@@ -47,6 +47,35 @@ def send_msg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": MY_CHAT_ID, "text": text, "parse_mode": "Markdown"})
 
+# --- פונקציית לוח משחקים ב-8 בבוקר ---
+
+def get_daily_schedule():
+    url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+    try:
+        response = requests.get(url).json()
+        games = response.get('scoreboard', {}).get('games', [])
+        if not games:
+            return "🏀 אין משחקים מתוכננים להיום."
+        
+        msg = "🗓️ *בוקר טוב! לוח המשחקים להיום ובלילה הקרוב:*\n\n"
+        for game in games:
+            home = game['homeTeam']['teamName']
+            away = game['awayTeam']['teamName']
+            home_h = TEAM_NAMES_HEB.get(home, home)
+            away_h = TEAM_NAMES_HEB.get(away, away)
+            
+            # עיבוד זמן לישראל (מוסיפים 2 שעות ל-UTC)
+            dt_utc = datetime.strptime(game['gameEt'], "%Y-%m-%dT%H:%M:%SZ")
+            dt_israel = dt_utc + timedelta(hours=2)
+            time_str = dt_israel.strftime("%H:%M")
+            
+            msg += f"⏰ {time_str} | {away_h} 🆚 {home_h}\n"
+        
+        msg += "\n*צפייה מהנה!* 🏀"
+        return msg
+    except:
+        return "⚠️ תקלה במשיכת לוח המשחקים."
+        
 # --- פונקציות פורמט הודעות ---
 
 def format_start_game(data):
@@ -194,5 +223,4 @@ def monitor_nba():
 
 if __name__ == "__main__":
 
-    send_msg("🤖 הבוט נדלק בהצלחה ומחכה למשחקים!")
     monitor_nba()
