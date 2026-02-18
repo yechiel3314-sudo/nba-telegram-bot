@@ -193,4 +193,6 @@ def monitor_nba():
         time.sleep(60)
 
 if __name__ == "__main__":
+
+    send_msg("🤖 הבוט נדלק בהצלחה ומחכה למשחקים!")
     monitor_nba()
