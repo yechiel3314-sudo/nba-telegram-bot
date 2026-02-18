@@ -39,9 +39,13 @@ def get_filtered_stats(game_id):
         return report
     except: return "❌ שגיאה בשליפת נתונים"
 
-def monitor_specific_games():
+def monitor_all_live_games():
     sent_states = {}
-    print("=== בוט מכללות פעיל: סורק משחקי הלילה ===")
+    
+    # --- שורת הבדיקה החדשה ---
+    print("Sending startup notification...")
+    send_msg("✅ *בוט מכללות עלה לאוויר ומתחיל בסריקה!*")
+    # --------------------------
 
     while True:
         try:
@@ -56,38 +60,29 @@ def monitor_specific_games():
                 display_clock = status.get('displayClock', "0:00")
                 period = status.get('period', 1)
                 
-                # תרגום שמות וקבלת תוצאה
                 t1_name = translate_heb(ev['competitions'][0]['competitors'][0]['team']['shortDisplayName'])
                 t2_name = translate_heb(ev['competitions'][0]['competitors'][1]['team']['shortDisplayName'])
                 score = f"{ev['competitions'][0]['competitors'][0]['score']} - {ev['competitions'][0]['competitors'][1]['score']}"
 
-                # 1. הודעת פתיחה (נשלחת רק פעם אחת כשהמשחק הופך ל-LIVE)
                 if state == 'in' and gid not in sent_states:
                     send_msg(f"🔥 *המשחק יצא לדרך!* 🔥\n🏟️ {t1_name} 🆚 {t2_name}")
                     sent_states[gid] = "STARTED"
 
-                # 2. עדכון זמן משחק (סביב דקה 10)
                 if state == 'in' and display_clock.startswith("10:"):
                     state_key = f"{gid}_clock_{period}"
                     if state_key not in sent_states:
                         send_msg(f"⏰ *עדכון אמצע חצי ({display_clock}):*\n🏟️ {t1_name} 🆚 {t2_name}\n🔹 תוצאה: {score}")
                         sent_states[state_key] = True
 
-                # 3. מחצית
                 if "Halftime" in label or "End of 1st" in label:
                     if f"{gid}_half" not in sent_states:
                         stats = get_filtered_stats(gid)
                         send_msg(f"🏀 *מחצית: {t1_name} {score} {t2_name}* 🏀\n{stats}")
                         sent_states[f"{gid}_half"] = True
 
-                # 4. סיום
-                if state == 'post' and f"{gid}_final" not in sent_states:
-                    stats = get_filtered_stats(gid)
-                    send_msg(f"🏁 *סיום: {t1_name} {score} {t2_name}* 🏁\n{stats}")
-                    sent_states[f"{gid}_final"] = True
-
-        except Exception as e: print(f"Error: {e}")
+        except Exception as e: 
+            print(f"Error: {e}")
         time.sleep(30)
 
 if __name__ == "__main__":
-    monitor_specific_games()
+    monitor_all_live_games()
