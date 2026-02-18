@@ -201,20 +201,48 @@ def format_final_summary(data, ot_count):
     return msg
 
 # --- לוגיקת ניהול המשחקים ---
+def get_morning_summary():
+    url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+    try:
+        response = requests.get(url, timeout=10).json()
+        games = response.get('scoreboard', {}).get('games', [])
+        
+        if not games:
+            return "☕ **בוקר טוב לכולם!**\n\nהלילה לא התרחשו משחקים ב-NBA. 💤\nנצלו את הזמן למנוחה, נתעדכן לקראת המשחקים הבאים!"
+
+        summary = "☕ **בוקר טוב לקהילת ה-NBA!**\n"
+        summary += "**ריכזנו עבורכם את תוצאות משחקי הלילה:**\n\n"
+        summary += "---\n**🏀 תוצאות סופיות:**\n"
+        
+        for game in games:
+            h_team = game['homeTeam']['teamTricode']
+            v_team = game['awayTeam']['teamTricode']
+            h_score = game['homeTeam']['score']
+            v_score = game['awayTeam']['score']
+            summary += f"• {v_team} {v_score} 🆚 {h_score} {h_team}\n"
+            
+        summary += "\n---\n**🇮🇱 הזווית הישראלית:**\n"
+        summary += "בדקו את העדכונים מהלילה בערוץ לסטטיסטיקה המלאה של דני!"
+        
+        summary += "\n\n**שיהיה יום כדורסל מוצלח! 🏀✨**"
+        return summary
+    except Exception as e:
+        print(f"Error in summary: {e}")
+        return None
 
 def monitor_nba():
     sent_states = {} 
-
     last_schedule_sent_date = ""
-    
+    last_morning_summary_date = "" # משתנה למניעת כפילויות בבוקר
+
     while True:
         try:
-            # הוספת timedelta(hours=2) כדי להתאים לשעון ישראל ב-Railway
+            # התאמה לשעון ישראל (UTC+2)
             now = datetime.now(timezone.utc) + timedelta(hours=2)
             today_date = now.strftime("%Y-%m-%d")
-            current_time = now.strftime("%H:%M") # הגדרת פורמט שעה נוח
+            current_time = now.strftime("%H:%M")
 
-            # --- 1. שליחת סיכום בוקר ב-09:00 --- (חדש!)
+            # --- 1. שליחת סיכום בוקר ב-09:00 ---
             if now.hour == 9 and now.minute == 0 and last_morning_summary_date != today_date:
                 summary_text = get_morning_summary()
                 if summary_text:
@@ -222,37 +250,40 @@ def monitor_nba():
                     last_morning_summary_date = today_date
                     print(f"Morning summary sent at {current_time}")
 
-            # --- 2. שליחת לוח משחקים ב-18:00 --- (קיים אצלך)
+            # --- 2. שליחת לוח משחקים ב-18:00 ---
             if now.hour == 18 and now.minute == 0 and last_schedule_sent_date != today_date:
                 send_msg(get_daily_schedule())
-                last_schedule_sent_date = today_da
-                
-            scoreboard = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json").json()
-            games = scoreboard['scoreboard']['games']
+                last_schedule_sent_date = today_date
+                print(f"Daily schedule sent at {current_time}")
+
+            # --- 3. בדיקת משחקים חיים ---
+            scoreboard_res = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=10)
+            scoreboard = scoreboard_res.json()
+            games = scoreboard.get('scoreboard', {}).get('games', [])
             
             for game in games:
                 gid = game['gameId']
                 status = game['gameStatusText']
                 period = game['period']
                 
-                data_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                game_data = requests.get(data_url).json()['game']
-                
-                state_key = f"{gid}_{status}_{period}"
-                
-                if state_key not in sent_states:
-                    # 1. פתיחת משחק
-                    if period == 1 and game['gameStatus'] == 2 and gid not in sent_states:
-                        send_msg(format_start_game(game_data))
-                        sent_states[gid] = "STARTED"
+                # רק אם המשחק פעיל (2) או הסתיים (3)
+                if game['gameStatus'] > 1:
+                    data_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+                    game_data = requests.get(data_url, timeout=10).json()['game']
+                    state_key = f"{gid}_{status}_{period}"
                     
-                    # 2. סיום רבעים רגילים (רבע 1, 2, 3, 4)
-                    elif "End" in status or "Half" in status:
-                        if period <= 4:
+                    if state_key not in sent_states:
+                        # א. פתיחת משחק
+                        if period == 1 and game['gameStatus'] == 2 and gid not in sent_states:
+                            send_msg(format_start_game(game_data))
+                            sent_states[gid] = "STARTED"
+                        
+                        # ב. סיום רבעים / מחצית
+                        elif "End" in status or "Half" in status:
                             label = "מחצית" if "Half" in status else f"סיום רבע {period}"
                             send_msg(format_period_update(game_data, label))
                             
-                            # --- תוספת: עדכון ישראלים בכל רבע ---
+                            # עדכון ישראלים
                             for team_key in ['awayTeam', 'homeTeam']:
                                 for p in game_data[team_key]['players']:
                                     if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
@@ -260,44 +291,27 @@ def monitor_nba():
                             
                             sent_states[state_key] = True
                             
+                            # התראת הארכה בסוף רבע 4
                             if period == 4 and game_data['awayTeam']['score'] == game_data['homeTeam']['score']:
                                 send_msg(format_overtime_alert(game_data, 1))
 
-                    # 3. הארכות (OT)
-                    elif period > 4 and "End" in status:
-                        ot_num = period - 4
-                        label = f"סיום הארכה {ot_num}"
-                        send_msg(format_period_update(game_data, label))
-                        
-                        # --- תוספת: עדכון ישראלים בהארכה ---
-                        for team_key in ['awayTeam', 'homeTeam']:
-                            for p in game_data[team_key]['players']:
-                                if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
-                                    send_msg(get_israeli_stats_message(p, label))
-                                    
-                        sent_states[state_key] = True
-                        if game_data['awayTeam']['score'] == game_data['homeTeam']['score']:
-                            send_msg(format_overtime_alert(game_data, ot_num + 1))
-
-                    # 4. סיום משחק סופי
-                    elif game['gameStatus'] == 3:
-                        ot_count = period - 4 if period > 4 else 0
-                        send_msg(format_final_summary(game_data, ot_count))
-                        
-                        label = "סיום משחק"
-                        for team_key in ['awayTeam', 'homeTeam']:
-                            for p in game_data[team_key]['players']:
-                                if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
-                                    send_msg(get_israeli_stats_message(p, label))
-                        
-                        sent_states[state_key] = True
-                        
+                        # ג. סיום משחק סופי
+                        elif game['gameStatus'] == 3:
+                            ot_count = period - 4 if period > 4 else 0
+                            send_msg(format_final_summary(game_data, ot_count))
+                            
+                            for team_key in ['awayTeam', 'homeTeam']:
+                                for p in game_data[team_key]['players']:
+                                    if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
+                                        send_msg(get_israeli_stats_message(p, "סיום משחק"))
+                            
+                            sent_states[state_key] = True
+                            
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error in main loop: {e}")
         
         time.sleep(60)
-        print(f"Check completed at {datetime.now()}. Waiting for games...")
+        print(f"Check completed at {datetime.now()}. Waiting for updates...")
 
 if __name__ == "__main__":
     monitor_nba()
-
