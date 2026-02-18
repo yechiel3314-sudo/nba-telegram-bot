@@ -209,12 +209,23 @@ def monitor_nba():
     
     while True:
         try:
+            # הוספת timedelta(hours=2) כדי להתאים לשעון ישראל ב-Railway
             now = datetime.now(timezone.utc) + timedelta(hours=2)
             today_date = now.strftime("%Y-%m-%d")
-            
+            current_time = now.strftime("%H:%M") # הגדרת פורמט שעה נוח
+
+            # --- 1. שליחת סיכום בוקר ב-09:00 --- (חדש!)
+            if now.hour == 9 and now.minute == 0 and last_morning_summary_date != today_date:
+                summary_text = get_morning_summary()
+                if summary_text:
+                    send_msg(summary_text)
+                    last_morning_summary_date = today_date
+                    print(f"Morning summary sent at {current_time}")
+
+            # --- 2. שליחת לוח משחקים ב-18:00 --- (קיים אצלך)
             if now.hour == 18 and now.minute == 0 and last_schedule_sent_date != today_date:
                 send_msg(get_daily_schedule())
-                last_schedule_sent_date = today_date
+                last_schedule_sent_date = today_da
                 
             scoreboard = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json").json()
             games = scoreboard['scoreboard']['games']
@@ -289,3 +300,4 @@ def monitor_nba():
 
 if __name__ == "__main__":
     monitor_nba()
+
