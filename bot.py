@@ -290,5 +290,8 @@ def monitor_nba():
 if __name__ == "__main__":
     monitor_nba()
 
+send_msg("🚀 בדיקה: הבוט התחבר בהצלחה לערוץ!")
+
+
 
 
