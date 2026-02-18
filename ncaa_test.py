@@ -19,34 +19,35 @@ def send_msg(text):
     except: pass
 
 def get_realtime_data(game_id):
-    """שליפת נתונים ישירה מה-Summary לעקיפת הדיליי של ה-Scoreboard"""
+    """שליפת נתונים עמוקה לעקיפת הדיליי של הלוח הראשי"""
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event={game_id}"
         data = requests.get(url, timeout=10).json()
         
         header = data.get('header', {})
-        competitors = header.get('competitions', [{}])[0].get('competitors', [])
+        comp = header.get('competitions', [{}])[0]
+        status_text = comp.get('status', {}).get('type', {}).get('description', "")
+        clock = comp.get('status', {}).get('displayClock', "0:00")
         
-        # זיהוי קבוצות ותוצאה מהראש (Header)
-        t1 = competitors[0]
-        t2 = competitors[1]
-        t1_name = translate_heb(t1['team']['shortDisplayName'])
-        t2_name = translate_heb(t2['team']['shortDisplayName'])
-        score = f"{t1['score']} - {t2['score']}"
-        clock = header.get('competitions', [{}])[0].get('status', {}).get('displayClock', "0:00")
+        t1 = comp.get('competitors', [])[0]
+        t2 = comp.get('competitors', [])[1]
         
-        # בדיקה אם באמת יש ניקוד (מישהו קלע)
+        # אם אין ניקוד בכלל, המשחק באמת עוד לא התחיל ב-API
         if t1['score'] == "0" and t2['score'] == "0":
             return None
 
-        report = f"✅ *משחק חי זוהה!* \n🏟️ {t1_name} {score} {t2_name}\n⏱️ שעון: {clock}\n"
+        t1_name = translate_heb(t1['team']['shortDisplayName'])
+        t2_name = translate_heb(t2['team']['shortDisplayName'])
+        score = f"{t1['score']} - {t2['score']}"
+
+        report = f"🏀 *עדכון חי (כל 2 דקות):* {t1_name} {score} {t2_name}\n⏱️ מצב: {status_text} ({clock})\n"
         
-        # הוספת סטטיסטיקת שחקנים (חמישייה)
+        # שליפת חמישיות
         for team in data.get('boxscore', {}).get('players', []):
-            team_title = translate_heb(team['team']['displayName'])
-            report += f"\n📊 *{team_title}*:\n"
-            all_players = team.get('statistics', [{}])[0].get('athletes', [])
-            starters = [p for p in all_players if p.get('starter')]
+            team_name = translate_heb(team['team']['displayName'])
+            report += f"\n📊 *{team_name}:*\n"
+            players = team.get('statistics', [{}])[0].get('athletes', [])
+            starters = [p for p in players if p.get('starter')]
             
             for p in starters:
                 p_name = translate_heb(p['athlete']['displayName'])
@@ -57,22 +58,34 @@ def get_realtime_data(game_id):
         return report
     except: return None
 
-def run_direct_sync():
-    print("🔄 מריץ סנכרון ישיר לעקיפת הדיליי...")
-    try:
-        # קבלת רשימת ה-IDs של כל משחקי היום
-        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-        resp = requests.get(url, timeout=10).json()
+def main_loop():
+    print("🚀 הבוט נכנס למצב עבודה: עדכון כל 2 דקות.")
+    send_msg("⚙️ *המערכת הוגדרה:* תקבל עדכון על כל המשחקים הפעילים בכל 2 דקות.")
+    
+    while True:
+        try:
+            # מקבל את רשימת כל ה-IDs של משחקי היום
+            list_url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+            resp = requests.get(list_url, timeout=10).json()
+            
+            found_any = False
+            for ev in resp.get('events', []):
+                gid = ev['id']
+                # בדיקה עמוקה לכל משחק
+                content = get_realtime_data(gid)
+                if content:
+                    send_msg(content)
+                    found_any = True
+                    time.sleep(1.5) # הפסקה קצרה כדי לא להציף את טלגרם בבת אחת
+            
+            if not found_any:
+                print("סריקה הושלמה: אין משחקים פעילים עם ניקוד כרגע.")
+                
+        except Exception as e:
+            print(f"Error in loop: {e}")
         
-        for ev in resp.get('events', []):
-            gid = ev['id']
-            # בדיקה ישירה לתוך הקרביים של המשחק
-            result = get_realtime_data(gid)
-            if result:
-                send_msg(result)
-                time.sleep(2) # מניעת הצפה
-    except Exception as e:
-        print(f"Error: {e}")
+        # המתנה של 2 דקות (120 שניות) לפני הסבב הבא
+        time.sleep(120)
 
 if __name__ == "__main__":
-    run_direct_sync()
+    main_loop()
