@@ -41,7 +41,7 @@ def get_filtered_stats(game_id):
 
 def monitor_college_basketball():
     sent_states = {}
-    send_msg("🚀 *הבוט פעיל:* מעקב תחילת משחק, כל 10 דקות, מחצית וסיום.")
+    print("🚀 הבוט התחיל סריקה חכמה - מעקב אחרי תוצאה ושעון רץ")
 
     while True:
         try:
@@ -51,48 +51,46 @@ def monitor_college_basketball():
             for ev in resp.get('events', []):
                 gid = ev['id']
                 status_obj = ev['status']
-                state = status_obj['type']['state'].lower()
-                description = status_obj['type']['description'].lower()
                 clock = status_obj.get('displayClock', "0:00")
                 period = status_obj.get('period', 1)
                 
-                # המרת שעון למספר לבדיקת ה-10 דקות
-                try: mins = int(clock.split(':')[0])
-                except: mins = 20
+                t1_score = int(ev['competitions'][0]['competitors'][0]['score'])
+                t2_score = int(ev['competitions'][0]['competitors'][1]['score'])
+                
+                # --- תיקון לוגיקת "המשחק התחיל" ---
+                # המשחק נחשב כפעיל אם: השעון הוא לא 20:00 (במכללות) או שאחת הקבוצות קלעה
+                is_actually_playing = (clock != "20:00" and clock != "0:00") or (t1_score > 0 or t2_score > 0)
 
-                t1 = translate_heb(ev['competitions'][0]['competitors'][0]['team']['shortDisplayName'])
-                t2 = translate_heb(ev['competitions'][0]['competitors'][1]['team']['shortDisplayName'])
-                score = f"{ev['competitions'][0]['competitors'][0]['score']} - {ev['competitions'][0]['competitors'][1]['score']}"
+                t1_name = translate_heb(ev['competitions'][0]['competitors'][0]['team']['shortDisplayName'])
+                t2_name = translate_heb(ev['competitions'][0]['competitors'][1]['team']['shortDisplayName'])
+                score_str = f"{t1_score} - {t2_score}"
 
-                # 1. הודעת תחילת משחק (רק כשמשתנה ל-In)
-                if state == 'in' and gid not in sent_states:
-                    send_msg(f"🔥 *המשחק יצא לדרך!* 🔥\n🏟️ {t1} 🆚 {t2}")
+                # 1. הודעת תחילת משחק
+                if is_actually_playing and gid not in sent_states:
+                    send_msg(f"🔥 *המשחק יצא לדרך!* 🔥\n🏟️ {t1_name} 🆚 {t2_name}")
                     sent_states[gid] = "STARTED"
 
-                # 2. עדכון אמצע חצי (כששעון יורד מ-10:00)
-                if state == 'in' and mins < 10:
+                # 2. עדכון 10 דקות (לפי שעון המשחק)
+                try: mins = int(clock.split(':')[0])
+                except: mins = 20
+                
+                if is_actually_playing and mins < 10:
                     clock_key = f"{gid}_mid_{period}"
                     if clock_key not in sent_states:
                         stats = get_filtered_stats(gid)
-                        send_msg(f"⏰ *עדכון 10 דקות לסיום חצי {period}* ({clock})\n🏟️ {t1} {score} {t2}\n{stats}")
+                        send_msg(f"⏰ *עדכון 10 דקות לסיום חצי {period}* ({clock})\n🏟️ {t1_name} {score_str} {t2_name}\n{stats}")
                         sent_states[clock_key] = True
 
                 # 3. מחצית
-                if "half" in description and f"{gid}_half" not in sent_states:
+                if "half" in status_obj['type']['description'].lower() and f"{gid}_half" not in sent_states:
                     stats = get_filtered_stats(gid)
-                    send_msg(f"🏀 *סיכום מחצית:* {t1} {score} {t2}\n{stats}")
+                    send_msg(f"🏀 *סיכום מחצית:* {t1_name} {score_str} {t2_name}\n{stats}")
                     sent_states[f"{gid}_half"] = True
-
-                # 4. סיום משחק
-                if state == 'post' and f"{gid}_final" not in sent_states:
-                    stats = get_filtered_stats(gid)
-                    send_msg(f"🏁 *סיום משחק:* {t1} {score} {t2}\n{stats}")
-                    sent_states[f"{gid}_final"] = True
 
         except Exception as e:
             print(f"Error: {e}")
             
-        time.sleep(30) # סריקה כל חצי דקה
+        time.sleep(30)
 
 if __name__ == "__main__":
     monitor_college_basketball()
