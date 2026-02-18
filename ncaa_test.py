@@ -40,7 +40,7 @@ def get_realtime_data(game_id):
         t2_name = translate_heb(t2['team']['shortDisplayName'])
         score = f"{t1['score']} - {t2['score']}"
 
-        report = f"🏀 *עדכון חי (כל 2 דקות):* {t1_name} {score} {t2_name}\n⏱️ מצב: {status_text} ({clock})\n"
+        report = f"🏀 *עדכון חי (סבב 2 דקות):* {t1_name} {score} {t2_name}\n⏱️ מצב: {status_text} ({clock})\n"
         
         # שליפת חמישיות
         for team in data.get('boxscore', {}).get('players', []):
@@ -59,8 +59,8 @@ def get_realtime_data(game_id):
     except: return None
 
 def main_loop():
-    print("🚀 הבוט נכנס למצב עבודה: עדכון כל 2 דקות.")
-    send_msg("⚙️ *המערכת הוגדרה:* תקבל עדכון על כל המשחקים הפעילים בכל 2 דקות.")
+    print("🚀 הבוט התחיל סבב ניטור של 2 דקות.")
+    send_msg("🔄 *מערכת הניטור הופעלה:* עדכון סטטיסטיקה מקיף יבוצע בכל 2 דקות.")
     
     while True:
         try:
@@ -71,20 +71,19 @@ def main_loop():
             found_any = False
             for ev in resp.get('events', []):
                 gid = ev['id']
-                # בדיקה עמוקה לכל משחק
                 content = get_realtime_data(gid)
                 if content:
                     send_msg(content)
                     found_any = True
-                    time.sleep(1.5) # הפסקה קצרה כדי לא להציף את טלגרם בבת אחת
+                    time.sleep(1.5)
             
             if not found_any:
-                print("סריקה הושלמה: אין משחקים פעילים עם ניקוד כרגע.")
+                print("סריקה הושלמה: לא נמצאו משחקים עם ניקוד זמין ב-API.")
                 
         except Exception as e:
-            print(f"Error in loop: {e}")
+            print(f"Error: {e}")
         
-        # המתנה של 2 דקות (120 שניות) לפני הסבב הבא
+        # המתנה של 2 דקות (120 שניות)
         time.sleep(120)
 
 if __name__ == "__main__":
