@@ -288,11 +288,7 @@ def monitor_nba():
         print(f"Check completed at {datetime.now()}. Waiting for games...")
 
 if __name__ == "__main__":
+    send_msg("🚀 בדיקה: הבוט התחבר בהצלחה לערוץ!")
     monitor_nba()
 
 send_msg("🚀 בדיקה: הבוט התחבר בהצלחה לערוץ!")
-
-
-
-
-
