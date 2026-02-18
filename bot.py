@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 import requests
 import time
 from deep_translator import GoogleTranslator
@@ -35,7 +36,7 @@ def translate_player(name):
 def get_stat_line(p):
     s = p['statistics']
     # שם שחקן בדגש
-    name = f"**{translate_player(f"{p['firstName']} {p['familyName']}")}**"
+    name = f"**{translate_player(p['firstName'] + ' ' + p['familyName'])}**"
     line = f"▫️ {name}: {s['points']} נק', {s['reboundsTotal']} ריב', {s['assists']} אס'"
     extras = []
     if s.get('steals', 0) > 0: extras.append(f"{s['steals']} חט'")
@@ -90,7 +91,7 @@ def format_start_game(data):
         team = data[team_key]
         t_heb = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
         # שמות חמישייה בדגש
-        starters = [f"**{translate_player(f"{p['firstName']} {p['familyName']}")}**" for p in team['players'] if p['starter'] == "1"]
+        starters = [f"**{translate_player(p['firstName'] + ' ' + p['familyName'])}**" for p in team['players'] if p['starter'] == "1"]
         msg += f"📍 *{t_heb}*:\n• 🏀 חמישייה: {', '.join(starters)}\n"
         msg += "• ❌ חיסורים: לא דווחו פציעות חדשות\n\n"
     return msg
@@ -169,8 +170,18 @@ def format_final_summary(data, ot_count):
 
 def monitor_nba():
     sent_states = {} 
+
+    last_schedule_sent_date = ""
+    
     while True:
         try:
+            now = datetime.utcnow() + timedelta(hours=2)
+            today_date = now.strftime("%Y-%m-%d")
+            
+            if now.hour == 18 and now.minute == 0 and last_schedule_sent_date != today_date:
+                send_msg(get_daily_schedule())
+                last_schedule_sent_date = today_date
+                
             scoreboard = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json").json()
             games = scoreboard['scoreboard']['games']
             
@@ -222,5 +233,4 @@ def monitor_nba():
         time.sleep(60)
 
 if __name__ == "__main__":
-
     monitor_nba()
