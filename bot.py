@@ -23,6 +23,17 @@ TEAM_NAMES_HEB = {
     "Grizzlies": "ממפיס גריזליס", "Pelicans": "ניו אורלינס פליקנס", "Spurs": "סן אנטוניו ספרס"
 }
 
+ISRAELI_PLAYERS = ["Deni Avdija", "Ben Saraf", "Danny Wolf"]
+
+def format_minutes(mins_raw):
+    # הופך פורמט NBA (PT08M30S) לפורמט קריא (08:30)
+    minutes = mins_raw.replace("PT", "").replace("M", ":").replace("S", "").split('.')[0]
+    if ":" in minutes:
+        parts = minutes.split(":")
+        if len(parts[1]) == 1: parts[1] = "0" + parts[1]
+        return f"{parts[0]}:{parts[1]}"
+    return minutes
+
 # --- פונקציות תרגום ועיבוד ---
 
 def translate_player(name):
@@ -47,6 +58,29 @@ def get_stat_line(p):
 def send_msg(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": MY_CHAT_ID, "text": text, "parse_mode": "Markdown"})
+
+# --- יצירת הודעת סטטיסטיקה לישראלים ---
+
+def get_israeli_stats_message(player_data, label):
+    s = player_data['statistics']
+    full_name = f"{player_data['firstName']} {player_data['familyName']}"
+    
+    if s['minutesCalculated'] == "PT00M00.00S":
+        return f"🇮🇱 **{translate_player(full_name)}** טרם שותף ({label})."
+
+    msg = (
+        f"🇮🇱 **סיכום ישראלי - {translate_player(full_name)}**:\n"
+        f"📌 סטטוס: {label}\n"
+        f"⏱️ דקות: {format_minutes(s['minutesCalculated'])}\n"
+        f"🏀 נקודות: {s['points']}\n"
+        f"💪 ריבאונדים: {s['reboundsTotal']}\n"
+        f"🎯 אסיסטים: {s['assists']}\n"
+        f"🧤 חטיפות: {s['steals']}\n"
+        f"🚫 חסימות: {s['blocks']}\n"
+        f"⚠️ איבודים: {s['turnovers']}\n"
+        f"📊 מדד פלוס/מינוס: {s['plusMinusPoints']}"
+    )
+    return msg
 
 # --- פונקציית לוח משחקים ב-8 בבוקר ---
 
@@ -201,23 +235,36 @@ def monitor_nba():
                         send_msg(format_start_game(game_data))
                         sent_states[gid] = "STARTED"
                     
-                    # 2. סיום רבעים רגילים
+                    # 2. סיום רבעים רגילים (רבע 1, 2, 3, 4)
                     elif "End" in status or "Half" in status:
                         if period <= 4:
                             label = "מחצית" if "Half" in status else f"סיום רבע {period}"
                             send_msg(format_period_update(game_data, label))
+                            
+                            # --- תוספת: עדכון ישראלים בכל רבע ---
+                            for team_key in ['awayTeam', 'homeTeam']:
+                                for p in game_data[team_key]['players']:
+                                    if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
+                                        send_msg(get_israeli_stats_message(p, label))
+                            
                             sent_states[state_key] = True
                             
-                            # אם סוף רבע 4 ושוויון - שלח הודעת דרמה
                             if period == 4 and game_data['awayTeam']['score'] == game_data['homeTeam']['score']:
                                 send_msg(format_overtime_alert(game_data, 1))
 
                     # 3. הארכות (OT)
                     elif period > 4 and "End" in status:
                         ot_num = period - 4
-                        send_msg(format_period_update(game_data, f"סיום הארכה {ot_num}"))
+                        label = f"סיום הארכה {ot_num}"
+                        send_msg(format_period_update(game_data, label))
+                        
+                        # --- תוספת: עדכון ישראלים בהארכה ---
+                        for team_key in ['awayTeam', 'homeTeam']:
+                            for p in game_data[team_key]['players']:
+                                if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
+                                    send_msg(get_israeli_stats_message(p, label))
+                                    
                         sent_states[state_key] = True
-                        # אם עדיין שוויון, שלח התראה להארכה הבאה
                         if game_data['awayTeam']['score'] == game_data['homeTeam']['score']:
                             send_msg(format_overtime_alert(game_data, ot_num + 1))
 
@@ -225,6 +272,13 @@ def monitor_nba():
                     elif game['gameStatus'] == 3:
                         ot_count = period - 4 if period > 4 else 0
                         send_msg(format_final_summary(game_data, ot_count))
+                        
+                        label = "סיום משחק"
+                        for team_key in ['awayTeam', 'homeTeam']:
+                            for p in game_data[team_key]['players']:
+                                if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
+                                    send_msg(get_israeli_stats_message(p, label))
+                        
                         sent_states[state_key] = True
                         
         except Exception as e:
@@ -234,3 +288,4 @@ def monitor_nba():
 
 if __name__ == "__main__":
     monitor_nba()
+
