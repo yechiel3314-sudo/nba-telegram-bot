@@ -29,11 +29,11 @@ def get_filtered_stats(game_id):
             all_players = team.get('statistics', [{}])[0].get('athletes', [])
             starters = [p for p in all_players if p.get('starter')]
             bench = [p for p in all_players if not p.get('starter')]
-            # מיון ספסל לפי דקות (לוקחים 3 הכי פעילים)
+            # מיון ספסל לפי דקות (3 הכי פעילים)
             bench = sorted(bench, key=lambda x: int(x['stats'][0]) if x['stats'][0].isdigit() else 0, reverse=True)[:3]
             for p in starters + bench:
                 name = translate_heb(p['athlete']['displayName'])
-                s = p['stats'] # [MIN, FG, 3PT, FT, OREB, DREB, REB, AST, STL, BLK, TO, PF, PTS]
+                s = p['stats']
                 prefix = "⭐️" if p.get('starter') else "👟"
                 line = f"{prefix} {name}: {s[12]}נ' | {s[6]}ר' | {s[7]}א' | {s[8]}חט' | {s[9]}חס'"
                 report += line + "\n"
@@ -42,8 +42,7 @@ def get_filtered_stats(game_id):
 
 def monitor_college_basketball():
     sent_states = {}
-    print("🚀 הבוט סורק את כל משחקי הלילה (כולל 1:30, 2:00, 3:00)...")
-    send_msg("🏀 *מערכת המכללות במעקב מלא:* משחקי 01:00, 01:30, 02:00 ו-03:00 בפנים!")
+    send_msg("🚀 *הבוט המעודכן עלה:* כולל סטטיסטיקה באמצע חצי ומנגנון למניעת פספוס דקות!")
 
     while True:
         try:
@@ -58,40 +57,45 @@ def monitor_college_basketball():
                 display_clock = status_obj.get('displayClock', "0:00")
                 period = status_obj.get('period', 1)
                 
-                t1_name = translate_heb(ev['competitions'][0]['competitors'][0]['team']['shortDisplayName'])
-                t2_name = translate_heb(ev['competitions'][0]['competitors'][1]['team']['shortDisplayName'])
+                # המרת שעון למספר (שניות) כדי לבדוק אם עברנו את ה-10 דקות
+                try:
+                    minutes = int(display_clock.split(':')[0])
+                except:
+                    minutes = 20
+
+                t1_short = ev['competitions'][0]['competitors'][0]['team']['shortDisplayName']
+                t2_short = ev['competitions'][0]['competitors'][1]['team']['shortDisplayName']
                 score = f"{ev['competitions'][0]['competitors'][0]['score']} - {ev['competitions'][0]['competitors'][1]['score']}"
 
                 # 1. הודעת פתיחה
                 if state == 'in' and gid not in sent_states:
-                    send_msg(f"🔥 *המשחק יצא לדרך!* 🔥\n🏟️ {t1_name} 🆚 {t2_name}")
+                    send_msg(f"🔥 *המשחק יצא לדרך!* 🔥\n🏟️ {translate_heb(t1_short)} 🆚 {translate_heb(t2_short)}")
                     sent_states[gid] = "STARTED"
 
-                # 2. עדכון כל 10 דקות (בכל חצי)
-                if state == 'in' and display_clock.startswith("10:"):
-                    # מפתח ייחודי כדי שלא ישלח פעמיים באותה דקה
-                    clock_key = f"{gid}_clk_{period}"
+                # 2. עדכון אמצע חצי (מתחת ל-10 דקות) + סטטיסטיקה
+                if state == 'in' and minutes < 10:
+                    clock_key = f"{gid}_mid_{period}"
                     if clock_key not in sent_states:
-                        send_msg(f"⏰ *עדכון אמצע חצי ({display_clock}):*\n🏟️ {t1_name} 🆚 {t2_name}\n🔹 תוצאה: {score}")
+                        stats = get_filtered_stats(gid)
+                        msg = f"⏰ *אמצע חצי {period} ({display_clock}):*\n🏟️ {translate_heb(t1_short)} 🆚 {translate_heb(t2_short)}\n🔹 תוצאה: {score}\n{stats}"
+                        send_msg(msg)
                         sent_states[clock_key] = True
 
-                # 3. מחצית + סטטיסטיקה
+                # 3. מחצית
                 if "half" in description or "end of 1st" in description:
                     if f"{gid}_half" not in sent_states:
                         stats = get_filtered_stats(gid)
-                        send_msg(f"🏀 *מחצית: {t1_name} {score} {t2_name}* 🏀\n{stats}")
+                        send_msg(f"🏀 *מחצית: {translate_heb(t1_short)} {score} {translate_heb(t2_short)}* 🏀\n{stats}")
                         sent_states[f"{gid}_half"] = True
 
-                # 4. סיום + סטטיסטיקה סופית
+                # 4. סיום
                 if state == 'post' and f"{gid}_final" not in sent_states:
                     stats = get_filtered_stats(gid)
-                    send_msg(f"🏁 *סיום: {t1_name} {score} {t2_name}* 🏁\n{stats}")
+                    send_msg(f"🏁 *סיום: {translate_heb(t1_short)} {score} {translate_heb(t2_short)}* 🏁\n{stats}")
                     sent_states[f"{gid}_final"] = True
 
-        except Exception as e:
-            print(f"Error: {e}")
-            
-        time.sleep(30) # בדיקה כל 30 שניות כדי לתפוס את הדקה ה-10 בדיוק
+        except Exception as e: print(f"Error: {e}")
+        time.sleep(30)
 
 if __name__ == "__main__":
     monitor_college_basketball()
