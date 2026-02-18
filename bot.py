@@ -5,7 +5,7 @@ from deep_translator import GoogleTranslator
 
 # --- הגדרות טכניות ---
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-MY_CHAT_ID = "MY_CHAT_ID = "-1003808107418""
+MY_CHAT_ID = "-1003808107418"
 translator = GoogleTranslator(source='auto', target='iw')
 cache = {}
 
@@ -291,6 +291,7 @@ if __name__ == "__main__":
     monitor_nba()
 
 send_msg("🚀 בדיקה: הבוט התחבר בהצלחה לערוץ!")
+
 
 
 
