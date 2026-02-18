@@ -5,7 +5,7 @@ from deep_translator import GoogleTranslator
 
 # --- הגדרות טכניות ---
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-MY_CHAT_ID = "6967694845"
+MY_CHAT_ID = "MY_CHAT_ID = "-1003808107418""
 translator = GoogleTranslator(source='auto', target='iw')
 cache = {}
 
@@ -289,5 +289,6 @@ def monitor_nba():
 
 if __name__ == "__main__":
     monitor_nba()
+
 
 
