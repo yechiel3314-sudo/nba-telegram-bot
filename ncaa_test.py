@@ -41,47 +41,46 @@ def get_filtered_stats(game_id):
 
 def monitor_all_live_games():
     sent_states = {}
-    
-    # --- שורת הבדיקה החדשה ---
-    print("Sending startup notification...")
-    send_msg("✅ *בוט מכללות עלה לאוויר ומתחיל בסריקה!*")
-    # --------------------------
+    print("🚀 בוט מכללות עלה ומבצע סריקה ראשונה...")
+    send_msg("🔎 *מתחיל סריקת משחקים פעילים...*")
 
     while True:
         try:
             url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
             resp = requests.get(url, timeout=10).json()
+            events = resp.get('events', [])
             
-            for ev in resp.get('events', []):
-                gid = ev['id']
-                status = ev['status']
-                state = status['type']['state']
-                label = status['type']['description']
-                display_clock = status.get('displayClock', "0:00")
-                period = status.get('period', 1)
-                
-                t1_name = translate_heb(ev['competitions'][0]['competitors'][0]['team']['shortDisplayName'])
-                t2_name = translate_heb(ev['competitions'][0]['competitors'][1]['team']['shortDisplayName'])
-                score = f"{ev['competitions'][0]['competitors'][0]['score']} - {ev['competitions'][0]['competitors'][1]['score']}"
+            print(f"found {len(events)} games in ESPN scoreboard")
 
-                if state == 'in' and gid not in sent_states:
-                    send_msg(f"🔥 *המשחק יצא לדרך!* 🔥\n🏟️ {t1_name} 🆚 {t2_name}")
+            for ev in events:
+                gid = ev['id']
+                status_obj = ev['status']
+                state = status_obj['type']['state'].lower() # הופך לאותיות קטנות ליתר ביטחון
+                
+                # הדפסה ללוג כדי שנראה מה קורה בזמן אמת
+                t1_short = ev['competitions'][0]['competitors'][0]['team']['shortDisplayName']
+                t2_short = ev['competitions'][0]['competitors'][1]['team']['shortDisplayName']
+                print(f"Game {t1_short} vs {t2_short} | State: {state}")
+
+                # שינוי התנאי: כל מה שלא 'pre' (כלומר התחיל או הסתיים) יקבל הודעה
+                if state != 'pre' and gid not in sent_states:
+                    t1_name = translate_heb(t1_short)
+                    t2_name = translate_heb(t2_short)
+                    send_msg(f"🔥 *המשחק יצא לדרך (או כבר רץ)!* 🔥\n🏟️ {t1_name} 🆚 {t2_name}")
                     sent_states[gid] = "STARTED"
 
-                if state == 'in' and display_clock.startswith("10:"):
-                    state_key = f"{gid}_clock_{period}"
-                    if state_key not in sent_states:
-                        send_msg(f"⏰ *עדכון אמצע חצי ({display_clock}):*\n🏟️ {t1_name} 🆚 {t2_name}\n🔹 תוצאה: {score}")
-                        sent_states[state_key] = True
-
-                if "Halftime" in label or "End of 1st" in label:
+                # בדיקת מחצית (גמיש יותר)
+                description = status_obj['type']['description'].lower()
+                if "half" in description or "end of 1st" in description:
                     if f"{gid}_half" not in sent_states:
+                        score = f"{ev['competitions'][0]['competitors'][0]['score']} - {ev['competitions'][0]['competitors'][1]['score']}"
                         stats = get_filtered_stats(gid)
-                        send_msg(f"🏀 *מחצית: {t1_name} {score} {t2_name}* 🏀\n{stats}")
+                        send_msg(f"🏀 *מחצית: {translate_heb(t1_short)} {score} {translate_heb(t2_short)}* 🏀\n{stats}")
                         sent_states[f"{gid}_half"] = True
 
         except Exception as e: 
             print(f"Error: {e}")
+        
         time.sleep(30)
 
 if __name__ == "__main__":
