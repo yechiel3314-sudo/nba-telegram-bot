@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 import time
 from deep_translator import GoogleTranslator
@@ -209,7 +209,7 @@ def monitor_nba():
     
     while True:
         try:
-            now = datetime.utcnow() + timedelta(hours=2)
+            now = datetime.now(timezone.utc) + timedelta(hours=2)
             today_date = now.strftime("%Y-%m-%d")
             
             if now.hour == 18 and now.minute == 0 and last_schedule_sent_date != today_date:
@@ -285,7 +285,9 @@ def monitor_nba():
             print(f"Error: {e}")
         
         time.sleep(60)
+        print(f"Check completed at {datetime.now()}. Waiting for games...")
 
 if __name__ == "__main__":
     monitor_nba()
+
 
