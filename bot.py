@@ -9,7 +9,7 @@ from deep_translator import GoogleTranslator
 # --- הגדרות ותצורה ---
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-STATE_FILE = "nba_state.json"
+STATE_FILE = "nba_ultra_safe_v5.json"
 ISRAELI_PLAYERS = ["Deni Avdija", "Ben Saraf", "Danny Wolf"]
 
 # אובייקטים עזר
@@ -30,20 +30,24 @@ TEAM_NAMES_HEB = {
     "Grizzlies": "ממפיס גריזליס", "Pelicans": "ניו אורלינס פליקנס", "Spurs": "סן אנטוניו ספרס"
 }
 
-# --- ניהול מצב (State) ---
+# --- ניהול מצב (State) והגנה משגיאות ---
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except: return {"games": {}, "dates": {"schedule": "", "summary": ""}}
+        except Exception as e:
+            logging.error(f"Error loading state: {e}")
     return {"games": {}, "dates": {"schedule": "", "summary": ""}}
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=4, ensure_ascii=False)
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        logging.error(f"Error saving state: {e}")
 
-# --- תרגום ועיבוד ---
+# --- פונקציות עיבוד ותרגום ---
 def translate_player(name):
     if name in name_cache: return name_cache[name]
     try:
@@ -53,6 +57,7 @@ def translate_player(name):
     except: return name
 
 def format_minutes(mins_raw):
+    if not mins_raw or "PT00M00.00S" in mins_raw: return "0:00"
     minutes = mins_raw.replace("PT", "").replace("M", ":").replace("S", "").split('.')[0]
     if ":" in minutes:
         parts = minutes.split(":")
@@ -61,86 +66,90 @@ def format_minutes(mins_raw):
     return minutes
 
 def send_msg(text):
+    if not text: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
-    except Exception as e:
-        logging.error(f"Telegram error: {e}")
+    for i in range(3):
+        try:
+            res = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=15)
+            if res.status_code == 200: return
+        except Exception as e:
+            logging.error(f"Telegram retry {i+1}: {e}")
+            time.sleep(2)
 
-# --- פונקציות סטטיסטיקה ---
+# --- לוגיקת סטטיסטיקה ---
 def calculate_efficiency(p):
-    s = p["statistics"]
+    s = p.get("statistics", {})
     try:
-        eff = (s['points'] + s['reboundsTotal'] + s['assists'] + s['steals'] + s['blocks']) - \
-              ((s['fieldGoalsAttempted'] - s['fieldGoalsMade']) + (s['freeThrowsAttempted'] - s['freeThrowsMade']) + s['turnovers'])
-        return eff
+        return (s.get('points',0) + s.get('reboundsTotal',0) + s.get('assists',0) + s.get('steals',0) + s.get('blocks',0)) - \
+               ((s.get('fieldGoalsAttempted',0) - s.get('fieldGoalsMade',0)) + (s.get('freeThrowsAttempted',0) - s.get('freeThrowsMade',0)) + s.get('turnovers',0))
     except: return 0
 
 def get_stat_line(p, extended=False):
-    s = p['statistics']
+    s = p.get('statistics', {})
     name = f"**{translate_player(p['firstName'] + ' ' + p['familyName'])}**"
-    line = f"▫️ {name}: {s['points']} נק', {s['reboundsTotal']} ריב', {s['assists']} אס'"
+    line = f"▫️ {name}: {s.get('points',0)} נק', {s.get('reboundsTotal',0)} ריב', {s.get('assists',0)} אס'"
     if extended:
         extras = []
         if s.get('steals', 0) > 0: extras.append(f"{s['steals']} חט'")
         if s.get('blocks', 0) > 0: extras.append(f"{s['blocks']} חס'")
-        if s.get('turnovers', 0) > 0: extras.append(f"{s['turnovers']} איבודי כדור")
         if extras: line += f" ({', '.join(extras)})"
     return line
 
-# --- פורמטים של הודעות ---
+# --- בוני הודעות ---
 
 def format_start_game(data):
-    away_h = TEAM_NAMES_HEB.get(data['awayTeam']['teamName'], data['awayTeam']['teamName'])
-    home_h = TEAM_NAMES_HEB.get(data['homeTeam']['teamName'], data['homeTeam']['teamName'])
+    away, home = data['awayTeam'], data['homeTeam']
+    away_h, home_h = TEAM_NAMES_HEB.get(away['teamName'], away['teamName']), TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     msg = f"🏀 *המשחק יצא לדרך!* 🔥\n🏟️ {away_h} 🆚 {home_h}\n\n"
-    for team_key in ['awayTeam', 'homeTeam']:
-        team = data[team_key]
+    for team in [away, home]:
         t_heb = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
-        starters = [f"**{translate_player(p['firstName'] + ' ' + p['familyName'])}**" for p in team['players'] if p['starter'] == "1"]
+        starters = [f"**{translate_player(p['firstName'] + ' ' + p['familyName'])}**" for p in team['players'] if p.get('starter') == "1"]
         inactive = [translate_player(p['firstName'] + ' ' + p['familyName']) for p in team['players'] if p.get('status') == 'INACTIVE']
-        
-        msg += f"📍 *{t_heb}*:\n• 🏀 חמישייה: {', '.join(starters)}\n"
-        msg += f"• ❌ חיסורים: {', '.join(inactive) if inactive else 'אין חיסורים ידועים'}\n\n"
+        msg += f"📍 *{t_heb}*:\n• 🏀 חמישייה: {', '.join(starters)}\n• ❌ חיסורים: {', '.join(inactive) if inactive else 'אין חיסורים דווחו'}\n\n"
     return msg
 
 def format_period_update(game_data, label):
     away, home = game_data['awayTeam'], game_data['homeTeam']
     away_h, home_h = TEAM_NAMES_HEB.get(away['teamName'], away['teamName']), TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     
-    msg = f"📊 *{label}: {away_h} 🆚 {home_h}* 🏀\n"
-    msg += f"📈 תוצאה: {away['score']} - {home['score']}\n\n"
+    if away['score'] > home['score']:
+        score_info = f"{away['score']} - {home['score']} ל{away_h}"
+    elif home['score'] > away['score']:
+        score_info = f"{away['score']} - {home['score']} ל{home_h}"
+    else:
+        score_info = f"{away['score']} - {home['score']} (שוויון)"
+
+    msg = f"📊 {label}: {away_h} 🆚 {home_h} 🏀\n"
+    msg += f"📈 תוצאה: {score_info}\n\n"
 
     for team in [away, home]:
         t_heb = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
-        # מיון שחקנים לפי נקודות
-        starters = sorted([p for p in team['players'] if p['starter'] == "1"], key=lambda x: x['statistics']['points'], reverse=True)
-        bench = sorted([p for p in team['players'] if p['starter'] == "0" and p['statistics']['minutesCalculated'] != "PT00M00.00S"], key=lambda x: x['statistics']['points'], reverse=True)
+        p_list = team.get('players', [])
+        starters = sorted([p for p in p_list if p.get('starter') == "1"], key=lambda x: x['statistics']['points'], reverse=True)
+        bench = sorted([p for p in p_list if p.get('starter') == "0" and p['statistics']['minutesCalculated'] != "PT00M00.00S"], key=lambda x: x['statistics']['points'], reverse=True)
         
         msg += f"🔥 *{t_heb}*:\n"
-        if len(starters) >= 1: msg += f"• {get_stat_line(starters[0])}\n"
-        if len(starters) >= 2: msg += f"• {get_stat_line(starters[1])}\n"
-        if bench: msg += f"• ⚡ מהספסל: {get_stat_line(bench[0])}\n"
+        if len(starters) >= 1: msg += f"🥇 קלע 1: {get_stat_line(starters[0])}\n"
+        if len(starters) >= 2: msg += f"🥈 קלע 2: {get_stat_line(starters[1])}\n"
+        if bench:
+            s_b = bench[0]['statistics']
+            msg += f"⚡ מהספסל: **{translate_player(bench[0]['firstName']+' '+bench[0]['familyName'])}**: {s_b['points']} נק', {s_b['reboundsTotal']} ריב', {s_b['assists']} אס'\n"
         msg += "\n"
     return msg
 
 def format_israeli_stats(p, label):
-    s = p['statistics']
+    s = p.get('statistics', {})
+    if s.get('minutesCalculated') == "PT00M00.00S": return None
     name = translate_player(f"{p['firstName']} {p['familyName']}")
-    if s['minutesCalculated'] == "PT00M00.00S":
-        return f"🇮🇱 **עדכון ישראלים - {name}**\n📍 סטטוס: {label}\n😴 השחקן טרם עלה לפרקט."
-
-    msg = (f"🇮🇱 **עדכון ישראלים - {name}** 🇮🇱\n"
-           f"━━━━━━━━━━━━━━\n"
-           f"🏀 **סטטיסטיקה מורחבת ({label}):**\n"
+    msg = (f"🇮🇱 **גאווה ישראלית: {name}** 🇮🇱\n━━━━━━━━━━━━━━\n"
+           f"🏀 **סטטיסטיקה מלאה ({label}):**\n\n"
            f"⏱️ **דקות:** {format_minutes(s['minutesCalculated'])}\n"
            f"🎯 **נקודות:** {s['points']}\n"
            f"💪 **ריבאונדים:** {s['reboundsTotal']}\n"
            f"🪄 **אסיסטים:** {s['assists']}\n"
            f"🧤 **חטיפות:** {s['steals']}\n"
            f"🚫 **חסימות:** {s['blocks']}\n"
-           f"⚠️ **איבודים:** {s['turnovers']}\n"
-           f"📊 **מדד +/-:** {s['plusMinusPoints']}\n"
+           f"📊 **מדד פלוס/מינוס:** {s['plusMinusPoints']}\n"
            f"━━━━━━━━━━━━━━")
     return msg
 
@@ -148,109 +157,124 @@ def format_final_summary(data, ot_count):
     away, home = data['awayTeam'], data['homeTeam']
     away_h, home_h = TEAM_NAMES_HEB.get(away['teamName'], away['teamName']), TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     ot_txt = f" (לאחר {ot_count} הארכות)" if ot_count > 0 else ""
+    winner = away_h if away['score'] > home['score'] else home_h
     
-    # MVP
     all_p = away['players'] + home['players']
     mvp = max(all_p, key=calculate_efficiency)
 
     msg = f"🏁🏀 **סיום המשחק: {away_h} 🆚 {home_h}** 🏁🏀\n\n"
-    msg += f"🏆 **תוצאה סופית: {away['score']} - {home['score']}{ot_txt}**\n\n"
+    msg += f"🏆 **תוצאה סופית: {away['score']} - {home['score']} ל{winner}{ot_txt}**\n\n"
     msg += f"⭐ **MVP המשחק:** {translate_player(mvp['firstName'] + ' ' + mvp['familyName'])}\n"
-    msg += f"📈 מדד יעילות (EFF): {calculate_efficiency(mvp)}\n"
     msg += "──────────────────\n\n"
     
     for team in [away, home]:
-        msg += f"📍 **{TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])}**:\n"
-        top_players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)[:4]
-        for p in top_players: msg += f"{get_stat_line(p, True)}\n"
+        msg += f"📍 **{TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])}**:\n🏀 *חמישייה פותחת:*\n"
+        for p in [p for p in team['players'] if p.get('starter') == "1"]:
+            msg += f"{get_stat_line(p, True)}\n"
+        msg += "\n⚡ *בולטים מהספסל:*\n"
+        bench = sorted([p for p in team['players'] if p.get('starter') == "0" and p['statistics']['minutesCalculated'] != "PT00M00.00S"], key=lambda x: x['statistics']['points'], reverse=True)[:3]
+        for p in bench:
+            msg += f"{get_stat_line(p, True)}\n"
         msg += "\n"
     return msg
 
-# --- לו"ז וסיכום בוקר ---
+# --- לוגיקת ניטור ולו"ז ---
 
-def get_daily_schedule():
-    try:
-        data = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json").json()
-        games = data['scoreboard']['games']
-        if not games: return "🏀 אין משחקים מתוכננים להיום."
-        msg = "🗓️ **לוח המשחקים להיום ובלילה:**\n\n"
-        for g in games:
-            away = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName'])
-            home = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
-            dt = datetime.strptime(g['gameEt'], "%Y-%m-%dT%H:%M:%SZ") + timedelta(hours=2)
-            msg += f"⏰ {dt.strftime('%H:%M')} | {away} 🆚 {home}\n"
-        return msg + "\n*צפייה מהנה!* 🏀"
-    except: return "⚠️ שגיאה במשיכת לוח המשחקים."
-
-def get_morning_summary():
-    try:
-        data = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json").json()
-        games = data['scoreboard']['games']
-        if not games: return "☕ בוקר טוב! לא היו משחקים הלילה."
-        msg = "☕ **בוקר טוב! סיכום תוצאות הלילה:**\n\n"
-        for g in games:
-            a_name = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamTricode'])
-            h_name = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamTricode'])
-            msg += f"• {a_name} {g['awayTeam']['score']} 🆚 {g['homeTeam']['score']} {h_name}\n"
-        return msg + "\n**המשך יום כדורסל נהדר!** ✨"
-    except: return None
-
-# --- לוגיקה ראשית ---
 def monitor_nba():
     state = load_state()
+    logging.info("NBA Monitor is live and protecting...")
+    
     while True:
         try:
             now = datetime.now(timezone.utc) + timedelta(hours=2)
             today = now.strftime("%Y-%m-%d")
 
-            # הודעות מתוזמנות
-            if now.hour == 9 and now.minute == 0 and state["dates"]["summary"] != today:
-                summary = get_morning_summary()
-                if summary: send_msg(summary)
-                state["dates"]["summary"] = today
-            
+            # קבלת ה-Scoreboard הראשי
+            try:
+                sb_url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+                resp = requests.get(sb_url, timeout=15).json()
+                games = resp.get('scoreboard', {}).get('games', [])
+            except Exception as api_err:
+                logging.error(f"Scoreboard API Error: {api_err}")
+                time.sleep(60); continue
+
+            # 1. שליחת לו"ז (18:00)
             if now.hour == 18 and now.minute == 0 and state["dates"]["schedule"] != today:
-                send_msg(get_daily_schedule())
-                state["dates"]["schedule"] = today
+                if games:
+                    sched_msg = "🗓️ **לוח המשחקים להיום ובלילה:**\n\n"
+                    for g in games:
+                        a = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName'])
+                        h = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
+                        dt = datetime.strptime(g['gameEt'], "%Y-%m-%dT%H:%M:%SZ") + timedelta(hours=2)
+                        sched_msg += f"⏰ {dt.strftime('%H:%M')} | {a} 🆚 {h}\n"
+                    send_msg(sched_msg + "\n*צפייה מהנה!* 🏀")
+                state["dates"]["schedule"] = today; save_state(state)
 
-            # משחקים חיים
-            resp = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=10).json()
-            for g in resp.get('scoreboard', {}).get('games', []):
+            # 2. סיכום בוקר מתורגם (09:00)
+            if now.hour == 9 and now.minute == 0 and state["dates"]["summary"] != today:
+                if games:
+                    sum_msg = "☕ **בוקר טוב! סיכום תוצאות משחקי הלילה:**\n\n"
+                    for g in games:
+                        a = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName'])
+                        h = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
+                        winner = a if g['awayTeam']['score'] > g['homeTeam']['score'] else h
+                        sum_msg += f"• {a} **{g['awayTeam']['score']}** 🆚 **{g['homeTeam']['score']}** {h} (ל{winner})\n"
+                    send_msg(sum_msg + "\n**המשך יום נהדר!** ✨")
+                state["dates"]["summary"] = today; save_state(state)
+
+            # 3. ניטור משחקים חיים
+            for g in games:
                 gid = g['gameId']
-                if g['gameStatus'] > 1:
-                    if gid not in state["games"]: state["games"][gid] = {"started": False, "periods": [], "final": False}
-                    s = state["games"][gid]
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
+                status = g['gameStatus']
+                status_text = g['gameStatusText'].strip()
 
-                    if not s["started"] and g['gameStatus'] == 2:
-                        send_msg(format_start_game(box))
-                        s["started"] = True
-                    
-                    period_label = f"p_{g['period']}_{g['gameStatusText'].strip()}"
-                    if ("End" in g['gameStatusText'] or "Half" in g['gameStatusText']) and period_label not in s["periods"]:
-                        label = "מחצית" if "Half" in g['gameStatusText'] else f"סיום רבע {g['period']}"
-                        send_msg(format_period_update(box, label))
-                        
-                        # עדכון ישראלים מורחב
-                        for team in ['awayTeam', 'homeTeam']:
-                            for p in box[team]['players']:
-                                full_name = f"{p['firstName']} {p['familyName']}"
-                                if full_name in ISRAELI_PLAYERS:
-                                    send_msg(format_israeli_stats(p, label))
-                        
-                        s["periods"].append(period_label)
+                if status > 1: # התחיל או נגמר
+                    if gid not in state["games"]:
+                        state["games"][gid] = {"started": False, "periods": [], "final": False}
+                    gs = state["games"][gid]
 
-                    if g['gameStatus'] == 3 and not s["final"]:
-                        ot = g['period'] - 4 if g['period'] > 4 else 0
-                        send_msg(format_final_summary(box, ot))
-                        for team in ['awayTeam', 'homeTeam']:
-                            for p in box[team]['players']:
+                    try:
+                        box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+                        box_data = requests.get(box_url, timeout=15).json()['game']
+                    except: continue
+
+                    # הודעת פתיחה
+                    if not gs["started"] and status == 2:
+                        send_msg(format_start_game(box_data))
+                        gs["started"] = True; save_state(state)
+
+                    # הודעת רבע/מחצית
+                    p_key = f"p_{g['period']}_{status_text}"
+                    if ("End" in status_text or "Half" in status_text) and p_key not in gs["periods"]:
+                        label = "מחצית" if "Half" in status_text else f"סיום רבע {g['period']}"
+                        send_msg(format_period_update(box_data, label))
+                        
+                        # בדיקת ישראלים
+                        for team_key in ['awayTeam', 'homeTeam']:
+                            for p in box_data[team_key]['players']:
                                 if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
-                                    send_msg(format_israeli_stats(p, "סיום משחק"))
-                        s["final"] = True
+                                    isr_msg = format_israeli_stats(p, label)
+                                    if isr_msg: send_msg(isr_msg)
+                        
+                        gs["periods"].append(p_key); save_state(state)
 
-            save_state(state)
-        except Exception as e: logging.error(f"Error: {e}")
+                    # הודעת סיום משחק
+                    if status == 3 and not gs["final"]:
+                        ot = g['period'] - 4 if g['period'] > 4 else 0
+                        send_msg(format_final_summary(box_data, ot))
+                        
+                        # סטטיסטיקה סופית לישראלים
+                        for team_key in ['awayTeam', 'homeTeam']:
+                            for p in box_data[team_key]['players']:
+                                if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS:
+                                    isr_msg = format_israeli_stats(p, "סיום משחק")
+                                    if isr_msg: send_msg(isr_msg)
+                                    
+                        gs["final"] = True; save_state(state)
+
+        except Exception as e:
+            logging.error(f"Global Error: {e}")
+        
         time.sleep(30)
 
 if __name__ == "__main__":
