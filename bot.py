@@ -158,22 +158,38 @@ def run_bot():
             sb = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
             games = sb.get('scoreboard', {}).get('games', [])
 
-            ## לו"ז מעוצב - תיקון אחרון: הכל מודגש, שעות בימין
-            if now.hour == 20 and now.minute == 50 and state["dates"]["schedule"] != today:
-                # כותרת מודגשת
+            # לו"ז מעוצב - פתרון סופי: שעות מודגשות, מארחת בימין והדגשות סיום
+            if now.hour == 20 and now.minute == 53 and state["dates"]["schedule"] != today:
+                # כותרת מודגשת לגמרי
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 
                 israeli_teams = ["Nets", "Trail Blazers"]
                 
                 for g in games:
+                    # חילוץ שעה בשיטה חסינה מכל שדה אפשרי
+                    time_display = "לפנות בוקר"
                     try:
                         import zoneinfo
-                        utc_time = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
+                        from datetime import datetime, timezone
+                        
+                        # ניסיון חילוץ לפי עדיפות: UTC -> ET -> StatusText
+                        st_utc = g.get('startTimeUTC')
+                        if st_utc:
+                            utc_dt = datetime.fromisoformat(st_utc.replace('Z', '+00:00'))
+                        else:
+                            # חישוב ידני מבוסס ET אם ה-UTC חסר (הוספת 7 שעות)
+                            et_val = g.get('gameEt', '2026-02-19T19:00:00')
+                            utc_dt = datetime.fromisoformat(et_val.replace('Z', '')) + timedelta(hours=5)
+                        
+                        # המרה אוטומטית לשעון ישראל
                         il_tz = zoneinfo.ZoneInfo("Asia/Jerusalem")
-                        il_time = utc_time.astimezone(il_tz)
+                        il_time = utc_dt.astimezone(il_tz)
                         time_display = il_time.strftime("%H:%M")
                     except:
-                        time_display = "לפנות בוקר"
+                        # ניקוי השעה משדה הטקסט אם הכל נכשל
+                        st_text = g.get('gameStatusText', '')
+                        if 'ET' in st_text:
+                            time_display = st_text.replace('ET', '').strip()
 
                     away_n = g['awayTeam']['teamName']
                     home_n = g['homeTeam']['teamName']
@@ -181,10 +197,11 @@ def run_bot():
                     away_heb = TEAM_NAMES_HEB.get(away_n, away_n)
                     home_heb = TEAM_NAMES_HEB.get(home_n, home_n)
                     
+                    # דגל ישראל ליד ברוקלין או פורטלנד בלבד
                     a_flag = " 🇮🇱" if away_n in israeli_teams else ""
                     h_flag = " 🇮🇱" if home_n in israeli_teams else ""
                     
-                    # בניית השורה: האמוג'י משמאל והשעה המודגשת מימין לו
+                    # בניית השורה: שעה מודגשת בצד ימין של האייקון
                     msg += f"⏰ **{time_display}**\n"
                     msg += f"🏀 {away_heb}{a_flag} 🆚 {home_heb}{h_flag}\n\n"
                 
@@ -248,6 +265,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
