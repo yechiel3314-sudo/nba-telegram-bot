@@ -160,29 +160,29 @@ def run_bot():
 
             # לו"ז ב-19:30
            # לו"ז מעוצב - שעון ישראל ורווחים נקיים
-            if now.hour == 19 and now.minute == 55 and state["dates"]["schedule"] != today:
-                msg = "🏀 ══ **לוח המשחקים להיום בלילה** ══ 🏀\n\n"
+            # לו"ז מעוצב - כותרת עם פסים מודגשת, שעות בלבד ורווחים
+            if now.hour == 19 and now.minute == 59 and state["dates"]["schedule"] != today:
+                msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 for g in games:
-                    # חישוב זמן ישראל מתוך ה-ET (זמן מזרחי ארה"ב)
+                    # חישוב שעה מדויקת לישראל מתוך ה-UTC
                     try:
-                        # ה-API של ה-NBA מחזיר זמן בפורמט ISO ב-startTimeUTC
                         st_utc = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
                         st_israel = st_utc.astimezone(timezone(timedelta(hours=2)))
-                        time_heb = st_israel.strftime("%H:%M")
+                        time_display = st_israel.strftime("%H:%M")
                     except:
-                        time_heb = "לפנות בוקר" # גיבוי למקרה של תקלה בפורמט
+                        time_display = "לפנות בוקר"
 
                     a = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName'])
                     h = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
                     
-                    # הצגת המשחק עם הדגשות ורווח של שורה
-                    msg += f"⏰ **שעון ישראל:** {time_heb}\n"
-                    msg += f"🏀 **{a}** 🆚 **{h}**\n\n" # רווח כפול בין משחקים
+                    # הצגת המשחק: שעה מודגשת והקבוצות מודגשות מתחתיה
+                    msg += f"⏰ **{time_display}**\n"
+                    msg += f"🏀 **{a}** 🆚 **{h}**\n\n"
                 
                 send_msg(msg + "*צפייה מהנה!* 📺")
                 state["dates"]["schedule"] = today
                 save_state(state)
-
+                
             # ניטור משחקים
             for g in games:
                 gid, status = g['gameId'], g['gameStatus']
@@ -236,6 +236,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
