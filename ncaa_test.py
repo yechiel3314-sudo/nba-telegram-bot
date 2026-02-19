@@ -146,9 +146,9 @@ def get_combined_schedule():
                 for p_en, info in db.items():
                     if p_en in players_handled: continue
                     if info[2] in str(teams):
-                        # חוק בן שרף - אם הוא ב-NBA אך לא נמצא לו משחק פיתוח
+                        # חוק בן שרף - הוספת רווח ותיקון הדגשה
                         if p_en == "Ben Saraf" and key == "NBA":
-                            saraf_training_msg = f"⬇️ **עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
+                            saraf_training_msg = f"\n{RTL_MARK}⬇️ **עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
                             continue 
                         
                         vs = [t for t in teams if info[2] not in t][0]
@@ -160,25 +160,23 @@ def get_combined_schedule():
                         all_games[key].append((time_il, f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
         except: pass
 
-    # בניית ההודעה לפי הסדר המבוקש
+    # בניית ההודעה
     full_msg = ""
     
-    # חלק 1: NBA וליגת הפיתוח
     for k in ["NBA", "GLEAGUE"]:
         if all_games[k]:
             title_name = "NBA" if k == "NBA" else "ליגת הפיתוח"
-            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב-{title_name}** 🇮🇱\n\n" + "\n\n".join([g[1] for g in sorted(all_games[k])]) + "\n\n\n"
+            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב-{title_name}** 🇮🇱\n\n" + "\n\n".join([g[1] for g in sorted(all_games[k])]) + "\n\n"
     
-    # חלק 2: עדכון בן שרף (מופיע כאן, לפני המכללות)
+    # הוספת העדכון של בן שרף (עם הרווח שהתווסף למעלה)
     if saraf_training_msg:
         full_msg += saraf_training_msg + "\n\n\n"
 
-    # חלק 3: מכללות
     if all_games["NCAA"]:
         full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה בהמכללות** 🇮🇱\n\n" + "\n\n".join([g[1] for g in sorted(all_games["NCAA"])]) + "\n\n"
 
     send_telegram(full_msg if full_msg else f"{RTL_MARK}🇮🇱 אין משחקי לגיונרים הלילה 😴")
-
+    
 # ==========================================
 # --- עדכוני פציעות בזמן אמת ---
 # ==========================================
@@ -216,7 +214,7 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
-        if now.hour == 15 and now.minute == 40 and last_sch != today:
+        if now.hour == 15 and now.minute == 47 and last_sch != today:
             get_combined_schedule(); last_sch = today
         if now.hour == 9 and now.minute == 15 and last_sum != today:
             get_morning_summary(); last_sum = today
