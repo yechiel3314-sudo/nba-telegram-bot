@@ -23,7 +23,7 @@ TEAM_NAMES_HEB = {
     "Cavaliers": "קליבלנד קאבלירס", "Magic": "אורלנדו מג'יק", "76ers": "פילדלפיה 76'",
     "Nets": "ברוקלין נטס", "Knicks": "ניו יורק ניקס", "Heat": "מיאמי היט",
     "Hornets": "שארלוט הורנטס", "Bulls": "שיקגו בולס", "Pacers": "אינדיאנה פייסרס",
-    "Pistons": "דטרויט פיסטונס", "Raptors": "טורונטו ראפפורס", "Wizards": "וושינגטון וויזארדס",
+    "Pistons": "דטרויט פיסטונס", "Raptors": "טורונטו ראפטורס", "Wizards": "וושינגטון וויזארדס",
     "Nuggets": "דנבר נאגטס", "Timberwolves": "מינסוטה טימברוולבס", "Thunder": "אוקלהומה סיטי תאנדר",
     "Trail Blazers": "פורטלנד טרייל בלייזרס", "Jazz": "יוטה ג'אז", "Warriors": "גולדן סטייט ווריורס",
     "Clippers": "ל.א קליפרס", "Lakers": "ל.א לייקרס", "Suns": "פיניקס סאנס",
@@ -159,7 +159,7 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             # לו"ז מעוצב - פתרון מושלם ומדויק
-            if now.hour == 23 and now.minute == 9 and state["dates"].get("schedule") != today:
+            if now.hour == 23 and now.minute == 11 and state["dates"].get("schedule") != today:
                 # שימוש בתו \u200f כדי להצמיד הכל לימין (RTL) בטלגרם
                 msg = "\u200f" + "🏀 **══ לוח המשחקים להיום בלילה ══** 🏀\n\n"
                 
@@ -255,6 +255,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
