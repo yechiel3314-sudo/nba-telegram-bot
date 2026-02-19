@@ -123,7 +123,7 @@ def get_combined_schedule():
     global status_cache
     status_cache = {}
 
-    # 1. סריקת ליגת הפיתוח (ג'י ליג)
+    # 1. סריקת ג'י ליג (קודם כל)
     try:
         resp_ncaa = requests.get(NCAA_SCOREBOARD, timeout=10).json()
         for ev in resp_ncaa.get("events", []):
@@ -145,12 +145,11 @@ def get_combined_schedule():
                 for p_en, info in db.items():
                     if p_en in players_handled: continue
                     if info[2] in str(teams):
-                        # חוק בן שרף - יצירת העדכון המודגש עם מרווח שורה אחת
+                        
+                        # טיפול מיוחד בבן שרף ב-NBA
                         if p_en == "Ben Saraf" and key == "NBA":
-                            # \n אחד בודד יוצר רווח של שורה אחת בדיוק מהשורה שמעליו
-                            update_msg = f"\n**עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
-                            
-                            # הזרקה למשחק של ברוקלין (דני וולף)
+                            # שתי ירידות שורה ליצירת רווח של שורה ריקה אחת + הדגשה נקייה
+                            update_msg = f"\n\n⬇️ **עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
                             for i, (g_time, g_str) in enumerate(all_games["NBA"]):
                                 if "ברוקלין" in g_str:
                                     all_games["NBA"][i] = (g_time, g_str + update_msg)
@@ -166,7 +165,7 @@ def get_combined_schedule():
                         all_games[key].append((time_il, game_str))
         except: pass
 
-    # בניית ההודעה הסופית
+    # בניית ההודעה
     full_msg = ""
     for k in ["NBA", "GLEAGUE", "NCAA"]:
         if all_games[k]:
@@ -214,7 +213,7 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
-        if now.hour == 15 and now.minute == 57 and last_sch != today:
+        if now.hour == 16 and now.minute == 01 and last_sch != today:
             get_combined_schedule(); last_sch = today
         if now.hour == 9 and now.minute == 15 and last_sum != today:
             get_morning_summary(); last_sum = today
