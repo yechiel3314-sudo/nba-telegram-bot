@@ -2,9 +2,9 @@ import requests
 import time
 from deep_translator import GoogleTranslator
 
-# =============================
+# =====================================
 # CONFIG
-# =============================
+# =====================================
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
@@ -15,9 +15,21 @@ translator = GoogleTranslator(source='en', target='iw')
 translation_cache = {}
 games_state = {}
 
-# =============================
-# TRANSLATION (WITH CACHE)
-# =============================
+# =====================================
+# SAFE REQUEST
+# =====================================
+def safe_get(url):
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print("❌ HTTP ERROR:", e)
+        return None
+
+# =====================================
+# TRANSLATION CACHE
+# =====================================
 def tr(text):
     if not text:
         return ""
@@ -30,34 +42,39 @@ def tr(text):
     except:
         return text
 
-# =============================
+# =====================================
 # TELEGRAM
-# =============================
+# =====================================
 def send_message(text):
-    r = requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        json={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-    )
-    return r.json()["result"]["message_id"]
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            timeout=10
+        )
+        return r.json()["result"]["message_id"]
+    except Exception as e:
+        print("❌ SEND ERROR:", e)
+        return None
 
 def edit_message(message_id, text):
-    requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/editMessageText",
-        json={
-            "chat_id": CHAT_ID,
-            "message_id": message_id,
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-    )
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/editMessageText",
+            json={
+                "chat_id": CHAT_ID,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": "Markdown"
+            },
+            timeout=10
+        )
+    except Exception as e:
+        print("❌ EDIT ERROR:", e)
 
-# =============================
+# =====================================
 # PLAYER STATS
-# =============================
+# =====================================
 def extract_stats(team):
     players = team.get("statistics", [{}])[0].get("athletes", [])
     result = []
@@ -81,10 +98,11 @@ def extract_stats(team):
     result.sort(key=lambda x: x["pts"], reverse=True)
     return result
 
-# =============================
+# =====================================
 # MESSAGE BUILDERS
-# =============================
-def build_start_message(event, summary):
+# =====================================
+def build_update(title, event, summary):
+
     comp = event["competitions"][0]["competitors"]
     home = next(c for c in comp if c["homeAway"] == "home")
     away = next(c for c in comp if c["homeAway"] == "away")
@@ -92,40 +110,19 @@ def build_start_message(event, summary):
     home_name = tr(home["team"]["displayName"])
     away_name = tr(away["team"]["displayName"])
 
-    msg = f"🔥 *המשחק יצא לדרך!* 🔥\n"
-    msg += f"🏟️ {home_name} 🆚 {away_name}\n\n"
+    home_score = int(home.get("score", 0))
+    away_score = int(away.get("score", 0))
 
-    for team in summary["boxscore"]["players"]:
-        team_name = tr(team["team"]["displayName"])
-        players = team.get("statistics", [{}])[0].get("athletes", [])
-        starters = [tr(p["athlete"]["displayName"]) for p in players if p.get("starter")]
-
-        msg += f"📍 *{team_name}:*\n"
-        msg += f"• 🏀 חמישייה: {', '.join(starters)}\n"
-        msg += f"• ❌ חיסורים: לא דווחו פציעות חדשות\n\n"
-
-    return msg
-
-def build_update_message(title, event, summary):
-    comp = event["competitions"][0]["competitors"]
-    home = next(c for c in comp if c["homeAway"] == "home")
-    away = next(c for c in comp if c["homeAway"] == "away")
-
-    home_name = tr(home["team"]["displayName"])
-    away_name = tr(away["team"]["displayName"])
-
-    home_score = int(home["score"])
-    away_score = int(away["score"])
     leader = home_name if home_score > away_score else away_name
 
     msg = f"🏀 *{title}:* {home_name} 🆚 {away_name} 🏀\n\n"
     msg += f"🔹 {leader} מובילה {home_score}-{away_score}\n\n"
 
-    for team in summary["boxscore"]["players"]:
+    for team in summary.get("boxscore", {}).get("players", []):
         team_name = tr(team["team"]["displayName"])
         players = extract_stats(team)
 
-        if len(players) == 0:
+        if not players:
             continue
 
         top1 = players[0]
@@ -134,41 +131,51 @@ def build_update_message(title, event, summary):
 
         msg += f"🔥 *{team_name}:*\n"
 
+        # מוביל
         msg += f"• 🔝 קלע מוביל: ▫️ {tr(top1['name'])}: {top1['pts']} נק', {top1['reb']} ריב', {top1['ast']} אס'"
         if top1["stl"] or top1["blk"]:
             msg += f" ({top1['stl']} חט', {top1['blk']} חס')"
         msg += "\n"
 
+        # שני
         if top2:
             msg += f"• 🏀 סקורר שני: ▫️ {tr(top2['name'])}: {top2['pts']} נק', {top2['reb']} ריב', {top2['ast']} אס'\n"
 
+        # ספסל
         if bench:
-            msg += f"• ⚡️ מהספסל: ▫️ {tr(bench['name'])}: {bench['pts']} נק', {bench['reb']} ריב', {bench['ast']} אס'\n"
+            msg += f"• ⚡️ מהספסל: ▫️ {tr(bench['name'])}: {bench['pts']} נק', {bench['reb']} ריב', {bench['ast']} אס'"
+            if bench["stl"] or bench["blk"]:
+                msg += f" ({bench['stl']} חט', {bench['blk']} חס')"
+            msg += "\n"
 
         msg += "\n"
 
     return msg
 
-def build_final_message(event, summary):
-    msg = build_update_message("סיום המשחק", event, summary)
-    msg += "\n📊 *שלושת הקלעים המובילים במשחק:*\n"
+def build_final(event, summary):
+    msg = build_update("סיום המשחק", event, summary)
 
     all_players = []
-    for team in summary["boxscore"]["players"]:
+    for team in summary.get("boxscore", {}).get("players", []):
         all_players.extend(extract_stats(team))
 
     all_players.sort(key=lambda x: x["pts"], reverse=True)
 
+    msg += "\n📊 *שלושת הקלעים המובילים במשחק:*\n"
     for p in all_players[:3]:
         msg += f"• {tr(p['name'])} — {p['pts']} נק', {p['reb']} ריב', {p['ast']} אס'\n"
 
     return msg
 
-# =============================
-# MAIN GAME LOGIC
-# =============================
+# =====================================
+# MAIN LOOP
+# =====================================
 def check_games():
-    data = requests.get(SCOREBOARD_URL).json()
+    data = safe_get(SCOREBOARD_URL)
+    if not data:
+        return
+
+    print(f"🔍 Found {len(data.get('events', []))} games")
 
     for ev in data.get("events", []):
         gid = ev["id"]
@@ -185,55 +192,64 @@ def check_games():
             }
 
         g = games_state[gid]
-        period = ev["status"]["period"]
-        clock = ev["status"]["displayClock"]
+
+        clock = ev["status"].get("displayClock", "20:00")
+        if ":" not in clock:
+            clock = "20:00"
+
+        period = ev["status"].get("period", 1)
+        minute = int(clock.split(":")[0])
+
+        print(f"🏀 Game {gid} | state={state} | period={period} | clock={clock}")
 
         if state == "in":
-            summary = requests.get(SUMMARY_URL + gid).json()
+            summary = safe_get(SUMMARY_URL + gid)
+            if not summary:
+                continue
 
-            minute = int(clock.split(":")[0])
-
-            # GAME START
+            # התחלה
             if not g["start"]:
-                msg = build_start_message(ev, summary)
+                msg = build_update("המשחק יצא לדרך", ev, summary)
                 mid = send_message(msg)
-                g["message_id"] = mid
-                g["start"] = True
+                if mid:
+                    g["message_id"] = mid
+                    g["start"] = True
 
-            # 10 MIN FIRST HALF
+            # 10 דקות ראשונות
             if period == 1 and minute <= 10 and not g["first10"]:
-                msg = build_update_message("עברו 10 דקות משחק", ev, summary)
+                msg = build_update("עברו 10 דקות משחק", ev, summary)
                 edit_message(g["message_id"], msg)
                 g["first10"] = True
 
-            # HALFTIME
+            # מחצית
             if period == 2 and minute == 20 and not g["halftime"]:
-                msg = build_update_message("מחצית", ev, summary)
+                msg = build_update("מחצית", ev, summary)
                 edit_message(g["message_id"], msg)
                 g["halftime"] = True
 
-            # 10 MIN SECOND HALF
+            # 10 דקות מחצית שנייה
             if period == 2 and minute <= 10 and not g["second10"]:
-                msg = build_update_message("10 דקות במחצית השנייה", ev, summary)
+                msg = build_update("10 דקות במחצית השנייה", ev, summary)
                 edit_message(g["message_id"], msg)
                 g["second10"] = True
 
-        # FINAL
         if state == "post" and not g["final"]:
-            summary = requests.get(SUMMARY_URL + gid).json()
-            msg = build_final_message(ev, summary)
+            summary = safe_get(SUMMARY_URL + gid)
+            if not summary:
+                continue
+            msg = build_final(ev, summary)
             edit_message(g["message_id"], msg)
             g["final"] = True
 
-# =============================
-# LOOP
-# =============================
-print("🚀 NCAA LIVE BOT RUNNING")
+# =====================================
+# RUN
+# =====================================
+print("🚀 NCAA LIVE BOT STARTED")
 
 while True:
     try:
         check_games()
     except Exception as e:
-        print("Error:", e)
+        print("🔥 CRITICAL ERROR:", e)
 
-    time.sleep(15)  # חי - בדיקה כל 15 שניות
+    time.sleep(15)
