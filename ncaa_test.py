@@ -9,11 +9,9 @@ TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 NCAA_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
 NBA_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
-NBA_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event="
 
 translator = GoogleTranslator(source='en', target='iw')
 RTL_MARK = "\u200f" 
-last_live_status = {}
 
 # --- מילון שחקני NBA ---
 NBA_DATABASE = {
@@ -37,7 +35,6 @@ NCAA_DATABASE = {
 def tr(text):
     try:
         translated = translator.translate(text)
-        # תיקוני תרגום נפוצים
         return translated.replace("שבילים בלייזרים", "פורטלנד").replace("רשתות", "ברוקלין")
     except:
         return text
@@ -69,7 +66,7 @@ def get_combined_schedule():
                     nba_games.append(line)
     except: pass
 
-    # --- סריקת G-League + NCAA (אותו API) ---
+    # --- סריקת G-League + NCAA ---
     try:
         ncaa_resp = requests.get(NCAA_SCOREBOARD, timeout=10).json()
         for ev in ncaa_resp.get("events", []):
@@ -107,17 +104,19 @@ def get_combined_schedule():
 
     if full_message:
         send_telegram(full_message)
+    else:
+        send_telegram(f"{RTL_MARK}🇮🇱 **אין משחקי לגיונרים מתוכננים להלילה** 😴")
 
 if __name__ == "__main__":
-    print("🚀 בוט במבנה מורחב פעיל. לו\"ז ב-13:00...")
+    print("🚀 בוט במבנה מורחב פעיל. לו\"ז מתוזמן ל-18:30...")
     last_day = ""
     while True:
         try:
             now = datetime.now(pytz.timezone('Asia/Jerusalem'))
             today = now.strftime("%Y-%m-%d")
 
-            # שליחת לו"ז
-            if now.hour == 13 and now.minute == 00 and last_day != today:
+            # שליחת לו"ז בערב
+            if now.hour == 18 and now.minute == 30 and last_day != today:
                 get_combined_schedule()
                 last_day = today
                 
