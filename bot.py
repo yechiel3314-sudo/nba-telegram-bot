@@ -150,9 +150,7 @@ def format_final_summary(box, ot_label=""):
 
 def run_bot():
     state = load_state()
-    # הודעת וידוא שהבוט הנכון עלה
-    send_msg("🚀 הבוט המעודכן (חמישיות, ספסל וישראלים) עלה לאוויר ב-Railway!")
-    
+        
     while True:
         try:
             now = datetime.now(timezone.utc) + timedelta(hours=2)
@@ -161,7 +159,7 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             # לו"ז ב-19:30
-            if now.hour == 19 and now.minute == 45 and state["dates"]["schedule"] != today:
+            if now.hour == 19 and now.minute == 49 and state["dates"]["schedule"] != today:
                 msg = "🗓️ **לוח המשחקים להיום ובלילה (שעון ישראל):**\n\n"
                 for g in games:
                     # המרת זמן משחק לשעון ישראל
@@ -232,5 +230,6 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
