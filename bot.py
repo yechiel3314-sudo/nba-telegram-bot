@@ -161,7 +161,7 @@ def run_bot():
             # לו"ז ב-19:30
            # לו"ז מעוצב - שעון ישראל ורווחים נקיים
             # לו"ז מעוצב - כותרת עם פסים מודגשת, שעות בלבד ורווחים
-            if now.hour == 19 and now.minute == 59 and state["dates"]["schedule"] != today:
+            if now.hour == 20 and now.minute == 0 and state["dates"]["schedule"] != today:
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 for g in games:
                     # חישוב שעה מדויקת לישראל מתוך ה-UTC
@@ -236,6 +236,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
