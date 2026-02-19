@@ -159,7 +159,7 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             # לו"ז מעוצב - תיקון שעות לישראל, הדגשה ויישור לימין
-            if now.hour == 23 and now.minute == 1 and state["dates"].get("schedule") != today:
+            if now.hour == 23 and now.minute == 3 and state["dates"].get("schedule") != today:
                 # תו \u200f בתחילת ההודעה כופה יישור לימין בטלגרם
                 msg = "\u200f" + "🏀 **══ לוח המשחקים להיום בלילה ══** 🏀\n\n"
                 
@@ -257,6 +257,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
