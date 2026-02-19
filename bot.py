@@ -158,24 +158,20 @@ def run_bot():
             sb = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
             games = sb.get('scoreboard', {}).get('games', [])
 
-            # לו"ז מעוצב - גרסה סופית ונקייה
-            if now.hour == 20 and now.minute == 25 and state["dates"]["schedule"] != today:
+            # לו"ז מעוצב - פורטלנד וברוקלין בלבד עם דגל + תיקון שעה סופי
+            if now.hour == 20 and now.minute == 40 and state["dates"]["schedule"] != today:
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 
-                # רשימת הקבוצות של הישראלים לזיהוי
-                israeli_teams = ["Trail Blazers", "Wizards", "Hawks"] # הוספתי את אטלנטה (שארף) ו-וושינגטון
+                # רשימת הקבוצות שאתה רוצה עם דגל
+                israeli_teams = ["Trail Blazers", "Nets"] 
                 
                 for g in games:
-                    # חילוץ שעה והמרה לשעון ישראל (UTC+2)
+                    # חילוץ זמן בשיטה הבטוחה ביותר
                     try:
-                        # לוקחים רק את השעה והדקות מה-UTC
-                        time_parts = g['startTimeUTC'].split('T')[1].split(':')
-                        utc_hour = int(time_parts[0])
-                        utc_min = time_parts[1]
-                        
-                        # הוספת שעתיים לשעון ישראל
-                        il_hour = (utc_hour + 2) % 24
-                        time_display = f"{il_hour:02d}:{utc_min}"
+                        # המרה מזמן UTC לזמן ישראל (UTC+2)
+                        utc_time = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
+                        il_time = utc_time.astimezone(timezone(timedelta(hours=2)))
+                        time_display = il_time.strftime("%H:%M")
                     except:
                         time_display = "00:00"
 
@@ -185,10 +181,9 @@ def run_bot():
                     away_heb = TEAM_NAMES_HEB.get(away_name, away_name)
                     home_heb = TEAM_NAMES_HEB.get(home_name, home_name)
                     
-                    # הוספת דגל ישראל לפני ה-VS אם יש ישראלי
+                    # הוספת דגל ישראל לפני ה-VS רק לקבוצות שבחרת
                     isr_flag = " 🇮🇱" if (away_name in israeli_teams or home_name in israeli_teams) else ""
                     
-                    # בניית ההודעה: כותרת מודגשת, שעה מודגשת, קבוצות רגיל
                     msg += f"⏰ **{time_display}**\n"
                     msg += f"🏀 {away_heb}{isr_flag} 🆚 {home_heb}\n\n"
                 
@@ -249,6 +244,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
