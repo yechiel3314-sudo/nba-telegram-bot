@@ -161,7 +161,7 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             # לו"ז ב-19:30
-            if now.hour == 19 and now.minute == 30 and state["dates"]["schedule"] != today:
+            if now.hour == 19 and now.minute == 40 and state["dates"]["schedule"] != today:
                 msg = "🗓️ **לוח המשחקים להיום ובלילה:**\n\n"
                 for g in games:
                     a, h = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName']), TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
@@ -223,3 +223,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
