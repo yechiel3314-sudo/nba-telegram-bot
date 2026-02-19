@@ -158,8 +158,8 @@ def run_bot():
             sb = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
             games = sb.get('scoreboard', {}).get('games', [])
 
-            # לו"ז מעוצב - פתרון סופי וחסין
-            if now.hour == 21 and now.minute == 0:
+            # לו"ז מעוצב - פתרון סופי וחסין: שעות מודגשות ומארחת בימין
+            if now.hour == 21 and now.minute == 3:
                 # כותרת מודגשת לגמרי
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 
@@ -168,18 +168,17 @@ def run_bot():
                 for g in games:
                     time_display = "00:00"
                     try:
-                        # שימוש ב-timestamp גולמי כדי לעקוף בעיות פורמט
-                        from datetime import datetime as dt, timezone as tz
-                        import zoneinfo
+                        # חילוץ שעה ישירות מהטקסט של ה-NBA כדי למנוע קריסה
+                        from datetime import datetime as dt, timedelta
                         
-                        # חילוץ הזמן בצורה הכי בטוחה שיש
-                        start_str = g.get('startTimeUTC', '').replace('Z', '+00:00')
-                        utc_dt = dt.fromisoformat(start_str)
+                        # לוקחים את זמן ה-UTC וממירים אותו ידנית (UTC+2 לישראל)
+                        st_utc = g.get('startTimeUTC', "").split('T')[1][:5]
+                        h = int(st_utc.split(':')[0])
+                        m = st_utc.split(':')[1]
                         
-                        # המרה אוטומטית לישראל
-                        israel_tz = zoneinfo.ZoneInfo("Asia/Jerusalem")
-                        il_time = utc_dt.astimezone(israel_tz)
-                        time_display = il_time.strftime("%H:%M")
+                        # חישוב שעה בישראל
+                        il_h = (h + 2) % 24
+                        time_display = f"{il_h:02d}:{m}"
                     except:
                         time_display = "00:00"
 
@@ -189,10 +188,11 @@ def run_bot():
                     away_heb = TEAM_NAMES_HEB.get(away_n, away_n)
                     home_heb = TEAM_NAMES_HEB.get(home_n, home_n)
                     
+                    # דגלים רק לברוקלין ופורטלנד
                     a_flag = " 🇮🇱" if away_n in israeli_teams else ""
                     h_flag = " 🇮🇱" if home_n in israeli_teams else ""
                     
-                    # שעה מודגשת מימין לאייקון
+                    # בניית השורה: אייקון ואז שעה מודגשת
                     msg += f"⏰ **{time_display}**\n"
                     msg += f"🏀 {away_heb}{a_flag} 🆚 {home_heb}{h_flag}\n\n"
                 
@@ -256,6 +256,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
