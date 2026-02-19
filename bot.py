@@ -159,21 +159,27 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             # לו"ז ב-19:30
-            if now.hour == 19 and now.minute == 49 and state["dates"]["schedule"] != today:
-                msg = "🗓️ **לוח המשחקים להיום ובלילה (שעון ישראל):**\n\n"
+           # לו"ז מעוצב - שעון ישראל ורווחים נקיים
+            if now.hour == 19 and now.minute == 55 and state["dates"]["schedule"] != today:
+                msg = "🏀 ══ **לוח המשחקים להיום בלילה** ══ 🏀\n\n"
                 for g in games:
-                    # המרת זמן משחק לשעון ישראל
-                    g_time_utc = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
-                    g_time_israel = g_time_utc.astimezone(timezone(timedelta(hours=2)))
-                    time_str = g_time_israel.strftime("%H:%M")
-                    
+                    # חישוב זמן ישראל מתוך ה-ET (זמן מזרחי ארה"ב)
+                    try:
+                        # ה-API של ה-NBA מחזיר זמן בפורמט ISO ב-startTimeUTC
+                        st_utc = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
+                        st_israel = st_utc.astimezone(timezone(timedelta(hours=2)))
+                        time_heb = st_israel.strftime("%H:%M")
+                    except:
+                        time_heb = "לפנות בוקר" # גיבוי למקרה של תקלה בפורמט
+
                     a = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName'])
                     h = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
                     
-                    msg += f"⏰ {time_str} | {a} 🆚 {h}\n"
-                    msg += "──────────────────\n" # קו מפריד למניעת צפיפות
+                    # הצגת המשחק עם הדגשות ורווח של שורה
+                    msg += f"⏰ **שעון ישראל:** {time_heb}\n"
+                    msg += f"🏀 **{a}** 🆚 **{h}**\n\n" # רווח כפול בין משחקים
                 
-                send_msg(msg + "\n*צפייה מהנה!* 🏀")
+                send_msg(msg + "*צפייה מהנה!* 📺")
                 state["dates"]["schedule"] = today
                 save_state(state)
 
@@ -230,6 +236,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
