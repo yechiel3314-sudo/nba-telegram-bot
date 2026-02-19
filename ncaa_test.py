@@ -203,7 +203,7 @@ if __name__ == "__main__":
             today_str = now.strftime("%Y-%m-%d")
             
             # שליחת לו''ז יומי ב-15:00
-            if now.hour == 15 and now.minute == 0 and last_day_sch != today_str:
+            if now.hour == 15 and now.minute == 9 and last_day_sch != today_str:
                 get_combined_schedule()
                 last_day_sch = today_str
                 
