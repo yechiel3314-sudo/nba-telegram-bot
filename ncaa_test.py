@@ -3,7 +3,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const moment = require("moment-timezone");
 
 const TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE";
-const CHAT_ID = "-1003808107418"; // העדכון של ה-Chat ID שלך
+const CHAT_ID = "-1003808107418"; // ה-Chat ID הנכון מהתמונות שלך
 
 const bot = new TelegramBot(TOKEN, { polling: false });
 const trackedGames = {};
@@ -39,9 +39,8 @@ async function fetchBoxScore(gameId) {
 }
 
 function getTopPlayers(teamData) {
-    if (!teamData || !teamData.players) return null;
+    if (!teamData || !teamData.players || !teamData.players[0]) return null;
     
-    // שליפת כל השחקנים ששיחקו
     const athletes = teamData.players[0].statistics[0].athletes;
     
     // מיון לפי נקודות (במכללות אינדקס 12 הוא לרוב הנקודות)
@@ -84,7 +83,7 @@ async function handleGames() {
             trackedGames[gameId] = { started: false, lastPeriod: 0, finalSent: false };
         }
 
-        // לוגיקת "המשחק התחיל" - מבוססת ניקוד/סטטוס
+        // זיהוי משחק פעיל (גם אם הסטטוס ב-API תקוע על Scheduled)
         const isActuallyPlaying = status === "STATUS_IN_PROGRESS" || (homeScore > 0 || awayScore > 0);
 
         if (isActuallyPlaying && status !== "STATUS_FINAL") {
@@ -93,11 +92,10 @@ async function handleGames() {
                 bot.sendMessage(CHAT_ID, `🔥 *המשחק יצא לדרך!* 🔥\n🏀 ${game.name}\n🕒 ${nowTime()}`, { parse_mode: "Markdown" });
             }
 
-            // בדיקת סוף מחצית (Period במכללות הוא לרוב 1 או 2)
             const currentPeriod = game.status.period;
             if (currentPeriod !== trackedGames[gameId].lastPeriod) {
                 const box = await fetchBoxScore(gameId);
-                if (box && box.boxscore) {
+                if (box && box.boxscore && box.boxscore.players) {
                     const homeBox = box.boxscore.players.find(t => t.team.id === homeTeam.id);
                     const awayBox = box.boxscore.players.find(t => t.team.id === awayTeam.id);
 
@@ -105,7 +103,7 @@ async function handleGames() {
                     const awayTop = getTopPlayers(awayBox);
 
                     let msg = `🏀 *עדכון מחצית/רבע ${currentPeriod}:* ${game.name}\n`;
-                    msg += `תוצאה: ${awayScore} - ${homeScore}\n\n`;
+                    msg += `תוצאה: ${awayTeam.team.shortDisplayName} ${awayScore} - ${homeScore} ${homeTeam.team.shortDisplayName}\n\n`;
                     
                     if (homeTop && awayTop) {
                         msg += `🔥 *${homeTeam.team.shortDisplayName}:*\n• ${formatPlayer(homeTop.leader)}\n• ${formatPlayer(homeTop.bench)} (ספסל)\n\n`;
@@ -118,7 +116,6 @@ async function handleGames() {
             }
         }
 
-        // לוגיקת סיום משחק
         if (status === "STATUS_FINAL" && !trackedGames[gameId].finalSent) {
             trackedGames[gameId].finalSent = true;
             bot.sendMessage(CHAT_ID, `🏁 *סיום המשחק!* 🏁\n🏀 ${game.name}\nתוצאה סופית: ${awayScore} - ${homeScore}`, { parse_mode: "Markdown" });
@@ -126,6 +123,5 @@ async function handleGames() {
     }
 }
 
-// הרצה כל 30 שניות כדי לא לחסום את ה-IP
-setInterval(handleGames, 30000);
+setInterval(handleGames, 45000); // סריקה כל 45 שניות
 handleGames();
