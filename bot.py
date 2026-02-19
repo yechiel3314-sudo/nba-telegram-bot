@@ -72,8 +72,15 @@ def send_msg(text):
 
 def get_stat_line(p):
     s = p.get('statistics', {})
-    name = f"**{translate(p['firstName'] + ' ' + p['familyName'])}**"
-    return f"▫️ {name}: {s.get('points', 0)} נק', {s.get('reboundsTotal', 0)} ריב', {s.get('assists', 0)} אס'"
+    line = f"{s.get('points', 0)} נק', {s.get('reboundsTotal', 0)} רב', {s.get('assists', 0)} אס'"
+    
+    # הוספת חטיפות וחסימות בסוגריים רק אם קיימות
+    extra = []
+    if s.get('steals', 0) > 0: extra.append(f"{s.get('steals', 0)} חט'")
+    if s.get('blocks', 0) > 0: extra.append(f"{s.get('blocks', 0)} חס'")
+    if extra:
+        line += f" ({', '.join(extra)})"
+    return line
 
 # ==========================================
 # בוני הודעות מעוצבות
@@ -256,3 +263,4 @@ def run_bot():
 if __name__ == "__main__":
     run_bot()
     
+
