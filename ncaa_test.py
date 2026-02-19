@@ -1,85 +1,137 @@
 import requests
 import time
-import re
 from deep_translator import GoogleTranslator
 
-# --- הגדרות ---
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-MY_CHAT_ID = "-1003808107418"
+CHAT_ID = "-1003808107418"
+
 translator = GoogleTranslator(source='en', target='iw')
+translation_cache = {}
+games_state = {}
 
 def translate_heb(text):
-    if not text: return ""
-    try: return translator.translate(text)
-    except: return text
+    if not text:
+        return ""
+    if text in translation_cache:
+        return translation_cache[text]
+    try:
+        tr = translator.translate(text)
+        translation_cache[text] = tr
+        return tr
+    except:
+        return text
 
-def send_msg(text):
+def send_message(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    r = requests.post(url, json={
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown"
+    })
+    return r.json()["result"]["message_id"]
+
+def edit_message(message_id, text):
+    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
+    requests.post(url, json={
+        "chat_id": CHAT_ID,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    })
+
+def extract_players(team_block):
+    players = team_block.get('statistics', [{}])[0].get('athletes', [])
+    result = []
+
+    for p in players:
+        stats = p.get("stats", [])
+        if len(stats) >= 13:
+            try:
+                pts = int(stats[12])
+                starter = p.get("starter", False)
+                result.append({
+                    "name": p["athlete"]["displayName"],
+                    "pts": pts,
+                    "starter": starter
+                })
+            except:
+                continue
+
+    result.sort(key=lambda x: x["pts"], reverse=True)
+    return result
+
+def build_gossip_message(event, summary):
+
+    comp = event["competitions"][0]["competitors"]
+
+    home = next(c for c in comp if c["homeAway"] == "home")
+    away = next(c for c in comp if c["homeAway"] == "away")
+
+    home_name = translate_heb(home["team"]["displayName"])
+    away_name = translate_heb(away["team"]["displayName"])
+
+    score = f'{home["score"]}-{away["score"]}'
+    clock = event["status"]["displayClock"]
+    period = event["status"]["period"]
+
+    msg = f"🏀 *{home_name} מול {away_name}*\n\n"
+
+    for team in summary.get("boxscore", {}).get("players", []):
+        team_name = translate_heb(team["team"]["displayName"])
+        players = extract_players(team)
+
+        top2 = players[:2]
+        bench = next((p for p in players if not p["starter"]), None)
+
+        msg += f"🔥 *אצל {team_name}:*\n"
+
+        for p in top2:
+            name = translate_heb(p["name"])
+            msg += f"{name} מוביל עם {p['pts']} נק׳.\n"
+
+        if bench:
+            bench_name = translate_heb(bench["name"])
+            msg += f"\n🪑 מהספסל בולט {bench_name} עם {bench['pts']} נק׳.\n"
+
+        msg += "\n"
+
+    msg += f"📊 *תוצאה:* {score}\n"
+    msg += f"⏱ רבע {period} | {clock}"
+
+    return msg
+
+def check_games():
+    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+    data = requests.get(url).json()
+
+    for ev in data.get("events", []):
+        if ev["status"]["type"]["state"] != "in":
+            continue
+
+        gid = ev["id"]
+
+        if gid not in games_state:
+            games_state[gid] = {"message_id": None}
+
+        summary = requests.get(
+            f"https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event={gid}"
+        ).json()
+
+        msg = build_gossip_message(ev, summary)
+
+        if games_state[gid]["message_id"] is None:
+            mid = send_message(msg)
+            games_state[gid]["message_id"] = mid
+        else:
+            edit_message(games_state[gid]["message_id"], msg)
+
+        time.sleep(2)
+
+print("🚀 NCAA Gossip Bot Active")
+while True:
     try:
-        requests.post(url, json={"chat_id": MY_CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=15)
-    except: pass
-
-def get_live_ncaa_scraping():
-    """שאיבת נתונים ישירות מהאתר כדי לעקוף את הדיליי של ה-API"""
-    try:
-        # דף התוצאות הכללי של המכללות
-        url = "https://site.web.api.espn.com/apis/v2/scoreboard/header?sport=basketball&league=mens-college-basketball&region=us&lang=en&contentorigin=espn"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        data = requests.get(url, headers=headers, timeout=10).json()
-        
-        sports = data.get('sports', [])
-        if not sports: return
-        
-        leagues = sports[0].get('leagues', [])
-        if not leagues: return
-        
-        events = leagues[0].get('events', [])
-        active_found = False
-
-        for ev in events:
-            # בודק אם המשחק בסטטוס "In Progress"
-            status = ev['status']['type']['state']
-            if status == 'in':
-                active_found = True
-                t1 = ev['competitors'][0]
-                t2 = ev['competitors'][1]
-                
-                t1_name = translate_heb(t1['homeAway'].capitalize() + ": " + t1['displayName'])
-                t2_name = translate_heb(t2['homeAway'].capitalize() + ": " + t2['displayName'])
-                score = f"{t1['score']} - {t2['score']}"
-                clock = ev['status']['displayClock']
-                
-                # בניית הודעה עם תוצאה חיה
-                msg = f"🏀 *משחק פעיל בזמן אמת:* \n🏟️ {t1_name} {score} {t2_name}\n⏱️ שעון: {clock}\n"
-                
-                # ניסיון למשוך סטטיסטיקת חמישייה מה-Summary המהיר
-                gid = ev['id']
-                stats_url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event={gid}"
-                stats_data = requests.get(stats_url, headers=headers, timeout=10).json()
-                
-                for team in stats_data.get('boxscore', {}).get('players', []):
-                    team_label = translate_heb(team['team']['displayName'])
-                    msg += f"\n📊 *{team_label}:*\n"
-                    # מושך רק את ה-5 שחקנים ששיחקו הכי הרבה דקות (בד"כ החמישייה)
-                    players = team.get('statistics', [{}])[0].get('athletes', [])
-                    for p in players[:5]: 
-                        p_name = translate_heb(p['athlete']['displayName'])
-                        s = p['stats']
-                        if len(s) >= 13:
-                            msg += f"⭐️ {p_name}: {s[12]}נ' | {s[6]}ר' | {s[7]}א'\n"
-                
-                send_msg(msg)
-                time.sleep(2)
-
-        if not active_found:
-            print("No live NCAA games at the moment.")
-
+        check_games()
     except Exception as e:
-        print(f"Scraping Error: {e}")
+        print("Error:", e)
 
-if __name__ == "__main__":
-    print("🚀 הבוט עובד במצב Scraping - ללא מגבלת בקשות")
-    while True:
-        get_live_ncaa_scraping()
-        # המתנה של 2 דקות
-        time.sleep(120)
+    time.sleep(600)  # כל 10 דקות
