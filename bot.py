@@ -161,11 +161,20 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             # לו"ז ב-19:30
-            if now.hour == 19 and now.minute == 40 and state["dates"]["schedule"] != today:
-                msg = "🗓️ **לוח המשחקים להיום ובלילה:**\n\n"
+            if now.hour == 19 and now.minute == 45 and state["dates"]["schedule"] != today:
+                msg = "🗓️ **לוח המשחקים להיום ובלילה (שעון ישראל):**\n\n"
                 for g in games:
-                    a, h = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName']), TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
-                    msg += f"⏰ {g['gameStatusText'].split(' ')[0]} | {a} 🆚 {h}\n"
+                    # המרת זמן משחק לשעון ישראל
+                    g_time_utc = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
+                    g_time_israel = g_time_utc.astimezone(timezone(timedelta(hours=2)))
+                    time_str = g_time_israel.strftime("%H:%M")
+                    
+                    a = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName'])
+                    h = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
+                    
+                    msg += f"⏰ {time_str} | {a} 🆚 {h}\n"
+                    msg += "──────────────────\n" # קו מפריד למניעת צפיפות
+                
                 send_msg(msg + "\n*צפייה מהנה!* 🏀")
                 state["dates"]["schedule"] = today
                 save_state(state)
@@ -223,4 +232,5 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
