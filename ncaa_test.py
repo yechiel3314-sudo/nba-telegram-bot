@@ -12,8 +12,7 @@ SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-col
 
 translator = GoogleTranslator(source='en', target='iw')
 
-# --- מילון הישראלים המלא (זיהוי ותרגום) ---
-# מפתח: שם ב-ESPN, ערך: [שם בעברית, שם המכללה בעברית]
+# --- מילון הישראלים המלא (שם ב-ESPN : [שם בעברית, קבוצה בעברית]) ---
 ISRAELI_DATABASE = {
     "Emanuel Sharp": ["עמנואל שארפ", "יוסטון"],
     "Yoav Berman": ["יואב ברמן", "קווינס"],
@@ -30,6 +29,23 @@ ISRAELI_DATABASE = {
     "Daniel Gueta": ["דניאל גואטה", "אוקלהומה סטייט"]
 }
 
+# מיפוי קבוצות באנגלית לחיפוש בלו"ז (כדי שהבוט ידע איזו קבוצה לחפש ב-API)
+TEAM_TO_PLAYER = {
+    "Houston": "Emanuel Sharp",
+    "Queens University": "Yoav Berman",
+    "Oral Roberts": "Ofri Naveh",
+    "Tennessee": "Eitan Burg",
+    "Purdue": "Omer Mayer",
+    "Miami": "Noam Dovrat",
+    "Lipscomb": "Or Ashkenazi",
+    "Colorado": "Alon Michaeli",
+    "Pepperdine": "Younatan Levi",
+    "Purdue Fort Wayne": "Yuval Levin",
+    "Kent State": "Omer Hamama",
+    "Mercyhurst": "Or Paran",
+    "Oklahoma State": "Daniel Gueta"
+}
+
 def tr(text):
     try: return translator.translate(text)
     except: return text
@@ -37,63 +53,56 @@ def tr(text):
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    try: requests.post(url, json=payload, timeout=10)
-    except: pass
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except:
+        pass
 
-# --- מנוע חיפוש וסיכום ---
-
+# --- פונקציית לו"ז (19:00) ---
 def get_evening_schedule():
-    """סורק משחקים עתידיים לישראלים"""
     try:
         resp = requests.get(SCOREBOARD_URL, timeout=15).json()
         games_tonight = []
         
         for ev in resp.get("events", []):
             comp = ev["competitions"][0]
+            # שמות הקבוצות במשחק הנוכחי
             teams_in_game = [t["team"]["displayName"] for t in comp["competitors"]]
             
-            for eng_name, info in ISRAELI_DATABASE.items():
-                college_eng = info[1] # אנחנו נחפש לפי שם המכללה באנגלית ב-API אם צריך, אבל ESPN נותן שמות מלאים
-                # בדיקה אם המכללה של הישראלי משתתפת במשחק
-                for t in comp["competitors"]:
-                    if eng_name in [a["athlete"]["displayName"] for a in t.get("roster", [])] or any(word in t["team"]["displayName"] for word in eng_name.split()[-1:]):
-                        # לצורך הפשטות ב-NCAA, נבדוק אם שם המכללה מופיע בנבחרת
-                        pass
-
-            # דרך בטוחה יותר: בדיקת כל קבוצה מול רשימת המכללות שלנו
-            for t in comp["competitors"]:
-                team_name = t["team"]["displayName"]
-                for eng_name, info in ISRAELI_DATABASE.items():
-                    # אם שם המכללה (אינדקס 1 במילון) נמצא בשם הקבוצה של ESPN
-                    if info[1] in tr(team_name): 
-                        vs_team = [temp["team"]["displayName"] for temp in comp["competitors"] if temp["team"]["displayName"] != team_name][0]
-                        
-                        game_time_utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
-                        game_time_il = game_time_utc.astimezone(pytz.timezone('Asia/Jerusalem')).strftime('%H:%M')
-                        
-                        games_tonight.append(f"🇮🇱 **{info[0]}** ({info[1]})\n🆚 נגד: **{tr(vs_team)}**\n⏰ שעה: **{game_time_il}**")
-                        break
+            for team_eng, player_eng in TEAM_TO_PLAYER.items():
+                # בדיקה אם אחת הקבוצות שלנו משחקת
+                if any(team_eng in t_name for t_name in teams_in_game):
+                    player_info = ISRAELI_DATABASE[player_eng]
+                    vs_team = [t for t in teams_in_game if team_eng not in t][0]
+                    
+                    # המרת זמן לישראל
+                    game_time_utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+                    game_time_il = game_time_utc.astimezone(pytz.timezone('Asia/Jerusalem')).strftime('%H:%M')
+                    
+                    line = f"🇮🇱 *{player_info[0]}* ({player_info[1]})\n🆚 נגד: *{tr(vs_team)}*\n⏰ שעה: *{game_time_il}*"
+                    if line not in games_tonight:
+                        games_tonight.append(line)
 
         if games_tonight:
-            msg = "📅 **לו\"ז הישראלים הלילה במכללות:**\n\n" + "\n\n".join(list(set(games_tonight)))
+            msg = "📅 *לו\"ז הישראלים הלילה במכללות:*\n\n" + "\n\n".join(games_tonight)
             send_telegram(msg)
         else:
             send_telegram("📅 הלילה אין משחקים לישראלים ברשימה.")
-    except Exception as e: print(f"Evening Error: {e}")
+    except Exception as e:
+        print(f"Evening Error: {e}")
 
+# --- פונקציית סיכום בוקר (08:00) ---
 def get_morning_summary():
-    """סורק סטטיסטיקות של משחקים שהסתיימו"""
     try:
         resp = requests.get(SCOREBOARD_URL, timeout=15).json()
         reports = []
         
         for ev in resp.get("events", []):
-            if ev["status"]["type"]["state"] == "post":
+            if ev["status"]["type"]["state"] == "post": # משחק הסתיים
                 gid = ev["id"]
                 summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
                 
                 for team_box in summary.get("boxscore", {}).get("players", []):
-                    # מחפשים את הישראלים בתוך ה-boxscore
                     stats_data = team_box.get("statistics", [{}])[0]
                     labels = stats_data.get("labels", [])
                     athletes = stats_data.get("athletes", [])
@@ -108,42 +117,46 @@ def get_morning_summary():
                                 try: return s[labels.index(lb)]
                                 except: return "0"
                             
-                            report = f"🇮🇱 **{res[0]}** ({res[1]})\n"
-                            report += f"📊 **{s_val('PTS')}** נק', **{s_val('REB')}** ריב', **{s_val('AST')}** אס'\n"
+                            report = f"🇮🇱 *{res[0]}* ({res[1]})\n"
+                            report += f"📊 *{s_val('PTS')}* נק', *{s_val('REB')}* ריב', *{s_val('AST')}* אס'\n"
                             report += f"🛡️ {s_val('STL')} חט', {s_val('BLK')} חס'\n"
                             report += f"⏱️ דקות: {s_val('MIN')} | מדד +/-: {s_val('+/-')}"
                             reports.append(report)
 
         if reports:
-            msg = "☀️ **סיכום הופעות הישראלים מהלילה:**\n\n" + "\n\n".join(reports)
+            msg = "☀️ *סיכום הופעות הישראלים מהלילה:*\n\n" + "\n\n".join(reports)
             send_telegram(msg)
         else:
             send_telegram("☀️ לא נמצאו דקות משחק לישראלים הלילה.")
-    except Exception as e: print(f"Morning Error: {e}")
+    except Exception as e:
+        print(f"Morning Error: {e}")
 
-# --- לופ הפעלה לפי שעות ---
-
+# --- לופ זמן ישראל ---
 if __name__ == "__main__":
-    print("🚀 בוט סקאוט ישראלים (NCAA) פעיל...")
-    
-    # משתנים למניעת כפילות שליחה
-    last_morning_day = ""
-    last_evening_day = ""
+    print("🚀 בוט סקאוט ישראלים NCAA באוויר...")
+    last_day = ""
+    morning_done = False
+    evening_done = False
 
     while True:
         try:
             now = datetime.now(pytz.timezone('Asia/Jerusalem'))
-            current_day = now.strftime("%Y-%m-%d")
+            today = now.strftime("%Y-%m-%d")
 
-            # בדיקת בוקר - 08:00
-            if now.hour == 8 and last_morning_day != current_day:
+            if today != last_day:
+                last_day = today
+                morning_done = False
+                evening_done = False
+
+            # בוקר 08:00
+            if now.hour == 8 and not morning_done:
                 get_morning_summary()
-                last_morning_day = current_day
+                morning_done = True
             
-            # בדיקת ערב - 19:00
-            if now.hour == 19 and last_evening_day != current_day:
+            # ערב 19:00
+            if now.hour == 19 and not evening_done:
                 get_evening_schedule()
-                last_evening_day = current_day
+                evening_done = True
 
         except Exception as e:
             print(f"Loop Error: {e}")
