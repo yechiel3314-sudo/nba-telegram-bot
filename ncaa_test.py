@@ -119,12 +119,11 @@ def get_morning_summary():
 
 def get_combined_schedule():
     all_games = {"NBA": [], "GLEAGUE": [], "NCAA": []}
-    saraf_training_msg = ""
     players_handled = set()
     global status_cache
     status_cache = {}
 
-    # 1. סריקת ליגת הפיתוח (עדיפות ראשונה)
+    # 1. סריקת ליגת הפיתוח (ג'י ליג)
     try:
         resp_ncaa = requests.get(NCAA_SCOREBOARD, timeout=10).json()
         for ev in resp_ncaa.get("events", []):
@@ -133,7 +132,7 @@ def get_combined_schedule():
                 if any(k in team_name for k in info[2:] for team_name in teams):
                     vs = [t for t in teams if not any(k in t for k in info[2:])][0]
                     time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
-                    all_games["GLEAGUE"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}* ⬇️ (ירד לסגל ליגת הפיתוח) ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
+                    all_games["GLEAGUE"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}* ⬇️ (ירד לסגל הג'י ליג) (לונג איילנד)\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
                     players_handled.add(p_en)
     except: pass
 
@@ -146,36 +145,37 @@ def get_combined_schedule():
                 for p_en, info in db.items():
                     if p_en in players_handled: continue
                     if info[2] in str(teams):
-                        # חוק בן שרף - הוספת רווח ותיקון הדגשה
-                        if p_en == "Ben Saraf" and key == "NBA":
-                            saraf_training_msg = f"\n{RTL_MARK}⬇️ **עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
-                            continue 
-                        
                         vs = [t for t in teams if info[2] not in t][0]
                         inj = get_detailed_injury(ev, p_en)
                         status_note = " ⚠️ (בסימן שאלה)" if "QUESTIONABLE" in inj["status"] or "GTD" in inj["status"] else ""
                         if status_note: status_cache[f"{p_en}_{ev['id']}"] = "QUESTIONABLE"
                         
                         time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
-                        all_games[key].append((time_il, f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
+                        game_str = f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"
+                        
+                        # הזרקת העדכון מיד אחרי ברוקלין ב-NBA
+                        if p_en == "Ben Saraf" and key == "NBA":
+                            # שימוש במחרוזת נקייה ללא RTL_MARK לפני הכוכביות כדי להבטיח דגש
+                            update_str = f"\n⬇️ **עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
+                            game_str += update_str
+                        
+                        all_games[key].append((time_il, game_str))
         except: pass
 
-    # בניית ההודעה
+    # בניית ההודעה הסופית
     full_msg = ""
-    
-    for k in ["NBA", "GLEAGUE"]:
+    for k in ["NBA", "GLEAGUE", "NCAA"]:
         if all_games[k]:
-            title_name = "NBA" if k == "NBA" else "ליגת הפיתוח"
-            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב-{title_name}** 🇮🇱\n\n" + "\n\n".join([g[1] for g in sorted(all_games[k])]) + "\n\n"
-    
-    # הוספת העדכון של בן שרף (עם הרווח שהתווסף למעלה)
-    if saraf_training_msg:
-        full_msg += saraf_training_msg + "\n\n\n"
+            if k == "NBA": title = "NBA"
+            elif k == "GLEAGUE": title = "ג'י ליג"
+            else: title = "המכללות"
+            
+            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב-{title}** 🇮🇱\n\n"
+            # מיון לפי שעה - העדכון של בן שרף יישאר צמוד למשחק של ברוקלין כי הוא חלק מאותה מחרוזת
+            full_msg += "\n\n".join([g[1] for g in sorted(all_games[k], key=lambda x: x[0])])
+            full_msg += "\n\n\n"
 
-    if all_games["NCAA"]:
-        full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה בהמכללות** 🇮🇱\n\n" + "\n\n".join([g[1] for g in sorted(all_games["NCAA"])]) + "\n\n"
-
-    send_telegram(full_msg if full_msg else f"{RTL_MARK}🇮🇱 אין משחקי לגיונרים הלילה 😴")
+    send_telegram(full_msg.strip() if full_msg else f"{RTL_MARK}🇮🇱 אין משחקי לגיונרים הלילה 😴")
     
 # ==========================================
 # --- עדכוני פציעות בזמן אמת ---
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
-        if now.hour == 15 and now.minute == 47 and last_sch != today:
+        if now.hour == 15 and now.minute == 52 and last_sch != today:
             get_combined_schedule(); last_sch = today
         if now.hour == 9 and now.minute == 15 and last_sum != today:
             get_morning_summary(); last_sum = today
