@@ -213,7 +213,7 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
-        if now.hour == 16 and now.minute == 01 and last_sch != today:
+        if now.hour == 16 and now.minute == 3 and last_sch != today:
             get_combined_schedule(); last_sch = today
         if now.hour == 9 and now.minute == 15 and last_sum != today:
             get_morning_summary(); last_sum = today
