@@ -1,6 +1,7 @@
 import requests
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+import pytz
 from deep_translator import GoogleTranslator
 
 # --- הגדרות טכניות ---
@@ -10,180 +11,141 @@ SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-
 SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event="
 
 translator = GoogleTranslator(source='en', target='iw')
-translation_cache = {}
-games_state = {}
+
+# --- מילון הישראלים המלא (זיהוי ותרגום) ---
+# מפתח: שם ב-ESPN, ערך: [שם בעברית, שם המכללה בעברית]
+ISRAELI_DATABASE = {
+    "Emanuel Sharp": ["עמנואל שארפ", "יוסטון"],
+    "Yoav Berman": ["יואב ברמן", "קווינס"],
+    "Ofri Naveh": ["עופרי נווה", "אורל רוברטס"],
+    "Eitan Burg": ["איתן בורג", "טנסי"],
+    "Omer Mayer": ["עומר מאייר", "פורדו"],
+    "Noam Dovrat": ["נועם דוברת", "מיאמי"],
+    "Or Ashkenazi": ["אור אשכנזי", "ליפסקומב"],
+    "Alon Michaeli": ["אלון מיכאלי", "קולורדו"],
+    "Younatan Levi": ["יונתן לוי", "פפרדיין"],
+    "Yuval Levin": ["יובל לוין", "פרדו פורט וויין"],
+    "Omer Hamama": ["עומר חממה", "קנט סטייט"],
+    "Or Paran": ["אור פארן", "מרסיהרסט"],
+    "Daniel Gueta": ["דניאל גואטה", "אוקלהומה סטייט"]
+}
 
 def tr(text):
-    if not text: return ""
-    if text in translation_cache: return translation_cache[text]
-    try:
-        t = translator.translate(text)
-        translation_cache[text] = t
-        return t
+    try: return translator.translate(text)
     except: return text
-
-# --- מנוע חילוץ נתונים ---
-
-def get_stat(stat_list, label, labels_map):
-    try:
-        idx = labels_map.index(label)
-        return stat_list[idx]
-    except: return "0"
-
-def extract_players_data(team_box):
-    stats_list = team_box.get("statistics", [])
-    if not stats_list: return []
-    athletes = stats_list[0].get("athletes", [])
-    labels = stats_list[0].get("labels", [])
-    parsed = []
-    for a in athletes:
-        s = a.get("stats", [])
-        if not s or len(s) < 5: continue
-        parsed.append({
-            "name": a["athlete"]["displayName"],
-            "starter": a.get("starter", False),
-            "pts": int(get_stat(s, "PTS", labels)),
-            "reb": int(get_stat(s, "REB", labels)),
-            "ast": int(get_stat(s, "AST", labels)),
-            "stl": int(get_stat(s, "STL", labels)),
-            "blk": int(get_stat(s, "BLK", labels))
-        })
-    return parsed
-
-def format_p_line(p, is_bench=False):
-    """עיצוב שורת שחקן עם הדגשות Markdown"""
-    prefix = "• ⚡ ספסל:" if is_bench else "• 🔝"
-    if is_bench == "final": prefix = "•"
-    
-    player_name = f"*{tr(p['name'])}*" # ב-Markdown של טלגרם כוכבית אחת זה Bold לפעמים, תלוי בגרסה. נשתמש בפורמט התקני.
-    line = f"{prefix} {player_name}: {p['pts']} נק' {p['reb']} ריב' {p['ast']} אס'"
-    
-    extras = []
-    if p['stl'] > 0: extras.append(f"{p['stl']} חט'")
-    if p['blk'] > 0: extras.append(f"{p['blk']} חס'")
-    if extras: line += f" ({' '.join(extras)})"
-    return line
-
-# --- בניית הודעות ב-5 שלבים ---
-
-def build_game_msg(title, ev, summary, is_final=False):
-    comp = ev["competitions"][0]
-    home = next(c for c in comp["competitors"] if c["homeAway"] == "home")
-    away = next(c for c in comp["competitors"] if c["homeAway"] == "away")
-    
-    h_name = f"*{tr(home['team']['displayName'])}*"
-    a_name = f"*{tr(away['team']['displayName'])}*"
-    h_score, a_score = int(home.get("score", 0)), int(away.get("score", 0))
-
-    if is_final:
-        winner = h_name if h_score > a_score else a_name
-        score_status = f"🏁 {winner} ניצחה {h_score} - {a_score}"
-    else:
-        if h_score > a_score: score_status = f"🔹 {h_name} מובילה *{h_score} - {a_score}*"
-        elif a_score > h_score: score_status = f"🔹 {a_name} מובילה *{a_score} - {h_score}*"
-        else: score_status = f"🔹 שוויון *{h_score} - {a_score}*"
-
-    clock = ev["status"].get("displayClock", "20:00")
-    period = ev["status"].get("period", 1)
-    period_text = f"חצי {period}" if period <= 2 else f"OT{period-2}"
-    time_label = f"⏱️ זמן: *{clock}* ({period_text})" if not is_final else "⏱️ סטטוס: *סופי*"
-
-    msg = f"🏀 *{title}*\n\n{a_name} 🆚 {h_name}\n\n{score_status}\n{time_label}\n"
-    msg += "───────────────────\n\n"
-
-    for team_box in summary.get("boxscore", {}).get("players", []):
-        t_name = f"*{tr(team_box['team']['displayName'])}*"
-        players = extract_players_data(team_box)
-        msg += f"🔥 {t_name}:\n"
-        
-        if "יצא לדרך" in title:
-            starters = [f"*{tr(p['name'])}*" for p in players if p["starter"]]
-            msg += "📋 חמישייה: " + ", ".join(starters) if starters else "📋 חמישייה טרם עודכנה"
-        elif is_final:
-            top_5 = sorted(players, key=lambda x: x["pts"], reverse=True)[:5]
-            for p in top_5: msg += f"{format_p_line(p, is_bench='final')}\n"
-        else:
-            starters = sorted([p for p in players if p["starter"]], key=lambda x: x["pts"], reverse=True)[:2]
-            bench = sorted([p for p in players if not p["starter"]], key=lambda x: x["pts"], reverse=True)
-            for p in starters: msg += f"{format_p_line(p)}\n"
-            if bench: msg += f"{format_p_line(bench[0], is_bench=True)}\n"
-        msg += "\n"
-    return msg
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    # שימוש ב-MarkdownV2 או Markdown רגיל עם דגש על שרת הטלגרם
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown", # שימוש בפורמט Markdown קלאסי שעובד הכי טוב עם כוכבית אחת להדגשה בבוטים
-        "disable_web_page_preview": True
-    }
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    try: requests.post(url, json=payload, timeout=10)
+    except: pass
+
+# --- מנוע חיפוש וסיכום ---
+
+def get_evening_schedule():
+    """סורק משחקים עתידיים לישראלים"""
     try:
-        requests.post(url, json=payload, timeout=10)
-    except Exception as e:
-        print(f"Send Error: {e}")
-
-# --- לוגיקת ניטור משופרת ---
-
-def run_ncaa_monitor():
-    print("🚀 ניטור מכללות משופר עם דגשים פועל...")
-    while True:
-        try:
-            resp = requests.get(SCOREBOARD_URL, timeout=15).json()
-            events = resp.get("events", [])
-            
-            for ev in events:
-                gid = ev["id"]
-                status_obj = ev["status"]["type"]
-                state = status_obj["state"] # 'pre', 'in', או 'post'
-                clock = ev["status"].get("displayClock", "20:00")
-                period = ev["status"].get("period", 1)
-                
-                if gid not in games_state:
-                    games_state[gid] = {"stages": []}
-                g = games_state[gid]
-
-                # שיפור הבדיקה: המרה בטוחה של דקות
-                try:
-                    minute = int(clock.split(":")[0])
-                except:
-                    minute = 20
-
-                # 1. פתיחה
-                if state == "in" and period == 1 and minute >= 19 and "start" not in g["stages"]:
-                    summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
-                    send_telegram(build_game_msg("המשחק יצא לדרך! 🔥", ev, summary))
-                    g["stages"].append("start")
-
-                # 2. 10 דק' לסיום חצי 1
-                elif state == "in" and period == 1 and minute <= 10 and minute > 0 and "10_p1" not in g["stages"]:
-                    summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
-                    send_telegram(build_game_msg("10 דקות לסיום החצי הראשון ⏳", ev, summary))
-                    g["stages"].append("10_p1")
-
-                # 3. מחצית
-                elif state == "in" and period == 2 and minute >= 19 and "half" not in g["stages"]:
-                    summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
-                    send_telegram(build_game_msg("מחצית ☕", ev, summary))
-                    g["stages"].append("half")
-
-                # 4. 10 דק' לסיום המשחק
-                elif state == "in" and period == 2 and minute <= 10 and minute > 0 and "10_p2" not in g["stages"]:
-                    summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
-                    send_telegram(build_game_msg("🚨 10 דקות לסיום המשחק!", ev, summary))
-                    g["stages"].append("10_p2")
-
-                # 5. סיום משחק (חסין לפספוסים)
-                elif state == "post" and "final" not in g["stages"]:
-                    summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
-                    send_telegram(build_game_msg("🏁 סיום המשחק - סטטיסטיקה סופית", ev, summary, is_final=True))
-                    g["stages"].append("final")
-
-        except Exception as e:
-            print(f"Global Error: {e}")
+        resp = requests.get(SCOREBOARD_URL, timeout=15).json()
+        games_tonight = []
         
-        time.sleep(45) # בדיקה תכופה יותר כדי לא לפספס דקה קריטית
+        for ev in resp.get("events", []):
+            comp = ev["competitions"][0]
+            teams_in_game = [t["team"]["displayName"] for t in comp["competitors"]]
+            
+            for eng_name, info in ISRAELI_DATABASE.items():
+                college_eng = info[1] # אנחנו נחפש לפי שם המכללה באנגלית ב-API אם צריך, אבל ESPN נותן שמות מלאים
+                # בדיקה אם המכללה של הישראלי משתתפת במשחק
+                for t in comp["competitors"]:
+                    if eng_name in [a["athlete"]["displayName"] for a in t.get("roster", [])] or any(word in t["team"]["displayName"] for word in eng_name.split()[-1:]):
+                        # לצורך הפשטות ב-NCAA, נבדוק אם שם המכללה מופיע בנבחרת
+                        pass
+
+            # דרך בטוחה יותר: בדיקת כל קבוצה מול רשימת המכללות שלנו
+            for t in comp["competitors"]:
+                team_name = t["team"]["displayName"]
+                for eng_name, info in ISRAELI_DATABASE.items():
+                    # אם שם המכללה (אינדקס 1 במילון) נמצא בשם הקבוצה של ESPN
+                    if info[1] in tr(team_name): 
+                        vs_team = [temp["team"]["displayName"] for temp in comp["competitors"] if temp["team"]["displayName"] != team_name][0]
+                        
+                        game_time_utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+                        game_time_il = game_time_utc.astimezone(pytz.timezone('Asia/Jerusalem')).strftime('%H:%M')
+                        
+                        games_tonight.append(f"🇮🇱 **{info[0]}** ({info[1]})\n🆚 נגד: **{tr(vs_team)}**\n⏰ שעה: **{game_time_il}**")
+                        break
+
+        if games_tonight:
+            msg = "📅 **לו\"ז הישראלים הלילה במכללות:**\n\n" + "\n\n".join(list(set(games_tonight)))
+            send_telegram(msg)
+        else:
+            send_telegram("📅 הלילה אין משחקים לישראלים ברשימה.")
+    except Exception as e: print(f"Evening Error: {e}")
+
+def get_morning_summary():
+    """סורק סטטיסטיקות של משחקים שהסתיימו"""
+    try:
+        resp = requests.get(SCOREBOARD_URL, timeout=15).json()
+        reports = []
+        
+        for ev in resp.get("events", []):
+            if ev["status"]["type"]["state"] == "post":
+                gid = ev["id"]
+                summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
+                
+                for team_box in summary.get("boxscore", {}).get("players", []):
+                    # מחפשים את הישראלים בתוך ה-boxscore
+                    stats_data = team_box.get("statistics", [{}])[0]
+                    labels = stats_data.get("labels", [])
+                    athletes = stats_data.get("athletes", [])
+                    
+                    for a in athletes:
+                        p_name_eng = a["athlete"]["displayName"]
+                        if p_name_eng in ISRAELI_DATABASE:
+                            s = a["stats"]
+                            res = ISRAELI_DATABASE[p_name_eng]
+                            
+                            def s_val(lb):
+                                try: return s[labels.index(lb)]
+                                except: return "0"
+                            
+                            report = f"🇮🇱 **{res[0]}** ({res[1]})\n"
+                            report += f"📊 **{s_val('PTS')}** נק', **{s_val('REB')}** ריב', **{s_val('AST')}** אס'\n"
+                            report += f"🛡️ {s_val('STL')} חט', {s_val('BLK')} חס'\n"
+                            report += f"⏱️ דקות: {s_val('MIN')} | מדד +/-: {s_val('+/-')}"
+                            reports.append(report)
+
+        if reports:
+            msg = "☀️ **סיכום הופעות הישראלים מהלילה:**\n\n" + "\n\n".join(reports)
+            send_telegram(msg)
+        else:
+            send_telegram("☀️ לא נמצאו דקות משחק לישראלים הלילה.")
+    except Exception as e: print(f"Morning Error: {e}")
+
+# --- לופ הפעלה לפי שעות ---
 
 if __name__ == "__main__":
-    run_ncaa_monitor()
+    print("🚀 בוט סקאוט ישראלים (NCAA) פעיל...")
+    
+    # משתנים למניעת כפילות שליחה
+    last_morning_day = ""
+    last_evening_day = ""
+
+    while True:
+        try:
+            now = datetime.now(pytz.timezone('Asia/Jerusalem'))
+            current_day = now.strftime("%Y-%m-%d")
+
+            # בדיקת בוקר - 08:00
+            if now.hour == 8 and last_morning_day != current_day:
+                get_morning_summary()
+                last_morning_day = current_day
+            
+            # בדיקת ערב - 19:00
+            if now.hour == 19 and last_evening_day != current_day:
+                get_evening_schedule()
+                last_evening_day = current_day
+
+        except Exception as e:
+            print(f"Loop Error: {e}")
+            
+        time.sleep(60)
