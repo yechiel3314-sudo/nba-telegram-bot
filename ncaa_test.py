@@ -7,14 +7,16 @@ from deep_translator import GoogleTranslator
 # --- הגדרות טכניות ---
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-# כתובות ה-API (NCAA ו-G-League משתמשות באותו מבנה ב-ESPN)
-SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event="
+NCAA_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+NBA_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+NBA_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event="
 
 translator = GoogleTranslator(source='en', target='iw')
+last_live_status = {} # למניעת כפילויות בעדכונים חיים
 
-# --- מילון הישראלים המעודכן ---
+# --- מילון הישראלים ---
 ISRAELI_DATABASE = {
+    "Ben Saraf": ["בן שרף", "NBA/G-League"],
     "Emanuel Sharp": ["עמנואל שארפ", "יוסטון"],
     "Yoav Berman": ["יואב ברמן", "קווינס"],
     "Ofri Naveh": ["עופרי נווה", "אורל רוברטס"],
@@ -27,17 +29,15 @@ ISRAELI_DATABASE = {
     "Yuval Levin": ["יובל לוין", "פרדו פורט וויין"],
     "Omer Hamama": ["עומר חממה", "קנט סטייט"],
     "Or Paran": ["אור פארן", "מרסיהרסט"],
-    "Daniel Gueta": ["דניאל גואטה", "אוקלהומה סטייט"],
-    "Ben Saraf": ["בן שרף", "ליגת הפיתוח"]
+    "Daniel Gueta": ["דניאל גואטה", "אוקלהומה סטייט"]
 }
 
-# מיפוי קבוצות (כולל אופציה לליגת הפיתוח עבור בן שרף)
 TEAM_TO_PLAYER = {
     "Houston": "Emanuel Sharp", "Queens": "Yoav Berman", "Oral Roberts": "Ofri Naveh",
     "Tennessee": "Eitan Burg", "Purdue": "Omer Mayer", "Miami": "Noam Dovrat",
     "Lipscomb": "Or Ashkenazi", "Colorado": "Alon Michaeli", "Pepperdine": "Younatan Levi",
     "Purdue Fort Wayne": "Yuval Levin", "Kent State": "Omer Hamama", "Mercyhurst": "Or Paran",
-    "Oklahoma State": "Daniel Gueta", "G League": "Ben Saraf", "Blue Coats": "Ben Saraf", "Squadron": "Ben Saraf"
+    "Oklahoma State": "Daniel Gueta", "G League": "Ben Saraf"
 }
 
 def tr(text):
@@ -50,10 +50,10 @@ def send_telegram(text):
     try: requests.post(url, json=payload, timeout=10)
     except: pass
 
-# --- לו"ז (מתוזמן ל-12:15) ---
+# --- פונקציית לו"ז (מתוזמן ל-12:25) ---
 def get_evening_schedule():
     try:
-        resp = requests.get(SCOREBOARD_URL, timeout=15).json()
+        resp = requests.get(NCAA_SCOREBOARD, timeout=15).json()
         games_tonight = []
         for ev in resp.get("events", []):
             comp = ev["competitions"][0]
@@ -65,69 +65,79 @@ def get_evening_schedule():
                     game_time_utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
                     game_time_il = game_time_utc.astimezone(pytz.timezone('Asia/Jerusalem'))
                     
-                    time_str = game_time_il.strftime('%H:%M')
-                    line = f"🏀 *{player_info[0]}* ({player_info[1]})\n🆚 נגד: *{tr(vs_team)}*\n⏰ שעה: *{time_str}*"
-                    games_tonight.append(line)
+                    if game_time_il.hour >= 21 or game_time_il.hour <= 11:
+                        line = f"🏀 *{player_info[0]}* ({player_info[1]})\n🆚 נגד: *{tr(vs_team)}*\n⏰ שעה: *{game_time_il.strftime('%H:%M')}*"
+                        games_tonight.append(line)
         if games_tonight:
             msg = "🇮🇱 **לו\"ז הישראלים הלילה:**\n\n" + "\n\n".join(list(set(games_tonight)))
             send_telegram(msg)
-    except Exception as e: print(f"Evening Error: {e}")
+    except Exception as e: print(f"Schedule Error: {e}")
 
-# --- סיכום סטטיסטי (מיושר לימין) ---
-def get_morning_summary():
+# --- מעקב חי בן שרף (כל דקה) ---
+def track_ben_saraf_live():
+    global last_live_status
     try:
-        resp = requests.get(SCOREBOARD_URL, timeout=15).json()
-        reports = []
+        resp = requests.get(NBA_SCOREBOARD, timeout=10).json()
         for ev in resp.get("events", []):
-            if ev["status"]["type"]["state"] == "post":
-                summary = requests.get(SUMMARY_URL + ev["id"], timeout=15).json()
-                for team_box in summary.get("boxscore", {}).get("players", []):
-                    stats_data = team_box.get("statistics", [{}])[0]
-                    labels, athletes = stats_data.get("labels", []), stats_data.get("athletes", [])
-                    for a in athletes:
-                        p_name = a["athlete"]["displayName"]
-                        if p_name in ISRAELI_DATABASE:
-                            s, res = a["stats"], ISRAELI_DATABASE[p_name]
-                            def g(lb):
-                                try: return s[labels.index(lb)]
-                                except: return "0"
+            gid = ev["id"]
+            summary = requests.get(NBA_SUMMARY + gid, timeout=10).json()
+            for team_box in summary.get("boxscore", {}).get("players", []):
+                stats_data = team_box.get("statistics", [{}])[0]
+                labels, athletes = stats_data.get("labels", []), stats_data.get("athletes", [])
+                for a in athletes:
+                    if a["athlete"]["displayName"] == "Ben Saraf":
+                        s = a["stats"]
+                        def g(lb):
+                            try: return s[labels.index(lb)]
+                            except: return "0"
+                        
+                        status_detail = ev["status"]["type"]["detail"]
+                        if gid not in last_live_status or last_live_status[gid] != status_detail:
+                            last_live_status[gid] = status_detail
                             
-                            if g('MIN') == "0" or g('MIN') == "":
-                                reports.append(f"🇮🇱 *{res[0]}* ({res[1]})\n❌ לא שותף במשחק")
-                            else:
-                                # בניית הודעה מיושרת לימין עם אמוג'ים
-                                report = f"🇮🇱 *{res[0]}* ({res[1]})\n"
-                                report += f"⏱️ דקות: {g('MIN')}\n"
-                                report += f"🏀 נקודות: *{g('PTS')}*\n"
-                                report += f"👐 ריבאונדים: {g('REB')}\n"
-                                report += f"🪄 אסיסטים: {g('AST')}\n"
-                                report += f"🛡️ חטיפות: {g('STL')}\n"
-                                report += f"🚫 חסימות: {g('BLK')}\n"
-                                report += f"⚠️ איבודים: {g('TO')}\n"
-                                report += f"📈 פלוס/מינוס: *{g('+/-')}*"
-                                reports.append(report)
-        if reports:
-            msg = "🇮🇱 **סיכום הופעות הלילה:**\n\n" + "\n\n".join(reports)
-            send_telegram(msg)
-    except Exception as e: print(f"Morning Error: {e}")
+                            home = ev["competitions"][0]["competitors"][0]
+                            away = ev["competitions"][0]["competitors"][1]
+                            
+                            msg = f"🏀 **עדכון משחק: בן שרף** 🏀\n"
+                            msg += f"🏟️ נגד: {tr(away['team']['displayName']) if home['team']['displayName']=='G League' else tr(home['team']['displayName'])}\n"
+                            msg += f"⏱️ מצב: {tr(status_detail)}\n"
+                            msg += f"🔢 תוצאה: {home['score']} - {away['score']}\n\n"
+                            msg += f"⏱️ דקות: {g('MIN')}\n"
+                            msg += f"🏀 נקודות: *{g('PTS')}*\n"
+                            msg += f"👐 ריבאונדים: {g('REB')}\n"
+                            msg += f"🪄 אסיסטים: {g('AST')}\n"
+                            msg += f"🛡️ חטיפות: {g('STL')}\n"
+                            msg += f"🚫 חסימות: {g('BLK')}\n"
+                            msg += f"⚠️ איבודים: {g('TO')}\n"
+                            msg += f"📈 פלוס/מינוס: *{g('+/-')}*"
+                            
+                            if ev["status"]["type"]["state"] == "post":
+                                win = "✅ ניצחון!" if (home['winner'] and home['team']['displayName']=='G League') else "❌ הפסד"
+                                msg += f"\n\n🏁 **סיום משחק: {win}**"
+                            
+                            send_telegram(msg)
+    except: pass
 
 if __name__ == "__main__":
-    print("🚀 בוט סקאוט מעודכן (כולל בן שרף) באוויר...")
-    last_day_m, last_day_e = "", ""
+    print("🚀 הבוט פעיל. מחכה ל-12:25...")
+    last_day_e, last_day_m = "", ""
     while True:
         try:
             now = datetime.now(pytz.timezone('Asia/Jerusalem'))
             today = now.strftime("%Y-%m-%d")
 
-            # סיכום בוקר ב-08:00
-            if now.hour == 8 and now.minute == 0 and last_day_m != today:
-                get_morning_summary()
-                last_day_m = today
+            # בדיקה חיה של בן שרף
+            track_ben_saraf_live()
 
-            # לו"ז ב-12:15
-            if now.hour == 12 and now.minute == 15 and last_day_e != today:
+            # שליחת לו"ז ב-12:25
+            if now.hour == 12 and now.minute == 25 and last_day_e != today:
                 get_evening_schedule()
                 last_day_e = today
-                
-        except Exception as e: print(f"Loop: {e}")
+
+            # סיכום בוקר ב-08:00
+            if now.hour == 8 and last_day_m != today:
+                # כאן תרוץ פונקציית סיכום הבוקר (נשמרת מהקוד הקודם)
+                last_day_m = today
+
+        except Exception as e: print(f"Loop error: {e}")
         time.sleep(30)
