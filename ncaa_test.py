@@ -5,36 +5,29 @@ import pytz
 from deep_translator import GoogleTranslator
 
 # --- הגדרות טכניות ---
-# הטוקן והמזהה של הערוץ שלך
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-# כתובות ה-API של ESPN לנתוני הליגות השונות
+# API של ESPN לתוצאות וסטטוסים
 NCAA_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
 NBA_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 
-# הגדרת המתרגם וסימן כיווניות לימין (RTL) עבור טלגרם
 translator = GoogleTranslator(source='en', target='iw')
 RTL_MARK = "\u200f" 
-
-# זיכרון זמני למעקב אחרי סטטוס פציעות (כדי לשלוח עדכונים סופיים)
 status_cache = {} 
 
-# --- בסיסי נתונים - כל השחקנים שביקשת ---
+# --- בסיסי נתונים ---
 
-# שחקנים שמשחקים ב-NBA (כולל כאלו שיכולים לרדת לליגת הפיתוח)
 NBA_DATABASE = {
     "Deni Avdija": ["דני אבדיה", "פורטלנד", "Trail Blazers"],
     "Danny Wolf": ["דני וולף", "ברוקלין", "Nets"],
     "Ben Saraf": ["בן שרף", "ברוקלין", "Nets"]
 }
 
-# שחקנים בליגת הפיתוח (G-League) - בודק שמות קבוצות נפוצים
 GLEAGUE_DATABASE = {
     "Ben Saraf": ["בן שרף", "לונג איילנד", "Long Island Nets", "Blue Coats", "Squadron"]
 }
 
-# רשימת שחקני המכללות המלאה שביקשת
 NCAA_DATABASE = {
     "Emanuel Sharp": ["עמנואל שארפ", "יוסטון", "Houston"],
     "Yoav Berman": ["יואב ברמן", "קווינס", "Queens"],
@@ -51,218 +44,164 @@ NCAA_DATABASE = {
     "Daniel Gueta": ["דניאל גואטה", "אוקלהומה סטייט", "Oklahoma State"]
 }
 
-# --- פונקציות עזר לטיפול בנתונים ---
+# --- פונקציות לוגיות ---
 
 def tr(text):
-    """מתרגם שמות קבוצות מאנגלית לעברית ומתקן שגיאות תרגום נפוצות"""
+    """תרגום שמות קבוצות ותיקון עברית"""
     try:
-        translated = translator.translate(text)
-        # תיקוני תרגום ספציפיים כדי שזה ייראה מקצועי
-        return translated.replace("שבילים בלייזרים", "פורטלנד").replace("רשתות", "ברוקלין").replace("לוחמים", "ווריורס")
-    except:
-        return text
+        t = translator.translate(text)
+        return t.replace("שבילים בלייזרים", "פורטלנד").replace("רשתות", "ברוקלין").replace("לוחמים", "ווריורס")
+    except: return text
 
-def get_player_status_info(ev, player_name_en):
-    """בודק אם השחקן מופיע בדוח הפציעות של ESPN למשחק הספציפי"""
+def get_detailed_injury(ev, player_name_en):
+    """מושך סטטוס וסיבת פציעה מפורטת"""
     try:
-        for competition in ev.get("competitions", []):
-            for team in competition.get("competitors", []):
-                for injury_detail in team.get("injuries", []):
-                    # חיפוש שם השחקן בתוך נתוני הפציעות
-                    if player_name_en in injury_detail.get("shortName", "") or player_name_en in injury_detail.get("displayName", ""):
-                        return injury_detail.get("status", "").upper()
-    except:
-        pass
-    return "ACTIVE"
-
-def is_player_active_in_nba(ev, player_name_en):
-    """
-    בדיקה קריטית: האם השחקן באמת נמצא בסגל למשחק ה-NBA הלילה?
-    מונע מצב ששולחים על בן שרף ב-NBA כשהוא בכלל ב-G-League.
-    """
-    try:
-        # ב-NBA, אם השחקן נשלח לליגת הפיתוח, הוא יופיע בסטטוס 'Out' עם סיבת 'G League'
-        for competition in ev.get("competitions", []):
-            for team in competition.get("competitors", []):
+        for comp in ev.get("competitions", []):
+            for team in comp.get("competitors", []):
                 for injury in team.get("injuries", []):
                     if player_name_en in injury.get("displayName", ""):
-                        # אם רשום שהוא בחוץ בגלל ליגת הפיתוח - נחזיר False
-                        if "G League" in injury.get("reason", ""):
-                            return False
-        return True
-    except:
-        return True
+                        return {
+                            "status": injury.get("status", "").upper(),
+                            "reason": injury.get("reason", "")
+                        }
+    except: pass
+    return {"status": "ACTIVE", "reason": ""}
 
 def send_telegram(text):
-    """שולח את ההודעה המעובדת לערוץ הטלגרם שלך"""
+    """שליחת הודעה לטלגרם"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-    except:
-        pass
-
-# --- לוגיקת עדכונים סופיים ---
+    try: requests.post(url, json=payload, timeout=10)
+    except: pass
 
 def check_final_updates():
-    """סורק משחקים שעומדים להתחיל ובודק אם שחקן 'בסימן שאלה' קיבל אישור לשחק"""
+    """בדיקת עדכונים בכל דקה - האם סימן שאלה הפך לסופי"""
     global status_cache
-    for api_url in [NBA_SCOREBOARD, NCAA_SCOREBOARD]:
+    for url in [NBA_SCOREBOARD, NCAA_SCOREBOARD]:
         try:
-            response = requests.get(api_url, timeout=10).json()
-            for event in response.get("events", []):
-                # בודק רק משחקים שעדיין לא התחילו (Pre-game)
-                if event["status"]["type"]["state"] != "pre":
-                    continue
+            resp = requests.get(url, timeout=10).json()
+            for ev in resp.get("events", []):
+                if ev["status"]["type"]["state"] != "pre": continue
                 
-                # איחוד רשימות השחקנים לצורך סריקה
-                all_players = {**NBA_DATABASE, **GLEAGUE_DATABASE, **NCAA_DATABASE}
-                teams_in_game = [t["team"]["displayName"] for t in event["competitions"][0]["competitors"]]
+                all_p = {**NBA_DATABASE, **GLEAGUE_DATABASE, **NCAA_DATABASE}
+                teams = [t["team"]["displayName"] for t in ev["competitions"][0]["competitors"]]
                 
-                for p_en, info in all_players.items():
-                    if any(info[2] in t_name for t_name in teams_in_game):
-                        current_status = get_player_status_info(event, p_en)
-                        cache_key = f"{p_en}_{event['id']}"
+                for p_en, info in all_p.items():
+                    if any(info[2] in t for t in teams):
+                        inj = get_detailed_injury(ev, p_en)
+                        key = f"{p_en}_{ev['id']}"
                         
-                        # אם השחקן היה מסומן ב-cache כ-QUESTIONABLE
-                        if status_cache.get(cache_key) == "QUESTIONABLE":
-                            if current_status == "ACTIVE" or "PROBABLE" in current_status:
-                                update_msg = f"{RTL_MARK}🇮🇱 **עדכון סופי: הוא משחק!** 🇮🇱\n\n"
-                                update_msg += f"{RTL_MARK}🏀 *{info[0]}* כשיר ויופיע הלילה במדי {info[1]}! ✅"
-                                send_telegram(update_msg)
-                                status_cache[cache_key] = "FINAL"
-                            elif "OUT" in current_status:
-                                update_msg = f"{RTL_MARK}🇮🇱 **עדכון סופי: לא ישחק** 🇮🇱\n\n"
-                                update_msg += f"{RTL_MARK}🏀 *{info[0]}* בחוץ למשחק הלילה (מדי {info[1]}). ❌"
-                                send_telegram(update_msg)
-                                status_cache[cache_key] = "FINAL"
-        except:
-            pass
-
-# --- בניית הלו"ז היומי המאוחד ---
+                        if status_cache.get(key) == "QUESTIONABLE":
+                            if inj["status"] == "ACTIVE" or "PROBABLE" in inj["status"]:
+                                send_telegram(f"{RTL_MARK}🇮🇱 **עדכון סופי: הוא משחק!** 🇮🇱\n\n{RTL_MARK}🏀 *{info[0]}* כשיר ויופיע הלילה במדי {info[1]}! ✅")
+                                status_cache[key] = "FINAL"
+                            elif "OUT" in inj["status"]:
+                                reason_str = f" ({inj['reason']})" if inj['reason'] else ""
+                                send_telegram(f"{RTL_MARK}🇮🇱 **עדכון סופי: לא ישחק** 🇮🇱\n\n{RTL_MARK}🏀 *{info[0]}* בחוץ למשחק הלילה{reason_str}. ❌")
+                                status_cache[key] = "FINAL"
+        except: pass
 
 def get_combined_schedule():
-    """סורקת את כל הליגות ובונה הודעה אחת ארוכה ומסודרת"""
+    """בניית לו''ז יומי עם בדיקת ירידה לליגת הפיתוח"""
     all_games = {"NBA": [], "GLEAGUE": [], "NCAA": []}
-    players_handled_today = set() 
+    players_handled = set()
     global status_cache
     
-    # חלק 1: סריקת NBA (עדיפות ראשונה)
+    # 1. סריקת NBA
     try:
-        nba_response = requests.get(NBA_SCOREBOARD, timeout=10).json()
-        for event in nba_response.get("events", []):
-            teams = [t["team"]["displayName"] for t in event["competitions"][0]["competitors"]]
+        resp = requests.get(NBA_SCOREBOARD, timeout=10).json()
+        for ev in resp.get("events", []):
+            teams = [t["team"]["displayName"] for t in ev["competitions"][0]["competitors"]]
             for p_en, info in NBA_DATABASE.items():
-                if any(info[2] in t_name for t_name in teams):
+                if any(info[2] in t for t in teams):
+                    inj = get_detailed_injury(ev, p_en)
                     
-                    # בדיקה אם השחקן באמת ב-NBA הלילה ולא ירד לליגת הפיתוח
-                    if not is_player_active_in_nba(event, p_en):
-                        continue # מדלג עליו ב-NBA, הוא יימצא בהמשך ב-G-League
+                    # בדיקה אם השחקן ירד לליגת הפיתוח (G-League)
+                    if "G League" in inj["reason"] or "Assignment" in inj["reason"]:
+                        print(f"Skipping {p_en} in NBA - down to GLeague")
+                        continue 
                     
-                    vs_team = [t for t in teams if info[2] not in t][0]
-                    status = get_player_status_info(event, p_en)
-                    
-                    # הוספת הערת סטטוס (פצוע/סימן שאלה)
+                    vs = [t for t in teams if info[2] not in t][0]
                     status_note = ""
-                    if "QUESTIONABLE" in status or "GTD" in status:
+                    if "QUESTIONABLE" in inj["status"] or "GTD" in inj["status"]:
                         status_note = " ⚠️ (בסימן שאלה)"
-                        status_cache[f"{p_en}_{event['id']}"] = "QUESTIONABLE"
-                    elif "OUT" in status:
+                        status_cache[f"{p_en}_{ev['id']}"] = "QUESTIONABLE"
+                    elif "OUT" in inj["status"]:
                         status_note = " ❌ (פצוע)"
                     
-                    # המרת זמן לישראל
-                    time_utc = datetime.strptime(event["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+                    time_utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
                     time_il = time_utc.astimezone(pytz.timezone('Asia/Jerusalem'))
                     
-                    line = (time_il, f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs_team)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*")
-                    all_games["NBA"].append(line)
-                    players_handled_today.add(p_en)
-    except:
-        pass
+                    all_games["NBA"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
+                    players_handled.add(p_en)
+    except: pass
 
-    # חלק 2: סריקת NCAA וליגת הפיתוח
+    # 2. סריקת G-League ומכללות
     try:
-        ncaa_response = requests.get(NCAA_SCOREBOARD, timeout=10).json()
-        for event in ncaa_response.get("events", []):
-            teams = [t["team"]["displayName"] for t in event["competitions"][0]["competitors"]]
+        resp = requests.get(NCAA_SCOREBOARD, timeout=10).json()
+        for ev in resp.get("events", []):
+            teams = [t["team"]["displayName"] for t in ev["competitions"][0]["competitors"]]
             
-            # בדיקת G-League לשחקנים שלא טופלו ב-NBA
+            # G-League
             for p_en, info in GLEAGUE_DATABASE.items():
-                if p_en in players_handled_today: continue
-                if any(k in t_name for k in info[2:] for t_name in teams):
-                    vs_team = [t for t in teams if not any(k in t for k in info[2:])][0]
-                    status = get_player_status_info(event, p_en)
+                if any(k in t for k in info[2:] for t in teams):
+                    vs = [t for t in teams if not any(k in t for k in info[2:])][0]
+                    inj = get_detailed_injury(ev, p_en)
                     
-                    status_note = " ⚠️ (בסימן שאלה)" if ("QUESTIONABLE" in status or "GTD" in status) else (" ❌ (פצוע)" if "OUT" in status else "")
-                    if "QUESTIONABLE" in status or "GTD" in status: status_cache[f"{p_en}_{event['id']}"] = "QUESTIONABLE"
+                    status_note = ""
+                    # אם הוא ירד מה-NBA, נוסיף הערה מיוחדת
+                    if p_en == "Ben Saraf": status_note = " ⬇️ (ירד לסגל ליגת הפיתוח)"
                     
-                    time_utc = datetime.strptime(event["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+                    if "QUESTIONABLE" in inj["status"] or "GTD" in inj["status"]:
+                        status_note = " ⚠️ (בסימן שאלה)"
+                        status_cache[f"{p_en}_{ev['id']}"] = "QUESTIONABLE"
+                    
+                    time_utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
                     time_il = time_utc.astimezone(pytz.timezone('Asia/Jerusalem'))
-                    all_games["GLEAGUE"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs_team)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
-                    players_handled_today.add(p_en)
+                    all_games["GLEAGUE"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
+                    players_handled.add(p_en)
 
-            # בדיקת שחקני מכללות
+            # מכללות
             for p_en, info in NCAA_DATABASE.items():
-                if p_en in players_handled_today: continue
-                if any(info[2] in t_name for t_name in teams):
-                    vs_team = [t for t in teams if info[2] not in t][0]
-                    status = get_player_status_info(event, p_en)
+                if p_en in players_handled: continue
+                if any(info[2] in t for t in teams):
+                    vs = [t for t in teams if info[2] not in t][0]
+                    inj = get_detailed_injury(ev, p_en)
+                    status_note = " ⚠️ (בסימן שאלה)" if ("QUESTIONABLE" in inj["status"] or "GTD" in inj["status"]) else ""
                     
-                    status_note = " ⚠️ (בסימן שאלה)" if ("QUESTIONABLE" in status or "GTD" in status) else (" ❌ (פצוע)" if "OUT" in status else "")
-                    if "QUESTIONABLE" in status or "GTD" in status: status_cache[f"{p_en}_{event['id']}"] = "QUESTIONABLE"
-                    
-                    time_utc = datetime.strptime(event["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+                    time_utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
                     time_il = time_utc.astimezone(pytz.timezone('Asia/Jerusalem'))
-                    all_games["NCAA"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs_team)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
-    except:
-        pass
+                    all_games["NCAA"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
+    except: pass
 
-    # חלק 3: הרכבת ההודעה הסופית מחלקים (NBA -> G-League -> NCAA)
-    full_message = ""
-    
+    full_msg = ""
     if all_games["NBA"]:
-        sorted_nba = sorted(all_games["NBA"], key=lambda x: x[0])
-        full_message += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב-NBA** 🇮🇱\n\n"
-        full_message += "\n\n".join([g[1] for g in sorted_nba]) + "\n\n"
-
+        full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב-NBA** 🇮🇱\n\n" + "\n\n".join([g[1] for g in sorted(all_games["NBA"])]) + "\n\n"
     if all_games["GLEAGUE"]:
-        sorted_gleague = sorted(all_games["GLEAGUE"], key=lambda x: x[0])
-        full_message += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה בליגת הפיתוח (ג'י ליג)** 🇮🇱\n\n"
-        full_message += "\n\n".join([g[1] for g in sorted_gleague]) + "\n\n"
-
+        full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה בליגת הפיתוח (ג'י ליג)** 🇮🇱\n\n" + "\n\n".join([g[1] for g in sorted(all_games["GLEAGUE"])]) + "\n\n"
     if all_games["NCAA"]:
-        sorted_ncaa = sorted(all_games["NCAA"], key=lambda x: x[0])
-        full_message += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה במכללות** 🇮🇱\n\n"
-        full_message += "\n\n".join([g[1] for g in sorted_ncaa]) + "\n\n"
+        full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה במכללות** 🇮🇱\n\n" + "\n\n".join([g[1] for g in sorted(all_games["NCAA"])]) + "\n\n"
+    
+    send_telegram(full_msg if full_msg else f"{RTL_MARK}🇮🇱 **אין משחקי לגיונרים הלילה** 😴")
 
-    # שליחה או הודעת "אין משחקים"
-    if full_message:
-        send_telegram(full_message)
-    else:
-        send_telegram(f"{RTL_MARK}🇮🇱 **אין משחקי לגיונרים הלילה** 😴")
-
-# --- הלולאה הראשית של הבוט ---
+# --- הרצה ובדיקה כל דקה ---
 
 if __name__ == "__main__":
-    print("🚀 בוט לגיונרים מאוחד פועל...")
-    last_sent_day = ""
-    
+    print("🚀 בוט מאוחד - בדיקה בכל דקה פועלת...")
+    last_day = ""
     while True:
-        try:
-            now_il = datetime.now(pytz.timezone('Asia/Jerusalem'))
-            today_str = now_il.strftime("%Y-%m-%d")
-
-            # שליחת הלו"ז היומי בשעה 14:30
-            if now_il.hour == 14 and now_il.minute == 36 and last_sent_day != today_str:
-                get_combined_schedule()
-                last_sent_day = today_str
+        now = datetime.now(pytz.timezone('Asia/Jerusalem'))
+        
+        # 1. שליחת הלו"ז היומי (שעה 14:40 לניסוי הנוכחי)
+        if now.hour == 14 and now.minute == 40 and last_day != now.strftime("%Y-%m-%d"):
+            get_combined_schedule()
+            last_day = now.strftime("%Y-%m-%d")
+        
+        # 2. בדיקה בכל דקה של סטטוסים רפואיים
+        check_final_updates()
+        
+        # הדפסה קטנה ללוג כדי לדעת שהבוט חי
+        if now.second == 0:
+            print(f"🔎 סריקת דקה: {now.strftime('%H:%M')}")
             
-            # בדיקת עדכוני פציעות/סטטוס כל 10 דקות באופן אוטומטי
-            if now_il.minute % 10 == 0:
-                check_final_updates()
-
-        except Exception as error:
-            print(f"שגיאה בלולאה הראשית: {error}")
-            
-        # המתנה של 30 שניות בין סבב בדיקה למשנהו
-        time.sleep(30)
+        time.sleep(60) # המתנה של דקה אחת בדיוק
