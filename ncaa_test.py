@@ -145,6 +145,17 @@ def get_combined_schedule():
                 for p_en, info in db.items():
                     if p_en in players_handled: continue
                     if info[2] in str(teams):
+                        # חוק בן שרף - יצירת העדכון המודגש עם מרווח שורה אחת
+                        if p_en == "Ben Saraf" and key == "NBA":
+                            # \n אחד בודד יוצר רווח של שורה אחת בדיוק מהשורה שמעליו
+                            update_msg = f"\n**עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
+                            
+                            # הזרקה למשחק של ברוקלין (דני וולף)
+                            for i, (g_time, g_str) in enumerate(all_games["NBA"]):
+                                if "ברוקלין" in g_str:
+                                    all_games["NBA"][i] = (g_time, g_str + update_msg)
+                            continue
+
                         vs = [t for t in teams if info[2] not in t][0]
                         inj = get_detailed_injury(ev, p_en)
                         status_note = " ⚠️ (בסימן שאלה)" if "QUESTIONABLE" in inj["status"] or "GTD" in inj["status"] else ""
@@ -152,13 +163,6 @@ def get_combined_schedule():
                         
                         time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
                         game_str = f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"
-                        
-                        # הזרקת העדכון מיד אחרי ברוקלין ב-NBA
-                        if p_en == "Ben Saraf" and key == "NBA":
-                            # שימוש במחרוזת נקייה ללא RTL_MARK לפני הכוכביות כדי להבטיח דגש
-                            update_str = f"\n⬇️ **עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
-                            game_str += update_str
-                        
                         all_games[key].append((time_il, game_str))
         except: pass
 
@@ -166,12 +170,8 @@ def get_combined_schedule():
     full_msg = ""
     for k in ["NBA", "GLEAGUE", "NCAA"]:
         if all_games[k]:
-            if k == "NBA": title = "NBA"
-            elif k == "GLEAGUE": title = "ג'י ליג"
-            else: title = "המכללות"
-            
+            title = "NBA" if k == "NBA" else "ג'י ליג" if k == "GLEAGUE" else "המכללות"
             full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב-{title}** 🇮🇱\n\n"
-            # מיון לפי שעה - העדכון של בן שרף יישאר צמוד למשחק של ברוקלין כי הוא חלק מאותה מחרוזת
             full_msg += "\n\n".join([g[1] for g in sorted(all_games[k], key=lambda x: x[0])])
             full_msg += "\n\n\n"
 
