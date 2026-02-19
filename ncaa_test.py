@@ -14,6 +14,7 @@ translation_cache = {}
 games_state = {}
 
 def tr(text):
+    """תרגום עם זיכרון מטמון למניעת עומס"""
     if not text: return ""
     if text in translation_cache: return translation_cache[text]
     try:
@@ -22,7 +23,7 @@ def tr(text):
         return t
     except: return text
 
-# --- עיבוד נתונים ---
+# --- מנוע חילוץ נתונים מפורט ---
 
 def get_stat(stat_list, label, labels_map):
     try:
@@ -31,10 +32,10 @@ def get_stat(stat_list, label, labels_map):
     except: return "0"
 
 def extract_players_data(team_box):
-    stats_data = team_box.get("statistics", [])
-    if not stats_data: return []
-    athletes = stats_data[0].get("athletes", [])
-    labels = stats_data[0].get("labels", [])
+    stats_list = team_box.get("statistics", [])
+    if not stats_list: return []
+    athletes = stats_list[0].get("athletes", [])
+    labels = stats_list[0].get("labels", [])
     parsed = []
     for a in athletes:
         s = a.get("stats", [])
@@ -51,6 +52,7 @@ def extract_players_data(team_box):
     return parsed
 
 def format_p_line(p):
+    """עיצוב שורת שחקן המקורי והמושקע"""
     line = f"• *{tr(p['name'])}* ({p['pts']} נק', {p['reb']} ריב', {p['ast']} אס')"
     extras = []
     if p['stl'] > 0: extras.append(f"{p['stl']} חט'")
@@ -58,7 +60,7 @@ def format_p_line(p):
     if extras: line += " [" + " ".join(extras) + "]"
     return line
 
-# --- בניית הודעות ---
+# --- פונקציות הודעות עם העיצוב המלא (5 שלבים) ---
 
 def build_game_msg(title, ev, summary, is_final=False):
     comp = ev["competitions"][0]
@@ -91,7 +93,7 @@ def build_game_msg(title, ev, summary, is_final=False):
         
         if "יצא לדרך" in title:
             starters = [p for p in players if p["starter"]]
-            msg += "📋 " + ", ".join([tr(p['name']) for p in starters]) if starters else "📋 חמישייה טרם עודכנה"
+            msg += "📋 חמישייה: " + ", ".join([tr(p['name']) for p in starters]) if starters else "📋 חמישייה טרם עודכנה"
         elif is_final:
             top_5 = sorted(players, key=lambda x: x["pts"], reverse=True)[:5]
             for p in top_5: msg += f"{format_p_line(p)}\n"
@@ -109,9 +111,10 @@ def send_telegram(text):
         requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
     except: pass
 
-# --- לוגיקה מרכזית ---
+# --- לוגיקת ניטור ---
 
 def run_ncaa_monitor():
+    print("🚀 ניטור מכללות בעיצוב המלא פעיל...")
     while True:
         try:
             resp = requests.get(SCOREBOARD_URL, timeout=15).json()
@@ -146,10 +149,10 @@ def run_ncaa_monitor():
                         send_telegram(build_game_msg("🚨 10 דקות לסיום המשחק!", ev, summary))
                         g["stages"].append("10_p2")
 
-                # 2. סיום משחק (חסין לפספוסים)
+                # 2. סיום משחק (גם אם הבוט רק נדלק!)
                 elif state == "post" and "final" not in g["stages"]:
                     summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
-                    send_telegram(build_game_msg("סיום המשחק - סטטיסטיקה", ev, summary, is_final=True))
+                    send_telegram(build_game_msg("סיום המשחק - סטטיסטיקה סופית", ev, summary, is_final=True))
                     g["stages"].append("final")
 
         except Exception as e:
