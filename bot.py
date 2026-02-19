@@ -245,6 +245,50 @@ def handle_game_logic(g, box, gs):
         
         gs["final"] = True
 
+def send_all_games_summary():
+    """שולח הודעת סיכום בוקר: המנצחת והמפסידה באותה שורה"""
+    try:
+        resp = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
+        games = resp.get('scoreboard', {}).get('games', [])
+        
+        if not games:
+            return
+
+        msg = f"\u200f" + f"🏀 **תוצאות משחקי הלילה ב-NBA** 🏀\n\n"
+        found_finished = False
+
+        for g in games:
+            if g['gameStatus'] == 3:  # משחק שהסתיים
+                away_n = g['awayTeam']['teamName']
+                home_n = g['homeTeam']['teamName']
+                away_heb = TEAM_NAMES_HEB.get(away_n, away_n)
+                home_heb = TEAM_NAMES_HEB.get(home_n, home_n)
+                
+                a_score = g['awayTeam']['score']
+                h_score = g['homeTeam']['score']
+                
+                # המנצחת תמיד ראשונה
+                if a_score > h_score:
+                    winner_name, winner_score = away_heb, a_score
+                    loser_name, loser_score = home_heb, h_score
+                else:
+                    winner_name, winner_score = home_heb, h_score
+                    loser_name, loser_score = away_heb, a_score
+                
+                # בניית השורה המעוצבת
+                msg += f"\u200f" + f"🏆 **{winner_name}** 🆚 {loser_name}\n"
+                msg += f"\u200f" + f"🏁 תוצאה: **{winner_score}** - {loser_score}\n"
+                msg += f"\u200f" + f"‏‏‎ ‎\n" # רווח קטן
+                
+                found_finished = True
+
+        if found_finished:
+            msg += f"\u200f" + f"☀️ **יום טוב לכולם**"
+            send_msg(msg)
+            
+    except Exception as e:
+        logging.error(f"Error in morning summary: {e}")
+
 # ==========================================
 # לולאה ראשית
 # ==========================================
@@ -302,6 +346,11 @@ def run_bot():
                 # עדכון הסטייט כדי שלא ישלח שוב עד מחר
                 state["dates"]["schedule"] = today
                 save_state(state)
+
+            if now.hour == 7 and now.minute == 0 and state["dates"].get("summary") != today:
+                send_all_games_summary()
+                state["dates"]["summary"] = today
+                save_state(state)
                 
             # ניטור משחקים
             for g in games:
@@ -356,4 +405,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-    
