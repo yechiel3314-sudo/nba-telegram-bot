@@ -47,16 +47,20 @@ TEAM_TO_PLAYER = {
 }
 
 def tr(text):
-    try: return translator.translate(text)
-    except: return text
+    try:
+        return translator.translate(text)
+    except:
+        return text
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    try: requests.post(url, json=payload, timeout=10)
-    except: pass
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except:
+        pass
 
-# --- פונקציית לו"ז ערב (19:00) ---
+# --- פונקציית לו"ז (מותאמת לניסוי) ---
 def get_evening_schedule():
     try:
         resp = requests.get(SCOREBOARD_URL, timeout=15).json()
@@ -72,20 +76,24 @@ def get_evening_schedule():
                     vs_team = [t for t in teams_in_game if team_eng not in t][0]
                     
                     game_time_utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
-                    game_time_il = game_time_utc.astimezone(pytz.timezone('Asia/Jerusalem')).strftime('%H:%M')
+                    game_time_il = game_time_utc.astimezone(pytz.timezone('Asia/Jerusalem'))
                     
-                    line = f"🇮🇱 *{player_info[0]}* ({player_info[1]})\n🆚 נגד: *{tr(vs_team)}*\n⏰ שעה: *{game_time_il}*"
-                    if line not in games_tonight:
-                        games_tonight.append(line)
+                    # בניסוי: נחפש משחקים שקורים מהלילה (23:00) והלאה
+                    if game_time_il.hour >= 23 or game_time_il.hour <= 10:
+                        time_str = game_time_il.strftime('%H:%M')
+                        line = f"🇮🇱 *{player_info[0]}* ({player_info[1]})\n🆚 נגד: *{tr(vs_team)}*\n⏰ שעה: *{time_str}*"
+                        if line not in games_tonight:
+                            games_tonight.append(line)
 
         if games_tonight:
-            msg = "🇮🇱 **לו\"ז הישראלים הלילה במכללות:** 🇮🇱\n\n" + "\n\n".join(games_tonight)
+            msg = "🇮🇱 **ניסוי: לו\"ז הישראלים הלילה במכללות:** 🇮🇱\n\n" + "\n\n".join(games_tonight)
             send_telegram(msg)
         else:
-            send_telegram("📅 הלילה אין משחקים לישראלים ברשימה.")
-    except Exception as e: print(f"Evening Error: {e}")
+            send_telegram("🇮🇱 ניסוי: לא נמצאו משחקים לישראלים הלילה (החל מ-23:00).")
+    except Exception as e:
+        print(f"Evening Error: {e}")
 
-# --- פונקציית סיכום בוקר (08:00) ---
+# --- פונקציית סיכום בוקר ---
 def get_morning_summary():
     try:
         resp = requests.get(SCOREBOARD_URL, timeout=15).json()
@@ -120,13 +128,12 @@ def get_morning_summary():
         if reports:
             msg = "🇮🇱 **סיכום הופעות הישראלים מהלילה:** 🇮🇱\n\n" + "\n\n".join(reports)
             send_telegram(msg)
-        else:
-            send_telegram("☀️ לא נמצאו דקות משחק לישראלים הלילה.")
-    except Exception as e: print(f"Morning Error: {e}")
+    except Exception as e:
+        print(f"Morning Error: {e}")
 
 # --- לופ זמן ישראל ---
 if __name__ == "__main__":
-    print("🚀 בוט הישראלים NCAA באוויר...")
+    print("🚀 בוט הישראלים NCAA בניסוי שעה 12:00...")
     last_day = ""
     morning_done = False
     evening_done = False
@@ -141,13 +148,17 @@ if __name__ == "__main__":
                 morning_done = False
                 evening_done = False
 
+            # בוקר נשאר ב-08:00
             if now.hour == 8 and not morning_done:
                 get_morning_summary()
                 morning_done = True
             
-            if now.hour == 19 and not evening_done:
+            # ניסוי: שליחת לו"ז בשעה 12:00 במקום 19:00
+            if now.hour == 12 and not evening_done:
                 get_evening_schedule()
                 evening_done = True
 
-        except Exception as e: print(f"Loop Error: {e}")
+        except Exception as e:
+            print(f"Loop Error: {e}")
+        
         time.sleep(60)
