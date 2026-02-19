@@ -1,255 +1,135 @@
-import requests
-import time
-from deep_translator import GoogleTranslator
+const axios = require("axios");
+const TelegramBot = require("node-telegram-bot-api");
+const moment = require("moment-timezone");
 
-# =====================================
-# CONFIG
-# =====================================
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-CHAT_ID = "-1003808107418"
+const CHAT_ID = "PUT_YOUR_CHAT_ID_HERE";
 
-SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event="
+const bot = new TelegramBot(TOKEN);
+const trackedGames = {};
 
-translator = GoogleTranslator(source='en', target='iw')
-translation_cache = {}
-games_state = {}
+function nowTime() {
+  return moment().tz("Asia/Jerusalem").format("HH:mm:ss");
+}
 
-# =====================================
-# SAFE REQUEST
-# =====================================
-def safe_get(url):
-    try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print("❌ HTTP ERROR:", e)
-        return None
+async function fetchGames() {
+  try {
+    const res = await axios.get(
+      "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+    );
+    return res.data.events || [];
+  } catch (e) {
+    console.log("Scoreboard error:", e.message);
+    return [];
+  }
+}
 
-# =====================================
-# TRANSLATION CACHE
-# =====================================
-def tr(text):
-    if not text:
-        return ""
-    if text in translation_cache:
-        return translation_cache[text]
-    try:
-        t = translator.translate(text)
-        translation_cache[text] = t
-        return t
-    except:
-        return text
+async function fetchBoxScore(gameId) {
+  try {
+    const res = await axios.get(
+      `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event=${gameId}`
+    );
+    return res.data;
+  } catch (e) {
+    console.log("Boxscore error:", e.message);
+    return null;
+  }
+}
 
-# =====================================
-# TELEGRAM
-# =====================================
-def send_message(text):
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"},
-            timeout=10
-        )
-        return r.json()["result"]["message_id"]
-    except Exception as e:
-        print("❌ SEND ERROR:", e)
-        return None
+function topPlayers(team) {
+  const players = team.statistics[0].athletes;
 
-def edit_message(message_id, text):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/editMessageText",
-            json={
-                "chat_id": CHAT_ID,
-                "message_id": message_id,
-                "text": text,
-                "parse_mode": "Markdown"
-            },
-            timeout=10
-        )
-    except Exception as e:
-        print("❌ EDIT ERROR:", e)
+  const sorted = players.sort((a, b) =>
+    parseInt(b.stats[13]) - parseInt(a.stats[13])
+  );
 
-# =====================================
-# PLAYER STATS
-# =====================================
-def extract_stats(team):
-    players = team.get("statistics", [{}])[0].get("athletes", [])
-    result = []
+  return {
+    leader: sorted[0],
+    second: sorted[1],
+    bench: sorted.find(p => p.starter === false)
+  };
+}
 
-    for p in players:
-        stats = p.get("stats", [])
-        if len(stats) >= 13:
-            try:
-                result.append({
-                    "name": p["athlete"]["displayName"],
-                    "pts": int(stats[12]),
-                    "reb": int(stats[6]),
-                    "ast": int(stats[7]),
-                    "stl": int(stats[8]) if len(stats) > 8 else 0,
-                    "blk": int(stats[9]) if len(stats) > 9 else 0,
-                    "starter": p.get("starter", False)
-                })
-            except:
-                continue
+function formatPlayer(p) {
+  if (!p) return "לא זמין";
+  return `${p.athlete.displayName}: ${p.stats[13]} נק', ${p.stats[6]} ריב', ${p.stats[7]} אס' (${p.stats[9] || 0} חט', ${p.stats[10] || 0} חס')`;
+}
 
-    result.sort(key=lambda x: x["pts"], reverse=True)
-    return result
+async function handleGames() {
+  const games = await fetchGames();
 
-# =====================================
-# MESSAGE BUILDERS
-# =====================================
-def build_update(title, event, summary):
+  for (const game of games) {
+    const gameId = game.id;
+    const status = game.status.type.name;
 
-    comp = event["competitions"][0]["competitors"]
-    home = next(c for c in comp if c["homeAway"] == "home")
-    away = next(c for c in comp if c["homeAway"] == "away")
+    if (!trackedGames[gameId]) {
+      trackedGames[gameId] = { started: false, lastPeriod: 0 };
+    }
 
-    home_name = tr(home["team"]["displayName"])
-    away_name = tr(away["team"]["displayName"])
+    if (status === "STATUS_IN_PROGRESS") {
+      if (!trackedGames[gameId].started) {
+        trackedGames[gameId].started = true;
+        bot.sendMessage(
+          CHAT_ID,
+          `🔥 המשחק יצא לדרך! 🔥\n🕒 ${nowTime()}\n🏀 ${game.name}`
+        );
+      }
 
-    home_score = int(home.get("score", 0))
-    away_score = int(away.get("score", 0))
+      const box = await fetchBoxScore(gameId);
+      if (!box) continue;
 
-    leader = home_name if home_score > away_score else away_name
+      const home = box.boxscore.teams[0];
+      const away = box.boxscore.teams[1];
 
-    msg = f"🏀 *{title}:* {home_name} 🆚 {away_name} 🏀\n\n"
-    msg += f"🔹 {leader} מובילה {home_score}-{away_score}\n\n"
+      const homeTop = topPlayers(home);
+      const awayTop = topPlayers(away);
 
-    for team in summary.get("boxscore", {}).get("players", []):
-        team_name = tr(team["team"]["displayName"])
-        players = extract_stats(team)
+      const currentPeriod = box.header.competitions[0].status.period;
 
-        if not players:
-            continue
+      if (currentPeriod !== trackedGames[gameId].lastPeriod) {
+        trackedGames[gameId].lastPeriod = currentPeriod;
 
-        top1 = players[0]
-        top2 = players[1] if len(players) > 1 else None
-        bench = next((p for p in players if not p["starter"]), None)
+        bot.sendMessage(
+          CHAT_ID,
+`🏀 סוף רבע ${currentPeriod}: ${away.team.displayName} 🆚 ${home.team.displayName} 🏀
+🕒 ${nowTime()}
 
-        msg += f"🔥 *{team_name}:*\n"
+🔹 ${home.team.displayName} ${home.score}-${away.score}
 
-        # מוביל
-        msg += f"• 🔝 קלע מוביל: ▫️ {tr(top1['name'])}: {top1['pts']} נק', {top1['reb']} ריב', {top1['ast']} אס'"
-        if top1["stl"] or top1["blk"]:
-            msg += f" ({top1['stl']} חט', {top1['blk']} חס')"
-        msg += "\n"
+🔥 ${home.team.displayName}:
+• 🔝 קלע מוביל: ${formatPlayer(homeTop.leader)}
+• 🏀 סקורר שני: ${formatPlayer(homeTop.second)}
+• ⚡ מהספסל: ${formatPlayer(homeTop.bench)}
 
-        # שני
-        if top2:
-            msg += f"• 🏀 סקורר שני: ▫️ {tr(top2['name'])}: {top2['pts']} נק', {top2['reb']} ריב', {top2['ast']} אס'\n"
+🔥 ${away.team.displayName}:
+• 🔝 קלע מוביל: ${formatPlayer(awayTop.leader)}
+• 🏀 סקורר שני: ${formatPlayer(awayTop.second)}
+• ⚡ מהספסל: ${formatPlayer(awayTop.bench)}
+`
+        );
+      }
+    }
 
-        # ספסל
-        if bench:
-            msg += f"• ⚡️ מהספסל: ▫️ {tr(bench['name'])}: {bench['pts']} נק', {bench['reb']} ריב', {bench['ast']} אס'"
-            if bench["stl"] or bench["blk"]:
-                msg += f" ({bench['stl']} חט', {bench['blk']} חס')"
-            msg += "\n"
+    if (status === "STATUS_FINAL") {
+      if (!trackedGames[gameId].finalSent) {
+        trackedGames[gameId].finalSent = true;
 
-        msg += "\n"
+        const box = await fetchBoxScore(gameId);
+        if (!box) continue;
 
-    return msg
+        const home = box.boxscore.teams[0];
+        const away = box.boxscore.teams[1];
 
-def build_final(event, summary):
-    msg = build_update("סיום המשחק", event, summary)
+        bot.sendMessage(
+          CHAT_ID,
+`🏁 סיום המשחק! 🏁
+🕒 ${nowTime()}
+🏀 ${game.name}
+תוצאה סופית: ${home.score}-${away.score}`
+        );
+      }
+    }
+  }
+}
 
-    all_players = []
-    for team in summary.get("boxscore", {}).get("players", []):
-        all_players.extend(extract_stats(team))
-
-    all_players.sort(key=lambda x: x["pts"], reverse=True)
-
-    msg += "\n📊 *שלושת הקלעים המובילים במשחק:*\n"
-    for p in all_players[:3]:
-        msg += f"• {tr(p['name'])} — {p['pts']} נק', {p['reb']} ריב', {p['ast']} אס'\n"
-
-    return msg
-
-# =====================================
-# MAIN LOOP
-# =====================================
-def check_games():
-    data = safe_get(SCOREBOARD_URL)
-    if not data:
-        return
-
-    print(f"🔍 Found {len(data.get('events', []))} games")
-
-    for ev in data.get("events", []):
-        gid = ev["id"]
-        state = ev["status"]["type"]["state"]
-
-        if gid not in games_state:
-            games_state[gid] = {
-                "message_id": None,
-                "start": False,
-                "first10": False,
-                "halftime": False,
-                "second10": False,
-                "final": False
-            }
-
-        g = games_state[gid]
-
-        clock = ev["status"].get("displayClock", "20:00")
-        if ":" not in clock:
-            clock = "20:00"
-
-        period = ev["status"].get("period", 1)
-        minute = int(clock.split(":")[0])
-
-        print(f"🏀 Game {gid} | state={state} | period={period} | clock={clock}")
-
-        if state == "in":
-            summary = safe_get(SUMMARY_URL + gid)
-            if not summary:
-                continue
-
-            # התחלה
-            if not g["start"]:
-                msg = build_update("המשחק יצא לדרך", ev, summary)
-                mid = send_message(msg)
-                if mid:
-                    g["message_id"] = mid
-                    g["start"] = True
-
-            # 10 דקות ראשונות
-            if period == 1 and minute <= 10 and not g["first10"]:
-                msg = build_update("עברו 10 דקות משחק", ev, summary)
-                edit_message(g["message_id"], msg)
-                g["first10"] = True
-
-            # מחצית
-            if period == 2 and minute == 20 and not g["halftime"]:
-                msg = build_update("מחצית", ev, summary)
-                edit_message(g["message_id"], msg)
-                g["halftime"] = True
-
-            # 10 דקות מחצית שנייה
-            if period == 2 and minute <= 10 and not g["second10"]:
-                msg = build_update("10 דקות במחצית השנייה", ev, summary)
-                edit_message(g["message_id"], msg)
-                g["second10"] = True
-
-        if state == "post" and not g["final"]:
-            summary = safe_get(SUMMARY_URL + gid)
-            if not summary:
-                continue
-            msg = build_final(ev, summary)
-            edit_message(g["message_id"], msg)
-            g["final"] = True
-
-# =====================================
-# RUN
-# =====================================
-print("🚀 NCAA LIVE BOT STARTED")
-
-while True:
-    try:
-        check_games()
-    except Exception as e:
-        print("🔥 CRITICAL ERROR:", e)
-
-    time.sleep(15)
+setInterval(handleGames, 20000);
