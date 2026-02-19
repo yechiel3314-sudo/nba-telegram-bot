@@ -158,34 +158,43 @@ def run_bot():
             sb = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
             games = sb.get('scoreboard', {}).get('games', [])
 
-            # לו"ז מעוצב - פורטלנד וברוקלין בלבד עם דגל + תיקון שעה סופי
-            if now.hour == 20 and now.minute == 37 and state["dates"]["schedule"] != today:
+            # לו"ז מעוצב - פתרון סופי: מארחת בימין, שעה תקינה, דגל לברוקלין ופורטלנד
+            if now.hour == 20 and now.minute == 40 and state["dates"]["schedule"] != today:
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 
-                # רשימת הקבוצות שאתה רוצה עם דגל
-                israeli_teams = ["Trail Blazers", "Nets"] 
+                # רשימת קבוצות עם דגל (ברוקלין ופורטלנד בלבד)
+                israeli_teams = ["Nets", "Trail Blazers"]
                 
                 for g in games:
-                    # חילוץ זמן בשיטה הבטוחה ביותר
+                    # חילוץ שעה בטוח - מונע את ה-00:00 שרואים בלוג
                     try:
-                        # המרה מזמן UTC לזמן ישראל (UTC+2)
-                        utc_time = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
-                        il_time = utc_time.astimezone(timezone(timedelta(hours=2)))
-                        time_display = il_time.strftime("%H:%M")
+                        # שימוש בשדה gameEt (זמן מזרחי) והוספת 7 שעות לשעון ישראל
+                        from datetime import datetime as dt
+                        # הפורמט ב-API הוא לרוב "2026-02-19T19:00:00Z"
+                        t_str = g.get('startTimeUTC', "").split('T')[1][:5]
+                        utc_h = int(t_str.split(':')[0])
+                        utc_m = t_str.split(':')[1]
+                        
+                        # חישוב שעון ישראל (UTC+2)
+                        il_h = (utc_h + 2) % 24
+                        time_display = f"{il_h:02d}:{utc_m}"
                     except:
-                        time_display = "00:00"
+                        time_display = "לפנות בוקר"
 
-                    away_name = g['awayTeam']['teamName']
-                    home_name = g['homeTeam']['teamName']
+                    # הגדרת קבוצות: Away (אורחת) בשמאל, Home (מארחת) בימין
+                    away_n = g['awayTeam']['teamName']
+                    home_n = g['homeTeam']['teamName']
                     
-                    away_heb = TEAM_NAMES_HEB.get(away_name, away_name)
-                    home_heb = TEAM_NAMES_HEB.get(home_name, home_name)
+                    away_heb = TEAM_NAMES_HEB.get(away_n, away_n)
+                    home_heb = TEAM_NAMES_HEB.get(home_n, home_n)
                     
-                    # הוספת דגל ישראל לפני ה-VS רק לקבוצות שבחרת
-                    isr_flag = " 🇮🇱" if (away_name in israeli_teams or home_name in israeli_teams) else ""
+                    # הוספת דגל רק לפורטלנד או ברוקלין
+                    a_flag = " 🇮🇱" if away_n in israeli_teams else ""
+                    h_flag = " 🇮🇱" if home_n in israeli_teams else ""
                     
+                    # בניית השורה: אורחת בשמאל 🆚 מארחת בימין
                     msg += f"⏰ **{time_display}**\n"
-                    msg += f"🏀 {away_heb}{isr_flag} 🆚 {home_heb}\n\n"
+                    msg += f"🏀 {away_heb}{a_flag} 🆚 {home_heb}{h_flag}\n\n"
                 
                 send_msg(msg + "צפייה מהנה! 📺")
                 state["dates"]["schedule"] = today
@@ -244,6 +253,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
