@@ -158,26 +158,33 @@ def run_bot():
             sb = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
             games = sb.get('scoreboard', {}).get('games', [])
 
-            # לו"ז ב-19:30
-           # לו"ז מעוצב - שעון ישראל ורווחים נקיים
-            # לו"ז מעוצב - כותרת עם פסים מודגשת, שעות בלבד ורווחים
-            if now.hour == 20 and now.minute == 0 and state["dates"]["schedule"] != today:
+            # לו"ז מעוצב - דגל ישראל לפני ה-🆚 וזמן שליחה 20:20
+            if now.hour == 20 and now.minute == 10 and state["dates"]["schedule"] != today:
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
+                
+                # רשימת הקבוצות של הישראלים
+                israeli_teams = ["Trail Blazers", "Wizards"]
+                
                 for g in games:
-                    # חישוב שעה מדויקת לישראל מתוך ה-UTC
                     try:
-                        st_utc = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
-                        st_israel = st_utc.astimezone(timezone(timedelta(hours=2)))
-                        time_display = st_israel.strftime("%H:%M")
+                        time_str = g['startTimeUTC'].split('T')[1][:5]
+                        utc_dt = datetime.strptime(time_str, "%H:%M")
+                        il_dt = utc_dt + timedelta(hours=2)
+                        time_display = il_dt.strftime("%H:%M")
                     except:
-                        time_display = "לפנות בוקר"
+                        time_display = g.get('gameStatusText', '00:00')
 
-                    a = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName'])
-                    h = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
+                    away_name = g['awayTeam']['teamName']
+                    home_name = g['homeTeam']['teamName']
                     
-                    # הצגת המשחק: שעה מודגשת והקבוצות מודגשות מתחתיה
+                    away_heb = TEAM_NAMES_HEB.get(away_name, away_name)
+                    home_heb = TEAM_NAMES_HEB.get(home_name, home_name)
+                    
+                    # בדיקה אם אחד מהצדדים הוא ישראלי כדי להוסיף את הדגל לפני ה-VS
+                    isr_flag = " 🇮🇱" if (away_name in israeli_teams or home_name in israeli_teams) else ""
+                    
                     msg += f"⏰ **{time_display}**\n"
-                    msg += f"🏀 **{a}** 🆚 **{h}**\n\n"
+                    msg += f"🏀 **{away_heb}**{isr_flag} 🆚 **{home_heb}**\n\n"
                 
                 send_msg(msg + "*צפייה מהנה!* 📺")
                 state["dates"]["schedule"] = today
@@ -236,6 +243,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
