@@ -15,23 +15,6 @@ translator = GoogleTranslator(source='en', target='iw')
 translation_cache = {}
 games_state = {}
 
-# =====================================
-# SAFE REQUEST
-# =====================================
-def safe_get(url):
-    try:
-        # הוספנו User-Agent כדי ש-ESPN לא יחסום את הבוט
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"❌ HTTP ERROR: {e}")
-        return None
-
-# =====================================
-# TRANSLATION
-# =====================================
 def tr(text):
     if not text: return ""
     if text in translation_cache: return translation_cache[text]
@@ -39,148 +22,147 @@ def tr(text):
         t = translator.translate(text)
         translation_cache[text] = t
         return t
-    except:
-        return text
+    except: return text
 
-# =====================================
-# TELEGRAM FUNCTIONS
-# =====================================
-def send_message(text):
+def send_telegram(method, data):
     try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        r = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
-        res = r.json()
-        if res.get("ok"):
-            return res["result"]["message_id"]
-        return None
+        url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+        requests.post(url, json=data, timeout=10)
     except Exception as e:
-        print(f"❌ SEND ERROR: {e}")
-        return None
-
-def edit_message(message_id, text):
-    if not message_id: return
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
-        requests.post(url, json={
-            "chat_id": CHAT_ID,
-            "message_id": message_id,
-            "text": text,
-            "parse_mode": "Markdown"
-        }, timeout=10)
-    except Exception as e:
-        print(f"❌ EDIT ERROR: {e}")
+        print(f"❌ Telegram Error ({method}): {e}")
 
 # =====================================
-# STATS EXTRACTION
+# STATS ENGINE
 # =====================================
 def extract_stats(team):
     players = team.get("statistics", [{}])[0].get("athletes", [])
     result = []
     for p in players:
-        stats = p.get("stats", [])
-        if len(stats) >= 13:
+        s = p.get("stats", [])
+        if len(s) >= 13:
             try:
-                result.append({
+                # פורמט מכללות: 12=PTS, 6=REB, 7=AST, 8=STL, 9=BLK
+                p_stats = {
                     "name": p["athlete"]["displayName"],
-                    "pts": int(stats[12]), # במכללות לרוב זה 12
-                    "reb": int(stats[6]),
-                    "ast": int(stats[7]),
-                    "stl": int(stats[8]) if len(stats) > 8 else 0,
-                    "blk": int(stats[9]) if len(stats) > 9 else 0,
+                    "pts": int(s[12]),
+                    "reb": int(s[6]),
+                    "ast": int(s[7]),
+                    "stl": int(s[8]) if len(s) > 8 else 0,
+                    "blk": int(s[9]) if len(s) > 9 else 0,
                     "starter": p.get("starter", False)
-                })
+                }
+                result.append(p_stats)
             except: continue
     result.sort(key=lambda x: x["pts"], reverse=True)
     return result
 
+def format_p_line(p):
+    """בונה שורת סטטיסטיקה מעוצבת לשחקן"""
+    line = f"{tr(p['name'])}: {p['pts']} נק', {p['reb']} ריב', {p['ast']} אס'"
+    extras = []
+    if p['stl'] > 0: extras.append(f"{p['stl']} חט'")
+    if p['blk'] > 0: extras.append(f"{p['blk']} חס'")
+    if extras:
+        line += " (" + " | ".join(extras) + ")"
+    return line
+
 # =====================================
-# BUILD MESSAGES
+# MESSAGE BUILDER
 # =====================================
-def build_update(title, event, summary):
-    comp = event["competitions"][0]["competitors"]
-    home = next(c for c in comp if c["homeAway"] == "home")
-    away = next(c for c in comp if c["homeAway"] == "away")
+def build_msg(title, ev, summary):
+    comp = ev["competitions"][0]
+    home = next(c for c in comp["competitors"] if c["homeAway"] == "home")
+    away = next(c for c in comp["competitors"] if c["homeAway"] == "away")
+    
+    clock = ev["status"].get("displayClock", "0:00")
+    period = ev["status"].get("period", 1)
+    # תרגום חצי/רבע
+    period_text = "חצי 1" if period == 1 else "חצי 2" if period == 2 else f"הארכה {period-2}"
+    
+    msg = f"🏀 *{title}*\n"
+    msg += f"🏟️ {tr(away['team']['displayName'])} *{away['score']} - {home['score']}* {tr(home['team']['displayName'])}\n"
+    msg += f"⏱️ זמן: {clock} ({period_text})\n"
+    msg += "───────────────────\n"
 
-    home_name = tr(home["team"]["displayName"])
-    away_name = tr(away["team"]["displayName"])
-    home_score = home.get("score", 0)
-    away_score = away.get("score", 0)
-
-    msg = f"🏀 *{title}:* {home_name} 🆚 {away_name} 🏀\n"
-    msg += f"💰 תוצאה: *{home_score} - {away_score}*\n\n"
-
-    for team in summary.get("boxscore", {}).get("players", []):
-        team_name = tr(team["team"]["displayName"])
-        players = extract_stats(team)
+    for team_box in summary.get("boxscore", {}).get("players", []):
+        t_name = tr(team_box["team"]["displayName"])
+        players = extract_stats(team_box)
         if not players: continue
-
-        top1 = players[0]
+        
+        top = players[0]
         bench = next((p for p in players if not p["starter"]), None)
 
-        msg += f"🔥 *{team_name}:*\n"
-        msg += f"• 🔝 מוביל: {tr(top1['name'])} ({top1['pts']}נ', {top1['reb']}ר')\n"
+        msg += f"🔥 *{t_name}:*\n"
+        msg += f"• 🔝 מוביל: {format_p_line(top)}\n"
         if bench:
-            msg += f"• ⚡️ ספסל: {tr(bench['name'])} ({bench['pts']}נ', {bench['reb']}ר')\n"
+            msg += f"• ⚡ מהספסל: {format_p_line(bench)}\n"
         msg += "\n"
+    
     return msg
 
 # =====================================
-# CORE LOGIC
+# MAIN SCANNER
 # =====================================
-def check_games():
-    data = safe_get(SCOREBOARD_URL)
-    if not data: return
+def check_all_games():
+    data = requests.get(SCOREBOARD_URL, headers={'User-Agent': 'Mozilla/5.0'}).json()
+    events = data.get("events", [])
+    print(f"🔄 סורק {len(events)} משחקים...")
 
-    for ev in data.get("events", []):
+    for ev in events:
         gid = ev["id"]
         state = ev["status"]["type"]["state"]
         
         if gid not in games_state:
-            games_state[gid] = {"message_id": None, "start": False, "10min": False, "halftime": False, "final": False}
-
+            games_state[gid] = {"mid": None, "start": False, "m10": False, "half": False, "m30": False, "final": False}
+        
         g = games_state[gid]
         clock = ev["status"].get("displayClock", "20:00")
         period = ev["status"].get("period", 1)
-        
-        # חילוץ דקות (מטפל בפורמט MM:SS)
         try: minute = int(clock.split(":")[0])
         except: minute = 20
 
-        # משחק פעיל
+        # משחק פעיל (LIVE)
         if state == "in":
-            summary = safe_get(SUMMARY_URL + gid)
-            if not summary: continue
-
-            # שלב 1: פתיחה
+            summary = requests.get(SUMMARY_URL + gid).json()
+            
+            # 1. יצא לדרך
             if not g["start"]:
-                mid = send_message(build_update("המשחק יצא לדרך", ev, summary))
-                if mid: g["message_id"] = mid; g["start"] = True
+                msg = build_msg("המשחק יצא לדרך! 🔥", ev, summary)
+                url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+                r = requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}).json()
+                if r.get("ok"): 
+                    g["mid"] = r["result"]["message_id"]
+                    g["start"] = True
 
-            # שלב 2: אחרי 10 דקות (שעון יורד מ-10)
-            if period == 1 and minute <= 10 and not g["10min"]:
-                edit_message(g["message_id"], build_update("עדכון: 10 דקות ראשונות", ev, summary))
-                g["10min"] = True
+            # 2. עדכון 10 דקות (חצי ראשון)
+            if period == 1 and minute <= 10 and not g["m10"]:
+                edit_data = {"chat_id": CHAT_ID, "message_id": g["mid"], "text": build_msg("עדכון: 10 דקות לסיום החצי הראשון ⏳", ev, summary), "parse_mode": "Markdown"}
+                send_telegram("editMessageText", edit_data)
+                g["m10"] = True
 
-            # שלב 3: מחצית
-            if period == 2 and minute == 20 and not g["halftime"]:
-                edit_message(g["message_id"], build_update("מחצית", ev, summary))
-                g["halftime"] = True
+            # 3. מחצית
+            if period == 2 and minute == 20 and not g["half"]:
+                edit_data = {"chat_id": CHAT_ID, "message_id": g["mid"], "text": build_msg("מחצית ☕", ev, summary), "parse_mode": "Markdown"}
+                send_telegram("editMessageText", edit_data)
+                g["half"] = True
 
-        # שלב 4: סיום
-        if state == "post" and not g["final"]:
-            summary = safe_get(SUMMARY_URL + gid)
-            if summary:
-                edit_message(g["message_id"], build_update("🏁 סיום המשחק", ev, summary))
-                g["final"] = True
+            # 4. עדכון 10 דקות לסיום המשחק (חצי שני)
+            if period == 2 and minute <= 10 and not g["m30"]:
+                edit_data = {"chat_id": CHAT_ID, "message_id": g["mid"], "text": build_msg("מאני טיים: 10 דקות לסיום! 🚨", ev, summary), "parse_mode": "Markdown"}
+                send_telegram("editMessageText", edit_data)
+                g["m30"] = True
 
-# =====================================
-# RUN
-# =====================================
+        # סיום משחק
+        elif state == "post" and not g["final"]:
+            summary = requests.get(SUMMARY_URL + gid).json()
+            edit_data = {"chat_id": CHAT_ID, "message_id": g["mid"], "text": build_msg("🏁 סיום המשחק", ev, summary), "parse_mode": "Markdown"}
+            send_telegram("editMessageText", edit_data)
+            g["final"] = True
+
 if __name__ == "__main__":
-    print("🚀 NCAA BOT IS BACK ONLINE")
     while True:
         try:
-            check_games()
+            check_all_games()
         except Exception as e:
-            print(f"🔥 Error: {e}")
-        time.sleep(30) # 30 שניות זה זמן מצוין לעדכון
+            print(f"Error: {e}")
+        time.sleep(30)
