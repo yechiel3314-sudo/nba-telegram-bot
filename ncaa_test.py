@@ -148,7 +148,7 @@ def get_combined_schedule():
                     if info[2] in str(teams):
                         # חוק בן שרף - אם הוא ב-NBA אך לא נמצא לו משחק פיתוח
                         if p_en == "Ben Saraf" and key == "NBA":
-                            saraf_training_msg = f"{RTL_MARK}⬇️ **עדכון: ** **{info[0]}** **ירד להתאמן בליגת הפיתוח (Long Island Nets)**"
+                            saraf_training_msg = f"{RTL_MARK}⬇️ **עדכון:** **{info[0]}** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)"
                             continue 
                         
                         vs = [t for t in teams if info[2] not in t][0]
@@ -216,7 +216,7 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
-        if now.hour == 15 and now.minute == 20 and last_sch != today:
+        if now.hour == 15 and now.minute == 31 and last_sch != today:
             get_combined_schedule(); last_sch = today
         if now.hour == 9 and now.minute == 15 and last_sum != today:
             get_morning_summary(); last_sum = today
