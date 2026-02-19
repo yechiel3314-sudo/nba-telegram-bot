@@ -2,134 +2,130 @@ const axios = require("axios");
 const TelegramBot = require("node-telegram-bot-api");
 const moment = require("moment-timezone");
 
-TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-const CHAT_ID = "PUT_YOUR_CHAT_ID_HERE";
+const TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE";
+const CHAT_ID = "-1003808107418"; // העדכון של ה-Chat ID שלך
 
-const bot = new TelegramBot(TOKEN);
+const bot = new TelegramBot(TOKEN, { polling: false });
 const trackedGames = {};
 
 function nowTime() {
-  return moment().tz("Asia/Jerusalem").format("HH:mm:ss");
+    return moment().tz("Asia/Jerusalem").format("HH:mm:ss");
 }
 
 async function fetchGames() {
-  try {
-    const res = await axios.get(
-      "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
-    );
-    return res.data.events || [];
-  } catch (e) {
-    console.log("Scoreboard error:", e.message);
-    return [];
-  }
+    try {
+        const res = await axios.get(
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard",
+            { timeout: 10000 }
+        );
+        return res.data.events || [];
+    } catch (e) {
+        console.log("Scoreboard error:", e.message);
+        return [];
+    }
 }
 
 async function fetchBoxScore(gameId) {
-  try {
-    const res = await axios.get(
-      `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event=${gameId}`
-    );
-    return res.data;
-  } catch (e) {
-    console.log("Boxscore error:", e.message);
-    return null;
-  }
+    try {
+        const res = await axios.get(
+            `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event=${gameId}`,
+            { timeout: 10000 }
+        );
+        return res.data;
+    } catch (e) {
+        console.log(`Boxscore error for ${gameId}:`, e.message);
+        return null;
+    }
 }
 
-function topPlayers(team) {
-  const players = team.statistics[0].athletes;
+function getTopPlayers(teamData) {
+    if (!teamData || !teamData.players) return null;
+    
+    // שליפת כל השחקנים ששיחקו
+    const athletes = teamData.players[0].statistics[0].athletes;
+    
+    // מיון לפי נקודות (במכללות אינדקס 12 הוא לרוב הנקודות)
+    const sorted = [...athletes].sort((a, b) => {
+        const ptsA = parseInt(a.stats[12]) || 0;
+        const ptsB = parseInt(b.stats[12]) || 0;
+        return ptsB - ptsA;
+    });
 
-  const sorted = players.sort((a, b) =>
-    parseInt(b.stats[13]) - parseInt(a.stats[13])
-  );
-
-  return {
-    leader: sorted[0],
-    second: sorted[1],
-    bench: sorted.find(p => p.starter === false)
-  };
+    return {
+        leader: sorted[0],
+        second: sorted[1],
+        bench: sorted.find(p => p.starter === false) || sorted[2]
+    };
 }
 
 function formatPlayer(p) {
-  if (!p) return "לא זמין";
-  return `${p.athlete.displayName}: ${p.stats[13]} נק', ${p.stats[6]} ריב', ${p.stats[7]} אס' (${p.stats[9] || 0} חט', ${p.stats[10] || 0} חס')`;
+    if (!p || !p.athlete) return "אין נתונים";
+    const s = p.stats;
+    // אינדקסים למכללות: 12=נק', 6=ריב', 7=אס'
+    return `*${p.athlete.displayName}*: ${s[12]} נק', ${s[6]} ריב', ${s[7]} אס'`;
 }
 
 async function handleGames() {
-  const games = await fetchGames();
+    console.log(`[${nowTime()}] מריץ סריקה...`);
+    const games = await fetchGames();
 
-  for (const game of games) {
-    const gameId = game.id;
-    const status = game.status.type.name;
+    for (const game of games) {
+        const gameId = game.id;
+        const competition = game.competitions[0];
+        const status = game.status.type.name;
+        
+        const homeTeam = competition.competitors.find(c => c.homeAway === 'home');
+        const awayTeam = competition.competitors.find(c => c.homeAway === 'away');
+        
+        const homeScore = parseInt(homeTeam.score) || 0;
+        const awayScore = parseInt(awayTeam.score) || 0;
 
-    if (!trackedGames[gameId]) {
-      trackedGames[gameId] = { started: false, lastPeriod: 0 };
+        if (!trackedGames[gameId]) {
+            trackedGames[gameId] = { started: false, lastPeriod: 0, finalSent: false };
+        }
+
+        // לוגיקת "המשחק התחיל" - מבוססת ניקוד/סטטוס
+        const isActuallyPlaying = status === "STATUS_IN_PROGRESS" || (homeScore > 0 || awayScore > 0);
+
+        if (isActuallyPlaying && status !== "STATUS_FINAL") {
+            if (!trackedGames[gameId].started) {
+                trackedGames[gameId].started = true;
+                bot.sendMessage(CHAT_ID, `🔥 *המשחק יצא לדרך!* 🔥\n🏀 ${game.name}\n🕒 ${nowTime()}`, { parse_mode: "Markdown" });
+            }
+
+            // בדיקת סוף מחצית (Period במכללות הוא לרוב 1 או 2)
+            const currentPeriod = game.status.period;
+            if (currentPeriod !== trackedGames[gameId].lastPeriod) {
+                const box = await fetchBoxScore(gameId);
+                if (box && box.boxscore) {
+                    const homeBox = box.boxscore.players.find(t => t.team.id === homeTeam.id);
+                    const awayBox = box.boxscore.players.find(t => t.team.id === awayTeam.id);
+
+                    const homeTop = getTopPlayers(homeBox);
+                    const awayTop = getTopPlayers(awayBox);
+
+                    let msg = `🏀 *עדכון מחצית/רבע ${currentPeriod}:* ${game.name}\n`;
+                    msg += `תוצאה: ${awayScore} - ${homeScore}\n\n`;
+                    
+                    if (homeTop && awayTop) {
+                        msg += `🔥 *${homeTeam.team.shortDisplayName}:*\n• ${formatPlayer(homeTop.leader)}\n• ${formatPlayer(homeTop.bench)} (ספסל)\n\n`;
+                        msg += `🔥 *${awayTeam.team.shortDisplayName}:*\n• ${formatPlayer(awayTop.leader)}\n• ${formatPlayer(awayTop.bench)} (ספסל)`;
+                    }
+
+                    bot.sendMessage(CHAT_ID, msg, { parse_mode: "Markdown" });
+                    trackedGames[gameId].lastPeriod = currentPeriod;
+                }
+            }
+        }
+
+        // לוגיקת סיום משחק
+        if (status === "STATUS_FINAL" && !trackedGames[gameId].finalSent) {
+            trackedGames[gameId].finalSent = true;
+            bot.sendMessage(CHAT_ID, `🏁 *סיום המשחק!* 🏁\n🏀 ${game.name}\nתוצאה סופית: ${awayScore} - ${homeScore}`, { parse_mode: "Markdown" });
+        }
     }
-
-    if (status === "STATUS_IN_PROGRESS") {
-      if (!trackedGames[gameId].started) {
-        trackedGames[gameId].started = true;
-        bot.sendMessage(
-          CHAT_ID,
-          `🔥 המשחק יצא לדרך! 🔥\n🕒 ${nowTime()}\n🏀 ${game.name}`
-        );
-      }
-
-      const box = await fetchBoxScore(gameId);
-      if (!box) continue;
-
-      const home = box.boxscore.teams[0];
-      const away = box.boxscore.teams[1];
-
-      const homeTop = topPlayers(home);
-      const awayTop = topPlayers(away);
-
-      const currentPeriod = box.header.competitions[0].status.period;
-
-      if (currentPeriod !== trackedGames[gameId].lastPeriod) {
-        trackedGames[gameId].lastPeriod = currentPeriod;
-
-        bot.sendMessage(
-          CHAT_ID,
-`🏀 סוף רבע ${currentPeriod}: ${away.team.displayName} 🆚 ${home.team.displayName} 🏀
-🕒 ${nowTime()}
-
-🔹 ${home.team.displayName} ${home.score}-${away.score}
-
-🔥 ${home.team.displayName}:
-• 🔝 קלע מוביל: ${formatPlayer(homeTop.leader)}
-• 🏀 סקורר שני: ${formatPlayer(homeTop.second)}
-• ⚡ מהספסל: ${formatPlayer(homeTop.bench)}
-
-🔥 ${away.team.displayName}:
-• 🔝 קלע מוביל: ${formatPlayer(awayTop.leader)}
-• 🏀 סקורר שני: ${formatPlayer(awayTop.second)}
-• ⚡ מהספסל: ${formatPlayer(awayTop.bench)}
-`
-        );
-      }
-    }
-
-    if (status === "STATUS_FINAL") {
-      if (!trackedGames[gameId].finalSent) {
-        trackedGames[gameId].finalSent = true;
-
-        const box = await fetchBoxScore(gameId);
-        if (!box) continue;
-
-        const home = box.boxscore.teams[0];
-        const away = box.boxscore.teams[1];
-
-        bot.sendMessage(
-          CHAT_ID,
-`🏁 סיום המשחק! 🏁
-🕒 ${nowTime()}
-🏀 ${game.name}
-תוצאה סופית: ${home.score}-${away.score}`
-        );
-      }
-    }
-  }
 }
 
-setInterval(handleGames, 20000);
+// הרצה כל 30 שניות כדי לא לחסום את ה-IP
+setInterval(handleGames, 30000);
+handleGames();
