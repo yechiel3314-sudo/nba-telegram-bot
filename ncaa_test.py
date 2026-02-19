@@ -1,8 +1,9 @@
 import requests
 import time
+from datetime import datetime, timedelta, timezone
 from deep_translator import GoogleTranslator
 
-# --- הגדרות ---
+# --- הגדרות טכניות ---
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
@@ -13,38 +14,30 @@ translation_cache = {}
 games_state = {}
 
 def tr(text):
-    """פונקציית תרגום עם שמירה בזיכרון למניעת עומס"""
-    if not text: 
-        return ""
-    if text in translation_cache: 
-        return translation_cache[text]
+    """תרגום עם זיכרון מטמון למניעת עומס"""
+    if not text: return ""
+    if text in translation_cache: return translation_cache[text]
     try:
         t = translator.translate(text)
         translation_cache[text] = t
         return t
-    except: 
-        return text
+    except: return text
 
-# --- מנוע חילוץ נתונים חכם ---
+# --- מנוע חילוץ נתונים ---
+
 def get_stat(stat_list, label, labels_map):
-    """חילוץ נתון ספציפי לפי תווית מה-API של ESPN"""
     try:
         idx = labels_map.index(label)
         return stat_list[idx]
-    except: 
-        return "0"
+    except: return "0"
 
 def extract_players_data(team_box):
-    """עיבוד נתוני שחקנים מהבוקס-סקור"""
     athletes = team_box.get("statistics", [{}])[0].get("athletes", [])
     labels = team_box.get("statistics", [{}])[0].get("labels", [])
     parsed = []
-    
     for a in athletes:
         s = a.get("stats", [])
-        if not s or len(s) < 5: 
-            continue
-            
+        if not s or len(s) < 5: continue
         parsed.append({
             "name": a["athlete"]["displayName"],
             "starter": a.get("starter", False),
@@ -57,166 +50,166 @@ def extract_players_data(team_box):
     return parsed
 
 def format_p_line(p):
-    """עיצוב שורת שחקן: שם מודגש, נתונים בסיסיים, הגנה בסוגריים"""
-    line = f"*{tr(p['name'])}*: {p['pts']} נק' {p['reb']} ריב' {p['ast']} אס'"
+    """עיצוב שורת שחקן נקי"""
+    line = f"• *{tr(p['name'])}* ({p['pts']} נק', {p['reb']} ריב', {p['ast']} אס')"
     extras = []
-    if p['stl'] > 0: 
-        extras.append(f"{p['stl']} חט'")
-    if p['blk'] > 0: 
-        extras.append(f"{p['blk']} חס'")
-    if extras:
-        line += " (" + " ".join(extras) + ")"
+    if p['stl'] > 0: extras.append(f"{p['stl']} חט'")
+    if p['blk'] > 0: extras.append(f"{p['blk']} חס'")
+    if extras: line += " [" + " ".join(extras) + "]"
     return line
 
-# --- בניית הודעה ---
+# --- פונקציות הודעות ---
+
 def build_game_msg(title, ev, summary, is_final=False):
-    """יצירת גוף ההודעה המעוצב לטלגרם"""
     comp = ev["competitions"][0]
     home = next(c for c in comp["competitors"] if c["homeAway"] == "home")
     away = next(c for c in comp["competitors"] if c["homeAway"] == "away")
     
-    h_name = tr(home['team']['displayName'])
-    a_name = tr(away['team']['displayName'])
-    h_score = int(home.get("score", 0))
-    a_score = int(away.get("score", 0))
+    h_name, a_name = tr(home['team']['displayName']), tr(away['team']['displayName'])
+    h_score, a_score = int(home.get("score", 0)), int(away.get("score", 0))
 
-    # שורת מובילה
     if h_score > a_score:
-        leader_text = f"🔹 *{h_name} מובילה {h_score} - {a_score}*"
-        if is_final: 
-            leader_text = f"🏁 *{h_name} ניצחה {h_score} - {a_score}*"
+        score_status = f"⏺ *{h_name}* {h_score} - {a_score} {a_name}"
+        if is_final: score_status = f"🏁 *{h_name}* ניצחה {h_score}-{a_score}"
     elif a_score > h_score:
-        leader_text = f"🔹 *{a_name} מובילה {a_score} - {h_score}*"
-        if is_final: 
-            leader_text = f"🏁 *{a_name} ניצחה {a_score} - {h_score}*"
+        score_status = f"⏺ *{a_name}* {a_score} - {h_score} {h_name}"
+        if is_final: score_status = f"🏁 *{a_name}* ניצחה {a_score}-{h_score}"
     else:
-        leader_text = f"🔹 *שוויון {h_score} - {a_score}*"
+        score_status = f"⚖ *שוויון* {h_score} - {a_score}"
 
     clock = ev["status"].get("displayClock", "20:00")
     period = ev["status"].get("period", 1)
-    period_text = "חצי 1" if period == 1 else "חצי 2" if period == 2 else f"הארכה {period-2}"
+    period_text = "חצי 1" if period == 1 else "חצי 2" if period == 2 else f"OT{period-2}"
 
-    msg = f"🏀 *{title}*\n"
-    msg += f"*{a_name}* 🆚 *{h_name}*\n\n"
-    msg += f"{leader_text}\n"
-    msg += f"⏱️ זמן: {clock} ({period_text})\n"
-    msg += "───────────────────\n"
+    msg = f"🏀 *{title}*\n{score_status}\n⏱ `{clock}` ({period_text})\n"
+    msg += "─" * 15 + "\n"
 
     for team_box in summary.get("boxscore", {}).get("players", []):
         t_name = tr(team_box["team"]["displayName"])
         players = extract_players_data(team_box)
-        msg += f"🔥 *{t_name}*:\n"
+        msg += f"▫️ *{t_name}*:\n"
         
-        if "יצא לדרך" in title or "עדכון משחק" in title:
+        if "פתיחה" in title or "יצא לדרך" in title:
             starters = [p for p in players if p["starter"]]
-            if starters:
-                msg += "📋 *חמישייה:* " + ", ".join([tr(p['name']) for p in starters]) + "\n"
-            else:
-                msg += "📋 *חמישייה:* אין כרגע עדכון לגבי החמישייה\n"
+            msg += "📋 " + ", ".join([tr(p['name']) for p in starters]) if starters else "📋 חמישייה טרם עודכנה"
         elif is_final:
             top_5 = sorted(players, key=lambda x: x["pts"], reverse=True)[:5]
-            for p in top_5: 
-                msg += f"• {format_p_line(p)}\n"
+            for p in top_5: msg += f"{format_p_line(p)}\n"
         else:
             starters = sorted([p for p in players if p["starter"]], key=lambda x: x["pts"], reverse=True)[:2]
             bench = sorted([p for p in players if not p["starter"]], key=lambda x: x["pts"], reverse=True)
-            for p in starters: 
-                msg += f"• 🔝 {format_p_line(p)}\n"
-            if bench: 
-                msg += f"• ⚡ ספסל: {format_p_line(bench[0])}\n"
+            for p in starters: msg += f"{format_p_line(p)}\n"
+            if bench: msg += f"{format_p_line(bench[0])} (ס)\n"
         msg += "\n"
     return msg
 
-# --- לוגיקה מרכזית ---
-def run_bot():
-    """הפונקציה שסורקת את המשחקים ומבצעת את השליחה/עריכה"""
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+
+# --- פונקציות תזמון ---
+
+def get_morning_summary():
     try:
-        # שליחת בקשה ל-Scoreboard לקבלת כל המשחקים
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(SCOREBOARD_URL, headers=headers, timeout=15).json()
+        resp = requests.get(SCOREBOARD_URL, timeout=10).json()
         events = resp.get("events", [])
-        
+        if not events: return "☕ *בוקר טוב!* לא התקיימו משחקים הלילה."
+        msg = "☕ *סיכום תוצאות הלילה (NCAA):*\n\n"
         for ev in events:
-            gid = ev["id"]
-            state = ev["status"]["type"]["state"]
-            clock = ev["status"].get("displayClock", "20:00")
-            period = ev["status"].get("period", 1)
-            
-            # חילוץ דקות מהשעון
-            try:
-                minute = int(clock.split(":")[0])
-            except:
-                minute = 20
+            if ev["status"]["type"]["state"] == "post":
+                comp = ev["competitions"][0]
+                home = comp["competitors"][0]
+                away = comp["competitors"][1]
+                msg += f"• {tr(away['team']['shortDisplayName'])} {away['score']} - {home['score']} {tr(home['team']['shortDisplayName'])}\n"
+        return msg
+    except: return None
 
-            # יצירת מצב למשחק חדש בזיכרון
-            if gid not in games_state:
-                games_state[gid] = {"mid": None, "stages": []}
-
-            g = games_state[gid]
-
-            # טיפול במשחקים פעילים (Live)
-            if state == "in":
-                summary_resp = requests.get(SUMMARY_URL + gid, headers=headers, timeout=15).json()
-                
-                # א. שליחת הודעה ראשונית (אם עוד לא נשלחה)
-                if not g["mid"]:
-                    title = "המשחק יצא לדרך! 🔥" if period == 1 and minute >= 19 else "עדכון משחק פעיל 🏀"
-                    msg_text = build_game_msg(title, summary_resp.get("event", ev), summary_resp)
-                    
-                    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-                    payload = {"chat_id": CHAT_ID, "text": msg_text, "parse_mode": "Markdown"}
-                    res = requests.post(url, json=payload).json()
-                    
-                    if res.get("ok"):
-                        g["mid"] = res["result"]["message_id"]
-
-                # ב. עדכון: 10 דקות לסיום חצי 1
-                if period == 1 and minute <= 10 and "10_p1" not in g["stages"] and g["mid"]:
-                    msg_text = build_game_msg("10 דקות לסיום החצי הראשון ⏳", summary_resp.get("event", ev), summary_resp)
-                    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
-                    payload = {"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg_text, "parse_mode": "Markdown"}
-                    requests.post(url, json=payload)
-                    g["stages"].append("10_p1")
-
-                # ג. עדכון: מחצית
-                if period == 2 and minute >= 19 and "half" not in g["stages"] and g["mid"]:
-                    msg_text = build_game_msg("מחצית ☕", summary_resp.get("event", ev), summary_resp)
-                    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
-                    payload = {"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg_text, "parse_mode": "Markdown"}
-                    requests.post(url, json=payload)
-                    g["stages"].append("half")
-
-                # ד. עדכון: 10 דקות לסיום המשחק
-                if period == 2 and minute <= 10 and "10_p2" not in g["stages"] and g["mid"]:
-                    msg_text = build_game_msg("🚨 10 דקות לסיום המשחק!", summary_resp.get("event", ev), summary_resp)
-                    url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
-                    payload = {"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg_text, "parse_mode": "Markdown"}
-                    requests.post(url, json=payload)
-                    g["stages"].append("10_p2")
-
-            # טיפול בסיום משחק (Final)
-            elif state == "post" and "final" not in g["stages"] and g.get("mid"):
-                final_summary = requests.get(SUMMARY_URL + gid, headers=headers, timeout=15).json()
-                msg_text = build_game_msg("🏁 סיום המשחק - סטטיסטיקה סופית", final_summary.get("event", ev), final_summary, is_final=True)
-                
-                url = f"https://api.telegram.org/bot{TOKEN}/editMessageText"
-                payload = {"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg_text, "parse_mode": "Markdown"}
-                requests.post(url, json=payload)
-                g["stages"].append("final")
-
-    except Exception as e:
-        print(f"Error in run_bot: {e}")
-
-# --- נקודת כניסה ---
-if __name__ == "__main__":
-    print("🚀 NCAA Live Bot is starting...")
-    # הודעת בדיקה ראשונית לוודא שהבוט מחובר
+def get_daily_schedule():
     try:
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                      json={"chat_id": CHAT_ID, "text": "✅ הבוט הופעל בהצלחה ומתחיל בסריקה..."})
-    except:
-        print("Could not send startup message.")
+        resp = requests.get(SCOREBOARD_URL, timeout=10).json()
+        events = resp.get("events", [])
+        if not events: return "🏀 אין משחקים מתוכננים להיום."
+        msg = "🗓️ *לו"ז משחקי המכללות להערב/לילה:*\n\n"
+        for ev in events:
+            start_time = ev["date"] # פורמט UTC
+            dt_utc = datetime.strptime(start_time, "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
+            dt_israel = dt_utc + timedelta(hours=2)
+            time_str = dt_israel.strftime("%H:%M")
+            msg += f"⏰ {time_str} | {tr(ev['name'])}\n"
+        return msg
+    except: return "⚠️ תקלה במשיכת לו"ז."
+
+# --- לוגיקה מרכזית ---
+
+def run_ncaa_monitor():
+    last_morning_date = ""
+    last_evening_date = ""
 
     while True:
-        run_bot()
-        time.sleep(30) # המתנה של 30 שניות בין סריקות
+        try:
+            now = datetime.now(timezone.utc) + timedelta(hours=2)
+            today = now.strftime("%Y-%m-%d")
+
+            # 1. סיכום בוקר (09:00)
+            if now.hour == 9 and now.minute == 0 and last_morning_date != today:
+                summary = get_morning_summary()
+                if summary: send_telegram(summary)
+                last_morning_date = today
+
+            # 2. לו"ז ערב (18:00)
+            if now.hour == 18 and now.minute == 0 and last_evening_date != today:
+                schedule = get_daily_schedule()
+                send_telegram(schedule)
+                last_evening_date = today
+
+            # 3. בדיקת משחקים חיים
+            resp = requests.get(SCOREBOARD_URL, timeout=15).json()
+            for ev in resp.get("events", []):
+                gid = ev["id"]
+                state = ev["status"]["type"]["state"]
+                clock = ev["status"].get("displayClock", "20:00")
+                period = ev["status"].get("period", 1)
+                
+                try: minute = int(clock.split(":")[0])
+                except: minute = 20
+
+                if gid not in games_state:
+                    games_state[gid] = {"stages": []}
+                
+                g = games_state[gid]
+
+                # משחק פעיל
+                if state == "in":
+                    summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
+                    
+                    # א. פתיחה
+                    if "start" not in g["stages"]:
+                        title = "המשחק יצא לדרך! 🔥" if period == 1 and minute >= 19 else "עדכון משחק פעיל 🏀"
+                        send_telegram(build_game_msg(title, ev, summary))
+                        g["stages"].append("start")
+                    
+                    # ב. תחנות עדכון (10 דק' לסיום חצי 1, מחצית, 10 דק' לסיום חצי 2)
+                    if period == 1 and minute <= 10 and "10_p1" not in g["stages"]:
+                        send_telegram(build_game_msg("10 דק' לסיום החצי הראשון ⏳", ev, summary))
+                        g["stages"].append("10_p1")
+                    elif period == 2 and minute >= 19 and "half" not in g["stages"]:
+                        send_telegram(build_game_msg("מחצית ☕", ev, summary))
+                        g["stages"].append("half")
+                    elif period == 2 and minute <= 10 and "10_p2" not in g["stages"]:
+                        send_telegram(build_game_msg("🚨 10 דקות לסיום המשחק!", ev, summary))
+                        g["stages"].append("10_p2")
+
+                # ג. סיום משחק (חסין לפספוסים)
+                elif state == "post" and "final" not in g["stages"]:
+                    summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
+                    send_telegram(build_game_msg("סיום המשחק - סטטיסטיקה", ev, summary, is_final=True))
+                    g["stages"].append("final")
+
+        except Exception as e:
+            print(f"Error: {e}")
+        
+        time.sleep(60)
+
+if __name__ == "__main__":
+    print("🚀 NCAA Pro-Monitor is running...")
+    run_ncaa_monitor()
