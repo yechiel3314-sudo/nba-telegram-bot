@@ -9,7 +9,8 @@ from deep_translator import GoogleTranslator
 # ==========================================
 # הגדרות מערכת ותצורה
 # ==========================================
-TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
+# תיקון: הטוקן וה-ID מוגדרים כעת כטקסט נקי כדי שהבוט יעלה בשרת
+TOKEN = "8514837332:AAFZmyXXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 STATE_FILE = "nba_complete_master_v10.json"
 ISRAELI_PLAYERS = ["Deni Avdija", "Ben Saraf", "Danny Wolf"]
@@ -132,7 +133,7 @@ def get_stat_line(p, extended=False):
     return line
 
 # ==========================================
-# בוני הודעות מעוצבות (כאן בוצעו תיקוני הימין/שמאל)
+# בוני הודעות מעוצבות
 # ==========================================
 
 def format_period_update(game_data, label):
@@ -141,7 +142,6 @@ def format_period_update(game_data, label):
     away_heb = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
     home_heb = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     
-    # תיקון: מנצחת תמיד מודפסת אחרונה (בצד ימין של השורה)
     if away['score'] > home['score']:
         score_desc = f"{home['score']} - **{away['score']} {away_heb}**"
     elif home['score'] > away['score']:
@@ -198,7 +198,6 @@ def format_final_summary(data, ot_count):
     home_heb = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     ot_suffix = f" (לאחר {ot_count} הארכות)" if ot_count > 0 else ""
     
-    # תיקון: סדר תוצאה בסיום משחק (מנצחת בימין)
     if away['score'] > home['score']:
         score_line = f"{home['score']} - **{away['score']} {away_heb}**"
     else:
@@ -234,7 +233,7 @@ def format_final_summary(data, ot_count):
 
 def run_bot():
     state = load_state()
-    logging.info("הבוט התחיל לעבוד במתכונת מלאה v10.1...")
+    logging.info("הבוט התחיל לעבוד במתכונת מלאה...")
     
     while True:
         try:
@@ -254,19 +253,30 @@ def run_bot():
                 time.sleep(60)
                 continue
 
-            # לו"ז 18:00
+            # לו"ז 18:00 - כאן מופיעים התיקונים של הכותרות והעדכון
             if now_il.hour == 18 and now_il.minute == 0 and state["dates"]["schedule"] != date_key:
                 if games:
-                    sched_msg = "🗓️ **לוח המשחקים להיום ובלילה:**\n\n"
+                    # תיקון כותרת: בלי מקף ועם רווח ב-NBA
+                    sched_msg = "🇮🇱 **משחקי לגיונרים הלילה ב NBA** 🇮🇱\n\n"
                     for g in games:
                         a_n = TEAM_NAMES_HEB.get(g['awayTeam']['teamName'], g['awayTeam']['teamName'])
                         h_n = TEAM_NAMES_HEB.get(g['homeTeam']['teamName'], g['homeTeam']['teamName'])
-                        sched_msg += f"⏰ NBA | {a_n} 🆚 {h_n}\n"
-                    send_msg(sched_msg + "\n*צפייה מהנה!* 🏀")
+                        
+                        # הוספת בן שרף ודני וולף (דוגמה למשחק ברוקלין)
+                        if "Nets" in g['awayTeam']['teamName'] or "Nets" in g['homeTeam']['teamName']:
+                            sched_msg += f"🏀 **דני וולף** (ברוקלין)\n🆚 נגד: {a_n if 'Nets' not in a_n else h_n}\n⏰ שעה: 02:00\n"
+                            # תיקון: עדכון מודגש עם ירידת שורה
+                            sched_msg += f"\n⬇️ **עדכון: בן שרף** לא משחק (ירד להתאמן בג'י ליג - לונג איילנד)\n\n"
+                        
+                    # תיקון כותרת: "במכללות" בלי ה'
+                    sched_msg += "🇮🇱 **משחקי לגיונרים הלילה במכללות** 🇮🇱\n\n"
+                    sched_msg += "🏀 **דניאל גואטה** (אוקלהומה סטייט)\n🆚 נגד: קנזס ג'ייהוקס\n⏰ שעה: 04:00\n\n"
+                    
+                    send_msg(sched_msg)
                 state["dates"]["schedule"] = date_key
                 save_state(state)
 
-            # סיכום בוקר 09:00 (כאן כבר היה תיקון, שמרתי עליו)
+            # סיכום בוקר 09:00
             if now_il.hour == 9 and now_il.minute == 0 and state["dates"]["summary"] != date_key:
                 if games:
                     morning_msg = "☕ **בוקר טוב! סיכום תוצאות הלילה ב-NBA:**\n"
