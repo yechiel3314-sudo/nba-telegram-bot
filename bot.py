@@ -159,7 +159,7 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             # לו"ז מעוצב - פתרון סופי: שעות מודגשות, מארחת בימין והדגשות סיום
-            if now.hour == 20 and now.minute == 53 and state["dates"]["schedule"] != today:
+            if now.hour == 20 and now.minute == 55 and state["dates"]["schedule"] != today:
                 # כותרת מודגשת לגמרי
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 
@@ -265,6 +265,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
