@@ -158,48 +158,47 @@ def run_bot():
             sb = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
             games = sb.get('scoreboard', {}).get('games', [])
 
-            # לו"ז מעוצב - תיקון סופי לשעות, יישור לימין והדגשה
-            if now.hour == 23 and now.minute == 6 and state["dates"].get("schedule") != today:
-                # שימוש בתו \u200f (Right-to-Left Mark) בתחילת ההודעה ליישור ימני
+            # לו"ז מעוצב - פתרון מושלם ומדויק
+            if now.hour == 23 and now.minute == 9 and state["dates"].get("schedule") != today:
+                # שימוש בתו \u200f כדי להצמיד הכל לימין (RTL) בטלגרם
                 msg = "\u200f" + "🏀 **══ לוח המשחקים להיום בלילה ══** 🏀\n\n"
                 
-                # דגלים רק לקבוצות של הישראלים
                 israeli_teams = ["Nets", "Trail Blazers"]
                 
                 for g in games:
                     try:
-                        # שליפת הזמן המדויק מה-API (בדרך כלל בפורמט ISO)
-                        raw_time = g.get('startTimeUTC')
+                        # שליפה חכמה של הזמן - בודק את כל המפתחות האפשריים ב-API
+                        raw_time = g.get('startTimeUTC') or g.get('gameTimeUTC')
                         
                         if raw_time:
-                            # 1. המרה לאובייקט זמן UTC
-                            # 2. שימוש ב-astimezone כדי להמיר אוטומטית לשעון ישראל (UTC+2)
+                            # הפיכה לאובייקט זמן (מתמודד עם פורמט Z של ה-NBA)
                             utc_dt = datetime.strptime(raw_time, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                            # המרה לשעון ישראל (UTC+2)
                             il_dt = utc_dt.astimezone(timezone(timedelta(hours=2)))
                             time_display = il_dt.strftime("%H:%M")
                         else:
                             time_display = "--:--"
                     except Exception as e:
-                        logging.error(f"Time calculation error: {e}")
-                        time_display = "02:00"
+                        logging.error(f"Time error for game {g.get('gameId')}: {e}")
+                        time_display = "--:--"
 
                     away_n = g['awayTeam']['teamName']
                     home_n = g['homeTeam']['teamName']
                     away_heb = TEAM_NAMES_HEB.get(away_n, away_n)
                     home_heb = TEAM_NAMES_HEB.get(home_n, home_n)
                     
-                    # דגל ישראל רק לברוקלין ופורטלנד
+                    # דגל רק לברוקלין ופורטלנד
                     a_flag = " 🇮🇱" if away_n in israeli_teams else ""
                     h_flag = " 🇮🇱" if home_n in israeli_teams else ""
                     
-                    # הרכבת השורה: תו יישור לימין (\u200f) + שעה מודגשת + שאר הטקסט
+                    # הרכבת השורה: תו RTL + שעה מודגשת + קבוצות
                     msg += f"\u200f⏰ **{time_display}**\n"
                     msg += f"\u200f🏀 {away_heb}{a_flag} 🆚 {home_heb}{h_flag}\n\n"
                 
                 msg += "\u200f**צפייה מהנה! 📺**"
                 
                 send_msg(msg)
-                # עדכון ה-state כדי שלא ישלח שוב באותה דקה
+                # עדכון הסטייט כדי שלא ישלח שוב עד מחר
                 state["dates"]["schedule"] = today
                 save_state(state)
                 
@@ -256,6 +255,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
