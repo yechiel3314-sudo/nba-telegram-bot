@@ -21,7 +21,7 @@ def tr(text):
         return t
     except: return text
 
-# --- מנוע חילוץ נתונים חכם למקסימום דיוק ---
+# --- מנוע חילוץ נתונים חכם ---
 def get_stat(stat_list, label, labels_map):
     try:
         idx = labels_map.index(label)
@@ -47,8 +47,8 @@ def extract_players_data(team_box):
     return parsed
 
 def format_p_line(p):
-    """עיצוב שורת שחקן: שם מודגש, נקודות, ריבאונד, אסיסט (חטיפות/חסימות בסוגריים)"""
-    line = f"*{tr(p['name'])}*: {p['pts']} נק', {p['reb']} ריב', {p['ast']} אס'"
+    """עיצוב שורת שחקן: שם מודגש, נתונים בסיסיים, הגנה בסוגריים"""
+    line = f"*{tr(p['name'])}*: {p['pts']} נק' {p['reb']} ריב' {p['ast']} אס'"
     extras = []
     if p['stl'] > 0: extras.append(f"{p['stl']} חט'")
     if p['blk'] > 0: extras.append(f"{p['blk']} חס'")
@@ -56,7 +56,7 @@ def format_p_line(p):
         line += " (" + " ".join(extras) + ")"
     return line
 
-# --- בניית ההודעה המעוצבת ---
+# --- בניית הודעה ---
 def build_game_msg(title, ev, summary, is_final=False):
     comp = ev["competitions"][0]
     home = next(c for c in comp["competitors"] if c["homeAway"] == "home")
@@ -67,7 +67,7 @@ def build_game_msg(title, ev, summary, is_final=False):
     h_score = int(home.get("score", 0))
     a_score = int(away.get("score", 0))
 
-    # לוגיקת מי מובילה
+    # שורת מובילה
     if h_score > a_score:
         leader_text = f"🔹 *{h_name} מובילה {h_score} - {a_score}*"
         if is_final: leader_text = f"🏁 *{h_name} ניצחה {h_score} - {a_score}*"
@@ -90,11 +90,14 @@ def build_game_msg(title, ev, summary, is_final=False):
     for team_box in summary.get("boxscore", {}).get("players", []):
         t_name = tr(team_box["team"]["displayName"])
         players = extract_players_data(team_box)
-        
         msg += f"🔥 *{t_name}*:\n"
+        
         if "יצא לדרך" in title:
             starters = [p for p in players if p["starter"]]
-            msg += "📋 *חמישייה:* " + ", ".join([tr(p['name']) for p in starters]) + "\n"
+            if starters:
+                msg += "📋 *חמישייה:* " + ", ".join([tr(p['name']) for p in starters]) + "\n"
+            else:
+                msg += "📋 *חמישייה:* אין כרגע עדכון לגבי החמישייה\n"
         elif is_final:
             top_5 = sorted(players, key=lambda x: x["pts"], reverse=True)[:5]
             for p in top_5: msg += f"• {format_p_line(p)}\n"
@@ -104,13 +107,12 @@ def build_game_msg(title, ev, summary, is_final=False):
             for p in starters: msg += f"• 🔝 {format_p_line(p)}\n"
             if bench: msg += f"• ⚡ ספסל: {format_p_line(bench[0])}\n"
         msg += "\n"
-    
     return msg
 
-# --- לוגיקה ראשית ---
+# --- לוגיקה ---
 def run_bot():
     try:
-        resp = requests.get(SCOREBOARD_URL, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10).json()
+        resp = requests.get(SCOREBOARD_URL, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15).json()
         for ev in resp.get("events", []):
             gid = ev["id"]
             state = ev["status"]["type"]["state"]
@@ -120,46 +122,45 @@ def run_bot():
             except: minute = 20
 
             if gid not in games_state:
-                # מניעת הודעת "יצא לדרך" אם המשחק כבר רץ כשהבוט הופעל
-                already_running = (state == "in")
-                games_state[gid] = {"mid": None, "stages": [], "ignore_start": already_running}
+                already_in = (state == "in" and (period > 1 or minute < 19))
+                games_state[gid] = {"mid": None, "stages": [], "start_handled": already_in}
 
             g = games_state[gid]
 
             if state == "in":
-                summary = requests.get(SUMMARY_URL + gid, timeout=10).json()
+                summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
                 
-                # שלב 1: יצא לדרך
-                if not g["mid"] and not g["ignore_start"] and period == 1 and minute >= 19:
+                # 1. יצא לדרך
+                if not g["start_handled"] and period == 1 and minute >= 19:
                     msg = build_game_msg("המשחק יצא לדרך! 🔥", ev, summary)
                     res = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                                         json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}).json()
                     if res.get("ok"): g["mid"] = res["result"]["message_id"]
+                    g["start_handled"] = True
 
-                # שלב 2: 10 דקות לסיום חצי 1
-                elif period == 1 and minute == 10 and "10_p1" not in g["stages"] and g["mid"]:
+                # 2. 10 דקות חצי 1
+                if period == 1 and minute <= 10 and "10_p1" not in g["stages"] and g["mid"]:
                     msg = build_game_msg("10 דקות לסיום החצי הראשון ⏳", ev, summary)
                     requests.post(f"https://api.telegram.org/bot{TOKEN}/editMessageText", 
                                   json={"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg, "parse_mode": "Markdown"})
                     g["stages"].append("10_p1")
 
-                # שלב 3: מחצית
-                elif period == 2 and minute == 20 and "half" not in g["stages"] and g["mid"]:
+                # 3. מחצית
+                if period == 2 and minute >= 19 and "half" not in g["stages"] and g["mid"]:
                     msg = build_game_msg("מחצית ☕", ev, summary)
                     requests.post(f"https://api.telegram.org/bot{TOKEN}/editMessageText", 
                                   json={"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg, "parse_mode": "Markdown"})
                     g["stages"].append("half")
 
-                # שלב 4: 10 דקות לסיום המשחק
-                elif period == 2 and minute == 10 and "10_p2" not in g["stages"] and g["mid"]:
+                # 4. 10 דקות לסיום
+                if period == 2 and minute <= 10 and "10_p2" not in g["stages"] and g["mid"]:
                     msg = build_game_msg("🚨 10 דקות לסיום המשחק!", ev, summary)
                     requests.post(f"https://api.telegram.org/bot{TOKEN}/editMessageText", 
                                   json={"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg, "parse_mode": "Markdown"})
                     g["stages"].append("10_p2")
 
             elif state == "post" and "final" not in g["stages"] and g["mid"]:
-                # שלב 5: סיום המשחק
-                summary = requests.get(SUMMARY_URL + gid, timeout=10).json()
+                summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
                 msg = build_game_msg("🏁 סיום המשחק - סטטיסטיקה סופית", ev, summary, is_final=True)
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/editMessageText", 
                               json={"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg, "parse_mode": "Markdown"})
@@ -169,7 +170,6 @@ def run_bot():
         print(f"Error: {e}")
 
 if __name__ == "__main__":
-    print("🚀 NCAA LIVE BOT STARTED")
     while True:
         run_bot()
-        time.sleep(20)
+        time.sleep(25)
