@@ -159,7 +159,7 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             ## לו"ז מעוצב - פתרון סופי וחסין תקלות (שעון ישראל אוטומטי)
-            if now.hour == 21 and now.minute == 00 and state["dates"]["schedule"] != today:
+            if now.hour == 20 and now.minute == 47 and state["dates"]["schedule"] != today:
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 
                 israeli_teams = ["Nets", "Trail Blazers"]
@@ -256,6 +256,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
