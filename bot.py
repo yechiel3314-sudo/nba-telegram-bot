@@ -158,26 +158,32 @@ def run_bot():
             sb = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
             games = sb.get('scoreboard', {}).get('games', [])
 
-            # לו"ז מעוצב - פתרון אוטומטי לשעון ישראל (קיץ/חורף) ומארחת בימין
-            if now.hour == 20 and now.minute == 45 and state["dates"]["schedule"] != today:
+            ## לו"ז מעוצב - פתרון סופי וחסין תקלות (שעון ישראל אוטומטי)
+            if now.hour == 21 and now.minute == 00 and state["dates"]["schedule"] != today:
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 
                 israeli_teams = ["Nets", "Trail Blazers"]
                 
                 for g in games:
-                    # חילוץ זמן אוטומטי - עובד גם בשעון קיץ וגם בשעון חורף
+                    # חילוץ שעה בשיטה חסינה מכל שדה אפשרי
                     try:
-                        from datetime import datetime, timezone
-                        import zoneinfo # ספרייה מובנית בפייתון 3.9+
+                        # ניסיון ראשון: מה-UTC (אם הוא חזר לעבוד)
+                        if 'startTimeUTC' in g:
+                            utc_time = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
+                        else:
+                            # ניסיון שני: המרה משעה אמריקאית (ET) לישראל
+                            # רוב המשחקים הם ET + 7 שעות כרגע
+                            et_str = g.get('gameEt', '2026-02-19T19:00:00')
+                            utc_time = datetime.fromisoformat(et_str.replace('Z', '')) + timedelta(hours=5)
                         
-                        # קריאת זמן ה-UTC מה-API
-                        utc_time = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
                         # המרה אוטומטית לשעון ישראל (מטפל בקיץ/חורף לבד)
-                        israel_tz = zoneinfo.ZoneInfo("Asia/Jerusalem")
-                        il_time = utc_time.astimezone(israel_tz)
+                        import zoneinfo
+                        il_tz = zoneinfo.ZoneInfo("Asia/Jerusalem")
+                        il_time = utc_time.astimezone(il_tz)
                         time_display = il_time.strftime("%H:%M")
                     except:
-                        time_display = "לפנות בוקר"
+                        # גיבוי אחרון אם הכל נכשל
+                        time_display = g.get('gameStatusText', 'לפנות בוקר').replace('ET', '').strip()
 
                     # מארחת (Home) תמיד בצד ימין
                     away_n = g['awayTeam']['teamName']
@@ -186,7 +192,7 @@ def run_bot():
                     away_heb = TEAM_NAMES_HEB.get(away_n, away_n)
                     home_heb = TEAM_NAMES_HEB.get(home_n, home_n)
                     
-                    # דגל ישראל ליד הקבוצות שבחרת
+                    # דגל ישראל ליד ברוקלין או פורטלנד בלבד
                     a_flag = " 🇮🇱" if away_n in israeli_teams else ""
                     h_flag = " 🇮🇱" if home_n in israeli_teams else ""
                     
@@ -250,6 +256,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
