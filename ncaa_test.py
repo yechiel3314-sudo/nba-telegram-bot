@@ -165,15 +165,19 @@ def get_combined_schedule():
                         all_games[key].append((time_il, game_str))
         except: pass
 
-    # בניית ההודעה
+    # בניית ההודעה הסופית
     full_msg = ""
     for k in ["NBA", "GLEAGUE", "NCAA"]:
         if all_games[k]:
-            title = "NBA" if k == "NBA" else "ג'י ליג" if k == "GLEAGUE" else "המכללות"
-            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב-{title}** 🇮🇱\n\n"
+            # כאן הורדנו את המקפים וסידרנו את השמות
+            if k == "NBA": title = "NBA"
+            elif k == "GLEAGUE": title = "ליגת הפיתוח"
+            else: title = "המכללות"
+            
+            # כאן הורדנו את ה-ב' המיותרת לפני ה-title כדי שזה יתחבר נכון (ב-NBA, במכללות)
+            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב{title}** 🇮🇱\n\n"
             full_msg += "\n\n".join([g[1] for g in sorted(all_games[k], key=lambda x: x[0])])
             full_msg += "\n\n\n"
-
     send_telegram(full_msg.strip() if full_msg else f"{RTL_MARK}🇮🇱 אין משחקי לגיונרים הלילה 😴")
     
 # ==========================================
@@ -213,7 +217,7 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
-        if now.hour == 16 and now.minute == 3 and last_sch != today:
+        if now.hour == 16 and now.minute == 9 and last_sch != today:
             get_combined_schedule(); last_sch = today
         if now.hour == 9 and now.minute == 15 and last_sum != today:
             get_morning_summary(); last_sum = today
