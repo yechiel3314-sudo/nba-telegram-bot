@@ -215,7 +215,7 @@ if __name__ == "__main__":
             today_str = now_il.strftime("%Y-%m-%d")
 
             # בדיקה לשליחת לו"ז (כאן שיניתי ל-14:22 כפי שביקשת לניסוי)
-            if now_il.hour == 14 and now_il.minute == 22 and last_sent_day != today_str:
+            if now_il.hour == 14 and now_il.minute == 30 and last_sent_day != today_str:
                 get_combined_schedule()
                 last_sent_day = today_str
             
