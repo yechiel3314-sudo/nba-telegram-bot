@@ -159,7 +159,7 @@ def run_bot():
             games = sb.get('scoreboard', {}).get('games', [])
 
             # לו"ז מעוצב - פורטלנד וברוקלין בלבד עם דגל + תיקון שעה סופי
-            if now.hour == 20 and now.minute == 36 and state["dates"]["schedule"] != today:
+            if now.hour == 20 and now.minute == 37 and state["dates"]["schedule"] != today:
                 msg = "**🏀 ══ לוח המשחקים להיום בלילה ══ 🏀**\n\n"
                 
                 # רשימת הקבוצות שאתה רוצה עם דגל
@@ -244,6 +244,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
