@@ -5,7 +5,7 @@ from deep_translator import GoogleTranslator
 # --- הגדרות ---
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/m-college-basketball/scoreboard"
 SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event="
 
 translator = GoogleTranslator(source='en', target='iw')
@@ -92,7 +92,7 @@ def build_game_msg(title, ev, summary, is_final=False):
         players = extract_players_data(team_box)
         msg += f"🔥 *{t_name}*:\n"
         
-        if "יצא לדרך" in title:
+        if "יצא לדרך" in title or "עדכון משחק" in title:
             starters = [p for p in players if p["starter"]]
             if starters:
                 msg += "📋 *חמישייה:* " + ", ".join([tr(p['name']) for p in starters]) + "\n"
@@ -121,22 +121,23 @@ def run_bot():
             try: minute = int(clock.split(":")[0])
             except: minute = 20
 
+            # שונה: הוספת כל משחק לזיכרון ללא תנאי זמן
             if gid not in games_state:
-                already_in = (state == "in" and (period > 1 or minute < 19))
-                games_state[gid] = {"mid": None, "stages": [], "start_handled": already_in}
+                games_state[gid] = {"mid": None, "stages": []}
 
             g = games_state[gid]
 
             if state == "in":
                 summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
                 
-                # 1. יצא לדרך
-                if not g["start_handled"] and period == 1 and minute >= 19:
-                    msg = build_game_msg("המשחק יצא לדרך! 🔥", ev, summary)
+                # שונה: פתיחת הודעה אם היא לא קיימת בטלגרם
+                if not g["mid"]:
+                    title = "המשחק יצא לדרך! 🔥" if period == 1 and minute >= 19 else "עדכון משחק פעיל 🏀"
+                    msg = build_game_msg(title, ev, summary)
                     res = requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                                         json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}).json()
-                    if res.get("ok"): g["mid"] = res["result"]["message_id"]
-                    g["start_handled"] = True
+                    if res.get("ok"): 
+                        g["mid"] = res["result"]["message_id"]
 
                 # 2. 10 דקות חצי 1
                 if period == 1 and minute <= 10 and "10_p1" not in g["stages"] and g["mid"]:
@@ -159,7 +160,7 @@ def run_bot():
                                   json={"chat_id": CHAT_ID, "message_id": g["mid"], "text": msg, "parse_mode": "Markdown"})
                     g["stages"].append("10_p2")
 
-            elif state == "post" and "final" not in g["stages"] and g["mid"]:
+            elif state == "post" and "final" not in g["stages"] and g.get("mid"):
                 summary = requests.get(SUMMARY_URL + gid, timeout=15).json()
                 msg = build_game_msg("🏁 סיום המשחק - סטטיסטיקה סופית", ev, summary, is_final=True)
                 requests.post(f"https://api.telegram.org/bot{TOKEN}/editMessageText", 
