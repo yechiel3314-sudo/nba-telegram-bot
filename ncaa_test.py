@@ -242,11 +242,11 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
-        if now.hour == 15 and now.minute == 32 and last_sum != today:
+        if now.hour == 15 and now.minute == 44 and last_sum != today:
             get_morning_summary(); last_sum = today
-        if now.hour == 15 and now.minute == 33 and last_sch != today:
+        if now.hour == 15 and now.minute == 45 and last_sch != today:
             get_combined_schedule(); last_sch = today
-        if now.hour == 15 and now.minute == 40 and last_all != today:
+        if now.hour == 15 and now.minute == 45 and last_all != today:
             get_all_nba_games(); last_all = today
         if now.hour >= 18 or now.hour <= 9:
             check_final_updates()
