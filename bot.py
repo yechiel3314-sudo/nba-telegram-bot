@@ -374,9 +374,6 @@ def format_rich_final_summary(box):
         msg += "\n"
     return msg
             
-    except Exception as e:
-        logging.error(f"Error in morning summary: {e}")
-
 # ==========================================
 # לולאה ראשית
 # ==========================================
@@ -427,7 +424,3 @@ def run_bot():
 if __name__ == "__main__":
     run_bot()
     
-
-
-
-
