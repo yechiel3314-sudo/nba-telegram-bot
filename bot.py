@@ -271,21 +271,23 @@ def handle_game_logic(g, box, gs):
         gs["start"] = True
 
     # 2. עדכוני רבעים, מחצית וסיום (זיהוי מצב לצורך דיווח)
-    # שיפור הזיהוי: הוספת "End" וטיפול גמיש בסטטוסים
-is_period_over = any(word in txt.lower() for word in ["end", "half", "final", "fin", "qtr"]) and ":" not in txt
+    # תיקון קריטי: המרה ל-lower כדי לתפוס "END" וגם "End"
+    # התנאי ":" not in txt מוודא שהשעון עצר והרבע באמת נגמר
+    txt_low = txt.lower()
+    is_period_over = any(word in txt_low for word in ["end", "half", "final", "fin", "qtr"]) and ":" not in txt
     
     if is_period_over and txt not in gs["p"]:
         print(f"🎯 זוהה מצב סיום תקופה חדש! שולח עדכונים עבור: {txt}")
         
-        # קביעת הכותרת לפי תוכן הטקסט
-        if "Half" in txt:
+        # קביעת הכותרת לפי תוכן הטקסט (בדיקה גמישה לאותיות גדולות/קטנות)
+        if "half" in txt_low:
             label = "מחצית"
-        elif "Final" in txt or "Fin" in txt:
+        elif "final" in txt_low or "fin" in txt_low:
             label = "סיום משחק"
         else:
             label = f"סיום רבע {period}"
 
-        # שליחת סיכום רבע/מחצית
+        # שליחת סיכום רבע/מחצית (ישתמש בעיצוב הכדורסל והאש שתיקנת)
         send_msg(format_period_update(box, label))
         
         # עדכוני גאווה ישראלית - רבעוניים
@@ -299,7 +301,7 @@ is_period_over = any(word in txt.lower() for word in ["end", "half", "final", "f
                         send_msg(format_israeli_card(p, label))
 
         # בדיקת שוויון והודעת דרמה/הארכה (רק כשהרבע מסתיים בתיקו ברבע 4 ומעלה)
-        if period >= 4 and home['score'] == away['score'] and "Final" not in txt:
+        if period >= 4 and home['score'] == away['score'] and "final" not in txt_low:
             ot_num = period - 3
             a_name = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
             h_name = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
@@ -339,6 +341,7 @@ is_period_over = any(word in txt.lower() for word in ["end", "half", "final", "f
                         send_msg(format_israeli_card(p, "סיכום סופי", is_mvp=is_mvp))
         
         gs["final"] = True
+        
 def send_all_games_summary():
     """שולח הודעת סיכום בוקר: המנצחת והמפסידה באותה שורה"""
     try:
@@ -432,6 +435,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
