@@ -214,38 +214,6 @@ def format_period_update(box, label):
         msg += "\n"
         
     return msg
-        
-        # מיון כל השחקנים לפי נקודות
-        players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)
-        
-        # פונקציית עזר פנימית לבניית שורת סטטיסטיקה מפורטת (נק', רב', אס' + חט', חס')
-        def get_full_stat_line(p):
-            s = p['statistics']
-            line = f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
-            extra = []
-            if s.get('steals', 0) > 0: extra.append(f"{s['steals']} חט'")
-            if s.get('blocks', 0) > 0: extra.append(f"{s['blocks']} חס'")
-            if extra:
-                line += f" ({', '.join(extra)})"
-            return line
-
-        # 2 קלעי חמישייה מובילים (starter == "1")
-        starters = [p for p in players if p.get('starter') == "1"][:2]
-        for i, p in enumerate(starters):
-            m = "🥇" if i == 0 else "🥈"
-            p_full_name = f"{p['firstName']} {p['familyName']}"
-            msg += f"\u200f{m} **{p_full_name}**: {get_full_stat_line(p)}\n"
-            
-        # מצטיין ספסל (starter == "0") - כולל הסטטיסטיקה המלאה
-        bench = [p for p in players if p.get('starter') == "0"]
-        if bench:
-            p_bench = bench[0]
-            p_bench_name = f"{p_bench['firstName']} {p_bench['familyName']}"
-            msg += f"\u200f⚡ **ספסל: {p_bench_name}**: {get_full_stat_line(p_bench)}\n"
-            
-        msg += "\n"
-        
-    return msg
     
     """סיכום משחק סופי עם מדליות וספסל"""
     away, home = box['awayTeam'], box['homeTeam']
@@ -467,3 +435,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
