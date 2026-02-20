@@ -109,27 +109,39 @@ def format_israeli_card(p, label, is_mvp=False):
     return msg
 
 def format_start_game(box):
-    """הודעת פתיחת משחק מעודכנת עם הדגשות לפי בקשת המשתמש"""
+    """הודעת פתיחת משחק עם זיהוי אוטומטי של חמישייה וחיסורים"""
     away, home = box['awayTeam'], box['homeTeam']
     a_full = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
     h_full = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     
-    # הדגשת שורת הפתיחה ושמות הקבוצות 🆚
     msg = f"\u200f" + f"🔥 **המשחק יצא לדרך!** 🔥\n"
-    msg += f"\u200f" + f"🏀 **{a_full} 🆚 {h_full}**\n\n"
+    msg += f"\u200f" + f"🏀 **{a_full} 🆚 {h_full}** 🏀\n\n"
     
     for team in [away, home]:
         t_name = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
-        # יצירת רשימת שחקני החמישייה
-        starters = [f"{translate(p['firstName'] + ' ' + p['familyName'])}" for p in team['players'] if p.get('starter') == "1"]
         
-        # הדגשת שם הקבוצה, המילה 'חמישייה' והמילה 'חיסורים'
+        # שליפת חמישייה (רק אלו שרשומים כ-starter)
+        starters = [translate(f"{p['firstName']} {p['familyName']}") for p in team['players'] if p.get('starter') == "1"]
+        
+        # שליפת חיסורים (שחקנים שקיימים בדו"ח אבל רשום להם סיבה למה הם לא משחקים)
+        missing = []
+        for p in team['players']:
+            reason = p.get('notPlayingReason')
+            if reason: # אם יש סיבה (פציעה, השעיה וכו')
+                p_name = translate(f"{p['firstName']} {p['familyName']}")
+                missing.append(p_name)
+        
+        # עיצוב רשימת החיסורים
+        if missing:
+            missing_txt = ", ".join(missing)
+        else:
+            missing_txt = "אין חיסורים מדווחים"
+
         msg += f"\u200f" + f"📍 **{t_name}**\n"
         msg += f"\u200f" + f"▫️ **חמישייה:** {', '.join(starters)}\n"
-        msg += f"\u200f" + f"❌ **חיסורים:** (לפי הדיווח האחרון)\n\n"
+        msg += f"\u200f" + f"❌ **חיסורים:** {missing_txt}\n\n"
         
     return msg
-
 def format_period_update(box, label):
     """עדכון רבע/מחצית שוטף"""
     away, home = box['awayTeam'], box['homeTeam']
@@ -411,4 +423,5 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
