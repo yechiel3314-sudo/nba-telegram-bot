@@ -165,8 +165,8 @@ def format_period_update(box, label):
     winner = a_f if away['score'] > home['score'] else h_f
     score_txt = f"{winner} מובילה {max(away['score'], home['score'])} - {min(away['score'], home['score'])}" if away['score'] != home['score'] else f"שוויון {away['score']} - {home['score']}"
     
-    msg = f"\u200f" + f"🏀 **{label} | {a_f} 🆚 {h_f}**\n"
-    msg += f"\u200f" + f"📊 {score_txt}\n\n"
+    msg += f"\u200f⏰ **{time_display}**\n"
+    msg += f"\u200f🏀 **{away_heb}**{a_flag} 🆚 **{home_heb}**{h_flag}\n\n"
     
     for team in [away, home]:
         msg += f"\u200f" + f"📍 **{TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])}**\n"
@@ -221,60 +221,76 @@ def format_final_summary(box, ot_count=0):
 # (יש לשלב קטע זה בתוך לולאת זיהוי הסטטוסים שלך)
 
 def handle_game_logic(g, box, gs):
-    txt = g['gameStatusText']
+    txt = g['gameStatusText'].strip()
     home, away = box['homeTeam'], box['awayTeam']
+    period = g['period']
     
-    # 1. פתיחת משחק
-    if g['period'] == 1 and g['gameStatus'] == 2 and "start" not in gs:
+    # 1. פתיחת משחק (סטטוס 2 ורבע ראשון)
+    if period == 1 and g['gameStatus'] == 2 and not gs.get("start"):
         send_msg(format_start_game(box))
         gs["start"] = True
 
-    # 2. הארכות וסיומי רבעים
-    if ("End" in txt or "Half" in txt) and txt not in gs["p"]:
-        label = "מחצית" if "Half" in txt else f"סיום רבע {g['period']}"
+    # 2. עדכוני רבעים, מחצית וסיום (הבדיקה המשופרת)
+    # מחפש מגוון מילים כדי לא לפספס אם ה-NBA משנים ניסוח
+    is_period_over = any(word in txt for word in ["End", "Half", "Final", "Final/OT"])
+    
+    if is_period_over and txt not in gs["p"]:
+        # קביעת הכותרת לפי תוכן הטקסט
+        if "Half" in txt:
+            label = "מחצית"
+        elif "End" in txt:
+            label = f"סיום רבע {period}"
+        else:
+            label = "עדכון משחק"
+
+        # שליחת סיכום רבע/מחצית
         send_msg(format_period_update(box, label))
         
-        # עדכוני גאווה ישראלית (דני אבדיה, בן שרף, דני וולף)
+        # עדכוני גאווה ישראלית - רק אם השחקן באמת שיחק ברבע הזה
         for team in [away, home]:
             for p in team['players']:
                 p_full = f"{p['firstName']} {p['familyName']}"
                 if p_full in ISRAELI_PLAYERS:
-                    send_msg(format_israeli_card(p, label))
+                    # בודק שהדקות שלו לא "0" כדי לא לשלוח סתם כרטיס ריק
+                    mins = p['statistics'].get('minutesCalculated', 'PT00M')
+                    if mins != "PT00M00.00S" and mins != "PT00M":
+                        send_msg(format_israeli_card(p, label))
 
-        # בדיקת שוויון והודעת הארכה
-        if g['period'] >= 4 and home['score'] == away['score']:
-            ot_num = g['period'] - 3
+        # בדיקת שוויון והודעת דרמה/הארכה (רק כשהרבע מסתיים בתיקו ברבע 4 ומעלה)
+        if period >= 4 and home['score'] == away['score']:
+            ot_num = period - 3
             a_name = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
             h_name = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
             
             if ot_num == 1:
-                # הארכה ראשונה
                 drama = f"\u200f⚠️ **דרמה ב-NBA: הולכים להארכה!** ⚠️\n"
                 drama += f"\u200f🏟️ **{a_name}** 🆚 **{h_name}**\n"
                 drama += f"\u200f📊 תוצאה בסיום 4 רבעים: **{home['score']}-{away['score']}**"
             else:
-                # הארכה שנייה ומעלה
-                drama = f"\u200f😱 **לא נגמר! הארכה {ot_num} (OT{ot_num}) יוצאת לדרך!** 😱\n"
+                drama = f"\u200f😱 **לא נגמר! הארכה {ot_num} יוצאת לדרך!** 😱\n"
                 drama += f"\u200f🏟️ **{a_name}** 🆚 **{h_name}**\n"
-                drama += f"\u200f🔥 **הקרב נמשך...**"
             
             send_msg(drama)
             gs["ot_count"] = ot_num
-        
+
+        # שמירת הסטטוס בזיכרון כדי לא לשלוח את אותו רבע פעמיים
         gs["p"].append(txt)
 
-    # 3. סיום משחק סופי
-    if g['gameStatus'] == 3 and "final" not in gs:
+    # 3. סיום משחק סופי (סטטוס 3)
+    if g['gameStatus'] == 3 and not gs.get("final"):
         ot_count = gs.get("ot_count", 0)
         final_msg, mvp = format_final_summary(box, ot_count)
         send_msg(final_msg)
         
-        # גאווה ישראלית לסיום
+        # כרטיס ישראלי מסכם (עם בדיקת MVP)
         for team in [away, home]:
             for p in team['players']:
                 p_full = f"{p['firstName']} {p['familyName']}"
                 if p_full in ISRAELI_PLAYERS:
-                    send_msg(format_israeli_card(p, "סיכום משחק", is_mvp=(p==mvp)))
+                    if p['statistics']['minutesCalculated'] != "PT00M00.00S":
+                        # בודק אם הישראלי הוא ה-MVP של המשחק
+                        is_mvp = (p['personId'] == mvp['personId'])
+                        send_msg(format_israeli_card(p, "סיכום סופי", is_mvp=is_mvp))
         
         gs["final"] = True
 
@@ -438,6 +454,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
