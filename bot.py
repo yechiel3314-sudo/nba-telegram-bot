@@ -186,6 +186,39 @@ def format_period_update(box, label):
         players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)
         
         # פונקציית עזר פנימית לבניית שורת סטטיסטיקה מפורטת (נק', רב', אס' + חט', חס')
+        def get_clean_stat_line(p):
+            s = p['statistics']
+            line = f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
+            extra = []
+            if s.get('steals', 0) > 0: extra.append(f"{s['steals']} חט'")
+            if s.get('blocks', 0) > 0: extra.append(f"{s['blocks']} חס'")
+            if extra:
+                line += f" ({', '.join(extra)})"
+            return line
+
+        # 2 קלעי חמישייה מובילים (starter == "1") עם תרגום שמות
+        starters = [p for p in players if p.get('starter') == "1"][:2]
+        for i, p in enumerate(starters):
+            m = "🥇" if i == 0 else "🥈"
+            # תרגום השם המלא לעברית
+            p_name_heb = translate(f"{p['firstName']} {p['familyName']}")
+            msg += f"\u200f{m} **{p_name_heb}**: {get_clean_stat_line(p)}\n"
+            
+        # מצטיין ספסל (starter == "0") עם תרגום שמות
+        bench = [p for p in players if p.get('starter') == "0"]
+        if bench:
+            b_p = bench[0]
+            b_name_heb = translate(f"{b_p['firstName']} {b_p['familyName']}")
+            msg += f"\u200f⚡ **ספסל: {b_name_heb}**: {get_clean_stat_line(b_p)}\n"
+            
+        msg += "\n"
+        
+    return msg
+        
+        # מיון כל השחקנים לפי נקודות
+        players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)
+        
+        # פונקציית עזר פנימית לבניית שורת סטטיסטיקה מפורטת (נק', רב', אס' + חט', חס')
         def get_full_stat_line(p):
             s = p['statistics']
             line = f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
@@ -279,7 +312,7 @@ def handle_game_logic(g, box, gs):
     if is_period_over and txt not in gs["p"]:
         print(f"🎯 זוהה מצב סיום תקופה חדש! שולח עדכונים עבור: {txt}")
         
-        # קביעת הכותרת לפי תוכן הטקסט (בדיקה גמישה לאותיות גדולות/קטנות)
+        # קביעת הכותרת לפי תוכן הטקסט
         if "half" in txt_low:
             label = "מחצית"
         elif "final" in txt_low or "fin" in txt_low:
@@ -287,7 +320,7 @@ def handle_game_logic(g, box, gs):
         else:
             label = f"סיום רבע {period}"
 
-        # שליחת סיכום רבע/מחצית (ישתמש בעיצוב הכדורסל והאש שתיקנת)
+        # שליחת סיכום רבע/מחצית עם העיצוב המלא
         send_msg(format_period_update(box, label))
         
         # עדכוני גאווה ישראלית - רבעוניים
@@ -300,7 +333,7 @@ def handle_game_logic(g, box, gs):
                     if mins != "PT00M00.00S" and mins != "PT00M":
                         send_msg(format_israeli_card(p, label))
 
-        # בדיקת שוויון והודעת דרמה/הארכה (רק כשהרבע מסתיים בתיקו ברבע 4 ומעלה)
+        # בדיקת שוויון והודעת דרמה/הארכה
         if period >= 4 and home['score'] == away['score'] and "final" not in txt_low:
             ot_num = period - 3
             a_name = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
@@ -317,7 +350,7 @@ def handle_game_logic(g, box, gs):
             send_msg(drama)
             gs["ot_count"] = ot_num
 
-        # שמירת הסטטוס בזיכרון (חיוני למניעת כפילויות וזיהוי מצב באמצע משחק)
+        # שמירת הסטטוס בזיכרון (חיוני למניעת כפילויות)
         gs["p"].append(txt)
 
     # 3. סיום משחק סופי (סטטוס 3)
@@ -334,7 +367,6 @@ def handle_game_logic(g, box, gs):
                 if p_full in ISRAELI_PLAYERS:
                     stats = p.get('statistics', {})
                     if stats.get('minutesCalculated') not in ["PT00M00.00S", "PT00M"]:
-                        # בודק אם הישראלי הוא ה-MVP של המשחק
                         is_mvp = False
                         if mvp and 'personId' in mvp:
                             is_mvp = (p['personId'] == mvp['personId'])
@@ -435,10 +467,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
-
-
-
-
-
-
