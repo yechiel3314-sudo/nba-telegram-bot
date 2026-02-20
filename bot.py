@@ -410,68 +410,39 @@ def run_bot():
                 state["dates"]["summary"] = today
                 save_state(state)
                 
-           # ניטור משחקים - גרסה סופית ללא כפילויות
-            for g in games:
-                gid, status = g['gameId'], g['gameStatus']
-                if status > 1:
-                    # יצירת ה-State למשחק אם לא קיים
-                    if gid not in state["games"]: 
-                        state["games"][gid] = {"p": [], "final": False, "start": False, "ot_count": 0}
+           # ניטור משחקים - גרסה מעודכנת
+           for g in games:
+            gid, status = g['gameId'], g['gameStatus']
+            
+            # מטפלים רק במשחקים שהתחילו או הסתיימו
+            if status > 1:
+                # יצירת ה-State למשחק אם לא קיים
+                if gid not in state["games"]: 
+                    state["games"][gid] = {"p": [], "final": False, "start": False, "ot_count": 0}
+                
+                gs = state["games"][gid]
+                
+                try:
+                    # משיכת נתונים מפורטים מה-Boxscore
+                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+                    response = requests.get(box_url, timeout=10)
+                    box = response.json()['game']
                     
-                    gs = state["games"][gid]
+                    # הפעלה של הלוגיקה המרכזית (שולחת הודעות על רבעים, ישראלים וסיום)
+                    handle_game_logic(g, box, gs)
                     
-                    try:
-                        # משיכת נתונים מפורטים מה-Boxscore
-                        box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                        box = requests.get(box_url, timeout=10).json()['game']
-                        
-                        # הפעלה של הלוגיקה המרכזית שסידרנו
-                        handle_game_logic(g, box, gs)
-                        
-                        save_state(state)
-                    except Exception as e:
-                        logging.error(f"Error in game {gid}: {e}")
-                        continue
-
-                    # פתיחת משחק
-                    if status == 2 and not gs["s"]:
-                        send_msg(format_start_game(box))
-                        gs["s"] = True
-
-                    # עדכוני רבעים + הארכות
-                    txt = g['gameStatusText'].strip()
-                    if "OT" in txt and g['period'] > gs["ot"]:
-                        send_msg(f"⚠️ **דרמה ב-NBA! שוויון {g['homeTeam']['score']}-{g['awayTeam']['score']}. נכנסים להארכה (OT{g['period']-4})!**")
-                        gs["ot"] = g['period']
-
-                    if ("End" in txt or "Half" in txt) and txt not in gs["p"]:
-                        label = "מחצית" if "Half" in txt else f"סיום רבע {g['period']}"
-                        send_msg(format_period_update(box, label))
-                        
-                        # הודעה נפרדת לישראלים
-                        for team in [box['awayTeam'], box['homeTeam']]:
-                            for p in team['players']:
-                                if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS and p['statistics']['minutesCalculated'] != "PT00M00.00S":
-                                    send_msg(format_israeli_card(p, label))
-                        gs["p"].append(txt)
-
-                    # סיום משחק
-                    if status == 3 and not gs["f"]:
-                        ot_label = f"(לאחר {g['period']-4} הארכות)" if g['period'] > 4 else ""
-                        msg_f, mvp_p = format_final_summary(box, ot_label)
-                        send_msg(msg_f)
-                        
-                        # כרטיס ישראלי סופי עם בדיקת MVP
-                        for team in [box['awayTeam'], box['homeTeam']]:
-                            for p in team['players']:
-                                if f"{p['firstName']} {p['familyName']}" in ISRAELI_PLAYERS and p['statistics']['minutesCalculated'] != "PT00M00.00S":
-                                    send_msg(format_israeli_card(p, "סופי", p['personId'] == mvp_p['personId']))
-                        gs["f"] = True
+                    # שמירת המצב לאחר כל עדכון מוצלח
                     save_state(state)
+                    
+                except Exception as e:
+                    logging.error(f"Error in game {gid}: {e}")
+                    continue
 
-        except Exception as e:
-            logging.error(f"Error: {e}")
-        time.sleep(30)
+    except Exception as e:
+        logging.error(f"General Loop Error: {e}")
+    
+    # המתנה של 30 שניות בין סבבים
+    time.sleep(30)
 
 if __name__ == "__main__":
     run_bot()
