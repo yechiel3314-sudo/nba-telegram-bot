@@ -335,42 +335,50 @@ def format_rich_final_summary(box):
     a_f = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
     h_f = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     
-    msg = f"\u200f" + f"🏁 **סיום משחק: {a_f} 🆚 {h_f}** 🏁\n"
-    if away['score'] > home['score']:
+    msg = f"\u200f" + f"🏀 🏁 **סיום משחק: {a_f} 🆚 {h_f}** 🏁 🏀\n"
+    if away.get('score', 0) > home.get('score', 0):
         msg += f"\u200f🏆 **{a_f} מנצחת {away['score']} - {home['score']}** 🏆\n\n"
     else:
         msg += f"\u200f🏆 **{h_f} מנצחת {home['score']} - {away['score']}** 🏆\n\n"
 
-    # MVP
-    all_players = away['players'] + home['players']
-    mvp = max(all_players, key=lambda x: x['statistics']['points'])
+    def get_stat_line_with_extras(p):
+        s = p.get('statistics', {})
+        line = f"{s.get('points', 0)} נק', {s.get('reboundsTotal', 0)} רב', {s.get('assists', 0)} אס'"
+        extra = []
+        if s.get('steals', 0) > 0: extra.append(f"{s.get('steals', 0)} חט'")
+        if s.get('blocks', 0) > 0: extra.append(f"{s.get('blocks', 0)} חס'")
+        return f"{line} ({', '.join(extra)})" if extra else line
+
+    all_players = away.get('players', []) + home.get('players', [])
+    if not all_players: return msg
+    
+    mvp = max(all_players, key=lambda x: x['statistics'].get('points', 0))
     mvp_name = translate(f"{mvp['firstName']} {mvp['familyName']}")
-    s = mvp['statistics']
-    msg += f"\u200f🌟 **ה-MVP:** **{mvp_name}** ({mvp['teamTricode']})\n"
-    msg += f"\u200f📊 {s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס', {s.get('steals', 0)} חט'\n\n"
+    
+    tri = mvp.get('teamTricode', '')
+    tri_str = f" ({tri})" if tri else ""
+        
+    msg += f"\u200f🌟 **ה-MVP:** **{mvp_name}**{tri_str}\n"
+    msg += f"\u200f📊 {get_stat_line_with_extras(mvp)}\n\n"
     msg += f"\u200f" + "─" * 15 + "\n\n"
 
     for team in [away, home]:
         t_name = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
         msg += f"\u200f📍 **סטטיסטיקת {t_name}:**\n"
-        players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)
+        players = sorted(team['players'], key=lambda x: x['statistics'].get('points', 0), reverse=True)
         
-        # חמישייה
         msg += f"\u200f🏀 **חמישייה:**\n"
         for p in [p for p in players if p.get('starter') == "1"]:
             p_name = translate(f"{p['firstName']} {p['familyName']}")
-            s = p['statistics']
-            msg += f"\u200f▫️ **{p_name}**: {s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'\n"
+            msg += f"\u200f▫️ **{p_name}**: {get_stat_line_with_extras(p)}\n"
             
-        # רווח בין חמישייה לספסל
         msg += "\n"
         
-        # ספסל מוביל
         msg += f"\u200f⚡ **ספסל מוביל:**\n"
-        for p in [p for p in players if p.get('starter') == "0"][:3]:
+        bench = [p for p in players if p.get('starter') == "0"][:3]
+        for p in bench:
             p_name = translate(f"{p['firstName']} {p['familyName']}")
-            s = p['statistics']
-            msg += f"\u200f▪️ **{p_name}**: {s['points']} נק', {s['reboundsTotal']} רב'\n"
+            msg += f"\u200f▪️ **{p_name}**: {get_stat_line_with_extras(p)}\n"
         msg += "\n"
     return msg
             
@@ -424,3 +432,4 @@ def run_bot():
 if __name__ == "__main__":
     run_bot()
     
+
