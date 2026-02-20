@@ -353,96 +353,46 @@ def send_all_games_summary():
 
 def run_bot():
     state = load_state()
-        
+    print("🚀 הבוט התחיל לרוץ...")
+    
     while True:
         try:
-            now = datetime.now(timezone.utc) + timedelta(hours=2)
-            today = now.strftime("%Y-%m-%d")
-            sb = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
-            games = sb.get('scoreboard', {}).get('games', [])
-
-            # לו"ז מעוצב - פתרון מושלם ומדויק
-            if now.hour == 18 and now.minute == 0 and state["dates"].get("schedule") != today:
-                # שימוש בתו \u200f כדי להצמיד הכל לימין (RTL) בטלגרם
-                msg = "\u200f" + "🏀 **══ לוח המשחקים להיום בלילה ══** 🏀\n\n"
-                
-                israeli_teams = ["Nets", "Trail Blazers"]
-                
-                for g in games:
-                    try:
-                        # שליפה חכמה של הזמן - בודק את כל המפתחות האפשריים ב-API
-                        raw_time = g.get('startTimeUTC') or g.get('gameTimeUTC')
-                        
-                        if raw_time:
-                            # הפיכה לאובייקט זמן (מתמודד עם פורמט Z של ה-NBA)
-                            utc_dt = datetime.strptime(raw_time, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                            # המרה לשעון ישראל (UTC+2)
-                            il_dt = utc_dt.astimezone(timezone(timedelta(hours=2)))
-                            time_display = il_dt.strftime("%H:%M")
-                        else:
-                            time_display = "--:--"
-                    except Exception as e:
-                        logging.error(f"Time error for game {g.get('gameId')}: {e}")
-                        time_display = "--:--"
-
-                    away_n = g['awayTeam']['teamName']
-                    home_n = g['homeTeam']['teamName']
-                    away_heb = TEAM_NAMES_HEB.get(away_n, away_n)
-                    home_heb = TEAM_NAMES_HEB.get(home_n, home_n)
-                    
-                    # דגל רק לברוקלין ופורטלנד
-                    a_flag = " 🇮🇱" if away_n in israeli_teams else ""
-                    h_flag = " 🇮🇱" if home_n in israeli_teams else ""
-                    
-                    # הרכבת השורה: תו RTL + שעה מודגשת + קבוצות
-                    msg += f"\u200f⏰ **{time_display}**\n"
-                    msg += f"\u200f🏀 {away_heb}{a_flag} 🆚 {home_heb}{h_flag}\n\n"
-                
-                msg += "\u200f**צפייה מהנה! 📺**"
-                
-                send_msg(msg)
-                # עדכון הסטייט כדי שלא ישלח שוב עד מחר
-                state["dates"]["schedule"] = today
-                save_state(state)
-
-            if now.hour == 7 and now.minute == 0 and state["dates"].get("summary") != today:
-                send_all_games_summary()
-                state["dates"]["summary"] = today
-                save_state(state)
-                
-           # ניטור משחקים - גרסה מעודכנת
-           for g in games:
-            gid, status = g['gameId'], g['gameStatus']
+            # משיכת רשימת המשחקים
+            response = requests.get(NBA_URL, timeout=10)
+            games = response.json()['scoreboard']['games']
             
-            # מטפלים רק במשחקים שהתחילו או הסתיימו
-            if status > 1:
-                # יצירת ה-State למשחק אם לא קיים
-                if gid not in state["games"]: 
-                    state["games"][gid] = {"p": [], "final": False, "start": False, "ot_count": 0}
+            for g in games:
+                gid, status = g['gameId'], g['gameStatus']
                 
-                gs = state["games"][gid]
-                
-                try:
-                    # משיכת נתונים מפורטים מה-Boxscore
-                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                    response = requests.get(box_url, timeout=10)
-                    box = response.json()['game']
+                # בדיקה אם המשחק פעיל או הסתיים (סטטוס 2 או 3)
+                if status > 1:
+                    # יצירת ה-State למשחק אם לא קיים - שימוש בשמות מפתחות תקינים
+                    if gid not in state["games"]: 
+                        state["games"][gid] = {"p": [], "final": False, "start": False, "ot_count": 0}
                     
-                    # הפעלה של הלוגיקה המרכזית (שולחת הודעות על רבעים, ישראלים וסיום)
-                    handle_game_logic(g, box, gs)
+                    gs = state["games"][gid]
                     
-                    # שמירת המצב לאחר כל עדכון מוצלח
-                    save_state(state)
-                    
-                except Exception as e:
-                    logging.error(f"Error in game {gid}: {e}")
-                    continue
+                    try:
+                        # משיכת נתונים מפורטים (Boxscore)
+                        box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+                        box_res = requests.get(box_url, timeout=10)
+                        box = box_res.json()['game']
+                        
+                        # הפעלה של הלוגיקה המרכזית - היא המוח היחיד שמחליט על שליחה
+                        handle_game_logic(g, box, gs)
+                        
+                        # שמירה לאחר כל עדכון
+                        save_state(state)
+                        
+                    except Exception as e:
+                        logging.error(f"Error in game {gid}: {e}")
+                        continue
 
-    except Exception as e:
-        logging.error(f"General Loop Error: {e}")
-    
-    # המתנה של 30 שניות בין סבבים
-    time.sleep(30)
+        except Exception as e:
+            logging.error(f"General Loop Error: {e}")
+        
+        # המתנה של 20 שניות בין סריקות
+        time.sleep(20)
 
 if __name__ == "__main__":
     run_bot()
