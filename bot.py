@@ -259,129 +259,120 @@ def handle_game_logic(g, box, gs):
     period = g.get('period', 0)
     status = g.get('gameStatus', 0)
     
-    # וודאות שרשימת הדיווחים קיימת ותקינה
-    if "p" not in gs: 
-        gs["p"] = []
+    if "p" not in gs: gs["p"] = []
+    txt_low = txt.lower()
     
-    # --- שורות אבחון (מופיעות בלוג של Railway) ---
-    print(f"🔍 בודק: {away['teamTricode']}@{home['teamTricode']} | סטטוס: '{txt}' | רבע: {period} | כבר דווחו: {gs['p']}")
-
-    # 1. פתיחת משחק (סטטוס 2 ורבע ראשון)
+    # זיהוי האם מדובר בסיום תקופה (רבע/מחצית)
+    is_period_over = any(word in txt_low for word in ["end", "half", "qtr"]) and ":" not in txt
+    
+    # 1. פתיחת משחק
     if period == 1 and status == 2 and not gs.get("start"):
         send_msg(format_start_game(box))
         gs["start"] = True
 
-    # 2. עדכוני רבעים, מחצית וסיום (זיהוי מצב לצורך דיווח)
-    # תיקון קריטי: המרה ל-lower כדי לתפוס "END" וגם "End"
-    # התנאי ":" not in txt מוודא שהשעון עצר והרבע באמת נגמר
-    txt_low = txt.lower()
-    is_period_over = any(word in txt_low for word in ["end", "half", "final", "fin", "qtr"]) and ":" not in txt
-    
+    # 2. עדכוני רבעים ומחצית (מניעת כפילות ברבע 4 אם המשחק נגמר)
     if is_period_over and txt not in gs["p"]:
-        print(f"🎯 זוהה מצב סיום תקופה חדש! שולח עדכונים עבור: {txt}")
-        
-        # קביעת הכותרת לפי תוכן הטקסט
-        if "half" in txt_low:
-            label = "מחצית"
-        elif "final" in txt_low or "fin" in txt_low:
-            label = "סיום משחק"
+        # אם המשחק הסתיים (סטטוס 3), נדלג על הודעת הרבע לטובת הסיכום הסופי
+        if status == 3:
+            pass 
         else:
-            label = f"סיום רבע {period}"
+            if "half" in txt_low: label = "מחצית"
+            else: label = f"סיום רבע {period}"
+            send_msg(format_period_update(box, label))
+            gs["p"].append(txt)
 
-        # שליחת סיכום רבע/מחצית עם העיצוב המלא
-        send_msg(format_period_update(box, label))
-        
-        # עדכוני גאווה ישראלית - רבעוניים
-        for team in [away, home]:
-            for p in team['players']:
-                p_full = f"{p['firstName']} {p['familyName']}"
-                if p_full in ISRAELI_PLAYERS:
-                    stats = p.get('statistics', {})
-                    mins = stats.get('minutesCalculated', 'PT00M')
-                    if mins != "PT00M00.00S" and mins != "PT00M":
-                        send_msg(format_israeli_card(p, label))
-
-        # בדיקת שוויון והודעת דרמה/הארכה
-        if period >= 4 and home['score'] == away['score'] and "final" not in txt_low:
-            ot_num = period - 3
-            a_name = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
-            h_name = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
-            
-            if ot_num == 1:
-                drama = f"⚠️ **דרמה ב-NBA: הולכים להארכה!** ⚠️\n"
-                drama += f"🏟️ **{a_name}** 🆚 **{h_name}**\n"
-                drama += f"📊 תוצאה בסיום 4 רבעים: **{home['score']}-{away['score']}**"
-            else:
-                drama = f"😱 **לא נגמר! הארכה {ot_num} יוצאת לדרך!** 😱\n"
-                drama += f"🏟️ **{a_name}** 🆚 **{h_name}**\n"
-            
-            send_msg(drama)
-            gs["ot_count"] = ot_num
-
-        # שמירת הסטטוס בזיכרון (חיוני למניעת כפילויות)
-        gs["p"].append(txt)
-
-    # 3. סיום משחק סופי (סטטוס 3)
+    # 3. סיום משחק סופי - MVP וסטטיסטיקה מורחבת
     if status == 3 and not gs.get("final"):
-        print(f"🏁 המשחק הסתיים סופית. מכין סיכום...")
-        ot_count = gs.get("ot_count", 0)
-        final_msg, mvp = format_final_summary(box, ot_count)
-        send_msg(final_msg)
-        
-        # כרטיס ישראלי מסכם (עם בדיקת MVP)
-        for team in [away, home]:
-            for p in team['players']:
-                p_full = f"{p['firstName']} {p['familyName']}"
-                if p_full in ISRAELI_PLAYERS:
-                    stats = p.get('statistics', {})
-                    if stats.get('minutesCalculated') not in ["PT00M00.00S", "PT00M"]:
-                        is_mvp = False
-                        if mvp and 'personId' in mvp:
-                            is_mvp = (p['personId'] == mvp['personId'])
-                        send_msg(format_israeli_card(p, "סיכום סופי", is_mvp=is_mvp))
-        
+        send_msg(format_rich_final_summary(box))
         gs["final"] = True
+
+def format_period_update(box, label):
+    away, home = box['awayTeam'], box['homeTeam']
+    a_f = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
+    h_f = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
+    
+    # כותרת מקורית עם כדורסל
+    msg = f"\u200f" + f"🏀 {label}: {a_f} 🆚 {h_f} 🏀\n"
+    
+    if away['score'] > home['score']:
+        score_txt = f"🔥 **{a_f} מובילה {away['score']} - {home['score']}** 🔥"
+    elif home['score'] > away['score']:
+        score_txt = f"🔥 **{h_f} מובילה {home['score']} - {away['score']}** 🔥"
+    else:
+        score_txt = f"🔥 **שוויון {away['score']} - {home['score']}** 🔥"
+    
+    msg += f"\u200f{score_txt}\n\n"
+    
+    for team in [away, home]:
+        t_name = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
+        msg += f"\u200f📍 **{t_name}**\n"
+        players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)
         
-def send_all_games_summary():
-    """שולח הודעת סיכום בוקר: המנצחת והמפסידה באותה שורה"""
-    try:
-        resp = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", timeout=15).json()
-        games = resp.get('scoreboard', {}).get('games', [])
+        def get_stat_line(p):
+            s = p['statistics']
+            line = f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
+            extra = []
+            if s.get('steals', 0) > 0: extra.append(f"{s['steals']} חט'")
+            if s.get('blocks', 0) > 0: extra.append(f"{s['blocks']} חס'")
+            return f"{line} ({', '.join(extra)})" if extra else line
+
+        # 2 מובילים מחמישייה ואחד מהספסל
+        starters = [p for p in players if p.get('starter') == "1"][:2]
+        for i, p in enumerate(starters):
+            icon = "🥇" if i == 0 else "🥈"
+            p_name = translate(f"{p['firstName']} {p['familyName']}")
+            msg += f"\u200f{icon} **{p_name}**: {get_stat_line(p)}\n"
+            
+        bench = [p for p in players if p.get('starter') == "0"]
+        if bench:
+            b_name = translate(f"{bench[0]['firstName']} {bench[0]['familyName']}")
+            msg += f"\u200f⚡ **ספסל: {b_name}**: {get_stat_line(bench[0])}\n"
+        msg += "\n"
+    return msg
+
+def format_rich_final_summary(box):
+    away, home = box['awayTeam'], box['homeTeam']
+    a_f = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
+    h_f = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
+    
+    msg = f"\u200f" + f"🏁 **סיום משחק: {a_f} 🆚 {h_f}** 🏁\n"
+    if away['score'] > home['score']:
+        msg += f"\u200f🏆 **{a_f} מנצחת {away['score']} - {home['score']}** 🏆\n\n"
+    else:
+        msg += f"\u200f🏆 **{h_f} מנצחת {home['score']} - {away['score']}** 🏆\n\n"
+
+    # MVP
+    all_players = away['players'] + home['players']
+    mvp = max(all_players, key=lambda x: x['statistics']['points'])
+    mvp_name = translate(f"{mvp['firstName']} {mvp['familyName']}")
+    s = mvp['statistics']
+    msg += f"\u200f🌟 **ה-MVP:** **{mvp_name}** ({mvp['teamTricode']})\n"
+    msg += f"\u200f📊 {s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס', {s.get('steals', 0)} חט'\n\n"
+    msg += f"\u200f" + "─" * 15 + "\n\n"
+
+    for team in [away, home]:
+        t_name = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
+        msg += f"\u200f📍 **סטטיסטיקת {t_name}:**\n"
+        players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)
         
-        if not games:
-            return
-
-        msg = f"\u200f" + f"🏀 **תוצאות משחקי הלילה ב-NBA** 🏀\n\n"
-        found_finished = False
-
-        for g in games:
-            if g['gameStatus'] == 3:  # משחק שהסתיים
-                away_n = g['awayTeam']['teamName']
-                home_n = g['homeTeam']['teamName']
-                away_heb = TEAM_NAMES_HEB.get(away_n, away_n)
-                home_heb = TEAM_NAMES_HEB.get(home_n, home_n)
-                
-                a_score = g['awayTeam']['score']
-                h_score = g['homeTeam']['score']
-                
-                # המנצחת תמיד ראשונה
-                if a_score > h_score:
-                    winner_name, winner_score = away_heb, a_score
-                    loser_name, loser_score = home_heb, h_score
-                else:
-                    winner_name, winner_score = home_heb, h_score
-                    loser_name, loser_score = away_heb, a_score
-                
-                # בניית השורה המעוצבת
-                msg += f"\u200f" + f"🏆 **{winner_name}** 🆚 {loser_name}\n"
-                msg += f"\u200f" + f"🏁 תוצאה: **{winner_score}** - {loser_score}\n"
-                msg += f"\u200f" + f"‏‏‎ ‎\n" # רווח קטן
-                
-                found_finished = True
-
-        if found_finished:
-            msg += f"\u200f" + f"☀️ **יום טוב לכולם**"
-            send_msg(msg)
+        # חמישייה
+        msg += f"\u200f🏀 **חמישייה:**\n"
+        for p in [p for p in players if p.get('starter') == "1"]:
+            p_name = translate(f"{p['firstName']} {p['familyName']}")
+            s = p['statistics']
+            msg += f"\u200f▫️ **{p_name}**: {s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'\n"
+            
+        # רווח בין חמישייה לספסל
+        msg += "\n"
+        
+        # ספסל מוביל
+        msg += f"\u200f⚡ **ספסל מוביל:**\n"
+        for p in [p for p in players if p.get('starter') == "0"][:3]:
+            p_name = translate(f"{p['firstName']} {p['familyName']}")
+            s = p['statistics']
+            msg += f"\u200f▪️ **{p_name}**: {s['points']} נק', {s['reboundsTotal']} רב'\n"
+        msg += "\n"
+    return msg
             
     except Exception as e:
         logging.error(f"Error in morning summary: {e}")
@@ -435,4 +426,5 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
