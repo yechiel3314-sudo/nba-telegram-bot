@@ -1,6 +1,6 @@
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from deep_translator import GoogleTranslator
 
@@ -19,7 +19,7 @@ RTL_MARK = "\u200f"
 status_cache = {} 
 
 # ==========================================
-# --- בסיסי נתונים מעודכנים (שמות מלאים למניעת כפילויות) ---
+# --- בסיסי נתונים (כולל החדשים והשמות המלאים) ---
 # ==========================================
 NBA_DATABASE = {
     "Deni Avdija": ["דני אבדיה", "פורטלנד", "Portland Trail Blazers"],
@@ -76,7 +76,7 @@ def send_telegram(text):
     except: pass
 
 # ==========================================
-# --- סיכום בוקר ---
+# --- סיכום לגיונרים (15:32) ---
 # ==========================================
 
 def get_morning_summary():
@@ -99,24 +99,27 @@ def get_morning_summary():
 
                 for p_en, info in db.items():
                     target_team = info[2]
-                    # בדיקת התאמה מדויקת לקבוצה
-                    if any(target_team == name for name in team_names):
+                    # תמיכה בטנסי (השוואה מדויקת) וגם ברשימות (לונג איילנד)
+                    if (isinstance(target_team, list) and any(k in team_names for k in target_team)) or (target_team in team_names):
                         try:
                             bs_url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/{sport_path}/summary?event={ev['id']}"
                             bs_data = requests.get(bs_url, timeout=10).json()
+                            player_found_in_stats = False
+
                             for t_stats in bs_data.get("players", []):
                                 for p_stats in t_stats.get("athletes", []):
                                     if p_en.lower() in p_stats["athlete"]["displayName"].lower():
+                                        player_found_in_stats = True
                                         s = p_stats["stats"]
-                                        # שליפה לפי אינדקסים מעודכנים של ESPN
                                         pts = s[14] if len(s) > 14 else (s[0] if len(s) > 0 else "0")
                                         reb = s[13] if len(s) > 13 else (s[1] if len(s) > 1 else "0")
                                         ast = s[15] if len(s) > 15 else (s[2] if len(s) > 2 else "0")
                                         stl = s[16] if len(s) > 16 else "0"
                                         mins = p_stats.get("minutes", "0")
                                         
-                                        my_team_data = [t for t in teams if t["team"]["displayName"] == target_team][0]
-                                        opp_team_data = [t for t in teams if t["team"]["displayName"] != target_team][0]
+                                        curr_team_name = p_stats["athlete"]["team"]["displayName"] if "team" in p_stats["athlete"] else info[2]
+                                        my_team_data = [t for t in teams if t["team"]["displayName"] == curr_team_name or t["team"]["displayName"] in info[2:]][0]
+                                        opp_team_data = [t for t in teams if t["id"] != my_team_data["id"]][0]
                                         
                                         my_s, opp_s = int(my_team_data["score"]), int(opp_team_data["score"])
                                         opp_n = tr(opp_team_data["team"]["shortDisplayName"])
@@ -124,12 +127,17 @@ def get_morning_summary():
                                         
                                         msg += f"{RTL_MARK}🏀 **{info[0]}** ({info[1]})\n{RTL_MARK}{res} {my_s} - {opp_s} על {opp_n}\n{RTL_MARK}📊 סטטיסטיקה: {pts} נק', {reb} ריב', {ast} אס', {stl} חט'\n{RTL_MARK}⏱️ דקות: {mins}\n\n"
                                         found_any = True
+
+                            # עדכון על בן שרף אם לא שיחק ב-NBA
+                            if not player_found_in_stats and p_en == "Ben Saraf" and title == "NBA":
+                                msg += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}⬇️ לא שיחק ב-NBA הלילה (ירד לסגל הג'י ליג)\n\n"
+                                found_any = True
                         except: pass
             if found_any: send_telegram(msg)
         except: pass
 
 # ==========================================
-# --- לו''ז יומי ---
+# --- לו''ז יומי (15:33) ---
 # ==========================================
 
 def get_combined_schedule():
@@ -138,54 +146,79 @@ def get_combined_schedule():
     global status_cache
     status_cache = {}
 
-    scan_configs = [
-        (GLEAGUE_SCOREBOARD, "GLEAGUE", GLEAGUE_DATABASE),
-        (NBA_SCOREBOARD, "NBA", NBA_DATABASE),
-        (NCAA_SCOREBOARD, "NCAA", NCAA_DATABASE)
-    ]
+    # 1. סריקת ג'י ליג (קודם כל)
+    try:
+        resp_gl = requests.get(GLEAGUE_SCOREBOARD, timeout=10).json()
+        for ev in resp_gl.get("events", []):
+            teams = [t["team"]["displayName"] for t in ev["competitions"][0]["competitors"]]
+            for p_en, info in GLEAGUE_DATABASE.items():
+                if any(k in teams for k in info[2:] if isinstance(info[2], list)) or (info[2] in teams):
+                    vs = [t for t in teams if t != info[2]][0]
+                    time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
+                    all_games["GLEAGUE"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}* ⬇️ (ירד לסגל הג'י ליג)\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
+                    players_handled.add(p_en)
+    except: pass
 
-    for url, key, db in scan_configs:
+    # 2. סריקת NBA ומכללות
+    for url, key, db in [(NBA_SCOREBOARD, "NBA", NBA_DATABASE), (NCAA_SCOREBOARD, "NCAA", NCAA_DATABASE)]:
         try:
             resp = requests.get(url, timeout=10).json()
             for ev in resp.get("events", []):
                 teams = [t["team"]["displayName"] for t in ev["competitions"][0]["competitors"]]
                 for p_en, info in db.items():
                     if p_en in players_handled: continue
-                    target_team = info[2]
-                    
-                    if target_team in teams:
-                        # טיפול מיוחד בבן שרף ב-NBA
+                    if info[2] in teams:
                         if p_en == "Ben Saraf" and key == "NBA":
                             update_msg = f"\n\n⬇️ **עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג)"
                             for i, (g_time, g_str) in enumerate(all_games["NBA"]):
-                                if "ברוקלין" in g_str:
-                                    all_games["NBA"][i] = (g_time, g_str + update_msg)
+                                if "ברוקלין" in g_str: all_games["NBA"][i] = (g_time, g_str + update_msg)
                             continue
 
-                        vs = [t for t in teams if t != target_team][0]
+                        vs = [t for t in teams if t != info[2]][0]
                         inj = get_detailed_injury(ev, p_en)
                         status_note = " ⚠️ (בסימן שאלה)" if "QUESTIONABLE" in inj["status"] or "GTD" in inj["status"] else ""
                         if status_note: status_cache[f"{p_en}_{ev['id']}"] = "QUESTIONABLE"
                         
                         time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
-                        
-                        prefix = ""
-                        if key == "GLEAGUE": prefix = " ⬇️ (סגל הג'י ליג)"
-                        
-                        game_str = f"{RTL_MARK}🏀 *{info[0]}*{status_note}{prefix} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"
+                        game_str = f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"
                         all_games[key].append((time_il, game_str))
-                        players_handled.add(p_en)
         except: pass
 
     full_msg = ""
-    titles = {"NBA": "NBA", "GLEAGUE": "ליגת הפיתוח", "NCAA": "מכללות"}
     for k in ["NBA", "GLEAGUE", "NCAA"]:
         if all_games[k]:
-            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב{titles[k]}** 🇮🇱\n\n"
+            title = "NBA" if k == "NBA" else ("ליגת הפיתוח" if k == "GLEAGUE" else "מכללות")
+            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב{title}** 🇮🇱\n\n"
             full_msg += "\n\n".join([g[1] for g in sorted(all_games[k], key=lambda x: x[0])])
             full_msg += "\n\n\n"
-    
     send_telegram(full_msg.strip() if full_msg else f"{RTL_MARK}🇮🇱 אין משחקי לגיונרים הלילה 😴")
+
+# ==========================================
+# --- 3. לוח משחקים כללי (15:40) ---
+# ==========================================
+
+def get_all_nba_games():
+    try:
+        resp = requests.get(NBA_SCOREBOARD, timeout=10).json()
+        games = []
+        for ev in resp.get("events", []):
+            time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
+            t1 = ev["competitions"][0]["competitors"][0]["team"]["displayName"]
+            t2 = ev["competitions"][0]["competitors"][1]["team"]["displayName"]
+            
+            israeli = ["Brooklyn Nets", "Portland Trail Blazers"]
+            t1_str = f"{tr(t1)} 🇮🇱" if t1 in israeli else tr(t1)
+            t2_str = f"{tr(t2)} 🇮🇱" if t2 in israeli else tr(t2)
+            
+            games.append((time_il, f"{RTL_MARK}‏⏰ **{time_il.strftime('%H:%M')}**\n{RTL_MARK}‏🏀 {t1_str} 🆚 {t2_str}"))
+        
+        if games:
+            games.sort(key=lambda x: x[0])
+            msg = f"{RTL_MARK}🏀 ══ לוח המשחקים להיום בלילה ══ 🏀\n\n"
+            msg += "\n\n".join([g[1] for g in games])
+            msg += f"\n\n{RTL_MARK}צפייה מהנה! 📺"
+            send_telegram(msg)
+    except: pass
 
 # ==========================================
 # --- עדכוני פציעות בזמן אמת ---
@@ -204,7 +237,7 @@ def check_final_updates():
                 for p_en, info in all_p.items():
                     key = f"{p_en}_{ev['id']}"
                     if status_cache.get(key) == "QUESTIONABLE":
-                        if info[2] in teams:
+                        if (isinstance(info[2], list) and any(k in teams for k in info[2:])) or (info[2] in teams):
                             inj = get_detailed_injury(ev, p_en)
                             if inj["status"] == "ACTIVE" or "PROBABLE" in inj["status"]:
                                 send_telegram(f"{RTL_MARK}🇮🇱 **עדכון סופי: הוא משחק!** 🇮🇱\n\n{RTL_MARK}🏀 *{info[0]}* כשיר ויופיע הלילה! ✅")
@@ -220,22 +253,18 @@ def check_final_updates():
 # ==========================================
 
 if __name__ == "__main__":
-    last_sch, last_sum = "", ""
+    last_sch, last_sum, last_all = "", "", ""
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
         
-        # סיכום אתמול ב-15:32 כפי שביקשת
-        if now.hour == 15 and now.minute == 32 and last_sum != today:
-            get_morning_summary()
-            last_sum = today
+        if now.hour == 15 and now.minute == 38 and last_sum != today:
+            get_morning_summary(); last_sum = today
+        if now.hour == 15 and now.minute == 39 and last_sch != today:
+            get_combined_schedule(); last_sch = today
+        if now.hour == 15 and now.minute == 40 and last_all != today:
+            get_all_nba_games(); last_all = today
             
-        # לו"ז הלילה ב-15:33 כפי שביקשת
-        if now.hour == 15 and now.minute == 33 and last_sch != today:
-            get_combined_schedule()
-            last_sch = today
-            
-        # בדיקת פציעות רציפה
         if now.hour >= 18 or now.hour <= 9:
             check_final_updates()
             
