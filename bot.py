@@ -270,10 +270,11 @@ def handle_game_logic(g, box, gs):
         send_msg(format_start_game(box))
         gs["start"] = True
 
-    # 2. עדכוני רבעים ומחצית (מניעת כפילות ברבע 4 אם המשחק נגמר)
+    # 2. עדכוני רבעים ומחצית - עם חסימה לרבע 4 ומעלה
     if is_period_over and txt not in gs["p"]:
-        # אם המשחק הסתיים (סטטוס 3), נדלג על הודעת הרבע לטובת הסיכום הסופי
-        if status == 3:
+        # תיקון: אם זה רבע 4 או הארכה, אנחנו לא שולחים הודעת "סיום רבע".
+        # אנחנו מחכים אך ורק להודעת ה-Final (סטטוס 3) למטה.
+        if status == 3 or period >= 4:
             pass 
         else:
             if "half" in txt_low: label = "מחצית"
@@ -281,7 +282,7 @@ def handle_game_logic(g, box, gs):
             send_msg(format_period_update(box, label))
             gs["p"].append(txt)
 
-    # 3. סיום משחק סופי - MVP וסטטיסטיקה מורחבת
+    # 3. סיום משחק סופי - תמיד יישלח כשהסטטוס הופך ל-3
     if status == 3 and not gs.get("final"):
         send_msg(format_rich_final_summary(box))
         gs["final"] = True
@@ -432,4 +433,5 @@ def run_bot():
 if __name__ == "__main__":
     run_bot()
     
+
 
