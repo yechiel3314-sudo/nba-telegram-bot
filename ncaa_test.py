@@ -229,8 +229,8 @@ def check_final_updates():
 if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
-        if now.hour == 15 and now.minute == 32: get_morning_summary(); time.sleep(61)
-        if now.hour == 15 and now.minute == 33: get_upcoming_israelis(); time.sleep(61)
-        if now.hour == 15 and now.minute == 40: get_nba_full_schedule(); time.sleep(61)
+        if now.hour == 16 and now.minute == 11: get_morning_summary(); time.sleep(61)
+        if now.hour == 16 and now.minute == 11: get_upcoming_israelis(); time.sleep(61)
+        if now.hour == 16 and now.minute == 11: get_nba_full_schedule(); time.sleep(61)
         if now.hour >= 18 or now.hour <= 9: check_final_updates()
         time.sleep(30)
