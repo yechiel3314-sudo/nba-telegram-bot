@@ -12,8 +12,7 @@ from deep_translator import GoogleTranslator
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-STATE_FILE = "nba_ultimate_master.json"
-
+STATE_FILE = "nba_new_sync.json"
 ISRAELI_PLAYERS = ["Deni Avdija", "Ben Saraf", "Danny Wolf"]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -238,9 +237,12 @@ def handle_game_logic(g, box, gs):
     period = g.get('period', 0)
     status = g.get('gameStatus', 0)
     
+    # וודאות שרשימת הדיווחים קיימת ותקינה
+    if "p" not in gs: 
+        gs["p"] = []
+    
     # --- שורות אבחון (מופיעות בלוג של Railway) ---
-    # זה יעזור לנו לראות מה הבוט "חושב" בכל סריקה
-    print(f"🔍 בודק: {away['teamTricode']}@{home['teamTricode']} | סטטוס: '{txt}' | רבע: {period} | כבר דווחו: {gs.get('p', [])}")
+    print(f"🔍 בודק: {away['teamTricode']}@{home['teamTricode']} | סטטוס: '{txt}' | רבע: {period} | כבר דווחו: {gs['p']}")
 
     # 1. פתיחת משחק (סטטוס 2 ורבע ראשון)
     if period == 1 and status == 2 and not gs.get("start"):
@@ -248,16 +250,16 @@ def handle_game_logic(g, box, gs):
         gs["start"] = True
 
     # 2. עדכוני רבעים, מחצית וסיום (זיהוי מצב לצורך דיווח)
-    # שיפרתי את הבדיקה שתהיה רגישה יותר למגוון שמות שה-NBA נותנים
-    is_period_over = any(word in txt for word in ["End", "Half", "Final", "Final/OT", "Fin"])
+    # שיפור הזיהוי: הוספת "End" וטיפול גמיש בסטטוסים
+    is_period_over = any(word in txt for word in ["End", "Half", "Final", "Fin", "Qtr"]) and ":" not in txt
     
-    if is_period_over and txt not in gs.get("p", []):
+    if is_period_over and txt not in gs["p"]:
         print(f"🎯 זוהה מצב סיום תקופה חדש! שולח עדכונים עבור: {txt}")
         
         # קביעת הכותרת לפי תוכן הטקסט
         if "Half" in txt:
             label = "מחצית"
-        elif "Final" in txt:
+        elif "Final" in txt or "Fin" in txt:
             label = "סיום משחק"
         else:
             label = f"סיום רבע {period}"
@@ -270,7 +272,8 @@ def handle_game_logic(g, box, gs):
             for p in team['players']:
                 p_full = f"{p['firstName']} {p['familyName']}"
                 if p_full in ISRAELI_PLAYERS:
-                    mins = p['statistics'].get('minutesCalculated', 'PT00M')
+                    stats = p.get('statistics', {})
+                    mins = stats.get('minutesCalculated', 'PT00M')
                     if mins != "PT00M00.00S" and mins != "PT00M":
                         send_msg(format_israeli_card(p, label))
 
@@ -292,7 +295,6 @@ def handle_game_logic(g, box, gs):
             gs["ot_count"] = ot_num
 
         # שמירת הסטטוס בזיכרון (חיוני למניעת כפילויות וזיהוי מצב באמצע משחק)
-        if "p" not in gs: gs["p"] = []
         gs["p"].append(txt)
 
     # 3. סיום משחק סופי (סטטוס 3)
@@ -307,13 +309,15 @@ def handle_game_logic(g, box, gs):
             for p in team['players']:
                 p_full = f"{p['firstName']} {p['familyName']}"
                 if p_full in ISRAELI_PLAYERS:
-                    if p['statistics'].get('minutesCalculated') not in ["PT00M00.00S", "PT00M"]:
+                    stats = p.get('statistics', {})
+                    if stats.get('minutesCalculated') not in ["PT00M00.00S", "PT00M"]:
                         # בודק אם הישראלי הוא ה-MVP של המשחק
-                        is_mvp = (mvp and p['personId'] == mvp.get('personId'))
+                        is_mvp = False
+                        if mvp and 'personId' in mvp:
+                            is_mvp = (p['personId'] == mvp['personId'])
                         send_msg(format_israeli_card(p, "סיכום סופי", is_mvp=is_mvp))
         
         gs["final"] = True
-
 def send_all_games_summary():
     """שולח הודעת סיכום בוקר: המנצחת והמפסידה באותה שורה"""
     try:
@@ -407,6 +411,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
