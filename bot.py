@@ -160,28 +160,37 @@ def format_start_game(box):
 def format_period_update(box, label):
     """עדכון רבע/מחצית שוטף"""
     away, home = box['awayTeam'], box['homeTeam']
-    a_f, h_f = TEAM_NAMES_HEB.get(away['teamName'], away['teamName']), TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
+    a_f = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
+    h_f = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     
-    winner = a_f if away['score'] > home['score'] else h_f
-    score_txt = f"{winner} מובילה {max(away['score'], home['score'])} - {min(away['score'], home['score'])}" if away['score'] != home['score'] else f"שוויון {away['score']} - {home['score']}"
+    # חישוב תוצאה ומובילה
+    if away['score'] > home['score']:
+        score_txt = f"🏀 **{a_f}** מובילה **{away['score']} - {home['score']}**"
+    elif home['score'] > away['score']:
+        score_txt = f"🏀 **{h_f}** מובילה **{home['score']} - {away['score']}**"
+    else:
+        score_txt = f"🏀 **שוויון {away['score']} - {home['score']}**"
     
-    msg += f"\u200f⏰ **{time_display}**\n"
-    msg += f"\u200f🏀 **{away_heb}**{a_flag} 🆚 **{home_heb}**{h_flag}\n\n"
+    msg = f"\u200f🔔 **עדכון: {label}**\n"
+    msg += f"\u200f{score_txt}\n\n"
     
     for team in [away, home]:
-        msg += f"\u200f" + f"📍 **{TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])}**\n"
+        t_name = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
+        msg += f"\u200f📍 **{t_name}**\n"
         players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)
-        # קלעי חמישייה מובילים (2)
-        for i, p in enumerate([p for p in players if p.get('starter') == "1"][:2]):
+        
+        # 2 קלעי חמישייה מובילים
+        starters = [p for p in players if p.get('starter') == "1"][:2]
+        for i, p in enumerate(starters):
             m = "🥇" if i == 0 else "🥈"
-            msg += f"\u200f{m} קלע מוביל {i+1}: **{translate(p['firstName']+' '+p['familyName'])}**: {get_clean_stat_line(p)}\n"
+            msg += f"\u200f{m} **{translate(p['firstName']+' '+p['familyName'])}**: {get_clean_stat_line(p)}\n"
+            
         # מצטיין ספסל
         bench = [p for p in players if p.get('starter') == "0"]
         if bench:
-            msg += f"\u200f⚡ מהספסל: **{translate(bench[0]['firstName']+' '+bench[0]['familyName'])}**: {get_clean_stat_line(bench[0])}\n"
+            msg += f"\u200f⚡ ספסל: **{translate(bench[0]['firstName']+' '+bench[0]['familyName'])}**: {get_clean_stat_line(bench[0])}\n"
         msg += "\n"
     return msg
-
 def format_final_summary(box, ot_count=0):
     """סיכום משחק סופי עם מדליות וספסל"""
     away, home = box['awayTeam'], box['homeTeam']
@@ -401,16 +410,28 @@ def run_bot():
                 state["dates"]["summary"] = today
                 save_state(state)
                 
-            # ניטור משחקים
+           # ניטור משחקים - גרסה סופית ללא כפילויות
             for g in games:
                 gid, status = g['gameId'], g['gameStatus']
                 if status > 1:
-                    if gid not in state["games"]: state["games"][gid] = {"p": [], "f": False, "s": False, "ot": 0}
+                    # יצירת ה-State למשחק אם לא קיים
+                    if gid not in state["games"]: 
+                        state["games"][gid] = {"p": [], "final": False, "start": False, "ot_count": 0}
+                    
                     gs = state["games"][gid]
                     
                     try:
-                        box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    except: continue
+                        # משיכת נתונים מפורטים מה-Boxscore
+                        box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+                        box = requests.get(box_url, timeout=10).json()['game']
+                        
+                        # הפעלה של הלוגיקה המרכזית שסידרנו
+                        handle_game_logic(g, box, gs)
+                        
+                        save_state(state)
+                    except Exception as e:
+                        logging.error(f"Error in game {gid}: {e}")
+                        continue
 
                     # פתיחת משחק
                     if status == 2 and not gs["s"]:
@@ -454,8 +475,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
-
-
-
-
