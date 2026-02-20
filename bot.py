@@ -11,6 +11,7 @@ from deep_translator import GoogleTranslator
 # ==========================================
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
+NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 STATE_FILE = "nba_ultimate_master.json"
 ISRAELI_PLAYERS = ["Deni Avdija", "Ben Saraf", "Danny Wolf"]
 
@@ -396,3 +397,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
