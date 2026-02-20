@@ -67,10 +67,18 @@ def format_minutes(mins_raw):
 def send_msg(text):
     if not text: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    
+    # המרת הכוכביות (**) לתגיות HTML (<b>) כדי שזה יעבוד בטוח
+    formatted_text = text.replace("**", "<b>").replace("**", "</b>") # החלפה ראשונה פותחת, שניה סוגרת
+    
+    # בגלל שהחלפה פשוטה בסטרינג יכולה להתבלבל, עדיף להשתמש בשיטה הזו:
+    import re
+    formatted_text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+
     payload = {
         "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown" # השורה הזו היא הקסם שיוצר את ההדגשה
+        "text": formatted_text,
+        "parse_mode": "HTML" 
     }
     try: 
         requests.post(url, json=payload, timeout=15)
@@ -430,6 +438,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
