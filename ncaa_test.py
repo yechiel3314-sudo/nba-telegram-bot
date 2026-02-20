@@ -19,38 +19,38 @@ RTL_MARK = "\u200f"
 status_cache = {} 
 
 # ==========================================
-# --- בסיסי נתונים (כולל החדשים והשמות המלאים) ---
+# --- בסיסי נתונים מאוחדים ---
 # ==========================================
 NBA_DATABASE = {
-    "Deni Avdija": ["דני אבדיה", "פורטלנד", "Portland Trail Blazers"],
-    "Danny Wolf": ["דני וולף", "ברוקלין", "Brooklyn Nets"],
-    "Ben Saraf": ["בן שרף", "ברוקלין", "Brooklyn Nets"]
+    "Deni Avdija": ["דני אבדיה", "פורטלנד", "Trail Blazers"],
+    "Danny Wolf": ["דני וולף", "מישיגן", "Michigan"],
+    "Ben Saraf": ["בן שרף", "ברוקלין", "Nets"]
 }
 
 GLEAGUE_DATABASE = {
-    "Ben Saraf": ["בן שרף", "לונג איילנד", "Long Island Nets", "Delaware Blue Coats", "Birmingham Squadron"]
+    "Ben Saraf": ["בן שרף", "לונג איילנד", "Long Island Nets", "Blue Coats", "Squadron"]
 }
 
 NCAA_DATABASE = {
-    "Emanuel Sharp": ["עמנואל שארפ", "יוסטון", "Houston Cougars"],
-    "Yoav Berman": ["יואב ברמן", "קווינס", "Queens University Royals"],
-    "Ofri Naveh": ["עופרי נווה", "אורל רוברטס", "Oral Roberts Golden Eagles"],
+    "Emanuel Sharp": ["עמנואל שארפ", "יוסטון", "Houston"],
+    "Yoav Berman": ["יואב ברמן", "קווינס", "Queens"],
+    "Ofri Naveh": ["עופרי נווה", "אורל רוברטס", "Oral Roberts"],
     "Eytan Burg": ["איתן בורג", "טנסי", "Tennessee Volunteers"],
-    "Omer Mayer": ["עומר מאייר", "פורדו", "Purdue Boilermakers"],
-    "Noam Dovrat": ["נועם דוברת", "מיאמי", "Miami Hurricanes"],
-    "Or Ashkenazi": ["אור אשכנזי", "ליפסקומב", "Lipscomb Bisons"],
-    "Alon Michaeli": ["אלון מיכאלי", "קולורדו", "Colorado Buffaloes"],
-    "Yonatan Levi": ["יונתן לוי", "פפרדיין", "Pepperdine Waves"],
-    "Yuval Levin": ["יובל לוין", "פרדו פורט וויין", "Purdue Fort Wayne Mastodons"],
-    "Omer Hamama": ["עומר חממה", "קנט סטייט", "Kent State Golden Flashes"],
-    "Or Paran": ["אור פארן", "מרסיהרסט", "Mercyhurst Lakers"],
-    "Daniel Gueta": ["דניאל גואטה", "אוקלהומה סטייט", "Oklahoma State Cowboys"],
-    "Erez Foren": ["ארז פורן", "צפון אריזונה", "Northern Arizona Lumberjacks"],
-    "Shon Abaev": ["שון אבייב", "סינסינטי", "Cincinnati Bearcats"]
+    "Omer Mayer": ["עומר מאייר", "פורדו", "Purdue"],
+    "Noam Dovrat": ["נועם דוברת", "מיאמי", "Miami"],
+    "Or Ashkenazi": ["אור אשכנזי", "ליפסקומב", "Lipscomb"],
+    "Alon Michaeli": ["אלון מיכאלי", "קולורדו", "Colorado"],
+    "Yonatan Levi": ["יונתן לוי", "פפרדיין", "Pepperdine"],
+    "Yuval Levin": ["יובל לוין", "פרדו פורט וויין", "Purdue Fort Wayne"],
+    "Omer Hamama": ["עומר חממה", "קנט סטייט", "Kent State"],
+    "Or Paran": ["אור פארן", "מרסיהרסט", "Mercyhurst"],
+    "Daniel Gueta": ["דניאל גואטה", "אוקלהומה סטייט", "Oklahoma State"],
+    "Erez Foren": ["ארז פורן", "צפון אריזונה", "Northern Arizona"],
+    "Shon Abaev": ["שון אבייב", "סינסינטי", "Cincinnati"]
 }
 
 # ==========================================
-# --- פונקציות עזר תרגום ופציעות ---
+# --- פונקציות עזר ---
 # ==========================================
 
 def tr(text):
@@ -76,7 +76,7 @@ def send_telegram(text):
     except: pass
 
 # ==========================================
-# --- סיכום לגיונרים (15:32) ---
+# --- 1. סיכום בוקר (15:32) ---
 # ==========================================
 
 def get_morning_summary():
@@ -99,8 +99,8 @@ def get_morning_summary():
 
                 for p_en, info in db.items():
                     target_team = info[2]
-                    # תמיכה בטנסי (השוואה מדויקת) וגם ברשימות (לונג איילנד)
-                    if (isinstance(target_team, list) and any(k in team_names for k in target_team)) or (target_team in team_names):
+                    # חיפוש גמיש למניעת פספוסים (כמו דני וולף וטנסי)
+                    if (isinstance(target_team, list) and any(k in str(team_names) for k in target_team)) or (target_team in str(team_names)):
                         try:
                             bs_url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/{sport_path}/summary?event={ev['id']}"
                             bs_data = requests.get(bs_url, timeout=10).json()
@@ -111,24 +111,16 @@ def get_morning_summary():
                                     if p_en.lower() in p_stats["athlete"]["displayName"].lower():
                                         player_found_in_stats = True
                                         s = p_stats["stats"]
-                                        pts = s[14] if len(s) > 14 else (s[0] if len(s) > 0 else "0")
-                                        reb = s[13] if len(s) > 13 else (s[1] if len(s) > 1 else "0")
-                                        ast = s[15] if len(s) > 15 else (s[2] if len(s) > 2 else "0")
-                                        stl = s[16] if len(s) > 16 else "0"
+                                        pts, reb, ast = (s[14], s[13], s[15]) if len(s) > 15 else (s[0], s[1], s[2])
                                         mins = p_stats.get("minutes", "0")
                                         
-                                        curr_team_name = p_stats["athlete"]["team"]["displayName"] if "team" in p_stats["athlete"] else info[2]
-                                        my_team_data = [t for t in teams if t["team"]["displayName"] == curr_team_name or t["team"]["displayName"] in info[2:]][0]
-                                        opp_team_data = [t for t in teams if t["id"] != my_team_data["id"]][0]
+                                        my_team = [t for t in teams if info[2] in t["team"]["displayName"] or any(k in t["team"]["displayName"] for k in info[2:] if isinstance(info[2], list))][0]
+                                        opp_team = [t for t in teams if t["id"] != my_team["id"]][0]
+                                        res = "✅ ניצחון" if int(my_team["score"]) > int(opp_team["score"]) else "❌ הפסד"
                                         
-                                        my_s, opp_s = int(my_team_data["score"]), int(opp_team_data["score"])
-                                        opp_n = tr(opp_team_data["team"]["shortDisplayName"])
-                                        res = "✅ ניצחון" if my_s > opp_s else "❌ הפסד"
-                                        
-                                        msg += f"{RTL_MARK}🏀 **{info[0]}** ({info[1]})\n{RTL_MARK}{res} {my_s} - {opp_s} על {opp_n}\n{RTL_MARK}📊 סטטיסטיקה: {pts} נק', {reb} ריב', {ast} אס', {stl} חט'\n{RTL_MARK}⏱️ דקות: {mins}\n\n"
+                                        msg += f"{RTL_MARK}🏀 **{info[0]}** ({info[1]})\n{RTL_MARK}{res} {my_team['score']} - {opp_team['score']} על {tr(opp_team['team']['shortDisplayName'])}\n{RTL_MARK}📊 סטטיסטיקה: {pts} נק', {reb} ריב', {ast} אס'\n{RTL_MARK}⏱️ דקות: {mins}\n\n"
                                         found_any = True
 
-                            # עדכון על בן שרף אם לא שיחק ב-NBA
                             if not player_found_in_stats and p_en == "Ben Saraf" and title == "NBA":
                                 msg += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}⬇️ לא שיחק ב-NBA הלילה (ירד לסגל הג'י ליג)\n\n"
                                 found_any = True
@@ -137,7 +129,7 @@ def get_morning_summary():
         except: pass
 
 # ==========================================
-# --- לו''ז יומי (15:33) ---
+# --- 2. לו''ז לגיונרים (15:33) ---
 # ==========================================
 
 def get_combined_schedule():
@@ -146,20 +138,20 @@ def get_combined_schedule():
     global status_cache
     status_cache = {}
 
-    # 1. סריקת ג'י ליג (קודם כל)
+    # סריקת ג'י ליג
     try:
         resp_gl = requests.get(GLEAGUE_SCOREBOARD, timeout=10).json()
         for ev in resp_gl.get("events", []):
             teams = [t["team"]["displayName"] for t in ev["competitions"][0]["competitors"]]
             for p_en, info in GLEAGUE_DATABASE.items():
-                if any(k in teams for k in info[2:] if isinstance(info[2], list)) or (info[2] in teams):
-                    vs = [t for t in teams if t != info[2]][0]
+                if any(k in str(teams) for k in info[2:] if isinstance(info[2], list)) or (info[2] in str(teams)):
+                    vs = [t for t in teams if info[2] not in t][0]
                     time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
                     all_games["GLEAGUE"].append((time_il, f"{RTL_MARK}🏀 *{info[0]}* ⬇️ (ירד לסגל הג'י ליג)\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"))
                     players_handled.add(p_en)
     except: pass
 
-    # 2. סריקת NBA ומכללות
+    # סריקת NBA ומכללות
     for url, key, db in [(NBA_SCOREBOARD, "NBA", NBA_DATABASE), (NCAA_SCOREBOARD, "NCAA", NCAA_DATABASE)]:
         try:
             resp = requests.get(url, timeout=10).json()
@@ -167,18 +159,16 @@ def get_combined_schedule():
                 teams = [t["team"]["displayName"] for t in ev["competitions"][0]["competitors"]]
                 for p_en, info in db.items():
                     if p_en in players_handled: continue
-                    if info[2] in teams:
+                    if info[2] in str(teams):
                         if p_en == "Ben Saraf" and key == "NBA":
                             update_msg = f"\n\n⬇️ **עדכון: {info[0]}** לא משחק (ירד להתאמן בג'י ליג)"
                             for i, (g_time, g_str) in enumerate(all_games["NBA"]):
                                 if "ברוקלין" in g_str: all_games["NBA"][i] = (g_time, g_str + update_msg)
                             continue
-
-                        vs = [t for t in teams if t != info[2]][0]
+                        vs = [t for t in teams if info[2] not in t][0]
                         inj = get_detailed_injury(ev, p_en)
                         status_note = " ⚠️ (בסימן שאלה)" if "QUESTIONABLE" in inj["status"] or "GTD" in inj["status"] else ""
                         if status_note: status_cache[f"{p_en}_{ev['id']}"] = "QUESTIONABLE"
-                        
                         time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
                         game_str = f"{RTL_MARK}🏀 *{info[0]}*{status_note} ({info[1]})\n{RTL_MARK}🆚 נגד: *{tr(vs)}*\n{RTL_MARK}⏰ שעה: *{time_il.strftime('%H:%M')}*"
                         all_games[key].append((time_il, game_str))
@@ -187,8 +177,8 @@ def get_combined_schedule():
     full_msg = ""
     for k in ["NBA", "GLEAGUE", "NCAA"]:
         if all_games[k]:
-            title = "NBA" if k == "NBA" else ("ליגת הפיתוח" if k == "GLEAGUE" else "מכללות")
-            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב{title}** 🇮🇱\n\n"
+            t_title = "NBA" if k == "NBA" else ("ליגת הפיתוח" if k == "GLEAGUE" else "מכללות")
+            full_msg += f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה ב{t_title}** 🇮🇱\n\n"
             full_msg += "\n\n".join([g[1] for g in sorted(all_games[k], key=lambda x: x[0])])
             full_msg += "\n\n\n"
     send_telegram(full_msg.strip() if full_msg else f"{RTL_MARK}🇮🇱 אין משחקי לגיונרים הלילה 😴")
@@ -205,23 +195,18 @@ def get_all_nba_games():
             time_il = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
             t1 = ev["competitions"][0]["competitors"][0]["team"]["displayName"]
             t2 = ev["competitions"][0]["competitors"][1]["team"]["displayName"]
-            
-            israeli = ["Brooklyn Nets", "Portland Trail Blazers"]
-            t1_str = f"{tr(t1)} 🇮🇱" if t1 in israeli else tr(t1)
-            t2_str = f"{tr(t2)} 🇮🇱" if t2 in israeli else tr(t2)
-            
-            games.append((time_il, f"{RTL_MARK}‏⏰ **{time_il.strftime('%H:%M')}**\n{RTL_MARK}‏🏀 {t1_str} 🆚 {t2_str}"))
-        
+            isr = ["Nets", "Trail Blazers", "Michigan"]
+            t1_s = f"{tr(t1)} 🇮🇱" if any(x in t1 for x in isr) else tr(t1)
+            t2_s = f"{tr(t2)} 🇮🇱" if any(x in t2 for x in isr) else tr(t2)
+            games.append((time_il, f"{RTL_MARK}‏⏰ **{time_il.strftime('%H:%M')}**\n{RTL_MARK}‏🏀 {t1_s} 🆚 {t2_s}"))
         if games:
             games.sort(key=lambda x: x[0])
-            msg = f"{RTL_MARK}🏀 ══ לוח המשחקים להיום בלילה ══ 🏀\n\n"
-            msg += "\n\n".join([g[1] for g in games])
-            msg += f"\n\n{RTL_MARK}צפייה מהנה! 📺"
+            msg = f"{RTL_MARK}🏀 ══ לוח המשחקים להיום בלילה ══ 🏀\n\n" + "\n\n".join([g[1] for g in games]) + f"\n\n{RTL_MARK}צפייה מהנה! 📺"
             send_telegram(msg)
     except: pass
 
 # ==========================================
-# --- עדכוני פציעות בזמן אמת ---
+# --- עדכוני פציעות (המקורי) ---
 # ==========================================
 
 def check_final_updates():
@@ -237,7 +222,7 @@ def check_final_updates():
                 for p_en, info in all_p.items():
                     key = f"{p_en}_{ev['id']}"
                     if status_cache.get(key) == "QUESTIONABLE":
-                        if (isinstance(info[2], list) and any(k in teams for k in info[2:])) or (info[2] in teams):
+                        if info[2] in str(teams):
                             inj = get_detailed_injury(ev, p_en)
                             if inj["status"] == "ACTIVE" or "PROBABLE" in inj["status"]:
                                 send_telegram(f"{RTL_MARK}🇮🇱 **עדכון סופי: הוא משחק!** 🇮🇱\n\n{RTL_MARK}🏀 *{info[0]}* כשיר ויופיע הלילה! ✅")
@@ -249,23 +234,20 @@ def check_final_updates():
         except: pass
 
 # ==========================================
-# --- הרצה ראשית ---
+# --- לולאת הרצה ---
 # ==========================================
 
 if __name__ == "__main__":
-    last_sch, last_sum, last_all = "", "", ""
+    last_sum, last_sch, last_all = "", "", ""
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         today = now.strftime("%Y-%m-%d")
-        
-        if now.hour == 15 and now.minute == 38 and last_sum != today:
+        if now.hour == 15 and now.minute == 32 and last_sum != today:
             get_morning_summary(); last_sum = today
-        if now.hour == 15 and now.minute == 39 and last_sch != today:
+        if now.hour == 15 and now.minute == 33 and last_sch != today:
             get_combined_schedule(); last_sch = today
         if now.hour == 15 and now.minute == 40 and last_all != today:
             get_all_nba_games(); last_all = today
-            
         if now.hour >= 18 or now.hour <= 9:
             check_final_updates()
-            
         time.sleep(30)
