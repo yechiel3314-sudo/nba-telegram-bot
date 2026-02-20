@@ -67,8 +67,15 @@ def format_minutes(mins_raw):
 def send_msg(text):
     if not text: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    try: requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=15)
-    except: pass
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown" # השורה הזו היא הקסם שיוצר את ההדגשה
+    }
+    try: 
+        requests.post(url, json=payload, timeout=15)
+    except: 
+        pass
 
 # ==========================================
 # בוני הודעות מעוצבות - גרסה סופית ומלאה
@@ -120,18 +127,17 @@ def format_start_game(box):
     for team in [away, home]:
         t_name = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
         
-        # שליפת חמישייה (רק אלו שרשומים כ-starter)
+        # שליפת חמישייה
         starters = [translate(f"{p['firstName']} {p['familyName']}") for p in team['players'] if p.get('starter') == "1"]
         
-        # שליפת חיסורים (שחקנים שקיימים בדו"ח אבל רשום להם סיבה למה הם לא משחקים)
+        # שליפת חיסורים
         missing = []
         for p in team['players']:
             reason = p.get('notPlayingReason')
-            if reason: # אם יש סיבה (פציעה, השעיה וכו')
+            if reason:
                 p_name = translate(f"{p['firstName']} {p['familyName']}")
                 missing.append(p_name)
         
-        # עיצוב רשימת החיסורים
         if missing:
             missing_txt = ", ".join(missing)
         else:
@@ -142,6 +148,7 @@ def format_start_game(box):
         msg += f"\u200f" + f"❌ **חיסורים:** {missing_txt}\n\n"
         
     return msg
+    
 def format_period_update(box, label):
     """עדכון רבע/מחצית שוטף"""
     away, home = box['awayTeam'], box['homeTeam']
@@ -423,5 +430,6 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
