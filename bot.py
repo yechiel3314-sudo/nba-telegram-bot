@@ -283,7 +283,7 @@ def handle_game_logic(g, box, gs):
 
     # 3. סיום משחק סופי - MVP וסטטיסטיקה מורחבת
     if status == 3 and not gs.get("final"):
-        send_msg(format_rich_final_summary(box)) # הוספת "rich_"
+        send_msg(format_rich_final_summary(box))"
         gs["final"] = True
         
 def format_period_update(box, label):
@@ -427,4 +427,5 @@ def run_bot():
 if __name__ == "__main__":
     run_bot()
     
+
 
