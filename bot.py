@@ -12,7 +12,7 @@ from deep_translator import GoogleTranslator
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-STATE_FILE = "nba_force_sync.json"
+STATE_FILE = "nba_fire_design_v1.json"
 ISRAELI_PLAYERS = ["Deni Avdija", "Ben Saraf", "Danny Wolf"]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -159,40 +159,61 @@ def format_start_game(box):
     return msg
     
 def format_period_update(box, label):
-    """עדכון רבע/מחצית שוטף"""
+    """עדכון רבע/מחצית עם עיצוב כדורסל, אש וסטטיסטיקה מורחבת"""
     away, home = box['awayTeam'], box['homeTeam']
     a_f = TEAM_NAMES_HEB.get(away['teamName'], away['teamName'])
     h_f = TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
     
-    # חישוב תוצאה ומובילה
-    if away['score'] > home['score']:
-        score_txt = f"🏀 **{a_f}** מובילה **{away['score']} - {home['score']}**"
-    elif home['score'] > away['score']:
-        score_txt = f"🏀 **{h_f}** מובילה **{home['score']} - {away['score']}**"
-    else:
-        score_txt = f"🏀 **שוויון {away['score']} - {home['score']}**"
+    # 1. כותרת עליונה - כדורסל משני הצדדים
+    header = f"🏀 {label}: {a_f} 🆚 {h_f} 🏀"
     
-    msg = f"\u200f🔔 **עדכון: {label}**\n"
+    # 2. חישוב תוצאה ומובילה - אש משני הצדדים
+    if away['score'] > home['score']:
+        score_txt = f"🔥 **{a_f}** מובילה **{away['score']} - {home['score']}** 🔥"
+    elif home['score'] > away['score']:
+        score_txt = f"🔥 **{h_f}** מובילה **{home['score']} - {away['score']}** 🔥"
+    else:
+        score_txt = f"🔥 **שוויון {away['score']} - {home['score']}** 🔥"
+    
+    msg = f"\u200f{header}\n"
     msg += f"\u200f{score_txt}\n\n"
     
     for team in [away, home]:
         t_name = TEAM_NAMES_HEB.get(team['teamName'], team['teamName'])
         msg += f"\u200f📍 **{t_name}**\n"
+        
+        # מיון כל השחקנים לפי נקודות
         players = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)
         
-        # 2 קלעי חמישייה מובילים
+        # פונקציית עזר פנימית לבניית שורת סטטיסטיקה מפורטת (נק', רב', אס' + חט', חס')
+        def get_full_stat_line(p):
+            s = p['statistics']
+            line = f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
+            extra = []
+            if s.get('steals', 0) > 0: extra.append(f"{s['steals']} חט'")
+            if s.get('blocks', 0) > 0: extra.append(f"{s['blocks']} חס'")
+            if extra:
+                line += f" ({', '.join(extra)})"
+            return line
+
+        # 2 קלעי חמישייה מובילים (starter == "1")
         starters = [p for p in players if p.get('starter') == "1"][:2]
         for i, p in enumerate(starters):
             m = "🥇" if i == 0 else "🥈"
-            msg += f"\u200f{m} **{translate(p['firstName']+' '+p['familyName'])}**: {get_clean_stat_line(p)}\n"
+            p_full_name = f"{p['firstName']} {p['familyName']}"
+            msg += f"\u200f{m} **{p_full_name}**: {get_full_stat_line(p)}\n"
             
-        # מצטיין ספסל
+        # מצטיין ספסל (starter == "0") - כולל הסטטיסטיקה המלאה
         bench = [p for p in players if p.get('starter') == "0"]
         if bench:
-            msg += f"\u200f⚡ ספסל: **{translate(bench[0]['firstName']+' '+bench[0]['familyName'])}**: {get_clean_stat_line(bench[0])}\n"
+            p_bench = bench[0]
+            p_bench_name = f"{p_bench['firstName']} {p_bench['familyName']}"
+            msg += f"\u200f⚡ **ספסל: {p_bench_name}**: {get_full_stat_line(p_bench)}\n"
+            
         msg += "\n"
+        
     return msg
-def format_final_summary(box, ot_count=0):
+    
     """סיכום משחק סופי עם מדליות וספסל"""
     away, home = box['awayTeam'], box['homeTeam']
     a_f, h_f = TEAM_NAMES_HEB.get(away['teamName'], away['teamName']), TEAM_NAMES_HEB.get(home['teamName'], home['teamName'])
@@ -411,6 +432,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
