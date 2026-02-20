@@ -12,7 +12,7 @@ from deep_translator import GoogleTranslator
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-STATE_FILE = "nba_new_sync.json"
+STATE_FILE = "nba_force_sync.json"
 ISRAELI_PLAYERS = ["Deni Avdija", "Ben Saraf", "Danny Wolf"]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -251,7 +251,7 @@ def handle_game_logic(g, box, gs):
 
     # 2. עדכוני רבעים, מחצית וסיום (זיהוי מצב לצורך דיווח)
     # שיפור הזיהוי: הוספת "End" וטיפול גמיש בסטטוסים
-    is_period_over = any(word in txt for word in ["End", "Half", "Final", "Fin", "Qtr"]) and ":" not in txt
+is_period_over = any(word in txt.lower() for word in ["end", "half", "final", "fin", "qtr"]) and ":" not in txt
     
     if is_period_over and txt not in gs["p"]:
         print(f"🎯 זוהה מצב סיום תקופה חדש! שולח עדכונים עבור: {txt}")
@@ -411,6 +411,7 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
 
 
 
