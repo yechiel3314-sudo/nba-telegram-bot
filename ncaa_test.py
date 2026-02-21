@@ -4,9 +4,7 @@ from datetime import datetime, timedelta
 import pytz
 from deep_translator import GoogleTranslator
 
-# ==========================================
-# --- הגדרות טכניות ---
-# ==========================================
+# --- הגדרות ---
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
@@ -16,8 +14,8 @@ GLEAGUE_API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba-ght/
 
 translator = GoogleTranslator(source='en', target='iw')
 RTL_MARK = "\u200f"
-injury_watch_list = {} # רשימת מעקב לפציעות
-cycle_done = False # למניעת כפילויות בסבב ההודעות
+injury_watch_list = {}
+cycle_done_today = "" # מונע הרצה חוזרת באותו יום
 
 PLAYERS = {
     "NBA": {
@@ -29,7 +27,6 @@ PLAYERS = {
         "Ben Saraf": ["בן שרף", "Long Island", "לונג איילנד"]
     },
     "NCAA": {
-        "Danny Wolf": ["דני וולף", "Michigan", "מישיגן"],
         "Emanuel Sharp": ["עמנואל שארפ", "Houston", "יוסטון"],
         "Yoav Berman": ["יואב ברמן", "Queens", "קווינס"],
         "Ofri Naveh": ["עופרי נווה", "Oral Roberts", "אורל רוברטס"],
@@ -51,37 +48,31 @@ PLAYERS = {
 def tr(text):
     try:
         t = translator.translate(text)
-        fixes = {"שבילים בלייזרים": "פורטלנד", "רשתות": "ברוקלין", "לוחמים": "גולדן סטייט", "בוכנות": "דטרויט", "חום": "מיאמי"}
+        fixes = {"שבילים בלייזרים": "פורטלנד", "רשתות": "ברוקלין", "לוחמים": "גולדן סטייט", "בוכנות": "דטרויט", "חום": "מיאמי", "זאבי עץ": "מינסוטה"}
         for k, v in fixes.items(): t = t.replace(k, v)
         return t
     except: return text
 
+def get_isr_time(date_str):
+    utc_dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+    return utc_dt.astimezone(pytz.timezone('Asia/Jerusalem')).strftime("%H:%M")
+
 def send(text):
-    if not text: return
+    if not text or len(text) < 10: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
     try: requests.post(url, json=payload, timeout=10)
     except: pass
 
-def get_inj(ev, p_en):
-    try:
-        for comp in ev.get("competitions", []):
-            for team in comp.get("competitors", []):
-                for inj in team.get("injuries", []):
-                    if p_en.lower() in inj.get("displayName", "").lower():
-                        return inj.get("status", "").upper()
-    except: pass
-    return "ACTIVE"
-
-# --- פונקציות ההודעות ---
-def do_msg_1():
+# --- פונקציות הודעות ---
+def do_msg_1(): # לו"ז NBA
     try:
         data = requests.get(NBA_API).json()
-        games = [f"{RTL_MARK}⏰ **{datetime.strptime(ev['date'], '%Y-%m-%dT%H:%MZ').replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem')).strftime('%H:%M')}**\n{RTL_MARK}🏀 {tr(ev['competitions'][0]['competitors'][1]['team']['displayName'])} 🆚 {tr(ev['competitions'][0]['competitors'][0]['team']['displayName'])}" for ev in data.get("events", [])]
+        games = [f"{RTL_MARK}⏰ **{get_isr_time(ev['date'])}**\n{RTL_MARK}🏀 {tr(ev['competitions'][0]['competitors'][1]['team']['displayName'])} 🆚 {tr(ev['competitions'][0]['competitors'][0]['team']['displayName'])}" for ev in data.get("events", [])]
         if games: send(f"{RTL_MARK}🏀 ══ **לוח המשחקים להיום בלילה** ══ 🏀\n\n" + "\n\n".join(games))
     except: pass
 
-def do_msg_2():
+def do_msg_2(): # לו"ז לגיונרים
     try:
         g_data = requests.get(GLEAGUE_API).json()
         saraf_gleague = any("Long Island" in t["team"]["displayName"] for ev in g_data.get("events", []) for t in ev["competitions"][0]["competitors"])
@@ -94,22 +85,16 @@ def do_msg_2():
                 for p_en, info in PLAYERS[key].items():
                     if p_en == "Ben Saraf" and key == "NBA" and saraf_gleague: continue
                     if any(info[1].lower() in t["team"]["displayName"].lower() for t in teams):
-                        st = get_inj(ev, p_en)
-                        note = ""
-                        if "QUEST" in st or "GTD" in st:
-                            note = " ⚠️ **(בסימן שאלה)**"
-                            injury_watch_list[f"{p_en}_{ev['id']}"] = {"name": info[0], "api": api}
                         opp = [t["team"]["displayName"] for t in teams if info[1].lower() not in t["team"]["displayName"].lower()][0]
-                        tm = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
-                        sec += f"{RTL_MARK}🏀 **{info[0]}**{note}\n{RTL_MARK}🆚 נגד: **{tr(opp)}**\n{RTL_MARK}⏰ שעה: **{tm.strftime('%H:%M')}**\n\n"
+                        sec += f"{RTL_MARK}🏀 **{info[0]}** ({tr(info[2])})\n{RTL_MARK}🆚 נגד: **{tr(opp)}**\n{RTL_MARK}⏰ שעה: **{get_isr_time(ev['date'])}**\n\n"
             if sec: send(f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה - {title}** 🇮🇱\n\n{sec}")
     except: pass
 
-def do_msg_3():
+def do_msg_3(): # סיכום לגיונרים (אתמול)
     try:
-        date_str = (datetime.now() - timedelta(hours=15)).strftime("%Y%m%d")
+        yesterday = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
         for key, api, path in [("NBA", NBA_API, "nba"), ("GLEAGUE", GLEAGUE_API, "nba-ght"), ("NCAA", NCAA_API, "mens-college-basketball")]:
-            data = requests.get(f"{api}?dates={date_str}").json()
+            data = requests.get(f"{api}?dates={yesterday}").json()
             sec = ""
             for ev in data.get("events", []):
                 if ev["status"]["type"]["state"] == "post":
@@ -120,67 +105,38 @@ def do_msg_3():
                                 if p_en.lower() in ath["athlete"]["displayName"].lower():
                                     s = ath["stats"]
                                     pts, reb, ast = (s[0], s[1], s[2]) if key == "NCAA" else (s[14], s[13], s[15])
-                                    teams = ev["competitions"][0]["competitors"]
-                                    my_t = [t for t in teams if t["team"]["id"] == t_box["team"]["id"]][0]
-                                    opp_t = [t for t in teams if t["team"]["id"] != t_box["team"]["id"]][0]
-                                    res = "✅" if int(my_t["score"]) > int(opp_t["score"]) else "❌"
-                                    sec += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}{res} {my_t['score']} - {opp_t['score']} נגד {tr(opp_t['team']['displayName'])}\n{RTL_MARK}📊 **{pts} נק', {reb} ריב', {ast} אס'**\n\n"
-            if sec: send(f"{RTL_MARK}🇮🇱 **סיכום לגיונרים - {key}** 🇮🇱\n\n{sec}")
+                                    sec += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}📊 **{pts} נק', {reb} ריב', {ast} אס'**\n\n"
+            if sec: send(f"{RTL_MARK}🇮🇱 **סיכום לגיונרים מהבוקר - {key}** 🇮🇱\n\n{sec}")
     except: pass
 
-def do_msg_4():
+def do_msg_4(): # סיכום תוצאות NBA
     try:
-        date_str = (datetime.now() - timedelta(hours=15)).strftime("%Y%m%d")
-        data = requests.get(f"{NBA_API}?dates={date_str}").json()
+        yesterday = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
+        data = requests.get(f"{NBA_API}?dates={yesterday}").json()
         res = []
         for ev in data.get("events", []):
             if ev["status"]["type"]["state"] == "post":
                 t = ev["competitions"][0]["competitors"]
-                w, l = (t[0], t[1]) if int(t[0]["score"]) > int(t[1]["score"]) else (t[1], t[0])
-                res.append(f"{RTL_MARK}🏆 **{tr(w['team']['displayName'])} {w['score']}**\n{RTL_MARK}🏀 {tr(l['team']['displayName'])} {l['score']}")
-        if res: send(f"{RTL_MARK}🏁 **סיכום תוצאות הלילה - NBA** 🏁\n\n" + "\n\n".join(res))
+                res.append(f"{RTL_MARK}🏆 **{tr(t[0]['team']['displayName'])} {t[0]['score']}** - {tr(t[1]['team']['displayName'])} {t[1]['score']}")
+        if res: send(f"{RTL_MARK}🏁 **תוצאות משחקי הלילה - NBA** 🏁\n\n" + "\n\n".join(res))
     except: pass
 
-def check_live_injuries():
-    global injury_watch_list
-    to_remove = []
-    for k, d in injury_watch_list.items():
-        try:
-            p_en = k.split('_')[0]
-            evs = requests.get(d["api"]).json().get("events", [])
-            for ev in evs:
-                if ev["id"] in k:
-                    st = get_inj(ev, p_en)
-                    if "ACTIVE" in st or "PROBABLE" in st:
-                        send(f"{RTL_MARK}🇮🇱 **עדכון סופי: {d['name']} משחק! ✅**")
-                        to_remove.append(k)
-                    elif "OUT" in st:
-                        send(f"{RTL_MARK}🇮🇱 **עדכון סופי: {d['name']} בחוץ הלילה ❌**")
-                        to_remove.append(k)
-        except: pass
-    for k in to_remove: injury_watch_list.pop(k, None)
-
-# --- לולאה ראשית ---
+# --- לולאה ---
 if __name__ == "__main__":
-    print("הבוט דרוך למשימה. יתחיל ב-19:25...")
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
+        today_str = now.strftime("%Y%m%d")
         curr_hm = now.strftime("%H:%M")
 
-        if curr_hm == "19:25" and not cycle_done:
+        if curr_hm == "19:30" and cycle_done_today != today_str:
             do_msg_1()
-            time.sleep(15)
+            time.sleep(5) # המתנה קצרה בין הודעות
             do_msg_2()
-            time.sleep(15)
+            time.sleep(5)
             do_msg_3()
-            time.sleep(15)
+            time.sleep(5)
             do_msg_4()
-            cycle_done = True
-        
-        if curr_hm != "19:25": cycle_done = False # איפוס ליום הבא
-
-        # בדיקת פציעות חיה (מעקב אקטיבי)
-        if (now.hour >= 19 and now.minute >= 26) or (now.hour < 9):
-            check_live_injuries()
+            cycle_done_today = today_str
+            print(f"סבב הושלם עבור {today_str}")
             
-        time.sleep(20)
+        time.sleep(30)
