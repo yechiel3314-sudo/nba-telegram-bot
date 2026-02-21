@@ -216,22 +216,22 @@ if __name__ == "__main__":
             current_time = now.strftime("%H:%M")
 
             # לו"ז משחקי אן בי איי להלילה 18:34
-            if current_time == "18:34":
+            if current_time == "18:38":
                 get_nba_full_schedule()
                 time.sleep(61)
 
             # לו"ז משחקי לגיונרים להלילה 18:35
-            elif current_time == "18:35":
+            elif current_time == "18:38":
                 get_upcoming_israelis()
                 time.sleep(61)
 
             # סיכום לגיונרים (ביצועים) 18:36
-            elif current_time == "18:36":
+            elif current_time == "18:38":
                 get_morning_summary()
                 time.sleep(61)
 
             # סיכום תוצאות הלילה באן בי איי 18:37
-            elif current_time == "18:37":
+            elif current_time == "18:38":
                 get_nba_scores_summary()
                 time.sleep(61)
 
@@ -244,3 +244,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Main Loop Error: {e}")
             time.sleep(60)
+
