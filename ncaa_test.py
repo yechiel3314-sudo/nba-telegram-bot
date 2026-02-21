@@ -16,7 +16,7 @@ GLEAGUE_API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba-ght/
 
 translator = GoogleTranslator(source='en', target='iw')
 RTL_MARK = "\u200f"
-injury_watch_list = {} # רשימת מעקב לפציעות
+injury_watch_list = {} 
 cycle_done_today = ""
 
 PLAYERS = {
@@ -55,10 +55,6 @@ def tr(text):
         return t
     except: return text
 
-def get_isr_time(date_str):
-    utc_dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
-    return utc_dt.astimezone(pytz.timezone('Asia/Jerusalem')).strftime("%H:%M")
-
 def send(text):
     if not text: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -76,19 +72,20 @@ def get_inj(ev, p_en):
     except: pass
     return "ACTIVE"
 
-# --- 1. לו"ז NBA (מ-19:00 והלאה) ---
+# --- 1. לו"ז NBA כללי ---
 def do_msg_1():
     try:
         data = requests.get(NBA_API).json()
         games = []
         for ev in data.get("events", []):
-            tm = get_isr_time(ev['date'])
+            utc_dt = datetime.strptime(ev['date'], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+            tm = utc_dt.astimezone(pytz.timezone('Asia/Jerusalem')).strftime("%H:%M")
             t = ev['competitions'][0]['competitors']
-            games.append(f"{RTL_MARK}⏰ **{tm}**\n{RTL_MARK}🏀 {tr(t[1]['team']['displayName'])} 🆚 {tr(t[0]['team']['displayName'])}")
+            games.append(f"{RTL_MARK}⏰ **{tm}**\n{RTL_MARK}🏀 **{tr(t[1]['team']['displayName'])}** 🆚 **{tr(t[0]['team']['displayName'])}**")
         if games: send(f"{RTL_MARK}🏀 ══ **לוח המשחקים להיום בלילה** ══ 🏀\n\n" + "\n\n".join(games))
     except: pass
 
-# --- 2. לו"ז לגיונרים מעוצב + פציעות ---
+# --- 2. לו"ז לגיונרים (NBA -> G -> NCAA) ---
 def do_msg_2():
     try:
         g_data = requests.get(GLEAGUE_API).json()
@@ -109,10 +106,11 @@ def do_msg_2():
                             note = " ⚠️ **(בסימן שאלה)**"
                             injury_watch_list[f"{p_en}_{ev['id']}"] = {"name": info[0], "api": api}
                         
+                        utc_dt = datetime.strptime(ev['date'], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+                        tm = utc_dt.astimezone(pytz.timezone('Asia/Jerusalem')).strftime("%H:%M")
                         opp = [t["team"]["displayName"] for t in teams if info[1].lower() not in t["team"]["displayName"].lower()][0]
-                        tm = get_isr_time(ev['date'])
-                        link = "https://www.365scores.com/he/basketball"
-                        section += f"{RTL_MARK}🇮🇱 **{info[0]}** ({tr(info[2])}){note}\n{RTL_MARK}🆚 נגד: **{tr(opp)}**\n{RTL_MARK}⏰ שעה: **{tm}**\n{RTL_MARK}🔗 [לעמוד המשחק ב-365Scores]({link})\n\n"
+                        link = f"https://www.365scores.com/he/basketball/results?q={info[1].replace(' ', '%20')}"
+                        section += f"{RTL_MARK}🏀 **{info[0]}** ({tr(info[2])}){note}\n{RTL_MARK}🆚 נגד: **{tr(opp)}**\n{RTL_MARK}⏰ שעה: **{tm}**\n{RTL_MARK}🔗 [לעמוד המשחק ב-365Scores]({link})\n\n"
             if section: send(f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה - {title}** 🇮🇱\n\n{section}")
     except: pass
 
@@ -136,11 +134,11 @@ def do_msg_3():
                                     my_t = [t for t in teams if t["team"]["id"] == t_box["team"]["id"]][0]
                                     opp_t = [t for t in teams if t["team"]["id"] != t_box["team"]["id"]][0]
                                     res = "✅" if int(my_t["score"]) > int(opp_t["score"]) else "❌"
-                                    section += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}{res} {my_t['score']} - {opp_t['score']} נגד {tr(opp_t['team']['displayName'])}\n{RTL_MARK}📊 **{pts} נק', {reb} ריב', {ast} אס'**\n\n"
+                                    section += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}{res} **{my_t['score']} - {opp_t['score']}** נגד **{tr(opp_t['team']['displayName'])}**\n{RTL_MARK}📊 **{pts} נק', {reb} ריב', {ast} אס'**\n\n"
             if section: send(f"{RTL_MARK}🇮🇱 **סיכום לגיונרים מהבוקר - {key}** 🇮🇱\n\n{section}")
     except: pass
 
-# --- 4. תוצאות NBA סופיות (העיצוב המקורי) ---
+# --- 4. תוצאות NBA סופיות (עיצוב 🏆) ---
 def do_msg_4():
     try:
         yesterday = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
@@ -178,7 +176,7 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         curr = now.strftime("%H:%M")
-        if curr == "19:41" and cycle_done_today != now.strftime("%Y%m%d"):
+        if curr == "19:46" and cycle_done_today != now.strftime("%Y%m%d"):
             do_msg_1()
             time.sleep(10)
             do_msg_2()
@@ -188,6 +186,8 @@ if __name__ == "__main__":
             do_msg_4()
             cycle_done_today = now.strftime("%Y%m%d")
         
-        if (now.hour >= 19 and now.minute >= 51) or (now.hour < 9):
+        # ניטור פציעות רץ כל דקה בין 19:00 ל-9:00 בבוקר
+        if (now.hour >= 19) or (now.hour < 9):
             check_live_injuries()
+            
         time.sleep(30)
