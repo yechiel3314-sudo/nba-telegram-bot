@@ -72,7 +72,7 @@ def get_inj(ev, p_en):
     except: pass
     return "ACTIVE"
 
-# --- 1. לו"ז NBA כללי ---
+# --- 1. לו"ז NBA (18:00) ---
 def do_msg_1():
     try:
         data = requests.get(NBA_API).json()
@@ -81,11 +81,14 @@ def do_msg_1():
             utc_dt = datetime.strptime(ev['date'], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
             tm = utc_dt.astimezone(pytz.timezone('Asia/Jerusalem')).strftime("%H:%M")
             t = ev['competitions'][0]['competitors']
-            games.append(f"{RTL_MARK}⏰ **{tm}**\n{RTL_MARK}🏀 **{tr(t[1]['team']['displayName'])}** 🆚 **{tr(t[0]['team']['displayName'])}**")
-        if games: send(f"{RTL_MARK}🏀 ══ **לוח המשחקים להיום בלילה** ══ 🏀\n\n" + "\n\n".join(games))
+            # שימוש ברווחים מסביב לכוכביות כדי להבטיח הדגשה בטלגרם
+            games.append(f"{RTL_MARK}⏰ ** {tm} **\n{RTL_MARK}🏀 ** {tr(t[1]['team']['displayName'])} ** 🆚 ** {tr(t[0]['team']['displayName'])} **")
+        if games:
+            msg = f"{RTL_MARK}🏀 ══ ** לוח המשחקים להיום בלילה ** ══ 🏀\n\n" + "\n\n".join(games)
+            send(msg)
     except: pass
 
-# --- 2. לו"ז לגיונרים (NBA -> G -> NCAA) ---
+# --- 2. לו"ז לגיונרים (18:30) ---
 def do_msg_2():
     try:
         g_data = requests.get(GLEAGUE_API).json()
@@ -101,29 +104,30 @@ def do_msg_2():
                     if p_en == "Ben Saraf" and key == "NBA" and saraf_gleague: continue
                     if any(info[1].lower() in t["team"]["displayName"].lower() for t in teams):
                         st = get_inj(ev, p_en)
-                        note = ""
-                        if "QUEST" in st or "GTD" in st:
-                            note = " ⚠️ **(בסימן שאלה)**"
-                            injury_watch_list[f"{p_en}_{ev['id']}"] = {"name": info[0], "api": api}
+                        note = " ⚠️ ** (בסימן שאלה) **" if ("QUEST" in st or "GTD" in st) else ""
+                        if note: injury_watch_list[f"{p_en}_{ev['id']}"] = {"name": info[0], "api": api}
                         
                         utc_dt = datetime.strptime(ev['date'], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
                         tm = utc_dt.astimezone(pytz.timezone('Asia/Jerusalem')).strftime("%H:%M")
                         opp = [t["team"]["displayName"] for t in teams if info[1].lower() not in t["team"]["displayName"].lower()][0]
                         link = f"https://www.365scores.com/he/basketball/results?q={info[1].replace(' ', '%20')}"
-                        section += f"{RTL_MARK}🏀 **{info[0]}** ({tr(info[2])}){note}\n{RTL_MARK}🆚 נגד: **{tr(opp)}**\n{RTL_MARK}⏰ שעה: **{tm}**\n{RTL_MARK}🔗 [לעמוד המשחק ב-365Scores]({link})\n\n"
-            if section: send(f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה - {title}** 🇮🇱\n\n{section}")
+                        section += f"{RTL_MARK}🏀 ** {info[0]} ** ({tr(info[2])}){note}\n{RTL_MARK}🆚 נגד: ** {tr(opp)} **\n{RTL_MARK}⏰ שעה: ** {tm} **\n{RTL_MARK}🔗 [לעמוד המשחק ב-365Scores]({link})\n\n"
+            if section:
+                send(f"{RTL_MARK}🇮🇱 ** משחקי לגיונרים הלילה - {title} ** 🇮🇱\n\n{section}")
     except: pass
 
-# --- 3. סיכום לגיונרים (תוצאות הבוקר) ---
+# --- 3. סיכום לגיונרים (09:15) ---
 def do_msg_3():
     try:
-        yesterday = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
+        # בדיקה על האתמול האמיתי (API מקבל תאריך בפורמט YYYYMMDD)
+        date_str = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
         for key, api, path in [("NBA", NBA_API, "nba"), ("GLEAGUE", GLEAGUE_API, "nba-ght"), ("NCAA", NCAA_API, "mens-college-basketball")]:
-            data = requests.get(f"{api}?dates={yesterday}").json()
+            res_data = requests.get(f"{api}?dates={date_str}").json()
             section = ""
-            for ev in data.get("events", []):
+            for ev in res_data.get("events", []):
                 if ev["status"]["type"]["state"] == "post":
-                    summary = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/{path}/summary?event={ev['id']}").json()
+                    summary_url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/{path}/summary?event={ev['id']}"
+                    summary = requests.get(summary_url).json()
                     for p_en, info in PLAYERS[key].items():
                         for t_box in summary.get("players", []):
                             for ath in t_box.get("athletes", []):
@@ -133,23 +137,25 @@ def do_msg_3():
                                     teams = ev["competitions"][0]["competitors"]
                                     my_t = [t for t in teams if t["team"]["id"] == t_box["team"]["id"]][0]
                                     opp_t = [t for t in teams if t["team"]["id"] != t_box["team"]["id"]][0]
-                                    res = "✅" if int(my_t["score"]) > int(opp_t["score"]) else "❌"
-                                    section += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}{res} **{my_t['score']} - {opp_t['score']}** נגד **{tr(opp_t['team']['displayName'])}**\n{RTL_MARK}📊 **{pts} נק', {reb} ריב', {ast} אס'**\n\n"
-            if section: send(f"{RTL_MARK}🇮🇱 **סיכום לגיונרים מהבוקר - {key}** 🇮🇱\n\n{section}")
+                                    res_icon = "✅" if int(my_t["score"]) > int(opp_t["score"]) else "❌"
+                                    section += f"{RTL_MARK}🏀 ** {info[0]} **\n{RTL_MARK}{res_icon} ** {my_t['score']} - {opp_t['score']} ** נגד ** {tr(opp_t['team']['displayName'])} **\n{RTL_MARK}📊 ** {pts} נק', {reb} ריב', {ast} אס' **\n\n"
+            if section:
+                send(f"{RTL_MARK}🇮🇱 ** סיכום לגיונרים מהבוקר - {key} ** 🇮🇱\n\n{section}")
     except: pass
 
-# --- 4. תוצאות NBA סופיות (עיצוב 🏆) ---
+# --- 4. תוצאות NBA כללי (09:00) ---
 def do_msg_4():
     try:
-        yesterday = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
-        data = requests.get(f"{NBA_API}?dates={yesterday}").json()
+        date_str = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
+        data = requests.get(f"{NBA_API}?dates={date_str}").json()
         res = []
         for ev in data.get("events", []):
             if ev["status"]["type"]["state"] == "post":
                 t = ev["competitions"][0]["competitors"]
                 w, l = (t[0], t[1]) if int(t[0]["score"]) > int(t[1]["score"]) else (t[1], t[0])
-                res.append(f"{RTL_MARK}🏆 **{tr(w['team']['displayName'])} {w['score']}**\n{RTL_MARK}🏀 {tr(l['team']['displayName'])} {l['score']}")
-        if res: send(f"{RTL_MARK}🏁 **סיכום תוצאות הלילה - NBA** 🏁\n\n" + "\n\n".join(res))
+                res.append(f"{RTL_MARK}🏆 ** {tr(w['team']['displayName'])} {w['score']} **\n{RTL_MARK}🏀 {tr(l['team']['displayName'])} {l['score']}")
+        if res:
+            send(f"{RTL_MARK}🏁 ** סיכום תוצאות הלילה - NBA ** 🏁\n\n" + "\n\n".join(res))
     except: pass
 
 # --- ניטור פציעות אקטיבי ---
@@ -164,10 +170,10 @@ def check_live_injuries():
                 if ev["id"] in k:
                     st = get_inj(ev, p_en)
                     if "ACTIVE" in st or "PROBABLE" in st:
-                        send(f"{RTL_MARK}🇮🇱 **עדכון סופי: {d['name']} משחק! ✅**")
+                        send(f"{RTL_MARK}🇮🇱 ** עדכון סופי: {d['name']} משחק! ✅ **")
                         to_remove.append(k)
                     elif "OUT" in st:
-                        send(f"{RTL_MARK}🇮🇱 **עדכון סופי: {d['name']} בחוץ הלילה ❌**")
+                        send(f"{RTL_MARK}🇮🇱 ** עדכון סופי: {d['name']} בחוץ הלילה ❌ **")
                         to_remove.append(k)
         except: pass
     for k in to_remove: injury_watch_list.pop(k, None)
@@ -176,18 +182,26 @@ if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
         curr = now.strftime("%H:%M")
-        if curr == "19:46" and cycle_done_today != now.strftime("%Y%m%d"):
+        today = now.strftime("%Y%m%d")
+
+        # לו"ז ערב
+        if curr == "18:00" and cycle_done_today != today + "_1800":
             do_msg_1()
-            time.sleep(10)
+            cycle_done_today = today + "_1800"
+        if curr == "18:30" and cycle_done_today != today + "_1830":
             do_msg_2()
-            time.sleep(10)
-            do_msg_3()
-            time.sleep(10)
-            do_msg_4()
-            cycle_done_today = now.strftime("%Y%m%d")
+            cycle_done_today = today + "_1830"
         
-        # ניטור פציעות רץ כל דקה בין 19:00 ל-9:00 בבוקר
-        if (now.hour >= 19) or (now.hour < 9):
+        # תוצאות בוקר
+        if curr == "09:00" and cycle_done_today != today + "_0900":
+            do_msg_4()
+            cycle_done_today = today + "_0900"
+        if curr == "09:15" and cycle_done_today != today + "_0915":
+            do_msg_3()
+            cycle_done_today = today + "_0915"
+
+        # ניטור פציעות בלילה
+        if (now.hour >= 18) or (now.hour < 9):
             check_live_injuries()
             
         time.sleep(30)
