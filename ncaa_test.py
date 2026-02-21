@@ -17,6 +17,7 @@ GLEAGUE_API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba-ght/
 translator = GoogleTranslator(source='en', target='iw')
 RTL_MARK = "\u200f"
 status_cache = {}
+translation_cache = {}
 
 PLAYERS = {
     "NBA": {
@@ -48,6 +49,7 @@ PLAYERS = {
 }
 
 def tr(text):
+    if text in translation_cache: return translation_cache[text]
     try:
         t = translator.translate(text)
         corrections = {
@@ -56,6 +58,7 @@ def tr(text):
             "חום": "מיאמי היט", "מלכים": "סקרמנטו קינגס", "ג'אז ביוטה": "יוטה ג'אז"
         }
         for eng, heb in corrections.items(): t = t.replace(eng, heb)
+        translation_cache[text] = t
         return t
     except: return text
 
@@ -63,8 +66,11 @@ def send_telegram(text):
     if not text or len(text) < 5: return
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
-    try: requests.post(url, json=payload, timeout=10)
-    except: pass
+    try: 
+        requests.post(url, json=payload, timeout=10)
+        print(f"✅ הודעה נשלחה בהצלחה")
+    except Exception as e: 
+        print(f"❌ שגיאה בשליחת טלגרם: {e}")
 
 def get_injury_status(ev, p_en):
     try:
@@ -76,17 +82,17 @@ def get_injury_status(ev, p_en):
     except: pass
     return {"status": "ACTIVE", "reason": ""}
 
-# --- 1. סיכום תוצאות הלילה ---
+# --- 1. סיכום תוצאות הלילה (כללי) ---
 def get_nba_scores_summary():
+    print("מריץ סיכום תוצאות NBA...")
     results = []
     try:
         date_str = (datetime.now() - timedelta(hours=15)).strftime("%Y%m%d")
-        data = requests.get(f"{NBA_API}?dates={date_str}").json()
+        data = requests.get(f"{NBA_API}?dates={date_str}", timeout=10).json()
         for ev in data.get("events", []):
             if ev["status"]["type"]["state"] == "post":
                 t = ev["competitions"][0]["competitors"]
-                h_f = tr(t[0]["team"]["displayName"])
-                a_f = tr(t[1]["team"]["displayName"])
+                h_f, a_f = tr(t[0]["team"]["displayName"]), tr(t[1]["team"]["displayName"])
                 h_s, a_s = int(t[0]["score"]), int(t[1]["score"])
                 if h_s > a_s:
                     l1, l2 = f"🏆 ** {h_f} {h_s} **", f"🏀 {a_f} {a_s}"
@@ -95,20 +101,21 @@ def get_nba_scores_summary():
                 results.append(f"{RTL_MARK}{l1}\n{RTL_MARK}{l2}")
         if results:
             send_telegram(f"{RTL_MARK}🏁 ** סיכום תוצאות הלילה - NBA ** 🏁\n\n" + "\n\n".join(results))
-    except: pass
+    except Exception as e: print(f"Error in scores: {e}")
 
-# --- 2. סיכום לגיונרים (ביצועים אישיים) ---
+# --- 2. סיכום לגיונרים (ביצועים) ---
 def get_morning_summary():
+    print("מריץ סיכום ביצועי לגיונרים...")
     sections = {"NBA": "", "GLEAGUE": "", "NCAA": ""}
     found_players = set()
     leagues = [(NBA_API, "NBA", PLAYERS["NBA"], "nba"), (GLEAGUE_API, "GLEAGUE", PLAYERS["GLEAGUE"], "nba-ght"), (NCAA_API, "NCAA", PLAYERS["NCAA"], "mens-college-basketball")]
     for api_url, key, db, path in leagues:
         try:
             date_str = (datetime.now() - timedelta(hours=15)).strftime("%Y%m%d")
-            data = requests.get(f"{api_url}?dates={date_str}").json()
+            data = requests.get(f"{api_url}?dates={date_str}", timeout=10).json()
             for ev in data.get("events", []):
                 if ev["status"]["type"]["state"] == "post":
-                    summary = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/{path}/summary?event={ev['id']}").json()
+                    summary = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/{path}/summary?event={ev['id']}", timeout=10).json()
                     for p_en, info in db.items():
                         if f"{p_en}_{ev['id']}" in found_players: continue
                         for t_box in summary.get("players", []):
@@ -127,19 +134,21 @@ def get_morning_summary():
     for k, title in [("NBA", "NBA"), ("GLEAGUE", "G-LEAGUE"), ("NCAA", "מכללות")]:
         if sections[k]: send_telegram(f"{RTL_MARK}🇮🇱 ** סיכום לגיונרים - {title} ** 🇮🇱\n\n{sections[k]}")
 
-# --- 3. לו"ז לגיונרים (כולל סינון בן שרף ובדיקת פציעות) ---
+# --- 3. לו"ז לגיונרים להלילה ---
 def get_upcoming_israelis():
+    print("מריץ לוז לגיונרים...")
     sections = {"NBA": "", "GLEAGUE": "", "NCAA": ""}
     now_isr = datetime.now(pytz.timezone('Asia/Jerusalem'))
     saraf_in_gleague = False
     try:
-        g_data = requests.get(GLEAGUE_API).json()
+        g_data = requests.get(GLEAGUE_API, timeout=10).json()
         saraf_in_gleague = any("Long Island" in t["team"]["displayName"] for ev in g_data.get("events", []) for t in ev["competitions"][0]["competitors"])
     except: pass
+    
     configs = [(NBA_API, "NBA", PLAYERS["NBA"]), (GLEAGUE_API, "GLEAGUE", PLAYERS["GLEAGUE"]), (NCAA_API, "NCAA", PLAYERS["NCAA"])]
     for api_url, key, db in configs:
         try:
-            data = requests.get(api_url).json()
+            data = requests.get(api_url, timeout=10).json()
             for ev in data.get("events", []):
                 if ev["status"]["type"]["state"] == "pre":
                     tm = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
@@ -150,19 +159,20 @@ def get_upcoming_israelis():
                             if any(info[2].lower() in t["team"]["displayName"].lower() for t in teams):
                                 vs = [t["team"]["displayName"] for t in teams if info[2].lower() not in t["team"]["displayName"].lower()][0]
                                 inj = get_injury_status(ev, p_en)
-                                note = f" {RTL_MARK}⚠️ (בסימן שאלה)" if "QUESTIONABLE" in inj["status"] or "GTD" in inj["status"] else ""
+                                note = f" {RTL_MARK}⚠️ (בסימן שאלה)" if any(x in inj["status"] for x in ["QUESTIONABLE", "GTD", "DOUBTFUL"]) else ""
                                 if note: status_cache[f"{p_en}_{ev['id']}"] = "QUESTIONABLE"
                                 sections[key] += f"{RTL_MARK}🏀 ** {info[0]} ** {note}\n{RTL_MARK}🆚 נגד: ** {tr(vs)} **\n{RTL_MARK}⏰ שעה: ** {tm.strftime('%H:%M')} **\n\n"
         except: continue
     for k, title in [("NBA", "NBA"), ("GLEAGUE", "G-LEAGUE"), ("NCAA", "מכללות")]:
         if sections[k]: send_telegram(f"{RTL_MARK}🇮🇱 ** משחקי לגיונרים הלילה - {title} ** 🇮🇱\n\n{sections[k]}")
 
-# --- 4. לו"ז כללי ---
+# --- 4. לו"ז כללי NBA ---
 def get_nba_full_schedule():
+    print("מריץ לוז NBA כללי...")
     now_isr = datetime.now(pytz.timezone('Asia/Jerusalem'))
     games = []
     try:
-        data = requests.get(NBA_API).json()
+        data = requests.get(NBA_API, timeout=10).json()
         for ev in data.get("events", []):
             tm = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc).astimezone(pytz.timezone('Asia/Jerusalem'))
             if now_isr <= tm <= now_isr + timedelta(hours=24):
@@ -172,15 +182,15 @@ def get_nba_full_schedule():
         if games:
             games.sort(key=lambda x: x[0])
             send_telegram(f"{RTL_MARK}🏀 ══ ** לוח המשחקים להיום בלילה ** ══ 🏀\n\n" + "\n\n".join([g[1] for g in games]))
-    except: pass
+    except Exception as e: print(f"Error in full schedule: {e}")
 
-# --- מנגנון עדכוני פציעות (היה במקורי) ---
+# --- 5. עדכוני פציעות בזמן אמת ---
 def check_final_updates():
     global status_cache
     if not status_cache: return
     for url in [NBA_API, NCAA_API, GLEAGUE_API]:
         try:
-            resp = requests.get(url).json()
+            resp = requests.get(url, timeout=10).json()
             for ev in resp.get("events", []):
                 all_p = {**PLAYERS["NBA"], **PLAYERS["GLEAGUE"], **PLAYERS["NCAA"]}
                 for p_en, info in all_p.items():
@@ -195,17 +205,42 @@ def check_final_updates():
                             status_cache[key] = "FINAL"
         except: pass
 
+# ==========================================
+# --- לולאה ראשית - ניהול זמנים ---
+# ==========================================
 if __name__ == "__main__":
+    print("🏀 הבוט הופעל ורץ ברקע...")
     while True:
-        now = datetime.now(pytz.timezone('Asia/Jerusalem'))
-        if now.hour == 16 and now.minute == 36:
-            get_nba_scores_summary()
-            time.sleep(1)
-            get_morning_summary()
-            time.sleep(1)
-            get_upcoming_israelis()
-            time.sleep(1)
-            get_nba_full_schedule()
+        try:
+            now = datetime.now(pytz.timezone('Asia/Jerusalem'))
+            current_time = now.strftime("%H:%M")
+
+            # לו"ז משחקי אן בי איי להלילה 18:34
+            if current_time == "18:34":
+                get_nba_full_schedule()
+                time.sleep(61)
+
+            # לו"ז משחקי לגיונרים להלילה 18:35
+            elif current_time == "18:35":
+                get_upcoming_israelis()
+                time.sleep(61)
+
+            # סיכום לגיונרים (ביצועים) 18:36
+            elif current_time == "18:36":
+                get_morning_summary()
+                time.sleep(61)
+
+            # סיכום תוצאות הלילה באן בי איי 18:37
+            elif current_time == "18:37":
+                get_nba_scores_summary()
+                time.sleep(61)
+
+            # החל מ-18:40 בדיקת פציעות כל דקה
+            if (now.hour == 18 and now.minute >= 40) or (now.hour > 18) or (now.hour <= 9):
+                check_final_updates()
+
+            time.sleep(30) # בדיקה כל חצי דקה כדי לא לפספס דקה קריטית
+            
+        except Exception as e:
+            print(f"Main Loop Error: {e}")
             time.sleep(60)
-        if now.hour >= 18 or now.hour <= 9: check_final_updates()
-        time.sleep(30)
