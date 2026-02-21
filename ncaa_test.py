@@ -16,7 +16,7 @@ GLEAGUE_API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba-ght/
 
 translator = GoogleTranslator(source='en', target='iw')
 RTL_MARK = "\u200f"
-injury_watch_list = {}
+injury_watch_list = {} # רשימת מעקב לפציעות
 cycle_done_today = ""
 
 PLAYERS = {
@@ -76,45 +76,53 @@ def get_inj(ev, p_en):
     except: pass
     return "ACTIVE"
 
-# --- 1. לו"ז NBA ---
+# --- 1. לו"ז NBA (מ-19:00 והלאה) ---
 def do_msg_1():
     try:
         data = requests.get(NBA_API).json()
-        games = [f"{RTL_MARK}⏰ **{get_isr_time(ev['date'])}**\n{RTL_MARK}🏀 {tr(ev['competitions'][0]['competitors'][1]['team']['displayName'])} 🆚 {tr(ev['competitions'][0]['competitors'][0]['team']['displayName'])}" for ev in data.get("events", [])]
+        games = []
+        for ev in data.get("events", []):
+            tm = get_isr_time(ev['date'])
+            t = ev['competitions'][0]['competitors']
+            games.append(f"{RTL_MARK}⏰ **{tm}**\n{RTL_MARK}🏀 {tr(t[1]['team']['displayName'])} 🆚 {tr(t[0]['team']['displayName'])}")
         if games: send(f"{RTL_MARK}🏀 ══ **לוח המשחקים להיום בלילה** ══ 🏀\n\n" + "\n\n".join(games))
     except: pass
 
-# --- 2. לו"ז לגיונרים מעוצב ---
+# --- 2. לו"ז לגיונרים מעוצב + פציעות ---
 def do_msg_2():
     try:
         g_data = requests.get(GLEAGUE_API).json()
         saraf_gleague = any("Long Island" in t["team"]["displayName"] for ev in g_data.get("events", []) for t in ev["competitions"][0]["competitors"])
+        
         for key, title in [("NBA", "NBA"), ("GLEAGUE", "G-LEAGUE"), ("NCAA", "מכללות")]:
             api = NBA_API if key == "NBA" else (GLEAGUE_API if key == "GLEAGUE" else NCAA_API)
             data = requests.get(api).json()
-            sec = ""
+            section = ""
             for ev in data.get("events", []):
                 teams = ev["competitions"][0]["competitors"]
                 for p_en, info in PLAYERS[key].items():
                     if p_en == "Ben Saraf" and key == "NBA" and saraf_gleague: continue
                     if any(info[1].lower() in t["team"]["displayName"].lower() for t in teams):
                         st = get_inj(ev, p_en)
-                        note = " ⚠️ **(בסימן שאלה)**" if "QUEST" in st or "GTD" in st else ""
-                        if note: injury_watch_list[f"{p_en}_{ev['id']}"] = {"name": info[0], "api": api}
+                        note = ""
+                        if "QUEST" in st or "GTD" in st:
+                            note = " ⚠️ **(בסימן שאלה)**"
+                            injury_watch_list[f"{p_en}_{ev['id']}"] = {"name": info[0], "api": api}
+                        
                         opp = [t["team"]["displayName"] for t in teams if info[1].lower() not in t["team"]["displayName"].lower()][0]
-                        # קישור ל-365Scores (חיפוש גוגל שמוביל לשם)
-                        link = f"https://www.365scores.com/he/basketball/league/{title.lower()}"
-                        sec += f"{RTL_MARK}🏀 **{info[0]}** ({tr(info[2])}){note}\n{RTL_MARK}🆚 נגד: **{tr(opp)}**\n{RTL_MARK}⏰ שעה: **{get_isr_time(ev['date'])}**\n{RTL_MARK}🔗 [לעמוד המשחק ב-365Scores]({link})\n\n"
-            if sec: send(f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה - {title}** 🇮🇱\n\n{sec}")
+                        tm = get_isr_time(ev['date'])
+                        link = "https://www.365scores.com/he/basketball"
+                        section += f"{RTL_MARK}🇮🇱 **{info[0]}** ({tr(info[2])}){note}\n{RTL_MARK}🆚 נגד: **{tr(opp)}**\n{RTL_MARK}⏰ שעה: **{tm}**\n{RTL_MARK}🔗 [לעמוד המשחק ב-365Scores]({link})\n\n"
+            if section: send(f"{RTL_MARK}🇮🇱 **משחקי לגיונרים הלילה - {title}** 🇮🇱\n\n{section}")
     except: pass
 
-# --- 3. סיכום לגיונרים (אתמול) ---
+# --- 3. סיכום לגיונרים (תוצאות הבוקר) ---
 def do_msg_3():
     try:
         yesterday = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
         for key, api, path in [("NBA", NBA_API, "nba"), ("GLEAGUE", GLEAGUE_API, "nba-ght"), ("NCAA", NCAA_API, "mens-college-basketball")]:
             data = requests.get(f"{api}?dates={yesterday}").json()
-            sec = ""
+            section = ""
             for ev in data.get("events", []):
                 if ev["status"]["type"]["state"] == "post":
                     summary = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/{path}/summary?event={ev['id']}").json()
@@ -128,11 +136,11 @@ def do_msg_3():
                                     my_t = [t for t in teams if t["team"]["id"] == t_box["team"]["id"]][0]
                                     opp_t = [t for t in teams if t["team"]["id"] != t_box["team"]["id"]][0]
                                     res = "✅" if int(my_t["score"]) > int(opp_t["score"]) else "❌"
-                                    sec += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}{res} {my_t['score']} - {opp_t['score']} נגד {tr(opp_t['team']['displayName'])}\n{RTL_MARK}📊 **{pts} נק', {reb} ריב', {ast} אס'**\n\n"
-            if sec: send(f"{RTL_MARK}🇮🇱 **סיכום לגיונרים מהבוקר - {key}** 🇮🇱\n\n{sec}")
+                                    section += f"{RTL_MARK}🏀 **{info[0]}**\n{RTL_MARK}{res} {my_t['score']} - {opp_t['score']} נגד {tr(opp_t['team']['displayName'])}\n{RTL_MARK}📊 **{pts} נק', {reb} ריב', {ast} אס'**\n\n"
+            if section: send(f"{RTL_MARK}🇮🇱 **סיכום לגיונרים מהבוקר - {key}** 🇮🇱\n\n{section}")
     except: pass
 
-# --- 4. תוצאות NBA מעוצב ---
+# --- 4. תוצאות NBA סופיות (העיצוב המקורי) ---
 def do_msg_4():
     try:
         yesterday = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
@@ -169,17 +177,17 @@ def check_live_injuries():
 if __name__ == "__main__":
     while True:
         now = datetime.now(pytz.timezone('Asia/Jerusalem'))
-        curr_hm = now.strftime("%H:%M")
-        if curr_hm == "19:36" and cycle_done_today != now.strftime("%Y%m%d"):
+        curr = now.strftime("%H:%M")
+        if curr == "19:41" and cycle_done_today != now.strftime("%Y%m%d"):
             do_msg_1()
-            time.sleep(5)
+            time.sleep(10)
             do_msg_2()
-            time.sleep(5)
+            time.sleep(10)
             do_msg_3()
-            time.sleep(5)
+            time.sleep(10)
             do_msg_4()
             cycle_done_today = now.strftime("%Y%m%d")
         
-        if (now.hour >= 19 and now.minute >= 41) or (now.hour < 9):
+        if (now.hour >= 19 and now.minute >= 51) or (now.hour < 9):
             check_live_injuries()
         time.sleep(30)
