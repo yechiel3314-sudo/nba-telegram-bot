@@ -44,18 +44,24 @@ def save_cache():
 def translate_player_name(english_name):
     if english_name in cache["names"]:
         return cache["names"][english_name]
-    try:
-        time.sleep(0.8) # מניעת שגיאה 429
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=f"Translate NBA player '{english_name}' to Hebrew. Return ONLY the name."
-        )
-        translated = response.text.strip().replace("*", "")
-        if translated and len(translated) < 40:
-            cache["names"][english_name] = translated
-            save_cache()
-            return translated
-    except Exception: pass
+    
+    # ניסיון תרגום עם המתנה ארוכה למניעת חסימות מכסה
+    for attempt in range(3):
+        try:
+            time.sleep(3.0) # המתנה של 3 שניות בין בקשה לבקשה
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=f"Translate NBA player name '{english_name}' to Hebrew. Return ONLY the name."
+            )
+            translated = response.text.strip().replace("*", "")
+            if translated and len(translated) < 40:
+                cache["names"][english_name] = translated
+                save_cache()
+                return translated
+        except Exception as e:
+            print(f"Translation attempt {attempt+1} failed for {english_name}: {e}")
+            time.sleep(5) # המתנה ארוכה יותר לפני ניסיון חוזר
+            
     return english_name
 
 def get_lineups_and_injuries(box):
@@ -86,7 +92,7 @@ def format_msg(box, label, is_final=False):
 
 # --- הודעת פתיחה (חמישיות וחיסורים) ---
     if "יצא לדרך" in label and period == 1:
-        msg = f"{rtl}🏀 {b('המשחק יצא לדרך')} 🏀\n"
+        msg = f"{rtl}⏱️ {b('המשחק יצא לדרך')}\n"
         msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
         
         lineups = get_lineups_and_injuries(box)
@@ -120,7 +126,7 @@ def format_msg(box, label, is_final=False):
         return msg, photo_url
 
     # --- הודעות תוצאה (רבע/מחצית/סיום) ---
-    msg = f"{rtl}🏀 {b(label)} 🏀\n"
+    msg = f"{rtl}⏱️ {b(label)}\n"
     msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
 
     leader = a_name if away['score'] > home['score'] else h_name
@@ -203,4 +209,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
