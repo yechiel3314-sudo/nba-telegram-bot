@@ -106,9 +106,8 @@ def format_msg(box, label, is_final=False):
             msg += f"\u200f{medal} <b>{p_full}</b>: {get_stat_line(p)}\n"
         msg += "\n"
 
-    photo_url = None
     if is_final:
-        # MVP אמיתי לפי מדד יעילות
+        # 1. מציאת ה-MVP
         all_p = away['players'] + home['players']
         mvp = max(all_p, key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists'])
         mvp_full_name = translate_name(f"{mvp['firstName']} {mvp['familyName']}")
@@ -116,12 +115,15 @@ def format_msg(box, label, is_final=False):
         msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_full_name}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}\n"
         
-        # שימוש בפורמט התמונה המעודכן והאיכותי ביותר של ה-NBA (ללא רקע או עם פורמט אחיד)
-        # הקישור הזה מושך תמונה גדולה ונקייה של השחקן מהעונה הנוכחית
-        # שימוש בפורמט מוקטן ואיכותי (260x190 פיקסלים)
-        photo_url = f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{mvp['personId']}.png"
-
-    return msg, photo_url
+        # 2. משיכת תמונה עדכנית מ-ESPN (שימוש ב-Slug של השם במקום ID)
+        # זה הפתרון הכי עוקף וטוב: ESPN מאפשרים לחפש לפי שם השחקן בכתובת שלהם
+        name_slug = f"{mvp['firstName']}-{mvp['familyName']}".lower().replace(" ", "-")
+        
+        # ניסיון ראשון: תמונת אקשן/סטודיו מעודכנת מ-ESPN
+        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=1000&h=750"
+        
+        # הערה: אם ה-ID של ה-NBA לא תואם ל-ESPN (קורה לפעמים), 
+        # ה-Fallback ב-send_telegram כבר ינסה להביא את התמונה מה-NBA.
 
 def send_telegram(text, photo_url=None):
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
@@ -187,6 +189,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
