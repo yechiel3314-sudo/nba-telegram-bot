@@ -2,18 +2,54 @@ import requests
 import time
 import json
 import os
-from google import genai
+from googletrans import Translator
 
 # =================================================================
-# הגדרות מערכת - יציבות ודיוק מקסימלי
+# הגדרות מערכת - גרסה מלאה (220 שורות) עם Google Translate
 # =================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-# הכנס כאן את המפתח החדש שייצרת
-GEMINI_API_KEY = "AIzaSyB_9d3tRBv58zysiFwjKhDS2aRv5v07NVs" 
-client = genai.Client(api_key=GEMINI_API_KEY)
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
+
+translator = Translator()
+
+# מילון תיקונים ידני - הוספתי את אבדיה והארדן כפי שביקשת
+PLAYER_OVERRIDES = {
+    "Deni Avdija": "דני אבדיה",
+    "James Harden": "ג'יימס הארדן",
+    "Jrue Holiday": "ג'רו הולידיי",
+    "Giannis Antetokounmpo": "יאניס אנדטוקומבו",
+    "Shai Gilgeous-Alexander": "שיי גילג'ס-אלכסנדר",
+    "Luka Doncic": "לוקה דונצ'יץ'",
+    "Nikola Jokic": "ניקולה יוקיץ'",
+    "Joel Embiid": "ג'ואל אמביד",
+    "Tyrese Haliburton": "טייריס הליברטון",
+    "Domantas Sabonis": "דומנטאס סאבוניס",
+    "Kristaps Porzingis": "קריסטפס פורזינגיס",
+    "Victor Wembanyama": "ויקטור וומבניאמה",
+    "Chet Holmgren": "צ'ט הולמגרן",
+    "Alperen Sengun": "אלפרן שנגון",
+    "Karl-Anthony Towns": "קארל-אנתוני טאונס",
+    "Kyrie Irving": "קיירי אירווינג",
+    "Anthony Edwards": "אנתוני אדוארדס",
+    "Kevin Durant": "קוין דוראנט",
+    "Stephen Curry": "סטפן קרי",
+    "LeBron James": "לברון ג'יימס",
+    "Devin Booker": "דבין בוקר",
+    "Jayson Tatum": "ג'ייסון טייטום",
+    "Jaylen Brown": "ג'יילן בראון",
+    "Damian Lillard": "דמיאן לילארד",
+    "Donovan Mitchell": "דונובן מיטשל",
+    "Ja Morant": "ג'ה מוראנט",
+    "Zion Williamson": "זאיון וויליאמסון",
+    "Trae Young": "טריי יאנג",
+    "De'Aaron Fox": "דיארון פוקס",
+    "Kawhi Leonard": "קוואי לנארד",
+    "Paul George": "פול ג'ורג'",
+    "Jimmy Butler": "ג'ימי באטלר",
+    "Bam Adebayo": "באם אדבאיו"
+}
 
 TEAM_TRANSLATIONS = {
     "Hawks": "אטלנטה הוקס", "Celtics": "בוסטון סלטיקס", "Nets": "ברוקלין נטס", 
@@ -43,26 +79,18 @@ def save_cache():
         json.dump(cache, f, indent=4, ensure_ascii=False)
 
 def translate_player_name(english_name):
-    # אם השם כבר תורגם בעבר, הוא נשלף בשבריר שנייה בלי לפנות ל-AI
+    if english_name in PLAYER_OVERRIDES:
+        return PLAYER_OVERRIDES[english_name]
     if english_name in cache["names"]:
         return cache["names"][english_name]
-    
     try:
-        # המתנה חכמה רק לשמות חדשים - מונע את שגיאה 429 שראית
-        time.sleep(2.5) 
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=f"Translate NBA player '{english_name}' to Hebrew. Return ONLY the name."
-        )
-        translated = response.text.strip().replace("*", "")
-        if translated and len(translated) < 40:
+        translated = translator.translate(english_name, src='en', dest='he').text
+        if translated:
             cache["names"][english_name] = translated
             save_cache()
             return translated
-    except Exception as e:
-        print(f"AI limit hit, returning English: {e}")
-        
-    return english_name # במקרה של עומס קיצוני, יחזור אנגלית זמנית כדי שהבוט לא יקרוס
+    except Exception: pass
+    return english_name
 
 def get_lineups_and_injuries(box):
     data = {"away": {"starters": [], "out": []}, "home": {"starters": [], "out": []}}
@@ -90,17 +118,17 @@ def format_msg(box, label, is_final=False):
     rtl = "\u200f"
     def b(text): return f"<b>{str(text).strip()}</b>"
 
-    # שימוש בסטופר רק בצד אחד כפי שביקשת
+    # סטופר בצד אחד בתחילת השורה
     msg = f"{rtl}⏱️ {b(label)}\n"
     msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
 
-    # --- הודעת פתיחה (חמישיות ופוסטר כוכב הבית) ---
+    # הודעת פתיחה עם חמישיות ופוסטר כוכב הבית
     if "יצא לדרך" in label and period == 1:
         lineups = get_lineups_and_injuries(box)
         try:
-            # פוסטר של הכוכב מהקבוצה המארחת (Home)
             h_players = home.get('players', [])
             starters = [p for p in h_players if p.get('starter') == "1"]
+            # פוסטר כוכב הבית
             p_id = starters[0]['personId'] if starters else home['teamId']
             photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{p_id}"
         except:
@@ -114,7 +142,7 @@ def format_msg(box, label, is_final=False):
             msg += "\n"
         return msg, photo_url
 
-    # --- הודעות תוצאה ---
+    # הודעות תוצאה ורבעים
     leader = a_name if away['score'] > home['score'] else h_name
     verb = "מנצחת" if is_final else "מובילה"
     
@@ -137,8 +165,7 @@ def format_msg(box, label, is_final=False):
     if is_final:
         all_p = away.get('players', []) + home.get('players', [])
         mvp = max(all_p, key=lambda x: x['statistics']['points'])
-        mvp_name = translate_player_name(f"{mvp['firstName']} {mvp['familyName']}")
-        msg += f"{rtl}⭐ {b('ה-MVP: ' + mvp_name)}\n"
+        msg += f"{rtl}⭐ {b('ה-MVP: ' + translate_player_name(f'{mvp[u'firstName']} {mvp[u'familyName']}'))}\n"
         msg += f"{rtl}📊 {get_stat_line(mvp)}"
         photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{mvp['personId']}"
 
@@ -154,7 +181,7 @@ def send_telegram(text, photo_url=None):
     except Exception as e: print(f"Telegram Error: {e}")
 
 def run():
-    print("🚀 הבוט התחיל לעבוד...")
+    print("🚀 הבוט באוויר - גרסת טרנסלייט מלאה...")
     while True:
         try:
             resp = requests.get(NBA_URL, timeout=10).json()
@@ -182,8 +209,7 @@ def run():
                     save_cache()
 
         except Exception as e: print(f"Error: {e}")
-        time.sleep(20)
+        time.sleep(15)
 
 if __name__ == "__main__":
     run()
-
