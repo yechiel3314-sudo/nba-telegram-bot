@@ -2,109 +2,119 @@ import requests
 import time
 import json
 import os
-from google import genai
 
 # ==========================================
-# הגדרות מערכת - שים כאן את המפתחות שלך
+# הגדרות מערכת
 # ==========================================
+
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-CHAT_ID = "-1003808107418"
-GEMINI_API_KEY = "AIzaSyCVsa8XtagYAYkhefu6EapEVxMWsXAGbtc" # המפתח שהעתקת מהמסך
+CHAT_ID = "1003808107418"
 
-# אתחול Gemini 3 Flash
-client = genai.Client(api_key=GEMINI_API_KEY)
-NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+NBA_SCOREBOARD_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+NBA_BOXSCORE_URL = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{}.json"
+
 CACHE_FILE = "nba_bot_cache.json"
+PLAYERS_FILE = "players_db.json"
 
 # ==========================================
-# ניהול תרגום וזיכרון (Cache)
+# 30 קבוצות NBA בעברית
 # ==========================================
+
+TEAMS_HE = {
+    "Atlanta Hawks": "אטלנטה הוקס",
+    "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס",
+    "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס",
+    "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס",
+    "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס",
+    "Golden State Warriors": "גולדן סטייט ווריורס",
+    "Houston Rockets": "יוסטון רוקטס",
+    "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "לוס אנג'לס קליפרס",
+    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס",
+    "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס",
+    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס",
+    "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
+    "Orlando Magic": "אורלנדו מג'יק",
+    "Philadelphia 76ers": "פילדלפיה סיקסרס",
+    "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
+    "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס",
+    "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג'אז",
+    "Washington Wizards": "וושינגטון וויזארדס"
+}
+
+# ==========================================
+# בניית מסד נתונים 540 שחקנים (פעם אחת)
+# ==========================================
+
+def build_players_db():
+    if os.path.exists(PLAYERS_FILE):
+        return
+
+    print("בונה מאגר שחקנים...")
+    players = {}
+
+    teams = requests.get("https://cdn.nba.com/static/json/staticData/teamRoster.json").json()["league"]["standard"]
+
+    for team in teams:
+        team_id = team["teamId"]
+        roster_url = f"https://cdn.nba.com/static/json/staticData/teamRoster_{team_id}.json"
+        roster = requests.get(roster_url).json()["league"]["standard"]["players"]
+
+        for p in roster:
+            full_name = f"{p['firstName']} {p['lastName']}"
+            players[str(p["personId"])] = {
+                "fullNameEng": full_name,
+                "fullNameHeb": full_name,  # אפשר לערוך ידנית כוכבים
+                "team": team["fullName"]
+            }
+
+    with open(PLAYERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(players, f, indent=2, ensure_ascii=False)
+
+    print("✅ מאגר שחקנים נוצר")
+
+# ==========================================
+# טעינת קבצים
+# ==========================================
+
+def load_players():
+    with open(PLAYERS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"names": {}, "games": {}}
-
-cache = load_cache()
+    return {"games": {}}
 
 def save_cache():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=4, ensure_ascii=False)
 
-def translate_player_name(english_name):
-    if english_name in cache["names"]:
-        return cache["names"][english_name]
-
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=f"Translate the NBA player name '{english_name}' to Hebrew. Output ONLY the full Hebrew name."
-        )
-
-        translated = response.text.strip()
-        cache["names"][english_name] = translated
-        save_cache()
-        return translated
-
-    except Exception as e:
-        print("Translation error:", e)
-        return english_name
-
 # ==========================================
-# עיצוב הודעות
+# תמונת אקשן MVP
 # ==========================================
 
-def get_stat_line(p):
-    s = p['statistics']
-    return f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
+def get_action_photo(person_id):
+    # ניסיון לתמונת אקשן
+    action_url = f"https://a.espncdn.com/photo/2024/r{person_id}_1296x729_16-9.jpg"
+    r = requests.get(action_url)
+    if r.status_code == 200:
+        return action_url
 
-def format_msg(box, label, is_final=False):
-    away, home = box['awayTeam'], box['homeTeam']
-    a_name = f"{away['teamCity']} {away['teamName']}"
-    h_name = f"{home['teamCity']} {home['teamName']}"
-    period = box.get('period', 0)
-    
-    # אייקון כותרת
-    icon = "🏁" if is_final else ("🚀" if "יצא לדרך" in label else "⏱️")
-    if "דרמה" in label: icon = "😱"
-
-    msg = f"\u200f{icon} **{label}**\n"
-    msg += f"\u200f🏀 **{a_name} 🆚 {h_name}** 🏀\n"
-
-    # שורת תוצאה
-    leader = a_name if away['score'] > home['score'] else h_name
-    if away['score'] == home['score']:
-        msg += f"\u200f🔥 **שוויון {away['score']} - {home['score']}** 🔥\n\n"
-    else:
-        msg += f"\u200f🔥 **{leader} מובילה {max(away['score'], home['score'])} - {min(away['score'], home['score'])}** 🔥\n\n"
-
-    if "יצא לדרך" in label or "דרמה" in label:
-        return msg, None
-
-    # לוגיקת כמות שחקנים: 
-    # רבע 4, הארכות וסיום = 3 שחקנים. רבעים 1-3 = 2 שחקנים.
-    count = 3 if (period >= 4 or is_final) else 2
-
-    for team in [away, home]:
-        msg += f"\u200f📍 **{team['teamName']}**\n"
-        top = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)[:count]
-        for i, p in enumerate(top):
-            medal = "🥇" if i == 0 else ("🥈" if i == 1 else "🥉")
-            p_full = translate_player_name(f"{p['firstName']} {p['familyName']}")
-            msg += f"\u200f{medal} **{p_full}**: {get_stat_line(p)}\n"
-        msg += "\n"
-
-    # תמונת MVP בסיום
-    photo_url = None
-    if is_final:
-        mvp = max(away['players'] + home['players'], key=lambda x: x['statistics']['points'])
-        mvp_name = translate_player_name(f"{mvp['firstName']} {mvp['familyName']}")
-        msg += f"\u200f⭐ **ה-MVP של הלילה: {mvp_name}**\n"
-        msg += f"\u200f📊 {get_stat_line(mvp)}"
-        photo_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{mvp['personId']}.png"
-
-    return msg, photo_url
+    # fallback headshot
+    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{person_id}.png"
 
 # ==========================================
 # שליחה לטלגרם
@@ -117,9 +127,63 @@ def send_telegram(text, photo_url=None):
     else:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+
     try:
         requests.post(url, json=payload, timeout=10)
-    except: pass
+    except:
+        pass
+
+# ==========================================
+# עיצוב הודעה
+# ==========================================
+
+def get_stat_line(p):
+    s = p["statistics"]
+    return f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
+
+def format_msg(box, label, is_final=False):
+    away = box["awayTeam"]
+    home = box["homeTeam"]
+
+    away_name = f"{away['teamCity']} {away['teamName']}"
+    home_name = f"{home['teamCity']} {home['teamName']}"
+
+    away_he = TEAMS_HE.get(away_name, away_name)
+    home_he = TEAMS_HE.get(home_name, home_name)
+
+    msg = f"🏀 **{label}**\n"
+    msg += f"**{away_he} 🆚 {home_he}**\n\n"
+
+    leader = away_he if away["score"] > home["score"] else home_he
+    msg += f"🔥 **{leader} {away['score']} - {home['score']}** 🔥\n\n"
+
+    period = box.get("period", 0)
+    count = 3 if (period >= 4 or is_final) else 2
+
+    for team in [away, home]:
+        team_name = f"{team['teamCity']} {team['teamName']}"
+        team_he = TEAMS_HE.get(team_name, team_name)
+
+        msg += f"📍 **{team_he}**\n"
+        top = sorted(team["players"], key=lambda x: x["statistics"]["points"], reverse=True)[:count]
+
+        for i, p in enumerate(top):
+            medal = ["🥇", "🥈", "🥉"][i]
+            name = players_db.get(str(p["personId"]), {}).get("fullNameHeb", p["firstName"] + " " + p["familyName"])
+            msg += f"{medal} **{name}**: {get_stat_line(p)}\n"
+
+        msg += "\n"
+
+    photo = None
+
+    if is_final:
+        mvp = max(away["players"] + home["players"], key=lambda x: x["statistics"]["points"])
+        mvp_name = players_db.get(str(mvp["personId"]), {}).get("fullNameHeb")
+        msg += f"⭐ **MVP: {mvp_name}**\n"
+        msg += f"{get_stat_line(mvp)}"
+        photo = get_action_photo(mvp["personId"])
+
+    return msg, photo
 
 # ==========================================
 # לוגיקה ראשית
@@ -127,56 +191,34 @@ def send_telegram(text, photo_url=None):
 
 def run():
     print("🚀 הבוט באוויר...")
+
     while True:
         try:
-            resp = requests.get(NBA_URL, timeout=10).json()
-            for g in resp['scoreboard']['games']:
-                gid = g['gameId']
-                status = g['gameStatus']
-                txt = g.get('gameStatusText', '').lower()
-                period = g.get('period', 0)
-                
-                if gid not in cache["games"]: cache["games"][gid] = []
-                game_log = cache["games"][gid]
+            data = requests.get(NBA_SCOREBOARD_URL, timeout=10).json()
 
-                # פתיחת רבע 3
-                if period == 3 and "q3" in txt and "start" in txt and "p3_start" not in game_log:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, _ = format_msg(box, "רבע 3 יצא לדרך")
-                    send_telegram(msg)
-                    game_log.append("p3_start")
+            for g in data["scoreboard"]["games"]:
+                gid = g["gameId"]
+                status = g["gameStatus"]
 
-                # סיום רבעים / הארכות / משחק
-                if ("end" in txt or "half" in txt or status == 3) and txt not in game_log:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    
-                    # בדיקת שוויון בסיום רבע 4 (דרמה)
-                    if period == 4 and "end" in txt and box['awayTeam']['score'] == box['homeTeam']['score'] and "drama" not in game_log:
-                        msg, _ = format_msg(box, "דרמה ב-NBA: הולכים להארכה!")
-                        send_telegram(msg)
-                        game_log.append("drama")
+                if gid not in cache["games"]:
+                    cache["games"][gid] = []
 
-                    # הגדרת תווית
-                    if status == 3: label = "סיום המשחק"
-                    elif period > 4: label = f"סיום הארכה {period-4}"
-                    else: label = "מחצית" if "half" in txt else f"סיום רבע {period}"
-                    
-                    msg_text, photo = format_msg(box, label, is_final=(status == 3))
-                    send_telegram(msg_text, photo)
-                    game_log.append(txt)
+                if status == 3 and "final_sent" not in cache["games"][gid]:
+                    box = requests.get(NBA_BOXSCORE_URL.format(gid)).json()["game"]
+                    msg, photo = format_msg(box, "סיום המשחק", True)
+                    send_telegram(msg, photo)
+                    cache["games"][gid].append("final_sent")
                     save_cache()
 
-                # פתיחת הארכה
-                if period > 4 and "ot" in txt and "start" in txt and f"ot{period}_start" not in game_log:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, _ = format_msg(box, f"הארכה {period-4} יצאה לדרך!")
-                    send_telegram(msg)
-                    game_log.append(f"ot{period}_start")
+        except Exception as e:
+            print("Error:", e)
 
-        except Exception as e: print(f"Error: {e}")
         time.sleep(30)
 
+# ==========================================
+
 if __name__ == "__main__":
+    build_players_db()
+    players_db = load_players()
+    cache = load_cache()
     run()
-
-
