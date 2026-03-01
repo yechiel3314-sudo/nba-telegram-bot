@@ -63,6 +63,7 @@ def format_msg(box, label, is_final=False):
     a_name, h_name = translate_name(away['teamName']), translate_name(home['teamName'])
     period = box.get('period', 0)
     
+    separator = "—" * 22  # שורת הפרדה שקובעת רוחב קבוע
     header = f"🏁 <b>{label}</b> 🏁" if is_final else f"⏱️ <b>{label}</b>"
     if "דרמה" in label: header = f"😱 <b>{label}</b> 😱"
     elif "יצא לדרך" in label: header = f"🚀 <b>{label}</b>"
@@ -186,3 +187,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
