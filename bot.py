@@ -108,6 +108,7 @@ def format_msg(box, label, is_final=False):
 
     # בסוף פונקציית format_msg, בתוך התנאי if is_final:
     if is_final:
+        # MVP אמיתי מכל השחקנים במשחק (אורחת + מארחת)
         all_p = away['players'] + home['players']
         mvp = max(all_p, key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists'])
         mvp_full_name = translate_name(f"{mvp['firstName']} {mvp['familyName']}")
@@ -115,8 +116,9 @@ def format_msg(box, label, is_final=False):
         msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_full_name}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}\n"
         
-        # כאן אתה שולט בעדכניות ובגודל (w=400 זה קטן וקומפקטי)
-        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=400&h=290"
+        # תמונה עדכנית מהעונה הנוכחית דרך ה-Headshot של ESPN
+        # ה-ID של ה-NBA עובד גם בקישור של ESPN ונותן את השחקן במדים העדכניים
+        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=420&h=310"
     
     return msg, photo_url
     
@@ -187,6 +189,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
