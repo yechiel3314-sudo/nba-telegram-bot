@@ -63,7 +63,7 @@ def format_msg(box, label, is_final=False):
     a_name, h_name = translate_name(away['teamName']), translate_name(home['teamName'])
     period = box.get('period', 0)
     
-    width_fix = "ㅤ" * 12 + "‏‏‏"
+    width_fix = "⠀" * 25
     
     header = f"🏁 <b>{label}</b> 🏁" if is_final else f"⏱️ <b>{label}</b>"
     if "דרמה" in label: header = f"😱 <b>{label}</b> 😱"
@@ -189,5 +189,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
