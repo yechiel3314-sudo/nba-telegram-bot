@@ -28,7 +28,7 @@ NBA_TEAMS_HEBREW = {
     "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר", "Orlando Magic": "אורלנדו מג'יק",
     "Philadelphia 76ers": "פילדלפיה 76", "Phoenix Suns": "פיניקס סאנס",
     "Portland Trail Blazers": "פורטלנד טרייל בלייזרס", "Sacramento Kings": "סקרמנטו קינגס",
-    "San Antonio Spurs": "סן אנטוניו ספרס", "Toronto Raptors": "טורונטו ראפטורס",
+    "San Antonio Spurs": "סן אנתוניו ספרס", "Toronto Raptors": "טורונטו ראפטורס",
     "Utah Jazz": "יוטה ג'אז", "Washington Wizards": "וושינגטון וויזארדס"
 }
 
@@ -56,7 +56,6 @@ def translate_name(name):
 
 def get_stat_line(p):
     s = p['statistics']
-    # ללא דגשים (bold) כלל בשורת הסטטיסטיקה - כפי שביקשת
     return f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
 
 def format_msg(box, label, is_final=False):
@@ -71,7 +70,7 @@ def format_msg(box, label, is_final=False):
     msg = f"\u200f{header}\n"
     msg += f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀\n\n"
 
-    photo_url = None # הגדרה ראשונית למניעת שגיאת NoneType
+    photo_url = None 
 
     if "יצא לדרך" in label:
         for team in [away, home]:
@@ -82,16 +81,19 @@ def format_msg(box, label, is_final=False):
             msg += f"\u200f{', '.join(starters) if starters else 'טרם פורסם'}\n"
             if out: msg += f"\u200f❌ <b>חיסורים:</b> {', '.join(out[:5])}\n"
             msg += "\n"
-        return msg, photo_url # תמיד להחזיר שני ערכים
+        return msg, photo_url
 
     leader_name = a_name if away['score'] > home['score'] else h_name
     action = "מנצחת" if is_final else "מובילה"
     score_str = f"<b>{max(away['score'], home['score'])} - {min(away['score'], home['score'])}</b>"
     
+    # שינוי האימוג'י בסיום משחק ל-🏆 כפי שביקשת
+    win_emoji = "🏆" if is_final else "🔥"
+    
     if away['score'] == home['score']:
         msg += f"\u200f🔥 <b>שוויון {score_str}</b> 🔥\n\n"
     else:
-        msg += f"\u200f🔥 <b>{leader_name} {action} {score_str}</b> 🔥\n\n"
+        msg += f"\u200f{win_emoji} <b>{leader_name} {action} {score_str}</b> {win_emoji}\n\n"
 
     if "דרמה" in label: return msg, photo_url
 
@@ -106,9 +108,7 @@ def format_msg(box, label, is_final=False):
             msg += f"\u200f{medal} <b>{p_full}</b>: {get_stat_line(p)}\n"
         msg += "\n"
 
-    # בסוף פונקציית format_msg, בתוך התנאי if is_final:
     if is_final:
-        # MVP אמיתי מכל השחקנים במשחק (אורחת + מארחת)
         all_p = away['players'] + home['players']
         mvp = max(all_p, key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists'])
         mvp_full_name = translate_name(f"{mvp['firstName']} {mvp['familyName']}")
@@ -116,33 +116,32 @@ def format_msg(box, label, is_final=False):
         msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_full_name}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}\n"
         
-        # תמונה עדכנית מהעונה הנוכחית דרך ה-Headshot של ESPN
-        # ה-ID של ה-NBA עובד גם בקישור של ESPN ונותן את השחקן במדים העדכניים
         photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=420&h=310"
     
     return msg, photo_url
     
 def send_telegram(text, photo_url=None):
-    # הגדרת Payload בסיסי
+    # שליחה בפורמט data במקום json פותרת את בעיית הצגת התמונות מכתובת URL
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
     
     try:
         if photo_url and photo_url.strip():
-            # ניסיון שליחה עם תמונה
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-            r = requests.post(url, json={**payload, "photo": photo_url, "caption": text}, timeout=15)
+            # שימוש ב-data=payload במקום json=payload
+            r = requests.post(url, data={**payload, "photo": photo_url, "caption": text}, timeout=20)
             if r.status_code == 200:
                 return
+            else:
+                print(f"Photo failed: {r.text}")
         
-        # אם אין תמונה או שהשליחה נכשלה - שלח טקסט בלבד
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={**payload, "text": text}, timeout=15)
+        requests.post(url, data={**payload, "text": text}, timeout=15)
         
     except Exception as e:
         print(f"Telegram Error: {e}")
 
 def run():
-    print("🚀 בוט NBA באוויר - גרסה מתוקנת ללא קריסות...")
+    print("🚀 בוט NBA באוויר - גרסת תמונות וגביעים...")
     while True:
         try:
             response = requests.get(NBA_URL, timeout=10)
@@ -151,7 +150,6 @@ def run():
                 continue
                 
             resp = response.json()
-            # בדיקה שהנתונים קיימים לפני שרצים עליהם
             if 'scoreboard' not in resp or 'games' not in resp['scoreboard']:
                 time.sleep(15)
                 continue
@@ -164,7 +162,6 @@ def run():
                     cache["games"][gid] = []
                 log = cache["games"][gid]
 
-                # שליחת הודעות - וודא שאתה משתמש ב-p (התמונה)
                 if status == 2 and period == 1 and ("12:00" in txt or "q1" in txt) and "start_alert" not in log:
                     box_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json")
                     if box_resp.status_code == 200:
@@ -189,7 +186,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
-
-
-
