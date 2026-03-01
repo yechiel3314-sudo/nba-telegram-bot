@@ -1,5 +1,2 @@
+moviepy
 requests
-python-telegram-bot==20.7
-nba_api
-deep-translator
-pillow
