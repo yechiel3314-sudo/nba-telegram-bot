@@ -33,7 +33,7 @@ NBA_TEAMS_HEBREW = {
 }
 
 def load_cache():
-    if os.path.exists(CACHE_FILE):
+    return {"names": {}, "games": {}} # זה יגרום לבוט לשכוח הכל ולשלוח מחדש
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"names": {}, "games": {}}
@@ -142,47 +142,51 @@ def send_telegram(text, photo_url=None):
         print(f"Telegram Error: {e}")
 
 def run():
-    print("🚀 בוט NBA סופי באוויר - MVP אמיתי + תמונות ESPN + ללא דגשים בסטטיסטיקה...")
+    print("🚀 בוט NBA באוויר - גרסה מתוקנת ללא קריסות...")
     while True:
         try:
-            resp = requests.get(NBA_URL, timeout=10).json()
-            for g in resp.get('scoreboard', {}).get('games', []):
+            response = requests.get(NBA_URL, timeout=10)
+            if response.status_code != 200:
+                time.sleep(15)
+                continue
+                
+            resp = response.json()
+            # בדיקה שהנתונים קיימים לפני שרצים עליהם
+            if 'scoreboard' not in resp or 'games' not in resp['scoreboard']:
+                time.sleep(15)
+                continue
+
+            for g in resp['scoreboard']['games']:
                 gid, status, period = g['gameId'], g['gameStatus'], g.get('period', 0)
                 txt = g.get('gameStatusText', '').lower()
-                if gid not in cache["games"]: cache["games"][gid] = []
+                
+                if gid not in cache["games"]: 
+                    cache["games"][gid] = []
                 log = cache["games"][gid]
 
-                # 1. יצא לדרך
+                # שליחת הודעות - וודא שאתה משתמש ב-p (התמונה)
                 if status == 2 and period == 1 and ("12:00" in txt or "q1" in txt) and "start_alert" not in log:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, p = format_msg(box, "המשחק יצא לדרך!")
-                    send_telegram(msg, p); log.append("start_alert")
+                    box_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json")
+                    if box_resp.status_code == 200:
+                        box = box_resp.json()['game']
+                        msg, p = format_msg(box, "המשחק יצא לדרך!")
+                        send_telegram(msg, p)
+                        log.append("start_alert")
 
-                # 2. רבע 3
-                if period == 3 and ("start" in txt or "12:00" in txt) and "q3_alert" not in log:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, p = format_msg(box, "רבע 3 יצא לדרך")
-                    send_telegram(msg, p); log.append("q3_alert")
-
-                # 3. סיומים ודרמות
                 if ("end" in txt or "half" in txt or status == 3) and txt not in log:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    if period == 4 and "end" in txt and box['awayTeam']['score'] == box['homeTeam']['score'] and "drama_ot" not in log:
-                        msg, p = format_msg(box, "דרמה ב-NBA: הולכים להארכה!")
-                        send_telegram(msg, p); log.append("drama_ot")
-                    
-                    label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
-                    m, p = format_msg(box, label, is_final=(status == 3))
-                    send_telegram(m, p); log.append(txt); save_cache()
+                    box_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json")
+                    if box_resp.status_code == 200:
+                        box = box_resp.json()['game']
+                        label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
+                        m, p = format_msg(box, label, is_final=(status == 3))
+                        send_telegram(m, p)
+                        log.append(txt)
+                        save_cache()
 
-                # 4. הארכות
-                if period > 4 and "start" in txt and f"ot{period}_start" not in log:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, p = format_msg(box, f"הארכה {period-4} יצאה לדרך!")
-                    send_telegram(msg, p); log.append(f"ot{period}_start")
-
-        except Exception as e: print(f"Error: {e}")
+        except Exception as e: 
+            print(f"Error logic: {e}")
         time.sleep(15)
 
 if __name__ == "__main__":
     run()
+
