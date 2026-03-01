@@ -5,10 +5,11 @@ import os
 from google import genai
 
 # =================================================================
-# הגדרות מערכת - מצב HTML ליציבות מקסימלית
+# הגדרות מערכת
 # =================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
+# חשוב: שים כאן מפתח API חדש ותקין מ-Google AI Studio
 GEMINI_API_KEY = "AIzaSyDyzsEfh0OAZymDcihDYEW0IjdJJaxQYoY" 
 client = genai.Client(api_key=GEMINI_API_KEY)
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
@@ -44,9 +45,8 @@ def save_cache():
 def translate_player_name(english_name):
     if english_name in cache["names"]:
         return cache["names"][english_name]
-    
     try:
-        time.sleep(4.0) # המתנה של 4 שניות לדיוק מקסימלי ומניעת חסימות
+        time.sleep(5.0) # המתנה ארוכה למניעת שגיאה 429
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=f"Translate NBA player name '{english_name}' to Hebrew. Return ONLY the name."
@@ -57,8 +57,7 @@ def translate_player_name(english_name):
             save_cache()
             return translated
     except Exception as e:
-        print(f"AI Translation Error: {e}")
-            
+        print(f"AI Error: {e}")
     return english_name
 
 def get_lineups_and_injuries(box):
@@ -87,42 +86,30 @@ def format_msg(box, label, is_final=False):
     rtl = "\u200f"
     def b(text): return f"<b>{str(text).strip()}</b>"
 
-# --- הודעת פתיחה (חמישיות וחיסורים) ---
+    # --- הודעת פתיחה ---
     if "יצא לדרך" in label and period == 1:
         msg = f"{rtl}⏱️ {b('המשחק יצא לדרך')}\n"
         msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
-        
         lineups = get_lineups_and_injuries(box)
         
-        # --- בחירת פוסטר של כוכב הקבוצה המארחת ---
         try:
-            # הבוט הולך לשחקני קבוצת הבית (Home)
-            home_players = home.get('players', [])
-            # מסנן רק את אלו שפותחים בחמישייה
-            starters = [p for p in home_players if p.get('starter') == "1"]
-            
-            if starters:
-                # לוקח את השחקן הראשון (בדרך כלל הכוכב/רכז)
-                star_player = starters[0]
-                p_id = star_player['personId']
-                # שימוש בקישור לתמונת אקשן גדולה ומרשימה
-                photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{p_id}"
-            else:
-                photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
+            # פוסטר של כוכב הבית כפי שביקשת
+            h_players = home.get('players', [])
+            starters = [p for p in h_players if p.get('starter') == "1"]
+            p_id = starters[0]['personId'] if starters else home['teamId']
+            photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{p_id}"
         except:
             photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
 
-        # המשך בניית הודעת החמישיות...
         for team_key, name in [('away', a_name), ('home', h_name)]:
             msg += f"{rtl}📍 {b(name)}\n"
             msg += f"{rtl}🏀 {b('חמישייה:')} {', '.join(lineups[team_key]['starters']) if lineups[team_key]['starters'] else 'טרם פורסם'}\n"
             if lineups[team_key]['out']:
                 msg += f"{rtl}❌ {b('חיסורים:')} {', '.join(lineups[team_key]['out'][:5])}\n"
             msg += "\n"
-            
         return msg, photo_url
 
-    # --- הודעות תוצאה (רבע/מחצית/סיום) ---
+    # --- הודעות תוצאה ---
     msg = f"{rtl}⏱️ {b(label)}\n"
     msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
 
@@ -174,16 +161,8 @@ def run():
                 gid, status, period = g['gameId'], g['gameStatus'], g['period']
                 txt = g.get('gameStatusText', '').lower()
                 
-                # תרגום שקט ברקע למניעת חסימות
-                if status == 2:
-                    t_away = g.get('awayTeam', {}).get('teamName', '')
-                    t_home = g.get('homeTeam', {}).get('teamName', '')
-                    if t_away not in cache["names"]: translate_player_name(t_away)
-                    if t_home not in cache["names"]: translate_player_name(t_home)
-
                 if gid not in cache["games"]: cache["games"][gid] = []
                 
-                # סיום רבע/מחצית/משחק
                 if ("end" in txt or "half" in txt or status == 3) and txt not in cache["games"][gid]:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
@@ -192,7 +171,6 @@ def run():
                     cache["games"][gid].append(txt)
                     save_cache()
 
-                # תחילת רבע (כולל רבע 1 עם חמישיות)
                 if "start" in txt and f"start_{period}" not in cache["games"][gid]:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "המשחק יצא לדרך" if period == 1 else f"רבע {period} יצא לדרך"
@@ -202,11 +180,7 @@ def run():
                     save_cache()
 
         except Exception as e: print(f"Error: {e}")
-        time.sleep(10) # 10 שניות המתנה
+        time.sleep(15)
 
 if __name__ == "__main__":
     run()
-
-
-
-
