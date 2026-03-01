@@ -107,8 +107,8 @@ def format_msg(box, label, is_final=False):
         msg += "\n"
 
     photo_url = None
-    if is_final:
-        # MVP אמיתי לפי מדד יעילות (נקודות + ריבאונד + אסיסטים)
+   if is_final:
+        # MVP אמיתי לפי מדד יעילות
         all_p = away['players'] + home['players']
         mvp = max(all_p, key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists'])
         mvp_full_name = translate_name(f"{mvp['firstName']} {mvp['familyName']}")
@@ -116,8 +116,9 @@ def format_msg(box, label, is_final=False):
         msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_full_name}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}\n"
         
-        # תמונת ESPN Player Card - איכותית ומעודכנת
-        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=600&h=436"
+        # שימוש בפורמט התמונה המעודכן והאיכותי ביותר של ה-NBA (ללא רקע או עם פורמט אחיד)
+        # הקישור הזה מושך תמונה גדולה ונקייה של השחקן מהעונה הנוכחית
+        photo_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{mvp['personId']}.png"
 
     return msg, photo_url
 
@@ -184,3 +185,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
