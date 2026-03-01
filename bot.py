@@ -118,7 +118,8 @@ def format_msg(box, label, is_final=False):
         
         # שימוש בפורמט התמונה המעודכן והאיכותי ביותר של ה-NBA (ללא רקע או עם פורמט אחיד)
         # הקישור הזה מושך תמונה גדולה ונקייה של השחקן מהעונה הנוכחית
-        photo_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{mvp['personId']}.png"
+        # שימוש בפורמט מוקטן ואיכותי (260x190 פיקסלים)
+        photo_url = f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{mvp['personId']}.png"
 
     return msg, photo_url
 
@@ -132,13 +133,14 @@ def send_telegram(text, photo_url=None):
         payload.update({"text": text})
     try:
         r = requests.post(url, json=payload, timeout=15)
-        # Fallback לשרת ה-NBA אם התמונה מ-ESPN לא זמינה
+        # אם התמונה המוקטנת לא נמצאה (404), ננסה את הקישור הרשמי הסטנדרטי
         if photo_url and r.status_code != 200:
-            pid = photo_url.split('/')[-1].split('.')[0]
-            fb = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
+            pid = mvp['personId'] # וודא שהמשתנה נגיש או חלץ אותו מה-URL
+            fb = f"https://cdn.nba.com/headshots/nba/latest/260x190/{pid}.png"
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", 
                           json={"chat_id": CHAT_ID, "photo": fb, "caption": text, "parse_mode": "HTML"})
-    except: pass
+    except Exception as e:
+        print(f"Telegram Error: {e}")
 
 def run():
     print("🚀 בוט NBA סופי באוויר - MVP אמיתי + תמונות ESPN + ללא דגשים בסטטיסטיקה...")
@@ -185,5 +187,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
