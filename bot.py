@@ -62,18 +62,24 @@ def translate_player_name(english_name):
     if english_name in cache["names"]:
         return cache["names"][english_name]
     try:
+        # הוספת המתנה קצרה כדי לא להיחסם על ידי גוגל
+        time.sleep(0.6) 
+        
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=f"Translate the NBA player name '{english_name}' to Hebrew. Output ONLY the full name."
         )
         translated = response.text.strip()
-        cache["names"][english_name] = translated
-        save_cache()
-        return translated
+        if translated:
+            cache["names"][english_name] = translated
+            save_cache()
+            return translated
     except Exception as e:
         print(f"AI Error: {e}")
-        return english_name
-
+        # אם יש שגיאת מכסה, נחכה קצת יותר בסבב הבא
+        if "429" in str(e):
+            time.sleep(2)
+    return english_name
 # =================================================================
 # שליפת חמישיות וחיסורים
 # =================================================================
@@ -222,6 +228,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
