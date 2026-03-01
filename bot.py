@@ -45,22 +45,19 @@ def translate_player_name(english_name):
     if english_name in cache["names"]:
         return cache["names"][english_name]
     
-    # ניסיון תרגום עם המתנה ארוכה למניעת חסימות מכסה
-    for attempt in range(3):
-        try:
-            time.sleep(3.0) # המתנה של 3 שניות בין בקשה לבקשה
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=f"Translate NBA player name '{english_name}' to Hebrew. Return ONLY the name."
-            )
-            translated = response.text.strip().replace("*", "")
-            if translated and len(translated) < 40:
-                cache["names"][english_name] = translated
-                save_cache()
-                return translated
-        except Exception as e:
-            print(f"Translation attempt {attempt+1} failed for {english_name}: {e}")
-            time.sleep(5) # המתנה ארוכה יותר לפני ניסיון חוזר
+    try:
+        time.sleep(4.0) # המתנה של 4 שניות לדיוק מקסימלי ומניעת חסימות
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=f"Translate NBA player name '{english_name}' to Hebrew. Return ONLY the name."
+        )
+        translated = response.text.strip().replace("*", "")
+        if translated and len(translated) < 40:
+            cache["names"][english_name] = translated
+            save_cache()
+            return translated
+    except Exception as e:
+        print(f"AI Translation Error: {e}")
             
     return english_name
 
@@ -209,6 +206,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
