@@ -63,14 +63,13 @@ def format_msg(box, label, is_final=False):
     a_name, h_name = translate_name(away['teamName']), translate_name(home['teamName'])
     period = box.get('period', 0)
     
-    width_lock = "\u200f" + "ㅤ" * 25 + "\u200f"
+    s = "ㅤ" 
     
     header = f"🏁 <b>{label}</b> 🏁" if is_final else f"⏱️ <b>{label}</b>"
     if "דרמה" in label: header = f"😱 <b>{label}</b> 😱"
     elif "יצא לדרך" in label: header = f"🚀 <b>{label}</b>"
 
-    msg = f"\u200f{header}\n"
-    msg += f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀\n\n"
+    wide_header = f"\u200f🏀{s*12}<b>{a_name} 🆚 {h_name}</b>{s*12}🏀"
 
     photo_url = None 
 
@@ -189,6 +188,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
