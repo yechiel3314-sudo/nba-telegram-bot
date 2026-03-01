@@ -2,7 +2,7 @@ import requests
 import time
 import json
 import os
-from google import genai
+import google.generativeai as genai
 
 # ==========================================
 # הגדרות מערכת - שים כאן את המפתחות שלך
@@ -12,7 +12,8 @@ CHAT_ID = "-1003808107418"
 GEMINI_API_KEY = "YOUR_GEMINI_API_KEY" # המפתח שהעתקת מהמסך
 
 # אתחול Gemini 3 Flash
-client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
 
@@ -35,16 +36,19 @@ def save_cache():
 def translate_player_name(english_name):
     if english_name in cache["names"]:
         return cache["names"][english_name]
+
     try:
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=f"Translate the NBA player name '{english_name}' to Hebrew. Output ONLY the full name."
+        response = model.generate_content(
+            f"Translate the NBA player name '{english_name}' to Hebrew. Output ONLY the full name."
         )
+
         translated = response.text.strip()
         cache["names"][english_name] = translated
         save_cache()
         return translated
-    except:
+
+    except Exception as e:
+        print("Translation error:", e)
         return english_name
 
 # ==========================================
@@ -174,3 +178,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
