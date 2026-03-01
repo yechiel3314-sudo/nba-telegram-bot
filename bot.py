@@ -25,7 +25,7 @@ TEAM_TRANSLATIONS = {
     "Pelicans": "ניו אורלינס פליקנס", "Knicks": "ניו יורק ניקס", "Thunder": "אוקלהומה סיטי ת'אנדר", 
     "Magic": "אורלנדו מג'יק", "76ers": "פילדלפיה 76", "Suns": "פיניקס סאנס", 
     "Trail Blazers": "פורטלנד טרייל בלייזרס", "Kings": "סקרמנטו קינגס", "Spurs": "סן אנטוניו ספרס", 
-    "Raptors": "טורונטו ראפפורס", "Jazz": "יוטה ג'אז", "Wizards": "וושינגטון ויזארדס"
+    "Raptors": "טורונטו ראפטורס", "Jazz": "יוטה ג'אז", "Wizards": "וושינגטון ויזארדס"
 }
 
 def load_cache():
@@ -46,7 +46,6 @@ def translate_player_name(english_name):
     if english_name in cache["names"]:
         return cache["names"][english_name]
     
-    # פתרון יצירתי: הגבלת קריאות ל-AI למניעת שגיאה 429
     try:
         time.sleep(1.5) # השהייה בטוחה
         response = client.models.generate_content(
@@ -87,11 +86,11 @@ def format_msg(box, label, is_final=False):
     period = box.get('period', 0)
     rtl = "\u200f" # תו כיווניות חובה לימין
     
-    # פתרון מחוץ לקופסא: שימוש בתגיות HTML במקום כוכביות
     def b(text): return f"<b>{str(text).strip()}</b>"
 
+    # --- הודעת פתיחה ---
     if "יצא לדרך" in label and period == 1:
-        msg = f"{rtl}🚀 {b('המשחק יצא לדרך')}\n"
+        msg = f"{rtl}🏀 {b('המשחק יצא לדרך')} 🏀\n"
         msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)}\n\n"
         lineups = get_lineups_and_injuries(box)
         
@@ -109,7 +108,11 @@ def format_msg(box, label, is_final=False):
         photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
         return msg, photo_url
 
-    header = b(f"🏁 {label}") if is_final else b(f"⏱️ {label}")
+    # --- הודעות תוצאה (רבע/מחצית/סיום) ---
+    # הוספת אימוג'י כדורסל משני הצדדים בכותרת
+    header_text = f"🏀 {label} 🏀"
+    header = b(header_text)
+    
     msg = f"{rtl}{header}\n"
     msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)}\n\n"
 
@@ -144,7 +147,6 @@ def format_msg(box, label, is_final=False):
 
 def send_telegram(text, photo_url=None):
     base_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-    # שינוי ל-HTML Mode בטלגרם
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
     try:
         if photo_url:
@@ -183,7 +185,7 @@ def run():
                     save_cache()
 
         except Exception as e: print(f"Error: {e}")
-        time.sleep(20) # הגדלת זמן ההמתנה כדי למנוע עומס
+        time.sleep(20)
 
 if __name__ == "__main__":
     run()
