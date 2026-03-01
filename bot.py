@@ -86,30 +86,20 @@ def format_msg(box, label, is_final=False):
     a_name = translate_name(away['teamName'])
     h_name = translate_name(home['teamName'])
     period = box.get('period', 0)
-    z = "\u200b"
     
-    if is_final:
-        header = f"🏁 **{label}** 🏁"
-    elif "דרמה" in label:
-        header = f"😱 **{label}** 😱"
-    elif "יצא לדרך" in label:
-        header = f"🚀 **{label}**"
-    else:
-        header = f"⏱️ **{label}**"
+    # כותרות ב-HTML
+    header = f"🏁 <b>{label}</b> 🏁" if is_final else f"⏱️ <b>{label}</b>"
+    if "דרמה" in label: header = f"😱 <b>{label}</b> 😱"
 
     msg = f"\u200f{header}\n"
-    msg += f"\u200f🏀 **{a_name} 🆚 {h_name}** 🏀\n\n"
+    msg += f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀\n\n"
 
     leader_name = a_name if away['score'] > home['score'] else h_name
     action = "מנצחת" if is_final else "מובילה"
     
-    # תוצאה מודגשת עם מפריד שקוף
-    score_str = f"{z}**{max(away['score'], home['score'])}**{z} - {z}**{min(away['score'], home['score'])}**{z}"
-    
-    if away['score'] == home['score']:
-        msg += f"\u200f🔥 **שוויון {score_str}** 🔥\n\n"
-    else:
-        msg += f"\u200f🔥 **{leader_name} {action} {score_str}** 🔥\n\n"
+    # תוצאה מודגשת בתוך תגיות HTML
+    score_str = f"<b>{max(away['score'], home['score'])} - {min(away['score'], home['score'])}</b>"
+    msg += f"\u200f🔥 <b>{leader_name}</b> {action} {score_str} 🔥\n\n"
 
     if "יצא לדרך" in label or "דרמה" in label:
         return msg, None
@@ -118,22 +108,23 @@ def format_msg(box, label, is_final=False):
 
     for team in [away, home]:
         t_heb = translate_name(team['teamName'])
-        msg += f"\u200f📍 **סטטיסטיקה {t_heb}:**\n"
+        msg += f"\u200f📍 <b>סטטיסטיקה {t_heb}:</b>\n"
         top = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)[:count]
         for i, p in enumerate(top):
             medal = "🥇" if i == 0 else ("🥈" if i == 1 else "🥉")
             p_full = translate_name(f"{p['firstName']} {p['familyName']}")
-            msg += f"\u200f{medal} **{p_full}**: {get_stat_line(p)}\n"
+            msg += f"\u200f{medal} <b>{p_full}</b>: {get_stat_line(p)}\n"
         msg += "\n"
 
     photo_url = None
     if is_final:
-        # MVP אמיתי - מחפש את השחקן עם הכי הרבה נקודות מכל המשחק
-        all_players = away['players'] + home['players']
-        mvp = max(all_players, key=lambda x: x['statistics']['points'])
+        # MVP מהבית - תמיד מציג את הכוכב של קבוצת הבית (Home Team)
+        mvp = max(home['players'], key=lambda x: x['statistics']['points'])
         mvp_name = translate_name(f"{mvp['firstName']} {mvp['familyName']}")
-        msg += f"\u200f⭐ **ה-MVP הרשמי: {mvp_name}**\n"
+        msg += f"\u200f⭐ <b>השחקן המצטיין (מארחת): {mvp_name}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}"
+        
+        # תמונת אקשן (Action Shot) - פורמט 1040x760 נותן תמונה גדולה ומרשימה
         photo_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{mvp['personId']}.png"
 
     return msg, photo_url
@@ -143,19 +134,20 @@ def format_msg(box, label, is_final=False):
 # ==========================================
 
 def send_telegram(text, photo_url=None):
+    # שינוי קריטי ל-HTML
+    payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
+    
     if photo_url:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-        payload = {"chat_id": CHAT_ID, "photo": photo_url, "caption": text, "parse_mode": "Markdown"}
+        payload.update({"photo": photo_url, "caption": text})
     else:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+        payload.update({"text": text})
     
     try:
-        r = requests.post(url, json=payload, timeout=15)
-        if photo_url and r.status_code != 200:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
-                          json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
-    except: pass
+        requests.post(url, json=payload, timeout=15)
+    except:
+        pass
 
 # ==========================================
 # לוגיקה ראשית
@@ -206,3 +198,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
