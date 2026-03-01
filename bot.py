@@ -5,17 +5,17 @@ import os
 from googletrans import Translator
 
 # =================================================================
-# הגדרות מערכת - גרסה מתוקנת למניעת קריסות (googletrans 3.1.0a0)
+# הגדרות מערכת - גרסה יציבה ומתוקנת (NBA Bot 2026)
 # =================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
 
-# אתחול הטרנסלייט עם הגנה לקריסות
+# אתחול שקט של המתרגם למניעת קריסות בגלל גרסאות פייתון
 try:
     translator = Translator()
-except:
+except Exception:
     translator = None
 
 PLAYER_OVERRIDES = {
@@ -113,15 +113,15 @@ def format_msg(box, label, is_final=False):
     msg = f"{rtl}⏱️ {b(label)}\n"
     msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
 
+    # פוסטר כוכב הבית בשריקת הפתיחה
     if "יצא לדרך" in label and period == 1:
         lineups = get_lineups_and_injuries(box)
         try:
             h_players = home.get('players', [])
             starters = [p for p in h_players if p.get('starter') == "1"]
-            # דרישה: תמיד כוכב הקבוצה המארחת (Home Team)
             p_id = starters[0]['personId'] if starters else home['teamId']
             photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{p_id}"
-        except:
+        except Exception:
             photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
 
         for team_key, name in [('away', a_name), ('home', h_name)]:
@@ -142,14 +142,18 @@ def format_msg(box, label, is_final=False):
         players = sorted(team.get('players', []), key=lambda x: x['statistics']['points'], reverse=True)[:count]
         for i, p in enumerate(players):
             medal = ["🥇", "🥈", "🥉"][i]
-            msg += f"{rtl}{medal} {b(translate_player_name(f\"{p['firstName']} {p['familyName']}\"))}: {get_stat_line(p)}\n"
+            # תיקון שגיאת הסינטקס בשורה 145 (שימוש במשתנה חיצוני במקום f-string מורכב מדי)
+            p_name_raw = f"{p['firstName']} {p['familyName']}"
+            heb_p_name = translate_player_name(p_name_raw)
+            msg += f"{rtl}{medal} {b(heb_p_name)}: {get_stat_line(p)}\n"
         msg += "\n"
 
     photo_url = None
     if is_final:
         all_p = away.get('players', []) + home.get('players', [])
         mvp = max(all_p, key=lambda x: x['statistics']['points'])
-        msg += f"{rtl}⭐ {b('ה-MVP: ' + translate_player_name(f'{mvp[u'firstName']} {mvp[u'familyName']}'))}\n"
+        mvp_name = translate_player_name(f"{mvp['firstName']} {mvp['familyName']}")
+        msg += f"{rtl}⭐ {b('ה-MVP: ' + mvp_name)}\n"
         msg += f"{rtl}📊 {get_stat_line(mvp)}"
         photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{mvp['personId']}"
 
@@ -162,10 +166,10 @@ def send_telegram(text, photo_url=None):
             requests.post(f"{base_url}/sendPhoto", json={"chat_id": CHAT_ID, "photo": photo_url, "caption": text, "parse_mode": "HTML"}, timeout=15)
         else:
             requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=15)
-    except Exception as e: print(f"Telegram Error: {e}")
+    except Exception: pass
 
 def run():
-    print("🧪 הרצת בדיקה רטרואקטיבית...")
+    print("🧪 הרצת בדיקה רטרואקטיבית לשעתיים האחרונות...")
     cache["games"] = {} 
     test_prefix = "⚠️ <b>הודעת בדיקה רטרואקטיבית</b> ⚠️\n"
 
@@ -173,7 +177,8 @@ def run():
         resp = requests.get(NBA_URL, timeout=10).json()
         for g in resp.get('scoreboard', {}).get('games', []):
             if g['gameStatus'] in [2, 3]: 
-                box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{g['gameId']}.json").json()['game']
+                box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{g['gameId']}.json"
+                box = requests.get(box_url).json()['game']
                 label = "סיום המשחק" if g['gameStatus'] == 3 else f"עדכון רבע {g['period']}"
                 msg, photo = format_msg(box, label, is_final=(g['gameStatus'] == 3))
                 send_telegram(test_prefix + msg, photo)
@@ -190,7 +195,8 @@ def run():
                 if gid not in cache["games"]: cache["games"][gid] = []
                 
                 if ("end" in txt or "half" in txt or status == 3) and txt not in cache["games"][gid]:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
+                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+                    box = requests.get(box_url).json()['game']
                     label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
                     msg, photo = format_msg(box, label, is_final=(status == 3))
                     send_telegram(msg, photo)
@@ -198,8 +204,10 @@ def run():
                     save_cache()
                 
                 if "start" in txt and f"start_{period}" not in cache["games"][gid]:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, photo = format_msg(box, f"רבע {period} יצא לדרך")
+                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+                    box = requests.get(box_url).json()['game']
+                    label = "המשחק יצא לדרך" if period == 1 else f"רבע {period} יצא לדרך"
+                    msg, photo = format_msg(box, label)
                     send_telegram(msg, photo)
                     cache["games"][gid].append(f"start_{period}")
                     save_cache()
