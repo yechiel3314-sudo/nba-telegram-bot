@@ -9,7 +9,7 @@ from google import genai
 # =================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-GEMINI_API_KEY = "AIzaSyB2MB_Y-wd2dEjSZ2sB9QeIbeYD3ojUaXM" 
+GEMINI_API_KEY = "AIzaSyDyzsEfh0OAZymDcihDYEW0IjdJJaxQYoY" 
 client = genai.Client(api_key=GEMINI_API_KEY)
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
@@ -209,5 +209,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
