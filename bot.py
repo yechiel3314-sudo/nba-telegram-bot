@@ -73,6 +73,8 @@ def format_msg(box, label, is_final=False):
     msg = f"\u200f{header}\n"
     msg += f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀\n\n"
 
+    photo_url = None # הגדרה ראשונית למניעת שגיאת NoneType
+
     if "יצא לדרך" in label:
         for team in [away, home]:
             t_name = translate_name(team['teamName'])
@@ -82,7 +84,7 @@ def format_msg(box, label, is_final=False):
             msg += f"\u200f{', '.join(starters) if starters else 'טרם פורסם'}\n"
             if out: msg += f"\u200f❌ <b>חיסורים:</b> {', '.join(out[:5])}\n"
             msg += "\n"
-        return msg, None
+        return msg, photo_url # תמיד להחזיר שני ערכים
 
     leader_name = a_name if away['score'] > home['score'] else h_name
     action = "מנצחת" if is_final else "מובילה"
@@ -93,7 +95,7 @@ def format_msg(box, label, is_final=False):
     else:
         msg += f"\u200f🔥 <b>{leader_name} {action} {score_str}</b> 🔥\n\n"
 
-    if "דרמה" in label: return msg, None
+    if "דרמה" in label: return msg, photo_url
 
     count = 3 if (period >= 4 or is_final) else 2
     for team in [away, home]:
@@ -107,7 +109,6 @@ def format_msg(box, label, is_final=False):
         msg += "\n"
 
     if is_final:
-        # 1. מציאת ה-MVP
         all_p = away['players'] + home['players']
         mvp = max(all_p, key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists'])
         mvp_full_name = translate_name(f"{mvp['firstName']} {mvp['familyName']}")
@@ -115,34 +116,29 @@ def format_msg(box, label, is_final=False):
         msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_full_name}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}\n"
         
-        # 2. משיכת תמונה עדכנית מ-ESPN (שימוש ב-Slug של השם במקום ID)
-        # זה הפתרון הכי עוקף וטוב: ESPN מאפשרים לחפש לפי שם השחקן בכתובת שלהם
-        name_slug = f"{mvp['firstName']}-{mvp['familyName']}".lower().replace(" ", "-")
-        
-        # ניסיון ראשון: תמונת אקשן/סטודיו מעודכנת מ-ESPN
-        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=1000&h=750"
-        
-        # הערה: אם ה-ID של ה-NBA לא תואם ל-ESPN (קורה לפעמים), 
-        # ה-Fallback ב-send_telegram כבר ינסה להביא את התמונה מה-NBA.
+        # שימוש בקישור ESPN עם ID של NBA (עובד לרוב השחקנים הפעילים)
+        # הוספתי פרמטרים להגדלת התמונה: w=800&h=600
+        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=800&h=600"
 
+    return msg, photo_url
+    
 def send_telegram(text, photo_url=None):
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
+    
     if photo_url:
+        # ננסה לשלוח עם התמונה מ-ESPN
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-        payload.update({"photo": photo_url, "caption": text})
+        res = requests.post(url, json={**payload, "photo": photo_url, "caption": text}, timeout=15)
+        
+        # אם ESPN נכשל (סטטוס לא 200), ננסה את ה-NBA כגיבוי
+        if res.status_code != 200:
+            pid = photo_url.split('/')[-1].split('.')[0] # חילוץ ה-ID מה-URL
+            fb_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
+            requests.post(url, json={**payload, "photo": fb_url, "caption": text}, timeout=15)
     else:
+        # שליחת טקסט בלבד
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload.update({"text": text})
-    try:
-        r = requests.post(url, json=payload, timeout=15)
-        # אם התמונה המוקטנת לא נמצאה (404), ננסה את הקישור הרשמי הסטנדרטי
-        if photo_url and r.status_code != 200:
-            pid = mvp['personId'] # וודא שהמשתנה נגיש או חלץ אותו מה-URL
-            fb = f"https://cdn.nba.com/headshots/nba/latest/260x190/{pid}.png"
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", 
-                          json={"chat_id": CHAT_ID, "photo": fb, "caption": text, "parse_mode": "HTML"})
-    except Exception as e:
-        print(f"Telegram Error: {e}")
+        requests.post(url, json={**payload, "text": text}, timeout=15)
 
 def run():
     print("🚀 בוט NBA סופי באוויר - MVP אמיתי + תמונות ESPN + ללא דגשים בסטטיסטיקה...")
@@ -189,6 +185,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
