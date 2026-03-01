@@ -61,8 +61,8 @@ def get_stat_line(p):
 
 def format_msg(box, label, is_final=False):
     away, home = box['awayTeam'], box['homeTeam']
-    a_name = away['teamName']
-    h_name = home['teamName']
+    a_name = f"{away['teamCity']} {away['teamName']}"
+    h_name = f"{home['teamCity']} {home['teamName']}"
     period = box.get('period', 0)
     
     # אייקון כותרת
@@ -102,7 +102,7 @@ def format_msg(box, label, is_final=False):
         mvp_name = translate_player_name(f"{mvp['firstName']} {mvp['familyName']}")
         msg += f"\u200f⭐ **ה-MVP של הלילה: {mvp_name}**\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}"
-        photo_url = f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{mvp['personId']}.png"
+        photo_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{mvp['personId']}.png"
 
     return msg, photo_url
 
@@ -178,5 +178,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
-
