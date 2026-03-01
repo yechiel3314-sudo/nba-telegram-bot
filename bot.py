@@ -65,7 +65,8 @@ def translate_name(name):
 
 def get_stat_line(p):
     s = p['statistics']
-    return f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
+    # הוספת דגשים (Bold) למספרים כפי שביקשת
+    return f"**{s['points']}** נק', **{s['reboundsTotal']}** רב', **{s['assists']}** אס'"
 
 def format_msg(box, label, is_final=False):
     away, home = box['awayTeam'], box['homeTeam']
@@ -73,16 +74,22 @@ def format_msg(box, label, is_final=False):
     h_name = translate_name(home['teamName'])
     period = box.get('period', 0)
     
-    # אייקון כותרת
-    icon = "🏁" if is_final else ("🚀" if "יצא לדרך" in label else "⏱️")
-    if "דרמה" in label: icon = "😱"
+    # אייקון כותרת - הוספת אימוג'י משני הצדדים בסיום המשחק
+    if is_final:
+        icon_line = f"🏁 **{label}** 🏁"
+    elif "דרמה" in label:
+        icon_line = f"😱 **{label}** 😱"
+    elif "יצא לדרך" in label:
+        icon_line = f"🚀 **{label}**"
+    else:
+        icon_line = f"⏱️ **{label}**"
 
-    msg = f"\u200f{icon} **{label}**\n"
-    msg += f"\u200f🏀 **{a_name} 🆚 {h_name}** 🏀\n"
+    msg = f"\u200f{icon_line}\n"
+    msg += f"\u200f🏀 **{a_name} 🆚 {h_name}** 🏀\n\n" # רווח כפול כאן
 
     # שורת תוצאה
     leader = a_name if away['score'] > home['score'] else h_name
-    action = "ניצחה" if is_final else "מובילה"
+    action = "מנצחת" if is_final else "מובילה"
     
     if away['score'] == home['score']:
         msg += f"\u200f🔥 **שוויון {away['score']} - {home['score']}** 🔥\n\n"
@@ -98,7 +105,7 @@ def format_msg(box, label, is_final=False):
 
     for team in [away, home]:
         t_heb = translate_name(team['teamName'])
-        msg += f"\u200f📍 **{t_heb}**\n"
+        msg += f"\u200f📍 **סטטיסטיקה {t_heb}:**\n"
         top = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)[:count]
         for i, p in enumerate(top):
             medal = "🥇" if i == 0 else ("🥈" if i == 1 else "🥉")
@@ -106,15 +113,15 @@ def format_msg(box, label, is_final=False):
             msg += f"\u200f{medal} **{p_full}**: {get_stat_line(p)}\n"
         msg += "\n"
 
-    # תמונת MVP בסיום (Action Shot)
+    # תמונת MVP בסיום המשחק
     photo_url = None
     if is_final:
         mvp = max(away['players'] + home['players'], key=lambda x: x['statistics']['points'])
         mvp_name = translate_name(f"{mvp['firstName']} {mvp['familyName']}")
-        msg += f"\u200f⭐ **ה-MVP של הלילה: {mvp_name}**\n"
+        msg += f"\u200f⭐ **ה-MVP של המשחק: {mvp_name}**\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}"
-        # תמונת אקשן בגודל מלא
-        photo_url = f"https://www.nba.com/stats/api/v1/player/{mvp['personId']}/action"
+        # תמונת שחקן איכותית
+        photo_url = f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/1040x760/{mvp['personId']}.png"
 
     return msg, photo_url
 
@@ -130,8 +137,8 @@ def send_telegram(text, photo_url=None):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
-        # בדיקה אם התמונה קיימת, אם לא - שלח רק טקסט
         r = requests.post(url, json=payload, timeout=10)
+        # גיבוי למקרה שהתמונה נכשלת (שולח רק טקסט)
         if photo_url and r.status_code != 200:
             url_text = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             payload_text = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
