@@ -63,7 +63,7 @@ def translate_player_name(english_name):
         return cache["names"][english_name]
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash-latest",
+            model="gemini-2.0-flash",
             contents=f"Translate the NBA player name '{english_name}' to Hebrew. Output ONLY the full name."
         )
         translated = response.text.strip()
@@ -222,5 +222,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
