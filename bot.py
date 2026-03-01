@@ -181,7 +181,38 @@ def send_telegram(text, photo_url=None):
     except Exception as e: print(f"Telegram Error: {e}")
 
 def run():
-    print("🚀 הבוט באוויר - גרסת טרנסלייט מלאה...")
+    print("🧪 הרצת בדיקה רטרואקטיבית לשעתיים האחרונות...")
+    # ניקוי זמני של הזיכרון כדי לאפשר שליחה חוזרת של משחקי הלילה
+    cache["games"] = {} 
+    
+    # הוספת שורת בדיקה לכל הודעה
+    test_prefix = "⚠️ <b>הודעת בדיקה רטרואקטיבית</b> ⚠️\n"
+
+    try:
+        resp = requests.get(NBA_URL, timeout=10).json()
+        games = resp.get('scoreboard', {}).get('games', [])
+        
+        for g in games:
+            gid, status, period = g['gameId'], g['gameStatus'], g['period']
+            
+            # בדיקה אם המשחק פעיל (2) או הסתיים (3)
+            if status in [2, 3]: 
+                box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
+                
+                label = "סיום המשחק" if status == 3 else f"עדכון רבע {period}"
+                msg, photo = format_msg(box, label, is_final=(status == 3))
+                
+                final_msg = test_prefix + msg
+                send_telegram(final_msg, photo)
+                
+                time.sleep(2)
+
+    except Exception as e: 
+        print(f"Test Error: {e}")
+    
+    print("✅ הבדיקה הסתיימה. הבוט חוזר לעבודה רגילה...")
+    
+    # --- לוגיקה רגילה (לולאה אינסופית) ---
     while True:
         try:
             resp = requests.get(NBA_URL, timeout=10).json()
@@ -192,6 +223,7 @@ def run():
                 
                 if gid not in cache["games"]: cache["games"][gid] = []
                 
+                # עדכוני סוף רבע/משחק
                 if ("end" in txt or "half" in txt or status == 3) and txt not in cache["games"][gid]:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
@@ -200,6 +232,7 @@ def run():
                     cache["games"][gid].append(txt)
                     save_cache()
 
+                # עדכוני תחילת רבע
                 if "start" in txt and f"start_{period}" not in cache["games"][gid]:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "המשחק יצא לדרך" if period == 1 else f"רבע {period} יצא לדרך"
@@ -208,8 +241,6 @@ def run():
                     cache["games"][gid].append(f"start_{period}")
                     save_cache()
 
-        except Exception as e: print(f"Error: {e}")
-        time.sleep(15)
-
-if __name__ == "__main__":
-    run()
+        except Exception as e: 
+            print(f"Runtime Error: {e}")
+        time.sleep(20)
