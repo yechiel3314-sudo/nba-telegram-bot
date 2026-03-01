@@ -125,7 +125,7 @@ def run_highlights_hunter():
                         is_israeli = p_id in ISRAELI_PLAYERS
                         
                         # תנאי סף: ישראלי או 40+ נקודות או 20+ אסיסטים
-                        if is_israeli or s['points'] >= 30 or s['assists'] >= 20:
+                        if is_israeli or s['points'] >= 24 or s['assists'] >= 20:
                             p_raw_name = f"{p['firstName']} {p['familyName']}"
                             p_display_name = ISRAELI_PLAYERS.get(p_id, p_raw_name)
                             
