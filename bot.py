@@ -2,7 +2,7 @@ import requests
 import time
 import json
 import os
-import google.generativeai as genai
+from google import genai
 
 # ==========================================
 # הגדרות מערכת - שים כאן את המפתחות שלך
@@ -178,3 +178,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
