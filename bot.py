@@ -63,7 +63,8 @@ def format_msg(box, label, is_final=False):
     a_name, h_name = translate_name(away['teamName']), translate_name(home['teamName'])
     period = box.get('period', 0)
     
-    separator = "—" * 22  # שורת הפרדה שקובעת רוחב קבוע
+    width_fix = "ㅤ" * 12 + "‏‏‏"
+    
     header = f"🏁 <b>{label}</b> 🏁" if is_final else f"⏱️ <b>{label}</b>"
     if "דרמה" in label: header = f"😱 <b>{label}</b> 😱"
     elif "יצא לדרך" in label: header = f"🚀 <b>{label}</b>"
@@ -100,7 +101,8 @@ def format_msg(box, label, is_final=False):
 
     count = 3 if (period >= 4 or is_final) else 2
     for team in [away, home]:
-        msg += f"\u200f📍 <b>סטטיסטיקה {translate_name(team['teamName'])}:</b>\n"
+        # משאיר רק את שם הקבוצה עם האייקון, בלי המילה "סטטיסטיקה"
+        msg += f"\u200f📍 <b>{translate_name(team['teamName'])}:</b>\n"
         top = sorted([p for p in team['players'] if p['statistics']['points'] > 0], 
                      key=lambda x: x['statistics']['points'], reverse=True)[:count]
         for i, p in enumerate(top):
@@ -187,4 +189,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
