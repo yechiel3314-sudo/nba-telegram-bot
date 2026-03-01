@@ -59,26 +59,33 @@ def get_team_name(eng_name):
     return TEAM_TRANSLATIONS.get(eng_name, eng_name)
 
 def translate_player_name(english_name):
+    # 1. בדיקה אם השם כבר תורגם ונמצא בזיכרון
     if english_name in cache["names"]:
         return cache["names"][english_name]
+    
     try:
-        # הוספת המתנה קצרה כדי לא להיחסם על ידי גוגל
+        # 2. המתנה קצרה כדי לא לעבור את המכסה של גוגל (מונע שגיאה 429)
         time.sleep(0.6) 
         
+        # 3. פנייה למודל החדש והיציב ביותר
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=f"Translate the NBA player name '{english_name}' to Hebrew. Output ONLY the full name."
         )
         translated = response.text.strip()
+        
+        # 4. שמירה בזיכרון לפעם הבאה כדי לא לבזבז בקשות AI
         if translated:
             cache["names"][english_name] = translated
             save_cache()
             return translated
+            
     except Exception as e:
-        print(f"AI Error: {e}")
-        # אם יש שגיאת מכסה, נחכה קצת יותר בסבב הבא
+        print(f"AI Error for {english_name}: {e}")
+        # אם בכל זאת הגענו למכסה, נחכה קצת יותר
         if "429" in str(e):
-            time.sleep(2)
+            time.sleep(5)
+            
     return english_name
 # =================================================================
 # שליפת חמישיות וחיסורים
@@ -228,6 +235,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
