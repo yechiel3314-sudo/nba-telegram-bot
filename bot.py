@@ -2,6 +2,7 @@ import requests
 import time
 import json
 import os
+from datetime import datetime
 from deep_translator import GoogleTranslator
 
 # ==========================================
@@ -11,6 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_cache.json"
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 translator = GoogleTranslator(source='en', target='iw')
 
@@ -33,7 +35,6 @@ NBA_TEAMS_HEBREW = {
 }
 
 def load_cache():
-    # גרסה נקייה שמוחקת את הזיכרון הישן כדי שהתמונות יישלחו מחדש כעת
     return {"names": {}, "games": {}}
 
 cache = load_cache()
@@ -63,22 +64,22 @@ def format_msg(box, label, is_final=False):
     away, home = box['awayTeam'], box['homeTeam']
     a_name, h_name = translate_name(away['teamName']), translate_name(home['teamName'])
     period = box.get('period', 0)
-    
     s = "ㅤ" 
     
-    # 2. חישוב אורך שמות הקבוצות ביחד
     combined_len = len(a_name) + len(h_name)
-    # הרף להודעה ארוכה ב-NBA הוא בערך 30 תווים (כולל ה-VS)
-    # אם השמות קצרים מ-30, נוסיף רווחים שקופים רק עד שנשלים ל-30
     padding = max(0, 20 - combined_len)
     
     header_text = f"🏁 <b>{label}</b> 🏁" if is_final else f"⏱️ <b>{label}</b>"
     if "דרמה" in label: header_text = f"😱 <b>{label}</b> 😱"
     elif "יצא לדרך" in label: header_text = f"🚀 <b>{label}</b>"
 
-    # 3. בניית ההודעה: העוגן מתווסף רק לפי הצורך כדי להשוות רוחב
-    msg = f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀{s * padding}\n"
-    msg += f"\u200f{header_text}\n\n" 
+    # שינוי סדר: אם זה סיום משחק, הכותרת (label) מופיעה קודם
+    if is_final:
+        msg = f"\u200f{header_text}\n"
+        msg += f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀{s * padding}\n\n"
+    else:
+        msg = f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀{s * padding}\n"
+        msg += f"\u200f{header_text}\n\n" 
 
     if "יצא לדרך" in label:
         for team in [away, home]:
@@ -94,8 +95,6 @@ def format_msg(box, label, is_final=False):
     leader_name = a_name if away['score'] > home['score'] else h_name
     action = "מנצחת" if is_final else "מובילה"
     score_str = f"<b>{max(away['score'], home['score'])} - {min(away['score'], home['score'])}</b>"
-    
-    # שינוי האימוג'י בסיום משחק ל-🏆 כפי שביקשת
     win_emoji = "🏆" if is_final else "🔥"
     
     if away['score'] == home['score']:
@@ -107,7 +106,6 @@ def format_msg(box, label, is_final=False):
 
     count = 3 if (period >= 4 or is_final) else 2
     for team in [away, home]:
-        # משאיר רק את שם הקבוצה עם האייקון, בלי המילה "סטטיסטיקה"
         msg += f"\u200f📍 <b>{translate_name(team['teamName'])}:</b>\n"
         top = sorted([p for p in team['players'] if p['statistics']['points'] > 0], 
                      key=lambda x: x['statistics']['points'], reverse=True)[:count]
@@ -128,33 +126,29 @@ def format_msg(box, label, is_final=False):
         photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=420&h=310"
     
     return msg, photo_url
-    
+
 def send_telegram(text, photo_url=None):
-    # שליחה בפורמט data במקום json פותרת את בעיית הצגת התמונות מכתובת URL
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
-    
     try:
         if photo_url and photo_url.strip():
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-            # שימוש ב-data=payload במקום json=payload
             r = requests.post(url, data={**payload, "photo": photo_url, "caption": text}, timeout=20)
-            if r.status_code == 200:
-                return
-            else:
-                print(f"Photo failed: {r.text}")
+            if r.status_code == 200: return
         
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, data={**payload, "text": text}, timeout=15)
-        
     except Exception as e:
         print(f"Telegram Error: {e}")
 
 def run():
-    HEADERS = {"User-Agent": "Mozilla/5.0"}
-    print("🚀 בוט NBA באוויר - גרסת תמונות וגביעים...")
+    print("🚀 בוט NBA באוויר - גרסת לוגים וסדר הודעות מעודכן...")
     while True:
+        # לוג בדיקה שמופיע במסוף כל 15 שניות
+        current_time = datetime.now().strftime("%H:%M:%S")
+        print(f"🔍 [{current_time}] סורק משחקים לעדכונים...")
+        
         try:
-            response = requests.get(NBA_URL, timeout=10)
+            response = requests.get(NBA_URL, headers=HEADERS, timeout=10)
             if response.status_code != 200:
                 time.sleep(15)
                 continue
@@ -172,16 +166,19 @@ def run():
                     cache["games"][gid] = []
                 log = cache["games"][gid]
 
+                # עדכון פתיחת משחק
                 if status == 2 and period == 1 and ("12:00" in txt or "q1" in txt) and "start_alert" not in log:
-                    box_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json")
+                    box_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json", headers=HEADERS)
                     if box_resp.status_code == 200:
                         box = box_resp.json()['game']
                         msg, p = format_msg(box, "המשחק יצא לדרך!")
                         send_telegram(msg, p)
                         log.append("start_alert")
+                        print(f"✅ נשלחה הודעת פתיחה למשחק {gid}")
 
+                # עדכון סיום רבע/מחצית/משחק
                 if ("end" in txt or "half" in txt or status == 3) and txt not in log:
-                    box_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json")
+                    box_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json", headers=HEADERS)
                     if box_resp.status_code == 200:
                         box = box_resp.json()['game']
                         label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
@@ -189,9 +186,11 @@ def run():
                         send_telegram(m, p)
                         log.append(txt)
                         save_cache()
+                        print(f"✅ נשלח עדכון: {label} למשחק {gid}")
 
         except Exception as e: 
-            print(f"Error logic: {e}")
+            print(f"❌ Error logic: {e}")
+        
         time.sleep(15)
 
 if __name__ == "__main__":
