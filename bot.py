@@ -69,7 +69,7 @@ def format_msg(box, label, is_final=False):
     combined_len = len(a_name) + len(h_name)
     # הרף להודעה ארוכה ב-NBA הוא בערך 30 תווים (כולל ה-VS)
     # אם השמות קצרים מ-30, נוסיף רווחים שקופים רק עד שנשלים ל-30
-    padding = max(0, 25 - combined_len)
+    padding = max(0, 35 - combined_len)
     
     header_text = f"🏁 <b>{label}</b> 🏁" if is_final else f"⏱️ <b>{label}</b>"
     if "דרמה" in label: header_text = f"😱 <b>{label}</b> 😱"
@@ -194,6 +194,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
