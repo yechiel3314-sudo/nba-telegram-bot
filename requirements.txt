@@ -1,5 +1,5 @@
 requests
 python-telegram-bot==20.7
-deep-translator
 nba_api
+deep-translator
 pillow
