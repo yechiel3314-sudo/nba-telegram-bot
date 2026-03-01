@@ -165,10 +165,14 @@ def run():
         try:
             resp = requests.get(NBA_URL, timeout=10).json()
             games = resp.get('scoreboard', {}).get('games', [])
-            for g in games:
-                gid, status, period = g['gameId'], g['gameStatus'], g['period']
-                txt = g.get('gameStatusText', '').lower()
-                if gid not in cache["games"]: cache["games"][gid] = []
+           for g in games:
+                # --- תרגום שקט ברקע למניעת חסימה ברגע האמת ---
+                if g.get('gameStatus') == 2: # רק אם המשחק פעיל עכשיו
+                    t_away = g.get('awayTeam', {}).get('teamName', '')
+                    t_home = g.get('homeTeam', {}).get('teamName', '')
+                    if t_away not in cache["names"]: translate_player_name(t_away)
+                    if t_home not in cache["names"]: translate_player_name(t_home)
+                # ----------------------------------------------
                 
                 if ("end" in txt or "half" in txt or status == 3) and txt not in cache["games"][gid]:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
@@ -191,3 +195,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
