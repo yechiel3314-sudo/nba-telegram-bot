@@ -33,10 +33,7 @@ NBA_TEAMS_HEBREW = {
 }
 
 def load_cache():
-    # גרסה נקייה שמוחקת את הזיכרון הישן כדי שהתמונות יישלחו מחדש
-    return {"names": {}, "games": {}}
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+    # גרסה נקייה שמוחקת את הזיכרון הישן כדי שהתמונות יישלחו מחדש כעת
     return {"names": {}, "games": {}}
 
 cache = load_cache()
@@ -120,7 +117,7 @@ def format_msg(box, label, is_final=False):
         
         # כאן אתה שולט בעדכניות ובגודל (w=400 זה קטן וקומפקטי)
         photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=400&h=290"
-
+    
     return msg, photo_url
     
 def send_telegram(text, photo_url=None):
@@ -190,5 +187,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
