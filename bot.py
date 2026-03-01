@@ -1,230 +1,207 @@
 import requests
 import time
-import json
-import os
+from datetime import datetime, timedelta
+import pytz
+from deep_translator import GoogleTranslator
 
 # ==========================================
-# הגדרות מערכת (ENV בלבד!)
+# --- הגדרות טכניות ---
 # ==========================================
+TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
+CHAT_ID = "-1003808107418"
 
-TELEGRAM_TOKEN = os.getenv("8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE")
-CHAT_ID = os.getenv("1003808107418")
+NBA_API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+NCAA_API = "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard"
+GLEAGUE_API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba-ght/scoreboard"
 
-NBA_SCOREBOARD_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-NBA_BOXSCORE_URL = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{}.json"
+translator = GoogleTranslator(source='en', target='iw')
+RTL_MARK = "\u200f"
+injury_watch_list = {} 
+cycle_done_today = ""
 
-CACHE_FILE = "nba_bot_cache.json"
-PLAYERS_FILE = "players_db.json"
-
-# ==========================================
-# 30 קבוצות NBA בעברית
-# ==========================================
-
-TEAMS_HE = {
-    "Atlanta Hawks": "אטלנטה הוקס",
-    "Boston Celtics": "בוסטון סלטיקס",
-    "Brooklyn Nets": "ברוקלין נטס",
-    "Charlotte Hornets": "שארלוט הורנטס",
-    "Chicago Bulls": "שיקגו בולס",
-    "Cleveland Cavaliers": "קליבלנד קאבלירס",
-    "Dallas Mavericks": "דאלאס מאבריקס",
-    "Denver Nuggets": "דנבר נאגטס",
-    "Detroit Pistons": "דטרויט פיסטונס",
-    "Golden State Warriors": "גולדן סטייט ווריורס",
-    "Houston Rockets": "יוסטון רוקטס",
-    "Indiana Pacers": "אינדיאנה פייסרס",
-    "LA Clippers": "לוס אנג'לס קליפרס",
-    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
-    "Memphis Grizzlies": "ממפיס גריזליס",
-    "Miami Heat": "מיאמי היט",
-    "Milwaukee Bucks": "מילווקי באקס",
-    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
-    "New Orleans Pelicans": "ניו אורלינס פליקנס",
-    "New York Knicks": "ניו יורק ניקס",
-    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
-    "Orlando Magic": "אורלנדו מג'יק",
-    "Philadelphia 76ers": "פילדלפיה סיקסרס",
-    "Phoenix Suns": "פיניקס סאנס",
-    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
-    "Sacramento Kings": "סקרמנטו קינגס",
-    "San Antonio Spurs": "סן אנטוניו ספרס",
-    "Toronto Raptors": "טורונטו ראפטורס",
-    "Utah Jazz": "יוטה ג'אז",
-    "Washington Wizards": "וושינגטון וויזארדס"
+PLAYERS = {
+    "NBA": {
+        "Deni Avdija": ["דני אבדיה", "Trail Blazers", "פורטלנד"],
+        "Danny Wolf": ["דני וולף", "Michigan", "מישיגן"],
+        "Ben Saraf": ["בן שרף", "Nets", "ברוקלין"]
+    },
+    "GLEAGUE": {
+        "Ben Saraf": ["בן שרף", "Long Island", "לונג איילנד"]
+    },
+    "NCAA": {
+        "Emanuel Sharp": ["עמנואל שארפ", "Houston", "יוסטון"],
+        "Yoav Berman": ["יואב ברמן", "Queens", "קווינס"],
+        "Ofri Naveh": ["עופרי נווה", "Oral Roberts", "אורל רוברטס"],
+        "Eytan Burg": ["איתן בורג", "Tennessee", "טנסי"],
+        "Omer Mayer": ["עומר מאייר", "Purdue", "פורדו"],
+        "Noam Dovrat": ["נועם דוברת", "Miami", "מיאמי"],
+        "Or Ashkenazi": ["אור אשכנזי", "Lipscomb", "ליפסקומב"],
+        "Alon Michaeli": ["אלון מיכאלי", "Colorado", "קולורדו"],
+        "Yonatan Levi": ["יונתן לוי", "Pepperdine", "פפרדיין"],
+        "Yuval Levin": ["יובל לוין", "Fort Wayne", "פרדו פורט וויין"],
+        "Omer Hamama": ["עומר חממה", "Kent State", "קנט סטייט"],
+        "Or Paran": ["אור פארן", "Mercyhurst", "מרסיהרסט"],
+        "Daniel Gueta": ["דניאל גואטה", "Oklahoma State", "אוקלהומה סטייט"],
+        "Erez Foren": ["ארז פורן", "Northern Arizona", "צפון אריזונה"],
+        "Shon Abaev": ["שון אבייב", "Cincinnati", "סינסינטי"]
+    }
 }
 
-# ==========================================
-# בניית מסד נתונים 540 שחקנים
-# ==========================================
-
-def build_players_db():
-    if os.path.exists(PLAYERS_FILE):
-        return
-
-    print("בונה מאגר שחקנים...")
-    players = {}
-
-    teams = requests.get(
-        "https://cdn.nba.com/static/json/staticData/teamRoster.json"
-    ).json()["league"]["standard"]
-
-    for team in teams:
-        team_id = team["teamId"]
-        roster_url = f"https://cdn.nba.com/static/json/staticData/teamRoster_{team_id}.json"
-        roster = requests.get(roster_url).json()["league"]["standard"]["players"]
-
-        for p in roster:
-            full_name = f"{p['firstName']} {p['lastName']}"
-            players[str(p["personId"])] = {
-                "fullNameEng": full_name,
-                "fullNameHeb": full_name,
-                "team": team["fullName"]
-            }
-
-    with open(PLAYERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(players, f, indent=2, ensure_ascii=False)
-
-    print("✅ מאגר שחקנים נוצר")
-
-# ==========================================
-# טעינת קבצים
-# ==========================================
-
-def load_players():
-    with open(PLAYERS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"games": {}}
-
-def save_cache():
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=4, ensure_ascii=False)
-
-# ==========================================
-# MVP חכם יותר (לא רק נקודות)
-# ==========================================
-
-def calculate_mvp(players):
-    def score(p):
-        s = p["statistics"]
-        return (
-            s["points"]
-            + s["reboundsTotal"]
-            + s["assists"]
-            + s["steals"]
-            + s["blocks"]
-            - s["turnovers"]
-        )
-
-    return max(players, key=score)
-
-# ==========================================
-# תמונת אקשן
-# ==========================================
-
-def get_action_photo(person_id):
-    action_url = f"https://a.espncdn.com/photo/2024/r{person_id}_1296x729_16-9.jpg"
+def tr(text):
     try:
-        r = requests.get(action_url, timeout=5)
-        if r.status_code == 200:
-            return action_url
-    except:
-        pass
+        t = translator.translate(text)
+        fixes = {"שבילים בלייזרים": "פורטלנד", "רשתות": "ברוקלין", "לוחמים": "גולדן סטייט", "בוכנות": "דטרויט", "חום": "מיאמי", "זאבי עץ": "מינסוטה"}
+        for k, v in fixes.items(): t = t.replace(k, v)
+        return t
+    except: return text
 
-    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{person_id}.png"
+def send(text):
+    if not text: return
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
+    try: requests.post(url, json=payload, timeout=10)
+    except: pass
 
-# ==========================================
-# שליחה לטלגרם
-# ==========================================
+def get_inj(ev, p_en):
+    try:
+        for comp in ev.get("competitions", []):
+            for team in comp.get("competitors", []):
+                for inj in team.get("injuries", []):
+                    if p_en.lower() in inj.get("displayName", "").lower():
+                        return inj.get("status", "").upper()
+    except: pass
+    return "ACTIVE"
 
-def send_telegram(text, photo_url=None):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("חסר TELEGRAM_TOKEN או CHAT_ID")
-        return
+# --- 1. לו"ז NBA (18:00) ---
+def do_msg_1():
+    try:
+        data = requests.get(NBA_API).json()
+        games = []
+        for ev in data.get("events", []):
+            utc_dt = datetime.strptime(ev['date'], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+            tm = utc_dt.astimezone(pytz.timezone('Asia/Jerusalem')).strftime("%H:%M")
+            t = ev['competitions'][0]['competitors']
+            # שימוש ברווחים מסביב לכוכביות כדי להבטיח הדגשה בטלגרם
+            games.append(f"{RTL_MARK}⏰ ** {tm} **\n{RTL_MARK}🏀 ** {tr(t[1]['team']['displayName'])} ** 🆚 ** {tr(t[0]['team']['displayName'])} **")
+        if games:
+            msg = f"{RTL_MARK}🏀 ══ ** לוח המשחקים להיום בלילה ** ══ 🏀\n\n" + "\n\n".join(games)
+            send(msg)
+    except: pass
 
-    if photo_url:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-        payload = {
-            "chat_id": CHAT_ID,
-            "photo": photo_url,
-            "caption": text,
-            "parse_mode": "Markdown"
-        }
-    else:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "Markdown"
-        }
+# --- 2. לו"ז לגיונרים (18:30) ---
+def do_msg_2():
+    try:
+        g_data = requests.get(GLEAGUE_API).json()
+        saraf_gleague = any("Long Island" in t["team"]["displayName"] for ev in g_data.get("events", []) for t in ev["competitions"][0]["competitors"])
+        
+        for key, title in [("NBA", "NBA"), ("GLEAGUE", "G-LEAGUE"), ("NCAA", "מכללות")]:
+            api = NBA_API if key == "NBA" else (GLEAGUE_API if key == "GLEAGUE" else NCAA_API)
+            data = requests.get(api).json()
+            section = ""
+            for ev in data.get("events", []):
+                teams = ev["competitions"][0]["competitors"]
+                for p_en, info in PLAYERS[key].items():
+                    if p_en == "Ben Saraf" and key == "NBA" and saraf_gleague: continue
+                    if any(info[1].lower() in t["team"]["displayName"].lower() for t in teams):
+                        st = get_inj(ev, p_en)
+                        note = " ⚠️ ** (בסימן שאלה) **" if ("QUEST" in st or "GTD" in st) else ""
+                        if note: injury_watch_list[f"{p_en}_{ev['id']}"] = {"name": info[0], "api": api}
+                        
+                        utc_dt = datetime.strptime(ev['date'], "%Y-%m-%dT%H:%MZ").replace(tzinfo=pytz.utc)
+                        tm = utc_dt.astimezone(pytz.timezone('Asia/Jerusalem')).strftime("%H:%M")
+                        opp = [t["team"]["displayName"] for t in teams if info[1].lower() not in t["team"]["displayName"].lower()][0]
+                        link = f"https://www.365scores.com/he/basketball/results?q={info[1].replace(' ', '%20')}"
+                        section += f"{RTL_MARK}🏀 ** {info[0]} ** ({tr(info[2])}){note}\n{RTL_MARK}🆚 נגד: ** {tr(opp)} **\n{RTL_MARK}⏰ שעה: ** {tm} **\n{RTL_MARK}🔗 [לעמוד המשחק ב-365Scores]({link})\n\n"
+            if section:
+                send(f"{RTL_MARK}🇮🇱 ** משחקי לגיונרים הלילה - {title} ** 🇮🇱\n\n{section}")
+    except: pass
 
-    requests.post(url, json=payload, timeout=10)
+# --- 3. סיכום לגיונרים (09:15) ---
+def do_msg_3():
+    try:
+        # בדיקה על האתמול האמיתי (API מקבל תאריך בפורמט YYYYMMDD)
+        date_str = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
+        for key, api, path in [("NBA", NBA_API, "nba"), ("GLEAGUE", GLEAGUE_API, "nba-ght"), ("NCAA", NCAA_API, "mens-college-basketball")]:
+            res_data = requests.get(f"{api}?dates={date_str}").json()
+            section = ""
+            for ev in res_data.get("events", []):
+                if ev["status"]["type"]["state"] == "post":
+                    summary_url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/{path}/summary?event={ev['id']}"
+                    summary = requests.get(summary_url).json()
+                    for p_en, info in PLAYERS[key].items():
+                        for t_box in summary.get("players", []):
+                            for ath in t_box.get("athletes", []):
+                                if p_en.lower() in ath["athlete"]["displayName"].lower():
+                                    s = ath["stats"]
+                                    pts, reb, ast = (s[0], s[1], s[2]) if key == "NCAA" else (s[14], s[13], s[15])
+                                    teams = ev["competitions"][0]["competitors"]
+                                    my_t = [t for t in teams if t["team"]["id"] == t_box["team"]["id"]][0]
+                                    opp_t = [t for t in teams if t["team"]["id"] != t_box["team"]["id"]][0]
+                                    res_icon = "✅" if int(my_t["score"]) > int(opp_t["score"]) else "❌"
+                                    section += f"{RTL_MARK}🏀 ** {info[0]} **\n{RTL_MARK}{res_icon} ** {my_t['score']} - {opp_t['score']} ** נגד ** {tr(opp_t['team']['displayName'])} **\n{RTL_MARK}📊 ** {pts} נק', {reb} ריב', {ast} אס' **\n\n"
+            if section:
+                send(f"{RTL_MARK}🇮🇱 ** סיכום לגיונרים מהבוקר - {key} ** 🇮🇱\n\n{section}")
+    except: pass
 
-# ==========================================
-# לוגיקה ראשית
-# ==========================================
+# --- 4. תוצאות NBA כללי (09:00) ---
+def do_msg_4():
+    try:
+        date_str = (datetime.now(pytz.timezone('Asia/Jerusalem')) - timedelta(days=1)).strftime("%Y%m%d")
+        data = requests.get(f"{NBA_API}?dates={date_str}").json()
+        res = []
+        for ev in data.get("events", []):
+            if ev["status"]["type"]["state"] == "post":
+                t = ev["competitions"][0]["competitors"]
+                w, l = (t[0], t[1]) if int(t[0]["score"]) > int(t[1]["score"]) else (t[1], t[0])
+                res.append(f"{RTL_MARK}🏆 ** {tr(w['team']['displayName'])} {w['score']} **\n{RTL_MARK}🏀 {tr(l['team']['displayName'])} {l['score']}")
+        if res:
+            send(f"{RTL_MARK}🏁 ** סיכום תוצאות הלילה - NBA ** 🏁\n\n" + "\n\n".join(res))
+    except: pass
 
-def run():
-    print("🚀 הבוט באוויר...")
-
-    while True:
+# --- ניטור פציעות אקטיבי ---
+def check_live_injuries():
+    global injury_watch_list
+    to_remove = []
+    for k, d in injury_watch_list.items():
         try:
-            data = requests.get(NBA_SCOREBOARD_URL, timeout=10).json()
-
-            for g in data["scoreboard"]["games"]:
-                gid = g["gameId"]
-                status = g["gameStatus"]
-
-                if gid not in cache["games"]:
-                    cache["games"][gid] = []
-
-                if status == 3 and "final_sent" not in cache["games"][gid]:
-                    box = requests.get(
-                        NBA_BOXSCORE_URL.format(gid),
-                        timeout=10
-                    ).json()["game"]
-
-                    away = box["awayTeam"]
-                    home = box["homeTeam"]
-
-                    all_players = away["players"] + home["players"]
-                    mvp = calculate_mvp(all_players)
-
-                    mvp_name = players_db.get(
-                        str(mvp["personId"]),
-                        {}
-                    ).get("fullNameHeb", "Unknown")
-
-                    photo = get_action_photo(mvp["personId"])
-
-                    msg = f"""🏀 סיום המשחק
-
-{away['teamCity']} {away['score']} - {home['score']} {home['teamCity']}
-
-⭐ MVP: {mvp_name}
-{mvp['statistics']['points']} נק'
-{mvp['statistics']['reboundsTotal']} רב'
-{mvp['statistics']['assists']} אס'
-"""
-
-                    send_telegram(msg, photo)
-
-                    cache["games"][gid].append("final_sent")
-                    save_cache()
-
-        except Exception as e:
-            print("Error:", e)
-
-        time.sleep(30)
-
-# ==========================================
+            p_en = k.split('_')[0]
+            evs = requests.get(d["api"]).json().get("events", [])
+            for ev in evs:
+                if ev["id"] in k:
+                    st = get_inj(ev, p_en)
+                    if "ACTIVE" in st or "PROBABLE" in st:
+                        send(f"{RTL_MARK}🇮🇱 ** עדכון סופי: {d['name']} משחק! ✅ **")
+                        to_remove.append(k)
+                    elif "OUT" in st:
+                        send(f"{RTL_MARK}🇮🇱 ** עדכון סופי: {d['name']} בחוץ הלילה ❌ **")
+                        to_remove.append(k)
+        except: pass
+    for k in to_remove: injury_watch_list.pop(k, None)
 
 if __name__ == "__main__":
-    build_players_db()
-    players_db = load_players()
-    cache = load_cache()
-    run()
+    while True:
+        now = datetime.now(pytz.timezone('Asia/Jerusalem'))
+        curr = now.strftime("%H:%M")
+        today = now.strftime("%Y%m%d")
+
+        # לו"ז ערב
+        if curr == "18:00" and cycle_done_today != today + "_1800":
+            do_msg_1()
+            cycle_done_today = today + "_1800"
+        if curr == "18:30" and cycle_done_today != today + "_1830":
+            do_msg_2()
+            cycle_done_today = today + "_1830"
+        
+        # תוצאות בוקר
+        if curr == "09:00" and cycle_done_today != today + "_0900":
+            do_msg_4()
+            cycle_done_today = today + "_0900"
+        if curr == "09:15" and cycle_done_today != today + "_0915":
+            do_msg_3()
+            cycle_done_today = today + "_0915"
+
+        # ניטור פציעות בלילה
+        if (now.hour >= 18) or (now.hour < 9):
+            check_live_injuries()
+            
+        time.sleep(30)
