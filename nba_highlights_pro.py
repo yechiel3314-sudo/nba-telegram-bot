@@ -15,13 +15,18 @@ ISRAELI_PLAYERS = {
     "1642300": "דני וולף"
 }
 
+# כותרת דפדפן כדי למנוע חסימות מ-Railway
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+
 PROCESSED_GAMES = set()
 translator = GoogleTranslator(source='en', target='iw')
 
 def get_player_highlights(game_id, player_id, player_name, is_israeli, stats_line):
     pbp_url = f"https://cdn.nba.com/static/json/liveData/playbyplay/playbyplay_{game_id}.json"
     try:
-        r_pbp = requests.get(pbp_url)
+        r_pbp = requests.get(pbp_url, headers=HEADERS)
         if r_pbp.status_code != 200: return None
         
         data = r_pbp.json()
@@ -32,7 +37,6 @@ def get_player_highlights(game_id, player_id, player_name, is_israeli, stats_lin
         temp_files = []
 
         for action in actions:
-            # מחפשים סלים או אסיסטים של השחקן
             p_id = str(action.get('personId'))
             ast_id = str(action.get('assistPersonId'))
             
@@ -40,8 +44,8 @@ def get_player_highlights(game_id, player_id, player_name, is_israeli, stats_lin
                 event_id = action['actionId']
                 video_url = f"https://videos.nba.com/nba/pbp/media/{game_date}/{game_id}/{event_id}/720p.mp4"
                 
-                # בדיקה אם הוידאו קיים בשרת
-                r = requests.get(video_url, timeout=5)
+                # ניסיון הורדה עם Headers
+                r = requests.get(video_url, headers=HEADERS, timeout=5)
                 if r.status_code == 200:
                     fname = f"temp_{player_id}_{event_id}.mp4"
                     with open(fname, 'wb') as f: f.write(r.content)
@@ -53,46 +57,37 @@ def get_player_highlights(game_id, player_id, player_name, is_israeli, stats_lin
 
         if not video_clips: return None
 
-        # חיבור וידאו עם ניהול זיכרון
         final_video = concatenate_videoclips(video_clips, method="compose")
         output_name = f"highlights_{player_id}.mp4"
         final_video.write_videofile(output_name, codec="libx264", audio=True, logger=None)
         
-        # סגירת קבצים לשחרור זיכרון RAM
         final_video.close()
         for clip in video_clips: clip.close()
 
-        # תרגום שם
         h_name = player_name if is_israeli else translator.translate(player_name)
-        
         prefix = "🇮🇱" if is_israeli else "🔥"
         caption = f"{prefix} <b>ביצועי {h_name} מהלילה!</b> {prefix}\n📊 {stats_line}"
 
-        # ניקוי
         for f in temp_files:
             if os.path.exists(f): os.remove(f)
         
-        gc.collect() # ניקוי זיכרון אקטיבי
+        gc.collect()
         return output_name, caption
 
     except Exception as e:
-        print(f"Error in highlight creation: {e}")
+        print(f"Error: {e}")
         return None
 
 def run_highlights_hunter():
-    print("🚀 הצייד התחיל לעבוד! מחפש ישראלים, 40+ נק' ו-20+ אס'...")
+    print("🚀 הבוט תוקן ומתחיל לסרוק...")
     while True:
         try:
-            resp = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json").json()
+            resp = requests.get("https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json", headers=HEADERS).json()
             for g in resp['scoreboard']['games']:
                 gid = g['gameId']
                 
                 if g['gameStatus'] == 3 and gid not in PROCESSED_GAMES:
-                    # מחכים 15 דקות מסיום המשחק כדי לוודא שהוידאו עלה לשרתי ה-NBA
-                    print(f"⌛ משחק {gid} הסתיים. מחכה 15 דקות להעלאת קטעים...")
-                    time.sleep(900) 
-                    
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
+                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json", headers=HEADERS).json()['game']
                     all_p = box['homeTeam']['players'] + box['awayTeam']['players']
                     
                     for p in all_p:
@@ -100,7 +95,7 @@ def run_highlights_hunter():
                         p_id = str(p['personId'])
                         is_israeli = p_id in ISRAELI_PLAYERS
                         
-                        if is_israeli or s['points'] >= 40 or s['assists'] >= 20:
+                        if is_israeli or s['points'] >= 30 or s['assists'] >= 20:
                             p_name = ISRAELI_PLAYERS.get(p_id, f"{p['firstName']} {p['familyName']}")
                             stats = f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
                             
