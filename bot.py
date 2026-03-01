@@ -10,7 +10,7 @@ from google import genai
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 # חשוב: שים כאן מפתח API חדש ותקין מ-Google AI Studio
-GEMINI_API_KEY = "AIzaSyDyzsEfh0OAZymDcihDYEW0IjdJJaxQYoY" 
+GEMINI_API_KEY = "AIzaSyB_9d3tRBv58zysiFwjKhDS2aRv5v07NVs" 
 client = genai.Client(api_key=GEMINI_API_KEY)
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
@@ -184,3 +184,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
