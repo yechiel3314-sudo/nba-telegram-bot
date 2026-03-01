@@ -1,2 +1,5 @@
-response = client.models.generate_content(
-    model="gemini-2.0-flash",
+requests
+python-telegram-bot==20.7
+deep-translator
+nba_api
+pillow
