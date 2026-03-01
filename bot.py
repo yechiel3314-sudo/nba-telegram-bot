@@ -107,7 +107,7 @@ def format_msg(box, label, is_final=False):
         msg += "\n"
 
     photo_url = None
-   if is_final:
+    if is_final:
         # MVP אמיתי לפי מדד יעילות
         all_p = away['players'] + home['players']
         mvp = max(all_p, key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists'])
@@ -185,4 +185,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
