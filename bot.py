@@ -75,6 +75,28 @@ def translate_player_name(english_name):
         return english_name
 
 # =================================================================
+# פונקציה לשליפת חמישיות וחיסורים (חדש/מוחזר)
+# =================================================================
+
+def get_lineups_and_injuries(box):
+    data = {"away": {"starters": [], "out": []}, "home": {"starters": [], "out": []}}
+    for side in ['awayTeam', 'homeTeam']:
+        key = 'away' if side == 'awayTeam' else 'home'
+        players = box.get(side, {}).get('players', [])
+        for p in players:
+            p_name = f"{p['firstName']} {p['familyName']}"
+            heb_name = translate_player_name(p_name)
+            
+            # בדיקת חמישייה
+            if p.get('starter') == "1":
+                data[key]['starters'].append(heb_name)
+            
+            # בדיקת פצועים/לא פעילים
+            if p.get('status') == "INACTIVE":
+                data[key]['out'].append(heb_name)
+    return data
+
+# =================================================================
 # בניית ההודעה ועיצוב פוסטרים
 # =================================================================
 
@@ -90,13 +112,31 @@ def format_msg(box, label, is_final=False):
     
     photo_url = None
     
-    # עיצוב כותרת
+    # הודעת פתיחה: "המשחק יצא לדרך" + פוסטר + חמישיות וחיסורים
+    if "יצא לדרך" in label and period == 1:
+        header = f"🚀 **המשחק יצא לדרך**"
+        msg = f"\u200f{header}\n"
+        msg += f"\u200f🏀 **{a_name} 🆚 {h_name}** 🏀\n\n"
+        
+        lineups = get_lineups_and_injuries(box)
+        
+        for side, t_name in [(lineups['away'], a_name), (lineups['home'], h_name)]:
+            msg += f"\u200f📍 **חמישיית {t_name}:**\n"
+            if side['starters']:
+                msg += f"\u200f{', '.join(side['starters'])}\n"
+            else:
+                msg += f"\u200f(טרם פורסם)\n"
+            
+            if side['out']:
+                msg += f"\u200f❌ **חיסורים:** {', '.join(side['out'][:5])}\n"
+            msg += "\n"
+            
+        photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
+        return msg, photo_url
+
+    # הודעת סיום או רבעים רגילה
     if is_final:
         header = f"🏁 **{label}** 🏁"
-    elif "יצא לדרך" in label:
-        header = f"🚀 **{label}**"
-        # פוסטר Matchup רשמי (לוגואים ומדים) להודעת הפתיחה
-        photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
     else:
         header = f"⏱️ **{label}**"
 
@@ -104,8 +144,6 @@ def format_msg(box, label, is_final=False):
     msg += f"\u200f🏀 **{a_name} 🆚 {h_name}** 🏀\n\n"
 
     leader = a_name if away['score'] > home['score'] else h_name
-    
-    # שינוי ל"מנצחת" בסיום המשחק לפי בקשתך
     verb = "מנצחת" if is_final else "מובילה"
     
     if away['score'] == home['score']:
@@ -113,9 +151,7 @@ def format_msg(box, label, is_final=False):
     else:
         msg += f"\u200f🔥 **{leader} {verb} {max(away['score'], home['score'])} - {min(away['score'], home['score'])}** 🔥\n\n"
 
-    if "יצא לדרך" in label:
-        return msg, photo_url
-
+    # סטטיסטיקות שחקנים
     count = 3 if (period >= 4 or is_final) else 2
     for team, t_name in [(away, a_name), (home, h_name)]:
         msg += f"\u200f📍 **{t_name}**\n"
@@ -134,19 +170,19 @@ def format_msg(box, label, is_final=False):
             mvp_name = translate_player_name(f"{mvp['firstName']} {mvp['familyName']}")
             msg += f"\u200f⭐ **ה-MVP של הלילה: {mvp_name}**\n"
             msg += f"\u200f📊 {get_stat_line(mvp)}"
-            # פוסטר אקשן ל-MVP בסיום
             photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{mvp['personId']}"
 
     return msg, photo_url
 
 # =================================================================
-# שליחה לטלגרם
+# שליחה לטלגרם - הודעה מאוחדת (Photo + Caption)
 # =================================================================
 
 def send_telegram(text, photo_url=None):
     base_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
     try:
         if photo_url:
+            # בודק שהלינק תקין לפני השליחה
             payload = {"chat_id": CHAT_ID, "photo": photo_url, "caption": text, "parse_mode": "Markdown"}
             requests.post(f"{base_url}/sendPhoto", json=payload, timeout=15)
         else:
@@ -160,7 +196,7 @@ def send_telegram(text, photo_url=None):
 # =================================================================
 
 def run():
-    print("🚀 בוט ה-NBA פועל עם פוסטרים ועדכונים...")
+    print("🚀 בוט ה-NBA פועל. בודק חמישיות, פוסטרים ותוצאות...")
     while True:
         try:
             resp = requests.get(NBA_URL, timeout=10).json()
@@ -179,18 +215,16 @@ def run():
 
                 # סיום רבע / משחק
                 if ("end" in status_text or "half" in status_text or status == 3) and status_text not in game_log:
-                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                    box_data = requests.get(box_url).json()['game']
+                    box_data = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in status_text else f"סיום רבע {period}")
                     msg, photo = format_msg(box_data, label, is_final=(status == 3))
                     send_telegram(msg, photo)
                     game_log.append(status_text)
                     save_cache()
 
-                # יצא לדרך
+                # יצא לדרך (כולל חמישיות וחיסורים בפעם הראשונה)
                 if "start" in status_text and f"start_{period}" not in game_log:
-                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                    box_data = requests.get(box_url).json()['game']
+                    box_data = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "רבע 3 יצא לדרך" if period == 3 else (f"הארכה {period-4} יצאה לדרך" if period > 4 else f"רבע {period} יצא לדרך")
                     msg, photo = format_msg(box_data, label)
                     send_telegram(msg, photo)
@@ -199,6 +233,7 @@ def run():
 
         except Exception as e:
             print(f"Polling Error: {e}")
+            
         time.sleep(15)
 
 if __name__ == "__main__":
