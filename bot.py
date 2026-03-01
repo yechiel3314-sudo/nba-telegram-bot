@@ -9,7 +9,7 @@ from google import genai
 # =================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-GEMINI_API_KEY = "AIzaSyD-L0K7H6v1Xj_n4X_k_X_l_X_X_JDHs"
+GEMINI_API_KEY = "AIzaSyBljGNa2qMXfDXbJM3gI2ai88rbfepqcyQ"
 
 # אתחול לקוח Google AI
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -222,3 +222,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
