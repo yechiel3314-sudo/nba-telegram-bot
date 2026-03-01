@@ -19,34 +19,16 @@ def get_player_highlights(game_id, player_id, player_name, is_israeli):
         temp_files = []
 
         # מחפשים סלים, אסיסטים, חסימות וחטיפות
+       # בדיקה גנרית - מוריד את 5 המהלכים הראשונים של המשחק
         for action in actions:
-            p_id = str(action.get('personId'))
-            ast_id = str(action.get('assistPersonId'))
-            
-            if p_id == player_id or ast_id == player_id:
-                if action['isFieldGoal'] == 1 or action['type'] in ['block', 'steal']:
-                    event_id = action['actionId']
-                    # הכתובת לוידאו - מעודכנת להיום (01/03/2026)
-                    video_url = f"https://videos.nba.com/nba/pbp/media/2026/03/01/{game_id}/{event_id}/720p.mp4"
-                    
-                    r = requests.get(video_url, timeout=10)
-                    if r.status_code == 200:
-                        fname = f"temp_{event_id}.mp4"
-                        with open(fname, 'wb') as f:
-                            f.write(r.content)
-                        video_clips.append(VideoFileClip(fname))
-                        temp_files.append(fname)
-                    
-                    # בדיקה: לוקח רק עד 10 קטעים כדי שהשרת לא יקרוס בבדיקה
-                    if len(video_clips) >= 10: break
-
-        if not video_clips:
-            return None
-
-        print(f"🎬 מחבר {len(video_clips)} קטעים עבור {player_name}...")
-        final_video = concatenate_videoclips(video_clips, method="compose")
-        output = f"highlights_{player_id}.mp4"
-        final_video.write_videofile(output, codec="libx264", audio=True)
+            if action.get('actionId') and action.get('isFieldGoal'):
+                event_id = action['actionId']
+                video_url = f"https://videos.nba.com/nba/pbp/media/2026/03/01/{game_id}/{event_id}/720p.mp4"
+                
+                print(f"📥 מנסה להוריד מהלך כלשהו {event_id}...")
+                r = requests.get(video_url, timeout=10)
+                if r.status_code == 200:
+                    # ... המשך הקוד להורדה וחיבור ...
         
         # ניקוי קבצים זמניים
         for f in temp_files: 
