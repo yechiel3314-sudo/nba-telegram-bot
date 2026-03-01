@@ -117,11 +117,10 @@ def format_msg(box, label, is_final=False):
         msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_full_name}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}\n"
         
-        # שימוש בשרת ה-Action Shots לעונה הנוכחית (2025-26)
-        # הוספתי הגבלת גודל ל-500x500 כדי שהתמונה תהיה קטנה ופרופורציונלית יותר בטלגרם
-        photo_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{mvp['personId']}.png" 
-        # הערה: אם תרצה תמונת אקשן ממש מהפרקט, ESPN הוא המקור, אבל ה-ID של ה-NBA (למשל של לוקה) 
-        # בכתובת של ESPN שהבאתי לך קודם אמור להציג את לוקה במדים הנוכחיים.
+        # כאן אתה שולט בעדכניות ובגודל (w=400 זה קטן וקומפקטי)
+        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=400&h=290"
+
+    return msg, photo_url
     
 def send_telegram(text, photo_url=None):
     # הגדרת Payload בסיסי
@@ -187,6 +186,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
