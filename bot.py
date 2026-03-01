@@ -5,7 +5,7 @@ import os
 from google import genai
 
 # =================================================================
-# הגדרות מערכת
+# הגדרות מערכת - מצב HTML ליציבות מקסימלית
 # =================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
@@ -25,7 +25,7 @@ TEAM_TRANSLATIONS = {
     "Pelicans": "ניו אורלינס פליקנס", "Knicks": "ניו יורק ניקס", "Thunder": "אוקלהומה סיטי ת'אנדר", 
     "Magic": "אורלנדו מג'יק", "76ers": "פילדלפיה 76", "Suns": "פיניקס סאנס", 
     "Trail Blazers": "פורטלנד טרייל בלייזרס", "Kings": "סקרמנטו קינגס", "Spurs": "סן אנטוניו ספרס", 
-    "Raptors": "טורונטו ראפטורס", "Jazz": "יוטה ג'אז", "Wizards": "וושינגטון ויזארדס"
+    "Raptors": "טורונטו ראפפורס", "Jazz": "יוטה ג'אז", "Wizards": "וושינגטון ויזארדס"
 }
 
 def load_cache():
@@ -46,23 +46,20 @@ def translate_player_name(english_name):
     if english_name in cache["names"]:
         return cache["names"][english_name]
     
-    # ניסיון תרגום יצירתי עם השהייה משתנה למניעת חסימה
-    for attempt in range(2):
-        try:
-            time.sleep(1.2) # השהייה בטוחה יותר
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=f"Translate NBA player '{english_name}' to Hebrew. Return ONLY the name."
-            )
-            translated = response.text.strip().replace("*", "") # ניקוי כוכביות מה-AI
-            if translated and len(translated) < 40:
-                cache["names"][english_name] = translated
-                save_cache()
-                return translated
-        except Exception as e:
-            print(f"AI Attempt {attempt+1} failed for {english_name}: {e}")
-            time.sleep(2)
-            
+    # פתרון יצירתי: הגבלת קריאות ל-AI למניעת שגיאה 429
+    try:
+        time.sleep(1.5) # השהייה בטוחה
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=f"Translate NBA player '{english_name}' to Hebrew. Return ONLY the name."
+        )
+        translated = response.text.strip().replace("*", "").replace("<b>", "").replace("</b>", "")
+        if translated and len(translated) < 40:
+            cache["names"][english_name] = translated
+            save_cache()
+            return translated
+    except Exception as e:
+        print(f"AI Error (Quota?): {e}")
     return english_name
 
 def get_lineups_and_injuries(box):
@@ -88,12 +85,11 @@ def format_msg(box, label, is_final=False):
     a_name = TEAM_TRANSLATIONS.get(away['teamName'], away['teamName'])
     h_name = TEAM_TRANSLATIONS.get(home['teamName'], home['teamName'])
     period = box.get('period', 0)
-    rtl = "\u200f" # תו כיווניות לימין
+    rtl = "\u200f" # תו כיווניות חובה לימין
     
-    # פונקציית עזר להדגשה בטוחה
-    def b(text): return f"**{str(text).strip()}**"
+    # פתרון מחוץ לקופסא: שימוש בתגיות HTML במקום כוכביות
+    def b(text): return f"<b>{str(text).strip()}</b>"
 
-    # --- הודעת פתיחה ---
     if "יצא לדרך" in label and period == 1:
         msg = f"{rtl}🚀 {b('המשחק יצא לדרך')}\n"
         msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)}\n\n"
@@ -113,7 +109,6 @@ def format_msg(box, label, is_final=False):
         photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
         return msg, photo_url
 
-    # --- הודעות תוצאה ---
     header = b(f"🏁 {label}") if is_final else b(f"⏱️ {label}")
     msg = f"{rtl}{header}\n"
     msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)}\n\n"
@@ -149,7 +144,8 @@ def format_msg(box, label, is_final=False):
 
 def send_telegram(text, photo_url=None):
     base_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-    payload = {"chat_id": CHAT_ID, "parse_mode": "Markdown"}
+    # שינוי ל-HTML Mode בטלגרם
+    payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
     try:
         if photo_url:
             payload.update({"photo": photo_url, "caption": text})
@@ -160,7 +156,7 @@ def send_telegram(text, photo_url=None):
     except Exception as e: print(f"Telegram Error: {e}")
 
 def run():
-    print("🚀 הבוט התחיל לעבוד...")
+    print("🚀 הבוט התחיל לעבוד במצב HTML...")
     while True:
         try:
             resp = requests.get(NBA_URL, timeout=10).json()
@@ -171,7 +167,6 @@ def run():
                 if gid not in cache["games"]: cache["games"][gid] = []
                 
                 if ("end" in txt or "half" in txt or status == 3) and txt not in cache["games"][gid]:
-                    print(f"📦 עדכון למשחק {gid}")
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
                     msg, photo = format_msg(box, label, is_final=(status == 3))
@@ -180,7 +175,6 @@ def run():
                     save_cache()
 
                 if "start" in txt and f"start_{period}" not in cache["games"][gid]:
-                    print(f"🟢 פתיחה למשחק {gid}")
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "המשחק יצא לדרך" if period == 1 else f"רבע {period} יצא לדרך"
                     msg, photo = format_msg(box, label)
@@ -189,7 +183,7 @@ def run():
                     save_cache()
 
         except Exception as e: print(f"Error: {e}")
-        time.sleep(15)
+        time.sleep(20) # הגדלת זמן ההמתנה כדי למנוע עומס
 
 if __name__ == "__main__":
     run()
