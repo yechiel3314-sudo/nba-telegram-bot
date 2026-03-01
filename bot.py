@@ -69,7 +69,7 @@ def format_msg(box, label, is_final=False):
     if "דרמה" in label: header = f"😱 <b>{label}</b> 😱"
     elif "יצא לדרך" in label: header = f"🚀 <b>{label}</b>"
 
-    wide_header = f"\u200f🏀{s*12}<b>{a_name} 🆚 {h_name}</b>{s*10}🏀"
+    wide_header = f"\u200f🏀{s*12}<b>{a_name} 🆚 {h_name}</b>{s*6}🏀"
 
     msg = f"{wide_header}\n"
     msg += f"\u200f{header}\n\n"
@@ -191,6 +191,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
