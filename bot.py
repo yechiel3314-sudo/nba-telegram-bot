@@ -9,7 +9,7 @@ import google.generativeai as genai
 # ==========================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY" # המפתח שהעתקת מהמסך
+GEMINI_API_KEY = "AIzaSyCVsa8XtagYAYkhefu6EapEVxMWsXAGbtc" # המפתח שהעתקת מהמסך
 
 # אתחול Gemini 3 Flash
 genai.configure(api_key=GEMINI_API_KEY)
@@ -178,4 +178,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
