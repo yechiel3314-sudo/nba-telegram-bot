@@ -2,48 +2,27 @@ import requests
 import time
 import json
 import os
-from googletrans import Translator
 
 # =================================================================
-# הגדרות מערכת - גרסה יציבה ומתוקנת (NBA Bot 2026)
+# הגדרות מערכת - גרסה מלאה ללא פשרות (NBA Bot 2026)
 # =================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
 
-# אתחול שקט של המתרגם למניעת קריסות בגלל גרסאות פייתון
-try:
-    translator = Translator()
-except Exception:
-    translator = None
-
+# מילון שמות שחקנים - פתרון קבע לבעיות תרגום ומכסות API
 PLAYER_OVERRIDES = {
-    "Deni Avdija": "דני אבדיה",
-    "James Harden": "ג'יימס הארדן",
-    "Jrue Holiday": "ג'רו הולידיי",
-    "Giannis Antetokounmpo": "יאניס אנדטוקומבו",
-    "Shai Gilgeous-Alexander": "שיי גילג'ס-אלכסנדר",
-    "Luka Doncic": "לוקה דונצ'יץ'",
-    "Nikola Jokic": "ניקולה יוקיץ'",
-    "Joel Embiid": "ג'ואל אמביד",
-    "Tyrese Haliburton": "טייריס הליברטון",
-    "Domantas Sabonis": "דומנטאס סאבוניס",
-    "Kristaps Porzingis": "קריסטפס פורזינגיס",
-    "Victor Wembanyama": "ויקטור וומבניאמה",
-    "Chet Holmgren": "צ'ט הולמגרן",
-    "Alperen Sengun": "אלפרן שנגון",
-    "Karl-Anthony Towns": "קארל-אנתוני טאונס",
-    "Kyrie Irving": "קיירי אירווינג",
-    "Anthony Edwards": "אנתוני אדוארדס",
-    "Kevin Durant": "קוין דוראנט",
-    "Stephen Curry": "סטפן קרי",
-    "LeBron James": "לברון ג'יימס",
-    "Devin Booker": "דבין בוקר",
-    "Jayson Tatum": "ג'ייסון טייטום",
-    "Jaylen Brown": "ג'יילן בראון",
-    "Damian Lillard": "דמיאן לילארד",
-    "Donovan Mitchell": "דונובן מיטשל"
+    "Deni Avdija": "דני אבדיה", "James Harden": "ג'יימס הארדן",
+    "Jrue Holiday": "ג'רו הולידיי", "Giannis Antetokounmpo": "יאניס אנדטוקומבו",
+    "Shai Gilgeous-Alexander": "שיי גילג'ס-אלכסנדר", "Luka Doncic": "לוקה דונצ'יץ'",
+    "Nikola Jokic": "ניקולה יוקיץ'", "Joel Embiid": "ג'ואל אמביד",
+    "Stephen Curry": "סטפן קרי", "LeBron James": "לברון ג'יימס",
+    "Kevin Durant": "קוין דוראנט", "Jayson Tatum": "ג'ייסון טייטום",
+    "Anthony Edwards": "אנתוני אדוארדס", "Kyrie Irving": "קיירי אירווינג",
+    "Donovan Mitchell": "דונובן מיטשל", "Jaylen Brown": "ג'יילן בראון",
+    "Damian Lillard": "דמיאן לילארד", "Devin Booker": "דבין בוקר",
+    "Tyrese Haliburton": "טייריס הליברטון", "Victor Wembanyama": "ויקטור וומבניאמה"
 }
 
 TEAM_TRANSLATIONS = {
@@ -64,8 +43,8 @@ def load_cache():
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception: pass
-    return {"names": {}, "games": {}}
+        except: pass
+    return {"games": {}}
 
 cache = load_cache()
 
@@ -74,17 +53,7 @@ def save_cache():
         json.dump(cache, f, indent=4, ensure_ascii=False)
 
 def translate_player_name(english_name):
-    if english_name in PLAYER_OVERRIDES: return PLAYER_OVERRIDES[english_name]
-    if english_name in cache["names"]: return cache["names"][english_name]
-    if not translator: return english_name
-    try:
-        translated = translator.translate(english_name, src='en', dest='he').text
-        if translated:
-            cache["names"][english_name] = translated
-            save_cache()
-            return translated
-    except Exception: pass
-    return english_name
+    return PLAYER_OVERRIDES.get(english_name, english_name)
 
 def get_lineups_and_injuries(box):
     data = {"away": {"starters": [], "out": []}, "home": {"starters": [], "out": []}}
@@ -93,9 +62,9 @@ def get_lineups_and_injuries(box):
         players = box.get(side, {}).get('players', [])
         for p in players:
             p_full = f"{p['firstName']} {p['familyName']}"
-            heb_name = translate_player_name(p_full)
-            if p.get('starter') == "1": data[key]['starters'].append(heb_name)
-            if p.get('status') == "INACTIVE": data[key]['out'].append(heb_name)
+            name = translate_player_name(p_full)
+            if p.get('starter') == "1": data[key]['starters'].append(name)
+            if p.get('status') == "INACTIVE": data[key]['out'].append(name)
     return data
 
 def get_stat_line(p):
@@ -113,15 +82,15 @@ def format_msg(box, label, is_final=False):
     msg = f"{rtl}⏱️ {b(label)}\n"
     msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
 
-    # פוסטר כוכב הבית בשריקת הפתיחה
+    # טיפול בפוסטר (תמיד כוכב הבית לפי דרישת המשתמש)
+    photo_url = None
     if "יצא לדרך" in label and period == 1:
         lineups = get_lineups_and_injuries(box)
         try:
-            h_players = home.get('players', [])
-            starters = [p for p in h_players if p.get('starter') == "1"]
+            starters = [p for p in home.get('players', []) if p.get('starter') == "1"]
             p_id = starters[0]['personId'] if starters else home['teamId']
             photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{p_id}"
-        except Exception:
+        except:
             photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
 
         for team_key, name in [('away', a_name), ('home', h_name)]:
@@ -132,6 +101,7 @@ def format_msg(box, label, is_final=False):
             msg += "\n"
         return msg, photo_url
 
+    # סטטיסטיקות ומובילים
     leader = a_name if away['score'] > home['score'] else h_name
     verb = "מנצחת" if is_final else "מובילה"
     msg += f"{rtl}🔥 {b(leader)} {verb} {b(str(max(away['score'], home['score'])) + ' - ' + str(min(away['score'], home['score'])))} 🔥\n\n"
@@ -142,16 +112,12 @@ def format_msg(box, label, is_final=False):
         players = sorted(team.get('players', []), key=lambda x: x['statistics']['points'], reverse=True)[:count]
         for i, p in enumerate(players):
             medal = ["🥇", "🥈", "🥉"][i]
-            # תיקון שגיאת הסינטקס בשורה 145 (שימוש במשתנה חיצוני במקום f-string מורכב מדי)
-            p_name_raw = f"{p['firstName']} {p['familyName']}"
-            heb_p_name = translate_player_name(p_name_raw)
-            msg += f"{rtl}{medal} {b(heb_p_name)}: {get_stat_line(p)}\n"
+            p_full = translate_player_name(f"{p['firstName']} {p['familyName']}")
+            msg += f"{rtl}{medal} {b(p_full)}: {get_stat_line(p)}\n"
         msg += "\n"
 
-    photo_url = None
     if is_final:
-        all_p = away.get('players', []) + home.get('players', [])
-        mvp = max(all_p, key=lambda x: x['statistics']['points'])
+        mvp = max(away.get('players', []) + home.get('players', []), key=lambda x: x['statistics']['points'])
         mvp_name = translate_player_name(f"{mvp['firstName']} {mvp['familyName']}")
         msg += f"{rtl}⭐ {b('ה-MVP: ' + mvp_name)}\n"
         msg += f"{rtl}📊 {get_stat_line(mvp)}"
@@ -166,26 +132,23 @@ def send_telegram(text, photo_url=None):
             requests.post(f"{base_url}/sendPhoto", json={"chat_id": CHAT_ID, "photo": photo_url, "caption": text, "parse_mode": "HTML"}, timeout=15)
         else:
             requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=15)
-    except Exception: pass
+    except: pass
 
 def run():
-    print("🧪 הרצת בדיקה רטרואקטיבית לשעתיים האחרונות...")
+    print("🧪 הרצת בדיקה רטרואקטיבית...")
     cache["games"] = {} 
-    test_prefix = "⚠️ <b>הודעת בדיקה רטרואקטיבית</b> ⚠️\n"
-
     try:
         resp = requests.get(NBA_URL, timeout=10).json()
         for g in resp.get('scoreboard', {}).get('games', []):
-            if g['gameStatus'] in [2, 3]: 
-                box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{g['gameId']}.json"
-                box = requests.get(box_url).json()['game']
+            if g['gameStatus'] in [2, 3]:
+                box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{g['gameId']}.json").json()['game']
                 label = "סיום המשחק" if g['gameStatus'] == 3 else f"עדכון רבע {g['period']}"
                 msg, photo = format_msg(box, label, is_final=(g['gameStatus'] == 3))
-                send_telegram(test_prefix + msg, photo)
+                send_telegram("⚠️ <b>בדיקת מערכת</b>\n" + msg, photo)
                 time.sleep(2)
-    except Exception as e: print(f"Test Error: {e}")
+    except: pass
 
-    print("🚀 הבוט חוזר לעבודה רגילה...")
+    print("🚀 הבוט בפעולה רציפה...")
     while True:
         try:
             resp = requests.get(NBA_URL, timeout=10).json()
@@ -195,24 +158,21 @@ def run():
                 if gid not in cache["games"]: cache["games"][gid] = []
                 
                 if ("end" in txt or "half" in txt or status == 3) and txt not in cache["games"][gid]:
-                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                    box = requests.get(box_url).json()['game']
+                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
                     msg, photo = format_msg(box, label, is_final=(status == 3))
                     send_telegram(msg, photo)
                     cache["games"][gid].append(txt)
                     save_cache()
-                
+
                 if "start" in txt and f"start_{period}" not in cache["games"][gid]:
-                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                    box = requests.get(box_url).json()['game']
-                    label = "המשחק יצא לדרך" if period == 1 else f"רבע {period} יצא לדרך"
-                    msg, photo = format_msg(box, label)
+                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
+                    msg, photo = format_msg(box, f"רבע {period} יצא לדרך")
                     send_telegram(msg, photo)
                     cache["games"][gid].append(f"start_{period}")
                     save_cache()
-        except Exception as e: print(f"Loop Error: {e}")
-        time.sleep(20)
+        except: pass
+        time.sleep(25)
 
 if __name__ == "__main__":
     run()
