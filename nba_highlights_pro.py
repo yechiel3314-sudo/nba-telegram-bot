@@ -134,7 +134,7 @@ def run_highlights_hunter():
                         is_israeli = p_id in ISRAELI_PLAYERS
                         
                         # תנאי להיילייטס (ישראלי או הופעה מטורפת)
-                        if is_israeli or s['points'] >= 35:
+                        if is_israeli or s['points'] >= 30:
                             p_raw_name = f"{p['firstName']} {p['familyName']}"
                             p_display_name = ISRAELI_PLAYERS.get(p_id, p_raw_name)
                             stats_text = f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
