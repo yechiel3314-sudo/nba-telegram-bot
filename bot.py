@@ -96,16 +96,22 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False):
     if is_start:
         if period == 1:
             for team in [away, home]:
-                t_name = translate_name(team['teamName'])
+                # שם מלא: עיר + שם קבוצה (למשל: לוס אנג'לס לייקרס)
+                t_full_name = translate_name(f"{team['teamCity']} {team['teamName']}")
+                
+                # שליפת שחקנים
                 starters = [translate_name(f"{p['firstName']} {p['familyName']}") for p in team['players'] if p.get('starter') == '1']
                 out = [translate_name(f"{p['firstName']} {p['familyName']}") for p in team['players'] if p.get('status') == 'INACTIVE']
-                msg += f"\u200f📍 <b>חמישיית {t_name}:</b>\n"
-                msg += f"\u200f{', '.join(starters) if starters else 'טרם פורסם'}\n"
-                if out: msg += f"\u200f❌ <b>חיסורים:</b> {', '.join(out[:5])}\n"
-                msg += "\n"
-            home_star = sorted(home['players'], key=lambda x: x['statistics'].get('points', 0), reverse=True)[0]
-            photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{home_star['personId']}.png&w=420&h=310"
-        return msg, photo_url
+                
+                # מבנה ההודעה החדש
+                msg += f"\u200f🏀 <b>{t_full_name}</b>\n"
+                msg += f"\u200f📍 <b>חמישייה:</b> {', '.join(starters) if starters else 'טרם פורסם'}\n"
+                if out:
+                    msg += f"\u200f❌ <b>חיסורים:</b> {', '.join(out[:5])}\n"
+                msg += "\n" # רווח בין הקבוצות
+        
+        # החזרת photo_url כ-None כדי שלא תישלח תמונה
+        return msg, None
 
     score_str = f"<b>{max(away['score'], home['score'])} - {min(away['score'], home['score'])}</b>"
     
@@ -211,3 +217,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
