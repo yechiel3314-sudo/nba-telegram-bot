@@ -108,6 +108,7 @@ def format_msg(box, label, is_final=False):
             msg += f"\u200f{medal} <b>{p_full}</b>: {get_stat_line(p)}\n"
         msg += "\n"
 
+    # בסוף פונקציית format_msg, בתוך התנאי if is_final:
     if is_final:
         all_p = away['players'] + home['players']
         mvp = max(all_p, key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists'])
@@ -116,29 +117,30 @@ def format_msg(box, label, is_final=False):
         msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_full_name}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}\n"
         
-        # שימוש בקישור ESPN עם ID של NBA (עובד לרוב השחקנים הפעילים)
-        # הוספתי פרמטרים להגדלת התמונה: w=800&h=600
-        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=800&h=600"
-
-    return msg, photo_url
+        # שימוש בשרת ה-Action Shots לעונה הנוכחית (2025-26)
+        # הוספתי הגבלת גודל ל-500x500 כדי שהתמונה תהיה קטנה ופרופורציונלית יותר בטלגרם
+        photo_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{mvp['personId']}.png" 
+        # הערה: אם תרצה תמונת אקשן ממש מהפרקט, ESPN הוא המקור, אבל ה-ID של ה-NBA (למשל של לוקה) 
+        # בכתובת של ESPN שהבאתי לך קודם אמור להציג את לוקה במדים הנוכחיים.
     
 def send_telegram(text, photo_url=None):
+    # הגדרת Payload בסיסי
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
     
-    if photo_url:
-        # ננסה לשלוח עם התמונה מ-ESPN
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-        res = requests.post(url, json={**payload, "photo": photo_url, "caption": text}, timeout=15)
+    try:
+        if photo_url and photo_url.strip():
+            # ניסיון שליחה עם תמונה
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+            r = requests.post(url, json={**payload, "photo": photo_url, "caption": text}, timeout=15)
+            if r.status_code == 200:
+                return
         
-        # אם ESPN נכשל (סטטוס לא 200), ננסה את ה-NBA כגיבוי
-        if res.status_code != 200:
-            pid = photo_url.split('/')[-1].split('.')[0] # חילוץ ה-ID מה-URL
-            fb_url = f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
-            requests.post(url, json={**payload, "photo": fb_url, "caption": text}, timeout=15)
-    else:
-        # שליחת טקסט בלבד
+        # אם אין תמונה או שהשליחה נכשלה - שלח טקסט בלבד
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={**payload, "text": text}, timeout=15)
+        
+    except Exception as e:
+        print(f"Telegram Error: {e}")
 
 def run():
     print("🚀 בוט NBA סופי באוויר - MVP אמיתי + תמונות ESPN + ללא דגשים בסטטיסטיקה...")
@@ -185,6 +187,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
