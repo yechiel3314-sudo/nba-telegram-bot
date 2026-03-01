@@ -12,8 +12,7 @@ CHAT_ID = "-1003808107418"
 GEMINI_API_KEY = "AIzaSyCVsa8XtagYAYkhefu6EapEVxMWsXAGbtc" # המפתח שהעתקת מהמסך
 
 # אתחול Gemini 3 Flash
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(api_key=GEMINI_API_KEY)
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
 
@@ -38,8 +37,9 @@ def translate_player_name(english_name):
         return cache["names"][english_name]
 
     try:
-        response = model.generate_content(
-            f"Translate the NBA player name '{english_name}' to Hebrew. Output ONLY the full name."
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=f"Translate the NBA player name '{english_name}' to Hebrew. Output ONLY the full Hebrew name."
         )
 
         translated = response.text.strip()
@@ -178,4 +178,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
