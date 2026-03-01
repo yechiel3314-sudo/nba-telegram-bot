@@ -47,20 +47,22 @@ def translate_player_name(english_name):
         return cache["names"][english_name]
     
     try:
-        time.sleep(1.5) # השהייה בטוחה
+        # המתנה קצרה כדי לא לעבור את המכסה של גוגל (60 בקשות לדקה)
+        time.sleep(0.8) 
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=f"Translate NBA player '{english_name}' to Hebrew. Return ONLY the name."
         )
-        translated = response.text.strip().replace("*", "").replace("<b>", "").replace("</b>", "")
+        translated = response.text.strip().replace("*", "")
         if translated and len(translated) < 40:
             cache["names"][english_name] = translated
             save_cache()
             return translated
-    except Exception as e:
-        print(f"AI Error (Quota?): {e}")
+    except Exception:
+        # אם יש עומס, לא קורסים - פשוט מחזירים אנגלית זמנית
+        pass
     return english_name
-
+    
 def get_lineups_and_injuries(box):
     data = {"away": {"starters": [], "out": []}, "home": {"starters": [], "out": []}}
     for side in ['awayTeam', 'homeTeam']:
@@ -114,7 +116,7 @@ def format_msg(box, label, is_final=False):
     header = b(header_text)
     
     msg = f"{rtl}{header}\n"
-    msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)}\n\n"
+    msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
 
     leader = a_name if away['score'] > home['score'] else h_name
     verb = "מנצחת" if is_final else "מובילה"
@@ -189,4 +191,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
