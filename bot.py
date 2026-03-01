@@ -14,6 +14,25 @@ CACHE_FILE = "nba_cache.json"
 
 translator = GoogleTranslator(source='en', target='iw')
 
+# מילון תרגום מובנה לכל 30 קבוצות ה-NBA
+NBA_TEAMS_HEBREW = {
+    "Atlanta Hawks": "אטלנטה הוקס", "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס", "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס", "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס", "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס", "Golden State Warriors": "גולדן סטייט ווריורס",
+    "Houston Rockets": "יוסטון רוקטס", "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "לאק קליפרס", "Los Angeles Lakers": "לוס אנג'לס לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס", "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס", "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס", "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר", "Orlando Magic": "אורלנדו מג'יק",
+    "Philadelphia 76ers": "פילדלפיה 76", "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס", "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס", "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג'אז", "Washington Wizards": "וושינגטון וויזארדס"
+}
+
 # ==========================================
 # ניהול תרגום וזיכרון
 # ==========================================
@@ -27,7 +46,10 @@ def load_cache():
 cache = load_cache()
 
 def translate_name(name):
-    """תרגום שם שחקן/קבוצה ושמירה בזיכרון"""
+    # קודם בודקים אם זו קבוצה מהמילון המובנה
+    if name in NBA_TEAMS_HEBREW:
+        return NBA_TEAMS_HEBREW[name]
+    # אם זה שם שחקן, בודקים בקאש או מתרגמים
     if name in cache["names"]:
         return cache["names"][name]
     try:
@@ -60,10 +82,12 @@ def format_msg(box, label, is_final=False):
 
     # שורת תוצאה
     leader = a_name if away['score'] > home['score'] else h_name
+    action = "ניצחה" if is_final else "מובילה"
+    
     if away['score'] == home['score']:
         msg += f"\u200f🔥 **שוויון {away['score']} - {home['score']}** 🔥\n\n"
     else:
-        msg += f"\u200f🔥 **{leader} מובילה {max(away['score'], home['score'])} - {min(away['score'], home['score'])}** 🔥\n\n"
+        msg += f"\u200f🔥 **{leader} {action} {max(away['score'], home['score'])} - {min(away['score'], home['score'])}** 🔥\n\n"
 
     if "יצא לדרך" in label or "דרמה" in label:
         return msg, None
@@ -82,14 +106,15 @@ def format_msg(box, label, is_final=False):
             msg += f"\u200f{medal} **{p_full}**: {get_stat_line(p)}\n"
         msg += "\n"
 
-    # תמונת MVP בסיום (גם לאחר הארכות)
+    # תמונת MVP בסיום (Action Shot)
     photo_url = None
     if is_final:
         mvp = max(away['players'] + home['players'], key=lambda x: x['statistics']['points'])
         mvp_name = translate_name(f"{mvp['firstName']} {mvp['familyName']}")
         msg += f"\u200f⭐ **ה-MVP של הלילה: {mvp_name}**\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}"
-        photo_url = f"https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/{mvp['personId']}.png"
+        # תמונת אקשן בגודל מלא
+        photo_url = f"https://www.nba.com/stats/api/v1/player/{mvp['personId']}/action"
 
     return msg, photo_url
 
@@ -105,7 +130,12 @@ def send_telegram(text, photo_url=None):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        # בדיקה אם התמונה קיימת, אם לא - שלח רק טקסט
+        r = requests.post(url, json=payload, timeout=10)
+        if photo_url and r.status_code != 200:
+            url_text = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            payload_text = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+            requests.post(url_text, json=payload_text, timeout=10)
     except: pass
 
 # ==========================================
