@@ -76,8 +76,11 @@ def get_stat_line(p):
 def format_msg(box, label, is_final=False, is_start=False, is_drama=False):
     photo_url = None
     away, home = box['awayTeam'], box['homeTeam']
+    
+    # שינוי 1: שם מלא (עיר + כינוי) בכל ההודעות בכותרת
     a_full = translate_name(f"{away['teamCity']} {away['teamName']}")
     h_full = translate_name(f"{home['teamCity']} {home['teamName']}")
+    
     period = box.get('period', 0)
     s_space = "ㅤ" 
     
@@ -96,28 +99,25 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False):
     if is_start:
         if period == 1:
             for team in [away, home]:
-                # שם מלא: עיר + שם קבוצה (למשל: לוס אנג'לס לייקרס)
+                # שינוי 2: שם מלא בחמישיות
                 t_full_name = translate_name(f"{team['teamCity']} {team['teamName']}")
-                
-                # שליפת שחקנים
                 starters = [translate_name(f"{p['firstName']} {p['familyName']}") for p in team['players'] if p.get('starter') == '1']
                 out = [translate_name(f"{p['firstName']} {p['familyName']}") for p in team['players'] if p.get('status') == 'INACTIVE']
                 
-                # מבנה ההודעה החדש
                 msg += f"\u200f🏀 <b>{t_full_name}</b>\n"
                 msg += f"\u200f📍 <b>חמישייה:</b> {', '.join(starters) if starters else 'טרם פורסם'}\n"
                 if out:
                     msg += f"\u200f❌ <b>חיסורים:</b> {', '.join(out[:5])}\n"
-                msg += "\n" # רווח בין הקבוצות
+                msg += "\n"
         
-        # החזרת photo_url כ-None כדי שלא תישלח תמונה
+        # שינוי 3: ביטול תמונה בפתיחה
         return msg, None
 
     score_str = f"<b>{max(away['score'], home['score'])} - {min(away['score'], home['score'])}</b>"
     
     if is_drama:
         msg += f"\u200f🔥 <b>טירוף! שוויון {score_str} הולכים להארכה!</b> 🔥\n\n"
-        return msg, photo_url
+        return msg, None # ביטול תמונה בדרמה
 
     leader_name = a_full if away['score'] > home['score'] else h_full
     win_emoji = "🏆" if is_final else "🔥"
@@ -129,7 +129,9 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False):
 
     count = 3 if (period >= 4 or is_final) else 2
     for team in [away, home]:
-        msg += f"\u200f📍 <b>{translate_name(team['teamName'])}:</b>\n"
+        # שינוי 4: שם מלא מעל רשימת הסטטיסטיקה (📍 הקבוצה המלאה:)
+        t_full_stats = translate_name(f"{team['teamCity']} {team['teamName']}")
+        msg += f"\u200f📍 <b>{t_full_stats}:</b>\n"
         top = sorted([p for p in team['players'] if p['statistics']['points'] > 0], 
                      key=lambda x: x['statistics']['points'], reverse=True)[:count]
         for i, p in enumerate(top):
@@ -142,7 +144,8 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False):
         mvp = max(all_p, key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists'])
         msg += f"\u200f🏆 <b>ה-MVP של המשחק: {translate_name(mvp['firstName']+' '+mvp['familyName'])}</b>\n"
         msg += f"\u200f📊 {get_stat_line(mvp)}\n"
-        photo_url = f"https://a.espncdn.com/combiner/i?img=/i/headshots/nba/players/full/{mvp['personId']}.png&w=420&h=310"
+        # שינוי 5: ביטול תמונה בסיום (MVP)
+        photo_url = None
     
     return msg, photo_url
 
@@ -217,4 +220,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
