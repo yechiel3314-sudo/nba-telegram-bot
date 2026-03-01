@@ -59,6 +59,7 @@ def get_stat_line(p):
     return f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
 
 def format_msg(box, label, is_final=False):
+    photo_url = None
     away, home = box['awayTeam'], box['homeTeam']
     a_name, h_name = translate_name(away['teamName']), translate_name(home['teamName'])
     period = box.get('period', 0)
@@ -149,6 +150,7 @@ def send_telegram(text, photo_url=None):
         print(f"Telegram Error: {e}")
 
 def run():
+    HEADERS = {"User-Agent": "Mozilla/5.0"}
     print("🚀 בוט NBA באוויר - גרסת תמונות וגביעים...")
     while True:
         try:
