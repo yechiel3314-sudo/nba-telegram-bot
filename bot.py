@@ -33,7 +33,8 @@ NBA_TEAMS_HEBREW = {
 }
 
 def load_cache():
-    return {"names": {}, "games": {}} # זה יגרום לבוט לשכוח הכל ולשלוח מחדש
+    # גרסה נקייה שמוחקת את הזיכרון הישן כדי שהתמונות יישלחו מחדש
+    return {"names": {}, "games": {}}
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"names": {}, "games": {}}
@@ -189,4 +190,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
