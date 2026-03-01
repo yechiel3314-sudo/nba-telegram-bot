@@ -63,16 +63,21 @@ def format_msg(box, label, is_final=False):
     a_name, h_name = translate_name(away['teamName']), translate_name(home['teamName'])
     period = box.get('period', 0)
     
-    anchor_char = "ㅤ" 
+    s = "ㅤ" 
+    
+    # 2. חישוב אורך שמות הקבוצות ביחד
+    combined_len = len(a_name) + len(h_name)
+    # הרף להודעה ארוכה ב-NBA הוא בערך 30 תווים (כולל ה-VS)
+    # אם השמות קצרים מ-30, נוסיף רווחים שקופים רק עד שנשלים ל-30
+    padding = max(0, 25 - combined_len)
     
     header_text = f"🏁 <b>{label}</b> 🏁" if is_final else f"⏱️ <b>{label}</b>"
     if "דרמה" in label: header_text = f"😱 <b>{label}</b> 😱"
     elif "יצא לדרך" in label: header_text = f"🚀 <b>{label}</b>"
 
-    msg = f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀{anchor_char * 4}\n"
-    msg += f"\u200f{header_text}\n\n"
-
-    photo_url = None 
+    # 3. בניית ההודעה: העוגן מתווסף רק לפי הצורך כדי להשוות רוחב
+    msg = f"\u200f🏀 <b>{a_name} 🆚 {h_name}</b> 🏀{s * padding}\n"
+    msg += f"\u200f{header_text}\n\n" 
 
     if "יצא לדרך" in label:
         for team in [away, home]:
@@ -189,6 +194,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
