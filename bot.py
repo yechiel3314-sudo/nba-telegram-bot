@@ -155,21 +155,21 @@ def run():
                 # 1. יצא לדרך
                 if status == 2 and period == 1 and ("12:00" in txt or "q1" in txt) and "start_alert" not in log:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, _ = format_msg(box, "המשחק יצא לדרך!")
-                    send_telegram(msg); log.append("start_alert")
+                    msg, p = format_msg(box, "המשחק יצא לדרך!")
+                    send_telegram(msg, p); log.append("start_alert")
 
                 # 2. רבע 3
                 if period == 3 and ("start" in txt or "12:00" in txt) and "q3_alert" not in log:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, _ = format_msg(box, "רבע 3 יצא לדרך")
-                    send_telegram(msg); log.append("q3_alert")
+                    msg, p = format_msg(box, "רבע 3 יצא לדרך")
+                    send_telegram(msg, p); log.append("q3_alert")
 
                 # 3. סיומים ודרמות
                 if ("end" in txt or "half" in txt or status == 3) and txt not in log:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     if period == 4 and "end" in txt and box['awayTeam']['score'] == box['homeTeam']['score'] and "drama_ot" not in log:
-                        msg, _ = format_msg(box, "דרמה ב-NBA: הולכים להארכה!")
-                        send_telegram(msg); log.append("drama_ot")
+                        msg, p = format_msg(box, "דרמה ב-NBA: הולכים להארכה!")
+                        send_telegram(msg, p); log.append("drama_ot")
                     
                     label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
                     m, p = format_msg(box, label, is_final=(status == 3))
@@ -178,18 +178,11 @@ def run():
                 # 4. הארכות
                 if period > 4 and "start" in txt and f"ot{period}_start" not in log:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, _ = format_msg(box, f"הארכה {period-4} יצאה לדרך!")
-                    send_telegram(msg); log.append(f"ot{period}_start")
+                    msg, p = format_msg(box, f"הארכה {period-4} יצאה לדרך!")
+                    send_telegram(msg, p); log.append(f"ot{period}_start")
 
         except Exception as e: print(f"Error: {e}")
         time.sleep(15)
 
 if __name__ == "__main__":
     run()
-
-
-
-
-
-
-
