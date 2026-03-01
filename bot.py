@@ -43,14 +43,16 @@ def save_cache():
         json.dump(cache, f, indent=4, ensure_ascii=False)
 
 def translate_player_name(english_name):
+    # אם השם כבר תורגם בעבר, הוא נשלף בשבריר שנייה בלי לפנות ל-AI
     if english_name in cache["names"]:
         return cache["names"][english_name]
+    
     try:
-        # המתנה של 8 שניות כדי למנוע שגיאת 429 (חריגת מכסה)
-        time.sleep(8.0) 
+        # המתנה חכמה רק לשמות חדשים - מונע את שגיאה 429 שראית
+        time.sleep(2.5) 
         response = client.models.generate_content(
             model="gemini-2.0-flash",
-            contents=f"Translate the NBA player name '{english_name}' to Hebrew. Return ONLY the name."
+            contents=f"Translate NBA player '{english_name}' to Hebrew. Return ONLY the name."
         )
         translated = response.text.strip().replace("*", "")
         if translated and len(translated) < 40:
@@ -58,8 +60,9 @@ def translate_player_name(english_name):
             save_cache()
             return translated
     except Exception as e:
-        print(f"AI Translation Error: {e}")
-    return english_name
+        print(f"AI limit hit, returning English: {e}")
+        
+    return english_name # במקרה של עומס קיצוני, יחזור אנגלית זמנית כדי שהבוט לא יקרוס
 
 def get_lineups_and_injuries(box):
     data = {"away": {"starters": [], "out": []}, "home": {"starters": [], "out": []}}
@@ -183,3 +186,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
