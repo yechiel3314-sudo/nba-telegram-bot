@@ -2,6 +2,7 @@ import requests
 import time
 import json
 import os
+from googletrans import Translator
 
 # =================================================================
 # הגדרות מערכת - גרסה מלאה ללא פשרות (NBA Bot 2026)
@@ -11,7 +12,13 @@ CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
 
-# מילון שמות שחקנים - פתרון קבע לבעיות תרגום ומכסות API
+# אתחול מתרגם עם מנגנון הגנה
+try:
+    translator = Translator()
+except:
+    translator = None
+
+# מילון שמות קבוע (Overrides) - למקרה שהתרגם נכשל או איטי
 PLAYER_OVERRIDES = {
     "Deni Avdija": "דני אבדיה", "James Harden": "ג'יימס הארדן",
     "Jrue Holiday": "ג'רו הולידיי", "Giannis Antetokounmpo": "יאניס אנדטוקומבו",
@@ -34,7 +41,7 @@ TEAM_TRANSLATIONS = {
     "Heat": "מיאמי היט", "Bucks": "מילווקי באקס", "Timberwolves": "מינסוטה טימברוולבס", 
     "Pelicans": "ניו אורלינס פליקנס", "Knicks": "ניו יורק ניקס", "Thunder": "אוקלהומה סיטי ת'אנדר", 
     "Magic": "אורלנדו מג'יק", "76ers": "פילדלפיה 76", "Suns": "פיניקס סאנס", 
-    "Trail Blazers": "פורטלנד טרייל בלייזרס", "Kings": "סקרמנטו קינגס", "Spurs": "סן אנטוניו ספרס", 
+    "Trail Blazers": "פורטלנד טרייל בלייזרס", "Kings": "סקרמנטו קינגס", "Spurs": "סן אנתוניו ספרס", 
     "Raptors": "טורונטו ראפטורס", "Jazz": "יוטה ג'אז", "Wizards": "וושינגטון ויזארדס"
 }
 
@@ -44,7 +51,7 @@ def load_cache():
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except: pass
-    return {"games": {}}
+    return {"names": {}, "games": {}}
 
 cache = load_cache()
 
@@ -53,7 +60,17 @@ def save_cache():
         json.dump(cache, f, indent=4, ensure_ascii=False)
 
 def translate_player_name(english_name):
-    return PLAYER_OVERRIDES.get(english_name, english_name)
+    if english_name in PLAYER_OVERRIDES: return PLAYER_OVERRIDES[english_name]
+    if english_name in cache["names"]: return cache["names"][english_name]
+    if not translator: return english_name
+    try:
+        time.sleep(0.5) # מניעת חסימה
+        translated = translator.translate(english_name, dest='he').text
+        cache["names"][english_name] = translated
+        save_cache()
+        return translated
+    except:
+        return english_name
 
 def get_lineups_and_injuries(box):
     data = {"away": {"starters": [], "out": []}, "home": {"starters": [], "out": []}}
@@ -82,7 +99,7 @@ def format_msg(box, label, is_final=False):
     msg = f"{rtl}⏱️ {b(label)}\n"
     msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
 
-    # טיפול בפוסטר (תמיד כוכב הבית לפי דרישת המשתמש)
+    # טיפול בפוסטר (כוכב הבית לפי הדרישה)
     photo_url = None
     if "יצא לדרך" in label and period == 1:
         lineups = get_lineups_and_injuries(box)
@@ -101,7 +118,7 @@ def format_msg(box, label, is_final=False):
             msg += "\n"
         return msg, photo_url
 
-    # סטטיסטיקות ומובילים
+    # תוצאה ומובילים
     leader = a_name if away['score'] > home['score'] else h_name
     verb = "מנצחת" if is_final else "מובילה"
     msg += f"{rtl}🔥 {b(leader)} {verb} {b(str(max(away['score'], home['score'])) + ' - ' + str(min(away['score'], home['score'])))} 🔥\n\n"
@@ -112,8 +129,9 @@ def format_msg(box, label, is_final=False):
         players = sorted(team.get('players', []), key=lambda x: x['statistics']['points'], reverse=True)[:count]
         for i, p in enumerate(players):
             medal = ["🥇", "🥈", "🥉"][i]
-            p_full = translate_player_name(f"{p['firstName']} {p['familyName']}")
-            msg += f"{rtl}{medal} {b(p_full)}: {get_stat_line(p)}\n"
+            p_full_name = f"{p['firstName']} {p['familyName']}"
+            heb_p_name = translate_player_name(p_full_name)
+            msg += f"{rtl}{medal} {b(heb_p_name)}: {get_stat_line(p)}\n"
         msg += "\n"
 
     if is_final:
@@ -141,12 +159,13 @@ def run():
         resp = requests.get(NBA_URL, timeout=10).json()
         for g in resp.get('scoreboard', {}).get('games', []):
             if g['gameStatus'] in [2, 3]:
-                box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{g['gameId']}.json").json()['game']
+                box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{g['gameId']}.json"
+                box = requests.get(box_url).json()['game']
                 label = "סיום המשחק" if g['gameStatus'] == 3 else f"עדכון רבע {g['period']}"
                 msg, photo = format_msg(box, label, is_final=(g['gameStatus'] == 3))
-                send_telegram("⚠️ <b>בדיקת מערכת</b>\n" + msg, photo)
+                send_telegram("⚠️ <b>בדיקת רטרו</b>\n" + msg, photo)
                 time.sleep(2)
-    except: pass
+    except Exception as e: print(f"Retro Error: {e}")
 
     print("🚀 הבוט בפעולה רציפה...")
     while True:
