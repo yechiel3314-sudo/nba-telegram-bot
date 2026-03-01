@@ -5,11 +5,11 @@ import os
 from google import genai
 
 # =================================================================
-# הגדרות מערכת
+# הגדרות מערכת - יציבות ודיוק מקסימלי
 # =================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-# חשוב: שים כאן מפתח API חדש ותקין מ-Google AI Studio
+# הכנס כאן את המפתח החדש שייצרת
 GEMINI_API_KEY = "AIzaSyB_9d3tRBv58zysiFwjKhDS2aRv5v07NVs" 
 client = genai.Client(api_key=GEMINI_API_KEY)
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
@@ -46,10 +46,11 @@ def translate_player_name(english_name):
     if english_name in cache["names"]:
         return cache["names"][english_name]
     try:
-        time.sleep(5.0) # המתנה ארוכה למניעת שגיאה 429
+        # המתנה של 8 שניות כדי למנוע שגיאת 429 (חריגת מכסה)
+        time.sleep(8.0) 
         response = client.models.generate_content(
             model="gemini-2.0-flash",
-            contents=f"Translate NBA player name '{english_name}' to Hebrew. Return ONLY the name."
+            contents=f"Translate the NBA player name '{english_name}' to Hebrew. Return ONLY the name."
         )
         translated = response.text.strip().replace("*", "")
         if translated and len(translated) < 40:
@@ -57,7 +58,7 @@ def translate_player_name(english_name):
             save_cache()
             return translated
     except Exception as e:
-        print(f"AI Error: {e}")
+        print(f"AI Translation Error: {e}")
     return english_name
 
 def get_lineups_and_injuries(box):
@@ -86,14 +87,15 @@ def format_msg(box, label, is_final=False):
     rtl = "\u200f"
     def b(text): return f"<b>{str(text).strip()}</b>"
 
-    # --- הודעת פתיחה ---
+    # שימוש בסטופר רק בצד אחד כפי שביקשת
+    msg = f"{rtl}⏱️ {b(label)}\n"
+    msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
+
+    # --- הודעת פתיחה (חמישיות ופוסטר כוכב הבית) ---
     if "יצא לדרך" in label and period == 1:
-        msg = f"{rtl}⏱️ {b('המשחק יצא לדרך')}\n"
-        msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
         lineups = get_lineups_and_injuries(box)
-        
         try:
-            # פוסטר של כוכב הבית כפי שביקשת
+            # פוסטר של הכוכב מהקבוצה המארחת (Home)
             h_players = home.get('players', [])
             starters = [p for p in h_players if p.get('starter') == "1"]
             p_id = starters[0]['personId'] if starters else home['teamId']
@@ -110,9 +112,6 @@ def format_msg(box, label, is_final=False):
         return msg, photo_url
 
     # --- הודעות תוצאה ---
-    msg = f"{rtl}⏱️ {b(label)}\n"
-    msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
-
     leader = a_name if away['score'] > home['score'] else h_name
     verb = "מנצחת" if is_final else "מובילה"
     
@@ -180,8 +179,7 @@ def run():
                     save_cache()
 
         except Exception as e: print(f"Error: {e}")
-        time.sleep(15)
+        time.sleep(20)
 
 if __name__ == "__main__":
     run()
-
