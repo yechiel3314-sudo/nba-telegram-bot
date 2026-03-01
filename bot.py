@@ -71,6 +71,9 @@ def format_msg(box, label, is_final=False):
 
     wide_header = f"\u200f🏀{s*12}<b>{a_name} 🆚 {h_name}</b>{s*12}🏀"
 
+    msg = f"{wide_header}\n"
+    msg += f"\u200f{header}\n\n"
+
     photo_url = None 
 
     if "יצא לדרך" in label:
@@ -188,6 +191,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
