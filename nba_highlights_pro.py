@@ -18,6 +18,9 @@ ISRAELI_PLAYERS = {
     "1642300": "דני וולף"
 }
 
+# מעקב אחרי שחקנים שכבר נשלחו כדי למנוע כפילויות
+SENT_TODAY = set()
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
@@ -63,7 +66,7 @@ def get_player_highlights(game_id, player_id, player_name, is_israeli, stats_lin
                         video_clips.append(clip)
                         temp_files.append(fname)
                 except:
-                    if os.path.exists(fname): os.remove(fname)
+                    if 'fname' in locals() and os.path.exists(fname): os.remove(fname)
                     continue
 
             if len(video_clips) >= 15: break
@@ -77,7 +80,6 @@ def get_player_highlights(game_id, player_id, player_name, is_israeli, stats_lin
         output_name = f"highlights_{player_id}.mp4"
         final_video.write_videofile(output_name, codec="libx264", audio=True, logger=None)
         
-        # סגירת קבצים וניקוי
         final_video.close()
         for clip in video_clips: clip.close()
         for f in temp_files:
@@ -99,75 +101,87 @@ def get_player_highlights(game_id, player_id, player_name, is_israeli, stats_lin
         print(f"❌ שגיאה קריטית בתהליך: {e}")
         return None
 
+def process_scoreboard(only_israelis=False):
+    """סורק את לוח התוצאות ומעבד שחקנים רלוונטיים"""
+    try:
+        scoreboard_url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+        resp = requests.get(scoreboard_url, headers=HEADERS, timeout=10).json()
+        games = resp.get('scoreboard', {}).get('games', [])
+        
+        for g in games:
+            if g.get('gameStatus') == 3: # המשחק הסתיים
+                gid = g['gameId']
+                box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+                box_resp = requests.get(box_url, headers=HEADERS, timeout=10).json()
+                box = box_resp.get('game', {})
+                
+                all_players = box.get('homeTeam', {}).get('players', []) + box.get('awayTeam', {}).get('players', [])
+                
+                for p in all_players:
+                    s = p.get('statistics', {})
+                    p_id = str(p.get('personId', ''))
+                    is_israeli = p_id in ISRAELI_PLAYERS
+                    points = s.get('points', 0)
+                    
+                    # בדיקה אם השחקן עומד בתנאי (ישראלי בסריקה שוטפת, או 35+ בסריקת בוקר)
+                    should_process = False
+                    if is_israeli and p_id not in SENT_TODAY:
+                        should_process = True
+                    elif not only_israelis and points >= 35 and p_id not in SENT_TODAY:
+                        should_process = True
+                    
+                    if should_process:
+                        p_raw_name = f"{p['firstName']} {p['familyName']}"
+                        p_display_name = ISRAELI_PLAYERS.get(p_id, p_raw_name)
+                        stats_text = f"{points} נק', {s.get('reboundsTotal')} רב', {s.get('assists')} אס'"
+                        
+                        print(f"🎯 מטרה נמצאה: {p_display_name} ({stats_text})")
+                        result = get_player_highlights(gid, p_id, p_display_name, is_israeli, stats_text)
+                        
+                        if result:
+                            vid_path, caption_text = result
+                            print(f"📤 [5/5] שולח וידאו לטלגרם...")
+                            
+                            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo"
+                            with open(vid_path, 'rb') as video_file:
+                                r = requests.post(url, data={'chat_id': CHAT_ID, 'caption': caption_text, 'parse_mode': 'HTML'}, files={'video': video_file}, timeout=60)
+                            
+                            if r.status_code == 200:
+                                print(f"✨ הצלחה מלאה! הסרטון של {p_display_name} נשלח.")
+                                SENT_TODAY.add(p_id)
+                            
+                            if os.path.exists(vid_path): os.remove(vid_path)
+    except Exception as e:
+        print(f"⚠️ שגיאה בסריקת לוח התוצאות: {e}")
+
 def run_highlights_hunter():
-    print("🚀 צייד ההיילייטס הופעל. ממתין לשעה 10:00 בבוקר לסריקה...")
+    print("🚀 צייד ההיילייטס המפוצל הופעל. בודק ישראלים כל 15 דקות וכוכבים ב-10:00.")
+    last_israeli_check = 0
     
     while True:
         now = datetime.now()
         
-        if now.hour == 10 and now.minute == 0:
-            print(f"⏰ השעה {now.strftime('%H:%M')}. מתחיל לסרוק את משחקי הלילה!")
-            
-            try:
-                scoreboard_url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-                resp = requests.get(scoreboard_url, headers=HEADERS, timeout=10).json()
-                games = resp.get('scoreboard', {}).get('games', [])
-                
-                if not games:
-                    print("📭 לא נמצאו משחקים בלוח התוצאות.")
-                
-                for g in games:
-                    if g.get('gameStatus') == 3:
-                        gid = g['gameId']
-                        print(f"\n🏀 בודק משחק: {g['awayTeam']['teamName']} נגד {g['homeTeam']['teamName']}")
-                        
-                        box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                        box_resp = requests.get(box_url, headers=HEADERS, timeout=10).json()
-                        box = box_resp.get('game', {})
-                        
-                        all_players = box.get('homeTeam', {}).get('players', []) + box.get('awayTeam', {}).get('players', [])
-                        
-                        for p in all_players:
-                            s = p.get('statistics', {})
-                            p_id = str(p.get('personId', ''))
-                            is_israeli = p_id in ISRAELI_PLAYERS
-                            
-                            # התנאי המשולב: ישראלי או 35+ נקודות
-                            if is_israeli or s.get('points', 0) >= 35:
-                                p_raw_name = f"{p['firstName']} {p['familyName']}"
-                                p_display_name = ISRAELI_PLAYERS.get(p_id, p_raw_name)
-                                stats_text = f"{s.get('points')} נק', {s.get('reboundsTotal')} רב', {s.get('assists')} אס'"
-                                
-                                print(f"🎯 מטרה נמצאה: {p_display_name} ({stats_text})")
-                                
-                                result = get_player_highlights(gid, p_id, p_display_name, is_israeli, stats_text)
-                                
-                                if result:
-                                    vid_path, caption_text = result
-                                    print(f"📤 [5/5] שולח וידאו לטלגרם...")
-                                    
-                                    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo"
-                                    with open(vid_path, 'rb') as video_file:
-                                        r = requests.post(url, data={
-                                            'chat_id': CHAT_ID, 
-                                            'caption': caption_text, 
-                                            'parse_mode': 'HTML'
-                                        }, files={'video': video_file}, timeout=60)
-                                    
-                                    if r.status_code == 200:
-                                        print(f"✨ הצלחה מלאה! הסרטון של {p_display_name} נשלח.")
-                                    else:
-                                        print(f"❌ תקלה בשליחה לטלגרם: {r.text}")
-                                    
-                                    if os.path.exists(vid_path): os.remove(vid_path)
-                
-                print(f"\n✅ סריקת הבוקר הסתיימה בהצלחה. חוזר להמתנה...")
-                time.sleep(61) 
+        # 1. איפוס הרשימה היומית בצהריים
+        if now.hour == 13 and now.minute == 0:
+            SENT_TODAY.clear()
+            print("🧹 רשימת השחקנים היומית אופסה.")
+            time.sleep(60)
 
-            except Exception as e:
-                print(f"⚠️ שגיאה כללית בסריקה: {e}")
-        
-        time.sleep(30)
+        # 2. סריקת בוקר כללית (ישראלים שפוספסו + שחקני 35+ נקודות)
+        if now.hour == 10 and now.minute == 0:
+            print(f"⏰ השעה 10:00. מתחיל סריקת בוקר כוללת...")
+            process_scoreboard(only_israelis=False)
+            time.sleep(61)
+
+        # 3. סריקת ישראלים כל 15 דקות (בכל שעה שהיא לא 10:00)
+        current_ts = time.time()
+        if (current_ts - last_israeli_check) >= 900: # 900 שניות = 15 דקות
+            if now.hour != 10:
+                print(f"⏳ בדיקה תקופתית לישראלים ({now.strftime('%H:%M')})...")
+                process_scoreboard(only_israelis=True)
+            last_israeli_check = current_ts
+
+        time.sleep(15)
 
 if __name__ == "__main__":
     run_highlights_hunter()
