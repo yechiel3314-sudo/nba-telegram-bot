@@ -84,18 +84,39 @@ def format_msg(box, label, is_final=False):
     rtl = "\u200f"
     def b(text): return f"<b>{str(text).strip()}</b>"
 
-    # --- הודעת פתיחה (חמישיות וחיסורים) ---
+# --- הודעת פתיחה (חמישיות וחיסורים) ---
     if "יצא לדרך" in label and period == 1:
         msg = f"{rtl}🏀 {b('המשחק יצא לדרך')} 🏀\n"
         msg += f"{rtl}🏀 {b(a_name)} 🆚 {b(h_name)} 🏀\n\n"
+        
         lineups = get_lineups_and_injuries(box)
+        
+        # --- בחירת פוסטר של כוכב הקבוצה המארחת ---
+        try:
+            # הבוט הולך לשחקני קבוצת הבית (Home)
+            home_players = home.get('players', [])
+            # מסנן רק את אלו שפותחים בחמישייה
+            starters = [p for p in home_players if p.get('starter') == "1"]
+            
+            if starters:
+                # לוקח את השחקן הראשון (בדרך כלל הכוכב/רכז)
+                star_player = starters[0]
+                p_id = star_player['personId']
+                # שימוש בקישור לתמונת אקשן גדולה ומרשימה
+                photo_url = f"https://www.nba.com/stats/api/v1/playerActionPhoto/{p_id}"
+            else:
+                photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
+        except:
+            photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
+
+        # המשך בניית הודעת החמישיות...
         for team_key, name in [('away', a_name), ('home', h_name)]:
             msg += f"{rtl}📍 {b(name)}\n"
             msg += f"{rtl}🏀 {b('חמישייה:')} {', '.join(lineups[team_key]['starters']) if lineups[team_key]['starters'] else 'טרם פורסם'}\n"
             if lineups[team_key]['out']:
                 msg += f"{rtl}❌ {b('חיסורים:')} {', '.join(lineups[team_key]['out'][:5])}\n"
             msg += "\n"
-        photo_url = f"https://cdn.nba.com/logos/leagues/L/nba/matchups/{away['teamId']}-vs-{home['teamId']}.png"
+            
         return msg, photo_url
 
     # --- הודעות תוצאה (רבע/מחצית/סיום) ---
@@ -182,3 +203,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
