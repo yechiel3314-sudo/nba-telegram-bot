@@ -5,11 +5,11 @@ import os
 from google import genai
 
 # ==========================================
-# הגדרות מערכת
+# הגדרות מערכת - הנתונים שלך מוטמעים כאן
 # ==========================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-# הדבק כאן את המפתח המלא מהתמונה (הזה שנגמר ב-JDHs)
+# המפתח שהוצאת מ-Google AI Studio (מנוקה מרווחים)
 GEMINI_API_KEY = "AIzaSyD-L0K7H6v1Xj_n4X_k_X_l_X_X_JDHs" 
 
 # אתחול הלקוח של גוגל
@@ -69,7 +69,7 @@ def translate_player_name(english_name):
         save_cache()
         return translated
     except Exception as e:
-        print(f"AI Error: {e}")
+        print(f"AI Translation Error: {e}")
         return english_name
 
 # ==========================================
@@ -92,7 +92,6 @@ def format_msg(box, label, is_final=False):
     msg = f"\u200f{icon} **{label}**\n"
     msg += f"\u200f🏀 **{a_name} 🆚 {h_name}** 🏀\n"
 
-    # שורת מובילה/תוצאה
     leader = a_name if away['score'] > home['score'] else h_name
     if away['score'] == home['score']:
         msg += f"\u200f🔥 **שוויון {away['score']} - {home['score']}** 🔥\n\n"
@@ -102,9 +101,7 @@ def format_msg(box, label, is_final=False):
     if "יצא לדרך" in label or "דרמה" in label:
         return msg, None
 
-    # כמות שחקנים להצגה
     count = 3 if (period >= 4 or is_final) else 2
-
     for team, t_name in [(away, a_name), (home, h_name)]:
         msg += f"\u200f📍 **{t_name}**\n"
         players = team.get('players', [])
@@ -151,31 +148,22 @@ def run():
         try:
             resp = requests.get(NBA_URL, timeout=10).json()
             games = resp.get('scoreboard', {}).get('games', [])
-            
             for g in games:
-                gid = g['gameId']
-                status = g['gameStatus']
+                gid, status, period = g['gameId'], g['gameStatus'], g['period']
                 txt = g.get('gameStatusText', '').lower()
-                period = g.get('period', 0)
                 
                 if gid not in cache["games"]: cache["games"][gid] = []
                 game_log = cache["games"][gid]
 
-                # עדכונים חיים
                 if ("end" in txt or "half" in txt or status == 3) and txt not in game_log:
-                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                    box = requests.get(box_url, timeout=10).json()['game']
-                    
-                    if status == 3: label = "סיום המשחק"
-                    elif period > 4: label = f"סיום הארכה {period-4}"
-                    else: label = "מחצית" if "half" in txt else f"סיום רבע {period}"
-                    
+                    box_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()
+                    box = box_resp['game']
+                    label = "סיום המשחק" if status == 3 else ("מחצית" if "half" in txt else f"סיום רבע {period}")
                     msg_text, photo = format_msg(box, label, is_final=(status == 3))
                     send_telegram(msg_text, photo)
                     game_log.append(txt)
                     save_cache()
 
-                # הארכות ורבע 3
                 if period >= 3 and "start" in txt and f"start_{period}" not in game_log:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     label = "רבע 3 יצא לדרך" if period == 3 else f"הארכה {period-4} יצאה לדרך"
@@ -185,7 +173,7 @@ def run():
 
         except Exception as e:
             print(f"Global Error: {e}")
-        time.sleep(30)
+        time.sleep(15)
 
 if __name__ == "__main__":
     run()
