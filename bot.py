@@ -5,19 +5,32 @@ import os
 from google import genai
 
 # ==========================================
-# הגדרות מערכת - שים כאן את המפתחות שלך
+# הגדרות מערכת
 # ==========================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY" # המפתח שהעתקת מהמסך
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
 
-# אתחול Gemini 3 Flash
 client = genai.Client(api_key=GEMINI_API_KEY)
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_bot_cache.json"
 
+# מילון שמות מלאים לעברית
+TEAM_TRANSLATIONS = {
+    "Hawks": "אטלנטה הוקס", "Celtics": "בוסטון סלטיקס", "Nets": "ברוקלין נטס", 
+    "Hornets": "שארלוט הורנטס", "Bulls": "שיקגו בולס", "Cavaliers": "קליבלנד קאבלירס", 
+    "Mavericks": "דאלאס מאבריקס", "Nuggets": "דנבר נאגטס", "Pistons": "דטרויט פיסטונס", 
+    "Warriors": "גולדן סטייט ווריורס", "Rockets": "יוסטון רוקטס", "Pacers": "אינדיאנה פייסרס", 
+    "Clippers": "לוס אנג'לס קליפרס", "Lakers": "לוס אנג'לס לייקרס", "Grizzlies": "ממפיס גריזליס", 
+    "Heat": "מיאמי היט", "Bucks": "מילווקי באקס", "Timberwolves": "מינסוטה טימברוולבס", 
+    "Pelicans": "ניו אורלינס פליקנס", "Knicks": "ניו יורק ניקס", "Thunder": "אוקלהומה סיטי ת'אנדר", 
+    "Magic": "אורלנדו מג'יק", "76ers": "פילדלפיה 76", "Suns": "פיניקס סאנס", 
+    "Trail Blazers": "פורטלנד טרייל בלייזרס", "Kings": "סקרמנטו קינגס", "Spurs": "סן אנטוניו ספרס", 
+    "Raptors": "טורונטו ראפטורס", "Jazz": "יוטה ג'אז", "Wizards": "וושינגטון ויזארדס"
+}
+
 # ==========================================
-# ניהול תרגום וזיכרון (Cache)
+# ניהול תרגום וזיכרון
 # ==========================================
 
 def load_cache():
@@ -31,6 +44,9 @@ cache = load_cache()
 def save_cache():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=4, ensure_ascii=False)
+
+def get_team_name(eng_name):
+    return TEAM_TRANSLATIONS.get(eng_name, eng_name)
 
 def translate_player_name(english_name):
     if english_name in cache["names"]:
@@ -57,11 +73,10 @@ def get_stat_line(p):
 
 def format_msg(box, label, is_final=False):
     away, home = box['awayTeam'], box['homeTeam']
-    a_name = away['teamName']
-    h_name = home['teamName']
+    a_name = get_team_name(away['teamName'])
+    h_name = get_team_name(home['teamName'])
     period = box.get('period', 0)
     
-    # אייקון כותרת
     icon = "🏁" if is_final else ("🚀" if "יצא לדרך" in label else "⏱️")
     if "דרמה" in label: icon = "😱"
 
@@ -78,12 +93,10 @@ def format_msg(box, label, is_final=False):
     if "יצא לדרך" in label or "דרמה" in label:
         return msg, None
 
-    # לוגיקת כמות שחקנים: 
-    # רבע 4, הארכות וסיום = 3 שחקנים. רבעים 1-3 = 2 שחקנים.
     count = 3 if (period >= 4 or is_final) else 2
 
-    for team in [away, home]:
-        msg += f"\u200f📍 **{team['teamName']}**\n"
+    for team, t_name in [(away, a_name), (home, h_name)]:
+        msg += f"\u200f📍 **{t_name}**\n"
         top = sorted(team['players'], key=lambda x: x['statistics']['points'], reverse=True)[:count]
         for i, p in enumerate(top):
             medal = "🥇" if i == 0 else ("🥈" if i == 1 else "🥉")
@@ -91,7 +104,6 @@ def format_msg(box, label, is_final=False):
             msg += f"\u200f{medal} **{p_full}**: {get_stat_line(p)}\n"
         msg += "\n"
 
-    # תמונת MVP בסיום
     photo_url = None
     if is_final:
         mvp = max(away['players'] + home['players'], key=lambda x: x['statistics']['points'])
@@ -107,14 +119,13 @@ def format_msg(box, label, is_final=False):
 # ==========================================
 
 def send_telegram(text, photo_url=None):
+    base_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
     if photo_url:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
         payload = {"chat_id": CHAT_ID, "photo": photo_url, "caption": text, "parse_mode": "Markdown"}
     else:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        requests.post(f"{base_url}/sendMessage" if not photo_url else f"{base_url}/sendPhoto", json=payload, timeout=10)
     except: pass
 
 # ==========================================
@@ -122,7 +133,7 @@ def send_telegram(text, photo_url=None):
 # ==========================================
 
 def run():
-    print("🚀 הבוט באוויר...")
+    print("🚀 הבוט פועל עם שמות מלאים בעברית...")
     while True:
         try:
             resp = requests.get(NBA_URL, timeout=10).json()
@@ -135,24 +146,15 @@ def run():
                 if gid not in cache["games"]: cache["games"][gid] = []
                 game_log = cache["games"][gid]
 
-                # פתיחת רבע 3
                 if period == 3 and "q3" in txt and "start" in txt and "p3_start" not in game_log:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     msg, _ = format_msg(box, "רבע 3 יצא לדרך")
                     send_telegram(msg)
                     game_log.append("p3_start")
 
-                # סיום רבעים / הארכות / משחק
                 if ("end" in txt or "half" in txt or status == 3) and txt not in game_log:
                     box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
                     
-                    # בדיקת שוויון בסיום רבע 4 (דרמה)
-                    if period == 4 and "end" in txt and box['awayTeam']['score'] == box['homeTeam']['score'] and "drama" not in game_log:
-                        msg, _ = format_msg(box, "דרמה ב-NBA: הולכים להארכה!")
-                        send_telegram(msg)
-                        game_log.append("drama")
-
-                    # הגדרת תווית
                     if status == 3: label = "סיום המשחק"
                     elif period > 4: label = f"סיום הארכה {period-4}"
                     else: label = "מחצית" if "half" in txt else f"סיום רבע {period}"
@@ -161,13 +163,6 @@ def run():
                     send_telegram(msg_text, photo)
                     game_log.append(txt)
                     save_cache()
-
-                # פתיחת הארכה
-                if period > 4 and "ot" in txt and "start" in txt and f"ot{period}_start" not in game_log:
-                    box = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json").json()['game']
-                    msg, _ = format_msg(box, f"הארכה {period-4} יצאה לדרך!")
-                    send_telegram(msg)
-                    game_log.append(f"ot{period}_start")
 
         except Exception as e: print(f"Error: {e}")
         time.sleep(15)
