@@ -45,7 +45,9 @@ def get_highlights(player_id, game_id, player_name):
         "X-RapidAPI-Host": "nba-highlights-api.p.rapidapi.com"
     }
     
-    log_status("SCAN", f"בודק ב-API אם קיימים קליפים עבור {player_name}...")
+    # לוג שיעזור לנו לדבג - מדפיס את הקישור הישיר לבדיקה
+    test_url = f"{url}?player_id={player_id}&game_id={game_id}"
+    log_status("SCAN", f"בודק ב-API עבור {player_name}... (לינק: {test_url})")
     
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=30)
@@ -53,15 +55,16 @@ def get_highlights(player_id, game_id, player_name):
         videos = data.get("videos", [])
         
         if videos:
-            log_status("SUCCESS", f"נמצאו {len(videos)} קליפים ב-API ל-{player_name}!")
+            log_status("SUCCESS", f"נמצאו {len(videos)} קליפים ל-{player_name}!")
         else:
-            log_status("INFO", f"ה-API החזיר 0 קטעי וידאו ל-{player_name} (למרות שהמשחק הסתיים).")
+            # הלוג שראינו בתמונה שלך
+            log_status("INFO", f"ה-API של RapidAPI עדיין לא עודכן עבור {player_name}. ננסה שוב בעוד 15 דקות.")
             
         return videos
     except Exception as e:
-        log_status("ERROR", f"שגיאה בתקשורת עם ה-API: {e}")
+        log_status("ERROR", f"שגיאה בתקשורת: {e}")
         return []
-
+        
 def create_video(player_id, player_name, video_list):
     clips, temp_files = [], []
     try:
