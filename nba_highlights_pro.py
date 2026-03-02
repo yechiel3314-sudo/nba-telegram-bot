@@ -13,7 +13,7 @@ from moviepy.editor import VideoFileClip, concatenate_videoclips
 
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-RAPID_API_KEY = "YOUR_API_KEY_HERE" # הכנס כאן את המפתח שקיבלת
+RAPID_API_KEY = "7979ea3becmsh0ff9ea48063fda2p14bc4bjsn965773ad1338"
 
 # רשימת המעקב הבלעדית - למניעת חריגה מהמכסה
 ISRAELI_PLAYERS = {
