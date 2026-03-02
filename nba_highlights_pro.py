@@ -39,12 +39,28 @@ def log_status(status, message):
 
 def get_highlights(player_id, game_id, player_name):
     url = "https://nba-highlights-api.p.rapidapi.com/highlights"
-    querystring = {"player_id": player_id, "game_id": game_id}
-    headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": "nba-highlights-api.p.rapidapi.com"}
+    querystring = {"player_id": str(player_id), "game_id": str(game_id)}
+    headers = {
+        "X-RapidAPI-Key": RAPID_API_KEY,
+        "X-RapidAPI-Host": "nba-highlights-api.p.rapidapi.com"
+    }
+    
+    log_status("SCAN", f"בודק ב-API אם קיימים קליפים עבור {player_name}...")
+    
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=30)
-        return response.json().get("videos", []) if response.status_code == 200 else []
-    except: return []
+        data = response.json()
+        videos = data.get("videos", [])
+        
+        if videos:
+            log_status("SUCCESS", f"נמצאו {len(videos)} קליפים ב-API ל-{player_name}!")
+        else:
+            log_status("INFO", f"ה-API החזיר 0 קטעי וידאו ל-{player_name} (למרות שהמשחק הסתיים).")
+            
+        return videos
+    except Exception as e:
+        log_status("ERROR", f"שגיאה בתקשורת עם ה-API: {e}")
+        return []
 
 def create_video(player_id, player_name, video_list):
     clips, temp_files = [], []
