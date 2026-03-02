@@ -38,30 +38,34 @@ def log_status(status, message):
 # ==========================================================
 
 def get_highlights(player_id, game_id, player_name):
-    url = "https://nba-highlights-api.p.rapidapi.com/highlights"
-    # חיפוש כללי לפי שחקן בלבד כדי לעקוף את בעיית ה-ID של המשחק
-    querystring = {"player_id": str(player_id)} 
+    # שימוש ב-API הרשמי של ה-NBA - ללא צורך ב-RapidAPI!
+    url = f"https://stats.nba.com/stats/videoleventsv3?GameID={game_id}&PlayerID={player_id}&GameEventID=0"
+    
     headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "nba-highlights-api.p.rapidapi.com"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.nba.com/"
     }
     
-    log_status("SCAN", f"מבצע חיפוש כללי עבור {player_name} כדי למצוא קטעים...")
+    log_status("SCAN", f"פונה לשרתי ה-NBA הרשמיים עבור {player_name}...")
     
     try:
-        response = requests.get(url, headers=headers, params=querystring, timeout=30)
-        videos = response.json().get("videos", [])
-        
-        if videos:
-            log_status("SUCCESS", f"נמצאו {len(videos)} קטעים במאגר עבור {player_name}!")
-            # מחזיר רק את ה-12 הכי חדשים שיש ל-API להציע
-            return videos[:12]
+        response = requests.get(url, headers=headers, timeout=20)
+        if response.status_code == 200:
+            data = response.json()
+            playlist = data.get("playlist", [])
+            
+            if playlist:
+                log_status("SUCCESS", f"נמצאו {len(playlist)} מהלכים רשמיים ל-{player_name}!")
+                # ה-API הרשמי מחזיר אובייקטים עם שדה בשם 'uuid' או 'url'
+                return playlist
+            else:
+                log_status("INFO", f"ה-NBA טרם חתכו את המהלכים של {player_name} למשחק זה.")
         else:
-            log_status("INFO", f"גם בחיפוש כללי, ה-API לא מחזיר קטעים עבור {player_name}.")
-            return []
+            log_status("ERROR", f"שגיאת שרת NBA: {response.status_code}")
     except Exception as e:
-        log_status("ERROR", f"כשל בתקשורת: {e}")
-        return []
+        log_status("ERROR", f"כשל בגישה לשרתי ה-NBA: {e}")
+    
+    return []
         
 def create_video(player_id, player_name, video_list):
     clips, temp_files = [], []
