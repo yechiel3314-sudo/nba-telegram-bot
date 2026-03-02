@@ -38,32 +38,36 @@ def log_status(status, message):
 # ==========================================================
 
 def get_highlights(player_id, game_id, player_name):
-    # שימוש ב-API הרשמי של ה-NBA - ללא צורך ב-RapidAPI!
+    # שימוש ב-Session כדי לשמור על הגדרות דפדפן עקביות
+    session = requests.Session()
     url = f"https://stats.nba.com/stats/videoleventsv3?GameID={game_id}&PlayerID={player_id}&GameEventID=0"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://www.nba.com/"
+        "Host": "stats.nba.com",
+        "Connection": "keep-alive",
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Origin": "https://www.nba.com",
+        "Referer": "https://www.nba.com/",
+        "Accept-Language": "en-US,en;q=0.9",
     }
     
-    log_status("SCAN", f"פונה לשרתי ה-NBA הרשמיים עבור {player_name}...")
+    log_status("SCAN", f"מנסה גישה בטוחה לשרתי ה-NBA עבור {player_name}...")
     
     try:
-        response = requests.get(url, headers=headers, timeout=20)
+        # הוספת Timeout ארוך יותר כדי למנוע את השגיאה שראינו בלוג
+        response = session.get(url, headers=headers, timeout=30)
+        
         if response.status_code == 200:
             data = response.json()
             playlist = data.get("playlist", [])
-            
             if playlist:
-                log_status("SUCCESS", f"נמצאו {len(playlist)} מהלכים רשמיים ל-{player_name}!")
-                # ה-API הרשמי מחזיר אובייקטים עם שדה בשם 'uuid' או 'url'
+                log_status("SUCCESS", f"הצלחנו! נמצאו {len(playlist)} מהלכים ל-{player_name}")
                 return playlist
-            else:
-                log_status("INFO", f"ה-NBA טרם חתכו את המהלכים של {player_name} למשחק זה.")
-        else:
-            log_status("ERROR", f"שגיאת שרת NBA: {response.status_code}")
+        
+        log_status("INFO", f"השרת הגיב אך לא נמצאו מהלכים זמינים ל-{player_name}.")
     except Exception as e:
-        log_status("ERROR", f"כשל בגישה לשרתי ה-NBA: {e}")
+        log_status("ERROR", f"ה-NBA עדיין חוסם את החיבור: {e}")
     
     return []
         
