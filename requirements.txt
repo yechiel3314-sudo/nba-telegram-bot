@@ -1,4 +1,4 @@
 requests==2.31.0
 moviepy==1.0.3
 deep_translator==1.11.4
-TZ=Asia/Jerusalem
+pytz==2024.1
