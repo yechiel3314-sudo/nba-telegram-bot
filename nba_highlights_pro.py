@@ -49,9 +49,17 @@ def get_highlights(player_id, game_id, player_name):
 def create_video(player_id, player_name, video_list):
     clips, temp_files = [], []
     try:
+        total = len(video_list[:12])
+        log_status("WAIT", f"מתחיל הורדה של {total} קליפים עבור {player_name}...")
+        
         for i, v in enumerate(video_list[:12]):
             v_url = v.get("url")
             if not v_url: continue
+            
+            # לוג התקדמות הורדה
+            if i % 3 == 0 and i > 0: 
+                log_status("WAIT", f"הורדו {i}/{total} קליפים ל-{player_name}...")
+
             r = requests.get(v_url, stream=True)
             fname = f"tmp_{player_id}_{i}.mp4"
             with open(fname, "wb") as f:
@@ -60,16 +68,23 @@ def create_video(player_id, player_name, video_list):
             temp_files.append(fname)
         
         if not clips: return None
+        
+        log_status("WAIT", f"מעבד ומחבר את הסרטון הסופי של {player_name} (זה עשוי לקחת דקה)...")
+        
         output = f"{player_id}.mp4"
         final = concatenate_videoclips(clips, method="compose")
         final.write_videofile(output, codec="libx264", audio=True, logger=None)
         
-        # ניקוי RAM
+        # ניקוי משאבים
         final.close()
         for c in clips: c.close()
         for f in temp_files: os.remove(f)
+        
+        log_status("SUCCESS", f"הקובץ המוכן של {player_name} נוצר בהצלחה!")
         return output
-    except: return None
+    except Exception as e:
+        log_status("ERROR", f"שגיאה בזמן יצירת הוידאו של {player_name}: {e}")
+        return None
 
 # ==========================================================
 # MAIN BOT LOGIC
@@ -112,25 +127,26 @@ def run_bot():
                 v_list = get_highlights(pid, gid, name_heb)
                 
                 if v_list:
-                    log_status("WAIT", f"...מתחיל עיבוד-{len(v_list)} קליפים ל-{name_heb}")
                     res_path = create_video(pid, name_heb, v_list)
                     
                     if res_path:
+                        log_status("WAIT", f"מעלה את הסרטון של {name_heb} לטלגרם עכשיו...")
+                        
                         cap = f"🇮🇱 <b>{name_heb}</b>\n📊 {stats['points']} נק', {stats['reboundsTotal']} רב', {stats['assists']} אס'"
                         try:
                             with open(res_path, "rb") as vf:
                                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo",
                                              data={"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML"},
                                              files={"video": vf})
+                            
                             SENT_TODAY.add(f"{pid}_{gid}")
-                            log_status("SUCCESS", f"סרטון של {name_heb} נשלח!")
+                            log_status("SUCCESS", f"נשלח בהצלחה! השחקן {name_heb} עודכן במערכת.")
                         except Exception as e:
-                            log_status("ERROR", f"כשל בשליחה לטלגרם: {e}")
+                            log_status("ERROR", f"כשל בשליחה הסופית: {e}")
                         
                         if os.path.exists(res_path):
                             os.remove(res_path)
-                else:
-                    log_status("INFO", f"המשחק של {name_heb} זוהה, אך ה-NBA טרם העלה קטעי וידאו. ננסה שוב בסבב הבא.")
+                            
                     
 def main():
     log_status("INFO", "הבוט רץ: אבדיה, שרף ווולף.")
