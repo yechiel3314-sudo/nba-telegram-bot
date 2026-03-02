@@ -11,8 +11,8 @@ from moviepy.editor import VideoFileClip, concatenate_videoclips
 # CONFIG
 # ==========================================================
 
-TELEGRAM_TOKEN = "PUT_TOKEN"
-CHAT_ID = "PUT_CHAT_ID"
+TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
+CHAT_ID = "-1003808107418"
 
 ISRAELI_PLAYERS = {
     "1630166": "דני אבדיה",
