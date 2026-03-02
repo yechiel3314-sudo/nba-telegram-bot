@@ -39,27 +39,28 @@ def log_status(status, message):
 
 def get_highlights(player_id, game_id, player_name):
     url = "https://nba-highlights-api.p.rapidapi.com/highlights"
-    # נסה לחפש רק לפי ID של שחקן כדי לקבל את כל המהלכים האחרונים שלו
+    # חיפוש כללי לפי שחקן בלבד כדי לעקוף את בעיית ה-ID של המשחק
     querystring = {"player_id": str(player_id)} 
     headers = {
         "X-RapidAPI-Key": RAPID_API_KEY,
         "X-RapidAPI-Host": "nba-highlights-api.p.rapidapi.com"
     }
     
+    log_status("SCAN", f"מבצע חיפוש כללי עבור {player_name} כדי למצוא קטעים...")
+    
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=30)
         videos = response.json().get("videos", [])
         
-        # סינון ידני בקוד רק לקליפים מהמשחק הנוכחי (לפי ה-ID של המשחק)
-        relevant_videos = [v for v in videos if str(v.get("game_id")) == str(game_id)]
-        
-        if relevant_videos:
-            log_status("SUCCESS", f"נמצאו {len(relevant_videos)} קליפים ל-{player_name}!")
-            return relevant_videos
+        if videos:
+            log_status("SUCCESS", f"נמצאו {len(videos)} קטעים במאגר עבור {player_name}!")
+            # מחזיר רק את ה-12 הכי חדשים שיש ל-API להציע
+            return videos[:12]
         else:
-            log_status("INFO", f"לא נמצאו קליפים למשחק {game_id} בחיפוש כללי.")
+            log_status("INFO", f"גם בחיפוש כללי, ה-API לא מחזיר קטעים עבור {player_name}.")
             return []
-    except:
+    except Exception as e:
+        log_status("ERROR", f"כשל בתקשורת: {e}")
         return []
         
 def create_video(player_id, player_name, video_list):
