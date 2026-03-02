@@ -112,17 +112,27 @@ def run_bot():
                 v_list = get_highlights(pid, gid, name_heb)
                 
                 if v_list:
+                    log_status("WAIT", f"נמצאו {len(v_list)} קליפים ל-{name_heb}, מתחיל עיבוד...")
                     res_path = create_video(pid, name_heb, v_list)
+                    
                     if res_path:
                         cap = f"🇮🇱 <b>{name_heb}</b>\n📊 {stats['points']} נק', {stats['reboundsTotal']} רב', {stats['assists']} אס'"
-                        with open(res_path, "rb") as vf:
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo",
-                                         data={"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML"},
-                                         files={"video": vf})
-                        SENT_TODAY.add(f"{pid}_{gid}")
-                        os.remove(res_path)
-                        log_status("SUCCESS", f"סרטון של {name_heb} נשלח!")
-
+                        try:
+                            with open(res_path, "rb") as vf:
+                                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo",
+                                             data={"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML"},
+                                             files={"video": vf})
+                            SENT_TODAY.add(f"{pid}_{gid}")
+                            log_status("SUCCESS", f"סרטון של {name_heb} נשלח לטלגרם!")
+                        except Exception as e:
+                            log_status("ERROR", f"כשל בשליחה לטלגרם: {e}")
+                        
+                        if os.path.exists(res_path):
+                            os.remove(res_path)
+                else:
+                    # זה החלק שחשוב שיהיה לך בלוגים עכשיו
+                    log_status("INFO", f"המשחק של {name_heb} זוהה, אך ה-NBA טרם העלה קטעי וידאו. ננסה שוב בסבב הבא.")
+                    
 def main():
     log_status("INFO", "הבוט רץ: אבדיה, שרף ווולף.")
     while True:
