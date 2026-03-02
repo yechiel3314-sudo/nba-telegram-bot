@@ -38,36 +38,33 @@ def log_status(status, message):
 # ==========================================================
 
 def get_highlights(player_id, game_id, player_name):
-    # שימוש ב-Session כדי לשמור על הגדרות דפדפן עקביות
-    session = requests.Session()
-    url = f"https://stats.nba.com/stats/videoleventsv3?GameID={game_id}&PlayerID={player_id}&GameEventID=0"
+    # כתובת חלופית של Play-by-Play - בדרך כלל לא חסומה
+    url = f"https://cdn.nba.com/static/json/liveData/playbyplay/playbyplay_{game_id}.json"
     
-    headers = {
-        "Host": "stats.nba.com",
-        "Connection": "keep-alive",
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Origin": "https://www.nba.com",
-        "Referer": "https://www.nba.com/",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-    
-    log_status("SCAN", f"מנסה גישה בטוחה לשרתי ה-NBA עבור {player_name}...")
+    log_status("SCAN", f"מנסה נתיב עקיף דרך Play-by-Play עבור {player_name}...")
     
     try:
-        # הוספת Timeout ארוך יותר כדי למנוע את השגיאה שראינו בלוג
-        response = session.get(url, headers=headers, timeout=30)
-        
+        response = requests.get(url, timeout=15)
         if response.status_code == 200:
             data = response.json()
-            playlist = data.get("playlist", [])
-            if playlist:
-                log_status("SUCCESS", f"הצלחנו! נמצאו {len(playlist)} מהלכים ל-{player_name}")
-                return playlist
+            actions = data.get('game', {}).get('actions', [])
+            
+            # סינון המהלכים של השחקן הספציפי שיש להם וידאו
+            highlights = []
+            for action in actions:
+                if str(action.get('personId')) == str(player_id) and action.get('isPlayable'):
+                    highlights.append({
+                        'gameId': game_id,
+                        'eventMsgId': action.get('actionId')
+                    })
+            
+            if highlights:
+                log_status("SUCCESS", f"נמצאו {len(highlights)} מהלכים בנתיב העקיף!")
+                return highlights
         
-        log_status("INFO", f"השרת הגיב אך לא נמצאו מהלכים זמינים ל-{player_name}.")
+        log_status("INFO", f"לא נמצאו מהלכים playable עבור {player_name} ב-JSON.")
     except Exception as e:
-        log_status("ERROR", f"ה-NBA עדיין חוסם את החיבור: {e}")
+        log_status("ERROR", f"גם הנתיב העקיף נכשל: {e}")
     
     return []
         
