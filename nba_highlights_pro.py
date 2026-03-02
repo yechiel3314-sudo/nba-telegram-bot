@@ -140,7 +140,7 @@ def run_bot():
                     continue
 
                 log_status("SUCCESS", f"ביצוע של {name_heb} זוהה!")
-                v_list = get_highlights(pid, gid, name_heb)
+                v_list = get_highlights(pid, "", name_heb)
                 
                 if v_list:
                     res_path = create_video(pid, name_heb, v_list)
