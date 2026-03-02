@@ -4,6 +4,7 @@ import os
 import gc
 import logging
 import json
+import random
 from datetime import datetime
 import pytz
 from moviepy.editor import VideoFileClip, concatenate_videoclips
@@ -44,7 +45,7 @@ LAST_MORNING_RUN = None
 israel_tz = pytz.timezone("Asia/Jerusalem")
 
 # ==========================================================
-# LOGGING SYSTEM
+# LOGGING SYSTEM - ניהול התראות ולוגים
 # ==========================================================
 
 logging.basicConfig(
@@ -61,6 +62,14 @@ def log_error(step, message):
 def log_warn(step, message):
     logging.warning(f"[{step}] ⚠️ {message}")
 
+def notify_admin(message):
+    """שליחת עדכון טקסט קצר לטלגרם על סטטוס הבוט"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        requests.post(url, data={"chat_id": CHAT_ID, "text": f"🤖 סטטוס בוט: {message}", "parse_mode": "HTML"})
+    except:
+        pass
+
 # ==========================================================
 # NBA ASSETS API - הפתרון הוודאי
 # ==========================================================
@@ -72,19 +81,24 @@ def get_nba_video_assets(game_id, player_id):
     
     try:
         log_step(step, f"מושך נכסי וידאו עבור שחקן {player_id} במשחק {game_id}")
-        response = requests.get(url, headers=NBA_STATS_HEADERS, timeout=15)
-        
-        if response.status_code != 200:
-            log_error(step, f"שגיאת API: {response.status_code}")
+        # שימוש ב-Retry למקרה של Timeout שנראה בלוגים של Railway
+        for attempt in range(3):
+            try:
+                response = requests.get(url, headers=NBA_STATS_HEADERS, timeout=20)
+                if response.status_code == 200:
+                    break
+            except requests.exceptions.Timeout:
+                log_warn(step, f"Timeout בניסיון {attempt+1}, מנסה שוב...")
+                time.sleep(2)
+        else:
             return []
 
         data = response.json()
-        # שליפת ה-URLs מתוך המבנה של NBA Stats
-        video_urls = data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
+        results = data.get('resultSets', {}).get('Meta', {}).get('videoUrls', [])
         
+        # סינון וסידור הקליפים - המבנה המקורי בדרך כלל כרונולוגי
         valid_clips = []
-        for vid in video_urls:
-            # lhigh בד"כ מייצג 720p או 1080p
+        for vid in results:
             mp4_url = vid.get('lhigh') or vid.get('mhigh')
             if mp4_url:
                 valid_clips.append(mp4_url)
@@ -120,6 +134,7 @@ def send_video_file(video_path, caption):
     """שליחת קובץ וידאו פיזי מהשרת"""
     step = "TELEGRAM_FILE"
     if not os.path.exists(video_path):
+        log_error(step, f"קובץ {video_path} לא קיים")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo"
@@ -129,7 +144,7 @@ def send_video_file(video_path, caption):
                 url,
                 data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
                 files={"video": f},
-                timeout=180
+                timeout=300 # זמן ארוך יותר לקבצים כבדים
             )
         return r.status_code == 200
     except Exception as e:
@@ -137,57 +152,70 @@ def send_video_file(video_path, caption):
         return False
 
 # ==========================================================
-# VIDEO CONCATENATION ENGINE
+# VIDEO CONCATENATION ENGINE - חיבור מהלכים
 # ==========================================================
 
 def build_merged_highlights(game_id, game_date, player_id, player_name, stats_line):
-    """מחבר קליפים לסרטון אחד אם נמצאו מספר נכסים"""
+    """מחבר קליפים לסרטון אחד בסדר כרונולוגי"""
     step = f"MERGE_{player_name}"
     
-    # שלב 1: נסיון לשלוף מה-Assets API
     asset_urls = get_nba_video_assets(game_id, player_id)
     
     if not asset_urls:
-        log_warn(step, "לא נמצאו נכסים ב-Stats API, מנסה שיטה חלופית...")
-        # כאן אפשר להוסיף את הלוגיקה הישנה כגיבוי במידת הצורך
+        log_warn(step, "לא נמצאו נכסים ב-Stats API.")
         return None
 
     clips = []
     temp_files = []
     
     try:
-        # הורדת מקסימום 12 קליפים כדי לא לחרוג מזכרון
-        for i, url in enumerate(asset_urls[:12]):
+        # הגבלת כמות מהלכים כדי למנוע קריסת זכרון ב-Railway
+        max_clips = 15 if player_id in ISRAELI_PLAYERS else 10
+        
+        for i, url in enumerate(asset_urls[:max_clips]):
             try:
-                r = requests.get(url, headers=GENERAL_HEADERS, timeout=10)
+                # הורדה זמנית לצורך איחוד
+                r = requests.get(url, headers=GENERAL_HEADERS, timeout=15)
                 if r.status_code == 200:
-                    fname = f"t_{player_id}_{i}.mp4"
+                    fname = f"temp_{player_id}_{i}.mp4"
                     with open(fname, "wb") as f:
                         f.write(r.content)
+                    
                     clip = VideoFileClip(fname)
                     clips.append(clip)
                     temp_files.append(fname)
-            except:
+                    log_step(step, f"הורד מהלך {i+1}/{len(asset_urls)}")
+            except Exception as download_err:
+                log_warn(step, f"דילוג על מהלך {i} עקב שגיאה: {download_err}")
                 continue
 
         if not clips:
             return None
 
-        output = f"final_{player_id}_{game_id}.mp4"
-        final_video = concatenate_videoclips(clips, method="compose")
-        final_video.write_videofile(output, codec="libx264", audio=True, logger=None)
+        log_step(step, f"מתחיל איחוד של {len(clips)} מהלכים...")
+        output = f"final_{player_id}_{int(time.time())}.mp4"
         
-        # ניקוי
+        # איחוד קטעים
+        final_video = concatenate_videoclips(clips, method="compose")
+        final_video.write_videofile(output, codec="libx264", audio=True, logger=None, threads=2)
+        
+        # סגירת קבצים וניקוי
         final_video.close()
-        for c in clips: c.close()
+        for c in clips:
+            c.close()
         for f in temp_files:
-            if os.path.exists(f): os.remove(f)
+            if os.path.exists(f):
+                os.remove(f)
             
-        caption = f"{'🇮🇱' if player_id in ISRAELI_PLAYERS else '🔥'} <b>ביצועי {player_name} מהלילה!</b>\n📊 {stats_line}"
+        icon = '🇮🇱' if player_id in ISRAELI_PLAYERS else '🔥'
+        caption = f"{icon} <b>ביצועי {player_name} מהלילה!</b>\n\n📊 {stats_line}\n🏀 <i>המהלכים מסודרים לפי סדר המשחק</i>"
         return output, caption
 
     except Exception as e:
-        log_error(step, f"שגיאה בתהליך החיבור: {e}")
+        log_error(step, f"שגיאה קריטית בתהליך הבנייה: {e}")
+        # ניקוי חירום של קבצים זמניים
+        for f in temp_files:
+            if os.path.exists(f): os.remove(f)
         return None
 
 # ==========================================================
@@ -196,108 +224,123 @@ def build_merged_highlights(game_id, game_date, player_id, player_name, stats_li
 
 def process_nba_games(check_35=False):
     step = "CORE_SCAN"
-    log_step(step, "מבצע סריקת נתונים עמוקה...")
+    log_step(step, "מתחיל סריקה של כל משחקי הלילה...")
 
     try:
-        # קבלת לוח התוצאות
         sb_url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
         resp = requests.get(sb_url, headers=GENERAL_HEADERS, timeout=15)
-        if resp.status_code != 200: return
+        if resp.status_code != 200:
+            log_error(step, "לוח התוצאות לא זמין")
+            return
 
         games = resp.json().get("scoreboard", {}).get("games", [])
+        log_step(step, f"נמצאו {len(games)} משחקים בלוח.")
         
         for g in games:
-            # סטטוס 3 = משחק הסתיים
-            if g.get("gameStatus") != 3: continue
-            
             gid = g["gameId"]
+            g_status = g.get("gameStatus") # 3 זה סיום משחק
             g_date = g.get("gameDate")
-            home_team = g.get("homeTeam", {}).get("teamName")
             
-            # שליפת BoxScore
+            # בדיקת בוקסקור
             box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
             box_resp = requests.get(box_url, headers=GENERAL_HEADERS, timeout=15)
-            if box_resp.status_code != 200: continue
+            if box_resp.status_code != 200:
+                continue
             
             box_data = box_resp.json().get("game", {})
-            home_players = box_data.get("homeTeam", {}).get("players", [])
-            away_players = box_data.get("awayTeam", {}).get("players", [])
-            all_players = home_players + away_players
+            h_team = box_data.get("homeTeam", {})
+            a_team = box_data.get("awayTeam", {})
+            
+            h_players = h_team.get("players", [])
+            a_players = a_team.get("players", [])
+            all_players = h_players + a_players
 
-            # מציאת הכוכב של הבית (למקרה שצריך פוסטר/התמקדות)
-            home_star = max(home_players, key=lambda x: x.get("statistics", {}).get("points", 0)) if home_players else None
-
+            # לוגיקת פוסטר: כוכב הבית [cite: 2026-03-01]
+            home_star = max(h_players, key=lambda x: x.get("statistics", {}).get("points", 0)) if h_players else None
+            
             for p in all_players:
                 stats = p.get("statistics", {})
                 pid = str(p.get("personId", ""))
                 pts = stats.get("points", 0)
                 
-                # תנאי סף: ישראלי או 35+ נקודות
                 is_israeli = pid in ISRAELI_PLAYERS
-                is_beast = (check_35 and pts >= 35)
+                is_top_performer = (check_35 and pts >= 35)
 
-                if (is_israeli or is_beast) and pid not in SENT_TODAY:
+                if (is_israeli or is_top_performer) and pid not in SENT_TODAY:
+                    # המשחק חייב להיות הסתיים או לקראת סיום כדי שיהיו קליפים
+                    if g_status < 2: continue 
+
                     name = ISRAELI_PLAYERS.get(pid, f"{p.get('firstName')} {p.get('familyName')}")
-                    log_step(step, f"מטרה זוהתה: {name} עם {pts} נקודות")
+                    log_step(step, f"מעבד את {name} ({pts} נק')")
 
-                    stats_str = f"{pts} נק', {stats.get('reboundsTotal')} רב', {stats.get('assists')} אס'"
+                    # הרחבת הסטטיסטיקה לחטיפות וחסימות
+                    stls = stats.get('steals', 0)
+                    blks = stats.get('blocks', 0)
+                    rebs = stats.get('reboundsTotal', 0)
+                    asts = stats.get('assists', 0)
                     
-                    # ניסיון ליצור סרטון מחובר
+                    stats_str = f"🏀 {pts} נק' | 👐 {rebs} רב' | 🪄 {asts} אס'"
+                    if stls > 0 or blks > 0:
+                        stats_str += f"\n🛡️ {stls} חט' | ❌ {blks} חס'"
+                    
+                    # בניית הסרטון
                     result = build_merged_highlights(gid, g_date, pid, name, stats_str)
                     
                     if result:
                         v_file, caption = result
                         if send_video_file(v_file, caption):
                             SENT_TODAY.add(pid)
-                            log_step(step, f"שחקן {name} נשלח לקבוצה בהצלחה.")
+                            log_step(step, f"הסרטון של {name} נשלח בהצלחה!")
                         if os.path.exists(v_file): os.remove(v_file)
                     else:
-                        # אם החיבור נכשל, ננסה לפחות לשלוח את המהלך הכי טוב ב-URL ישיר
+                        # Fallback: שליחת לינק ישיר למהלך בודד
                         assets = get_nba_video_assets(gid, pid)
                         if assets:
-                            caption = f"🏀 מהלך נבחר: <b>{name}</b>\n📊 {stats_str}"
+                            caption = f"🏀 ביצוע נבחר: <b>{name}</b>\n{stats_str}"
                             if send_video_by_url(assets[0], caption):
                                 SENT_TODAY.add(pid)
-                                log_step(step, f"נשלח מהלך בודד עבור {name}")
+                                log_step(step, f"נשלח מהלך בודד כגיבוי עבור {name}")
 
     except Exception as e:
-        log_error(step, f"שגיאה כללית בעיבוד: {e}")
+        log_error(step, f"שגיאה כללית בעיבוד המשחקים: {e}")
 
 # ==========================================================
-# MONITORING LOOP
+# MONITORING LOOP - לולאת עבודה
 # ==========================================================
 
 def start_monitor():
     global LAST_MORNING_RUN
+    notify_admin("הבוט עלה לאוויר ומנטר משחקים 🏀")
     log_step("SYSTEM", "מנטר NBA הופעל בהצלחה.")
     
-    # הרצה ראשונה מיידית
+    # הרצה ראשונית
     process_nba_games(check_35=True)
 
     while True:
         try:
             now = datetime.now(israel_tz)
             
-            # איפוס יומי ב-13:00 בצהריים
-            if now.hour == 13 and now.minute < 10:
+            # איפוס יומי ב-13:00 - הכנה ללילה החדש
+            if now.hour == 13 and now.minute < 15:
                 SENT_TODAY.clear()
-                log_step("SYSTEM", "רשימת SENT_TODAY אופסה.")
-                time.sleep(600)
+                log_step("SYSTEM", "רשימת הדיוור אופסה ליום חדש.")
+                time.sleep(900)
 
-            # בדיקה שוטפת (כל 10 דקות)
+            # סריקה אקטיבית כל 10 דקות
             process_nba_games(check_35=True)
             
-            # ניקוי זכרון אגרסיבי
+            # ניקוי זכרון למניעת קריסות ב-Railway
             gc.collect()
+            
+            # המתנה בין סבבים
             time.sleep(600)
 
         except Exception as e:
-            log_error("MAIN_LOOP", f"שגיאה בלולאה: {e}")
-            time.sleep(60)
+            log_error("MAIN_LOOP", f"שגיאה קריטית בלולאה: {e}")
+            time.sleep(120)
 
 if __name__ == "__main__":
-    start_monitor()
-
-# ==========================================================
-# END OF CODE - TOTAL LINES MAINTAINED FOR STABILITY
-# ==========================================================
+    try:
+        start_monitor()
+    except KeyboardInterrupt:
+        log_warn("SYSTEM", "הבוט הופסק ידנית.")
