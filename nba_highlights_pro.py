@@ -67,46 +67,50 @@ def get_highlights(player_id, game_id, player_name):
     
     return []
         
-def create_video(player_id, player_name, video_list):
+def create_video(player_id, player_name, playlist):
     clips, temp_files = [], []
     try:
-        total = len(video_list[:12])
-        log_status("WAIT", f"מתחיל הורדה של {total} קליפים עבור {player_name}...")
+        # לוקחים עד 10 מהלכים כדי לא להעמיס על השרת
+        items = playlist[:10]
+        log_status("WAIT", f"מתחיל הורדה של {len(items)} קליפים רשמיים עבור {player_name}...")
         
-        for i, v in enumerate(video_list[:12]):
-            v_url = v.get("url")
-            if not v_url: continue
+        for i, item in enumerate(items):
+            # בניית הקישור הישיר לוידאו משרתי ה-NBA
+            game_id = item.get('gameId', '')
+            event_id = item.get('eventMsgId', '')
+            # פורמט הקישור הרשמי של ה-NBA באיכות גבוהה
+            v_url = f"https://videos.nba.com/nba/pbp/media/2025/12/31/{game_id}/{event_id}/720p.mp4"
             
-            # לוג התקדמות הורדה
-            if i % 3 == 0 and i > 0: 
-                log_status("WAIT", f"הורדו {i}/{total} קליפים ל-{player_name}...")
-
-            r = requests.get(v_url, stream=True)
-            fname = f"tmp_{player_id}_{i}.mp4"
-            with open(fname, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024*1024): f.write(chunk)
-            clips.append(VideoFileClip(fname))
-            temp_files.append(fname)
+            try:
+                r = requests.get(v_url, stream=True, timeout=15)
+                if r.status_code == 200:
+                    fname = f"tmp_{player_id}_{i}.mp4"
+                    with open(fname, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024*1024): f.write(chunk)
+                    clips.append(VideoFileClip(fname))
+                    temp_files.append(fname)
+                    if i % 2 == 0: log_status("WAIT", f"הורד קליפ {i+1}...")
+            except:
+                continue
         
-        if not clips: return None
+        if not clips:
+            log_status("ERROR", f"לא הצלחתי להוריד קבצי וידאו פיזיים עבור {player_name}.")
+            return None
         
-        log_status("WAIT", f"מעבד ומחבר את הסרטון הסופי של {player_name} (זה עשוי לקחת דקה)...")
-        
+        log_status("WAIT", f"מחבר {len(clips)} קליפים לסרטון אחד...")
         output = f"{player_id}.mp4"
         final = concatenate_videoclips(clips, method="compose")
         final.write_videofile(output, codec="libx264", audio=True, logger=None)
         
-        # ניקוי משאבים
+        # ניקוי
         final.close()
         for c in clips: c.close()
         for f in temp_files: os.remove(f)
         
-        log_status("SUCCESS", f"הקובץ המוכן של {player_name} נוצר בהצלחה!")
         return output
     except Exception as e:
-        log_status("ERROR", f"שגיאה בזמן יצירת הוידאו של {player_name}: {e}")
+        log_status("ERROR", f"שגיאה בעיבוד הוידאו: {e}")
         return None
-
 # ==========================================================
 # MAIN BOT LOGIC
 # ==========================================================
