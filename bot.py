@@ -171,9 +171,10 @@ def run():
                 gid, status, period, txt = g['gameId'], g['gameStatus'], g.get('period', 0), g.get('gameStatusText', '').lower()
                 if gid not in cache["games"]: cache["games"][gid] = []
                 log = cache["games"][gid]
+                game_final_key = "FINAL_SENT"
 
                 # --- 1. הודעות יצא לדרך (רבע 1 עם חמישיות, רבע 3 פשוט) ---
-                if status == 2 and ("12:00" in txt or "q"+str(period) in txt):
+                if status == 2 and period in [1, 3] and f"q{period}" in txt:
                     s_key = f"start_q{period}"
                     if (period == 1 or period == 3) and s_key not in log:
                         b_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json", headers=HEADERS).json()
@@ -181,6 +182,7 @@ def run():
                         m, p = format_msg(b_resp['game'], label, is_start=True)
                         send_telegram(m, p)
                         log.append(s_key)
+                        save_cache()
                         print(f"✅ נשלחה פתיחת רבע {period}: {gid}")
 
                 # --- 2. לוגיקת הארכה (שוויון בסיום רבע 4 ומעלה) ---
@@ -192,26 +194,68 @@ def run():
                         send_telegram(m, p)
                         log.append(d_key)
                         log.append(txt) # מונע הודעת סיום רבע רגילה בשוויון
+                        save_cache()
                         print(f"😱 נשלחה הודעת דרמה (הארכה): {gid}")
 
-                # --- 3. הודעות סיום (רבעים, מחצית, משחק) ---
-                if ("end" in txt or "half" in txt or status == 3) and txt not in log:
-                    b_resp = requests.get(f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json", headers=HEADERS).json()
-                    
-                    if status == 3:
-                        label = "סיום המשחק"
-                    elif "half" in txt:
-                        label = "סיום מחצית"
-                    elif period > 4:
-                        label = f"סיום הארכה {period-4}"
-                    else:
-                        label = f"סיום רבע {period}"
-                    
-                    m, p = format_msg(b_resp['game'], label, is_final=(status == 3))
-                    send_telegram(m, p)
-                    log.append(txt)
-                    save_cache()
-                    print(f"✅ נשלח עדכון {label} למשחק {gid}")
+                # --- 3. הודעות סיום מסודרות ללא כפילויות ---
+                if status == 3 and game_final_key not in log:
+                   
+                        b_resp = requests.get(
+                            f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
+                            headers=HEADERS
+                        ).json()
+
+                        m, p = format_msg(b_resp['game'], "סיום המשחק", is_final=True)
+                        send_telegram(m, p)
+
+                        log.append(game_final_key)
+                        save_cache()
+                        print(f"🏁 נשלח סיום משחק {gid}")
+                        
+                # ⛔ אם המשחק לא הסתיים – מטפלים רק במחצית ורבעים
+                elif status != 3:
+
+                        # מחצית
+                        if "half" in txt and txt not in log:
+                            b_resp = requests.get(
+                                f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
+                                headers=HEADERS
+                            ).json()
+
+                            m, p = format_msg(b_resp['game'], "סיום מחצית")
+                            send_telegram(m, p)
+
+                            log.append(txt)
+                            save_cache()
+                            print(f"⏸ נשלחה מחצית {gid}")
+
+                        # סיום רבע רגיל (רק רבעים 1-3)
+                        elif "end" in txt and txt not in log and period < 4:
+                            b_resp = requests.get(
+                                f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
+                                headers=HEADERS
+                            ).json()
+
+                            m, p = format_msg(b_resp['game'], f"סיום רבע {period}")
+                            send_telegram(m, p)
+
+                            log.append(txt)
+                            save_cache()
+                            print(f"⏱ נשלח סיום רבע {period} {gid}")
+
+                        # סיום הארכה בלבד
+                        elif "end" in txt and txt not in log and period > 4:
+                            b_resp = requests.get(
+                                f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
+                                headers=HEADERS
+                            ).json()
+
+                            m, p = format_msg(b_resp['game'], f"סיום הארכה {period-4}")
+                            send_telegram(m, p)
+
+                            log.append(txt)
+                            save_cache()
+                            print(f"⏱ נשלחה הארכה {gid}")
 
         except Exception as e:
             print(f"❌ שגיאה בלוגיקה: {e}")
@@ -220,5 +264,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
-
