@@ -2,196 +2,274 @@ import requests
 import time
 import pytz
 import sys
+import json
 from datetime import datetime, date, timedelta
 
-# ==========================================
-# 1. הגדרות וטוקנים
-# ==========================================
+# ==============================================================================
+# --- הגדרות מערכת וטוקנים ---
+# ==============================================================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-# API מקורות
-NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-NBA_SCHEDULE_FULL = "https://data.nba.com/data/10s/v2015/json/mobile/composer/nba/schedules/main_schedule.json"
+# זמני פעילות (לפי שעון ישראל)
+SCHEDULE_TIME = "01:39"  # שליחת לו"ז משחקים
+RESULTS_TIME = "01:39"   # שליחת תוצאות הלילה
 
-SCHEDULE_TIME = "01:34"
-RESULTS_TIME = "01:34"
+# מקורות מידע (APIs)
+NBA_SCOREBOARD_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+NBA_BACKUP_SCHEDULE = "https://data.nba.com/data/10s/v2015/json/mobile/composer/nba/schedules/main_schedule.json"
 
-# ==========================================
-# 2. מערכת לוגים (מתוקנת - מונעת קריסה)
-# ==========================================
+# ==============================================================================
+# --- פונקציות ניטור ולוגים (מיושר לימין) ---
+# ==============================================================================
 def log(msg):
+    """מדפיס לוג מפורט לטרמינל של Railway"""
     tz = pytz.timezone("Asia/Jerusalem")
-    now = datetime.now(tz).strftime("%H:%M:%S")
-    print(f"[{now}] {msg}")
+    timestamp = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    output = f"[{timestamp}] >> {msg}"
+    print(output)
     sys.stdout.flush()
 
-# ==========================================
-# 3. מילון כוכבים (פוסטרים)
-# ==========================================
-STARS_POSTERS = {
-    "Lakers": "https://piks.eldesmarque.com/bin/2023/10/25/lebron_james_entrenamiento_lakers.jpg",
-    "Warriors": "https://e00-marca.ad.james.net/assets/multimedia/imagenes/2023/05/11/16837943586073.jpg",
-    "Nuggets": "https://hoopshype.com/wp-content/uploads/sites/92/2023/06/jokic_finals.jpg",
-    "Mavericks": "https://nbatitlechase.com/wp-content/uploads/2023/02/Luka-Doncic-Kyrie-Irving-Dallas-Mavericks.jpg",
-    "Celtics": "https://www.si.com/.image/t_share/MTk4MjgyOTk1OTY5MTc5NTI2/jayson-tatum-jaylen-brown.jpg",
-    "Bucks": "https://images2.minutemediacdn.com/image/upload/c_crop,w_5342,h_3004,x_0,y_0/c_fill,w_1440,ar_16:9,f_auto,q_auto,g_auto/images/mmsport/6/01hcbmf7j6hbmwre33y6.jpg"
+# ==============================================================================
+# --- מילון תרגום קבוצות NBA (מלא) ---
+# ==============================================================================
+TEAM_MAP = {
+    "Atlanta Hawks": "אטלנטה הוקס",
+    "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס",
+    "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס",
+    "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס",
+    "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס",
+    "Golden State Warriors": "גולדן סטייט",
+    "Houston Rockets": "יוסטון רוקטס",
+    "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "לוס אנג'לס קליפרס",
+    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס",
+    "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס",
+    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס",
+    "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי",
+    "Orlando Magic": "אורלנדו מג'יק",
+    "Philadelphia 76ers": "פילדלפיה 76",
+    "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
+    "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס",
+    "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג'אז",
+    "Washington Wizards": "וושינגטון וויזארדס"
 }
 
-# ==========================================
-# 4. תרגום קבוצות
-# ==========================================
-TEAM_TRANSLATIONS = {
-    "Atlanta Hawks":"אטלנטה הוקס", "Boston Celtics":"בוסטון סלטיקס",
-    "Brooklyn Nets":"ברוקלין נטס", "Charlotte Hornets":"שארלוט הורנטס",
-    "Chicago Bulls":"שיקגו בולס", "Cleveland Cavaliers":"קליבלנד קאבלירס",
-    "Dallas Mavericks":"דאלאס מאבריקס", "Denver Nuggets":"דנבר נאגטס",
-    "Detroit Pistons":"דטרויט פיסטונס", "Golden State Warriors":"גולדן סטייט",
-    "Houston Rockets":"יוסטון רוקטס", "Indiana Pacers":"אינדיאנה פייסרס",
-    "LA Clippers":"לוס אנג'לס קליפרס", "Los Angeles Lakers":"לוס אנג'לס לייקרס",
-    "Memphis Grizzlies":"ממפיס גריזליס", "Miami Heat":"מיאמי היט",
-    "Milwaukee Bucks":"מילווקי באקס", "Minnesota Timberwolves":"מינסוטה טימברוולבס",
-    "New Orleans Pelicans":"ניו אורלינס פליקנס", "New York Knicks":"ניו יורק ניקס",
-    "Oklahoma City Thunder":"אוקלהומה סיטי", "Orlando Magic":"אורלנדו מג'יק",
-    "Philadelphia 76ers":"פילדלפיה 76", "Phoenix Suns":"פיניקס סאנס",
-    "Portland Trail Blazers":"פורטלנד טרייל בלייזרס", "Sacramento Kings":"סקרמנטו קינגס",
-    "San Antonio Spurs":"סן אנטוניו ספרס", "Toronto Raptors":"טורונטו ראפטורס",
-    "Utah Jazz":"יוטה ג'אז", "Washington Wizards":"וושינגטון וויזארדס"
-}
-
-def translate_team(city, name, score=None):
-    full = f"{city} {name}" if name else city
-    base = TEAM_TRANSLATIONS.get(full, full)
-    flag = " 🇮🇱" if "Portland" in full or "Brooklyn" in full else ""
+def get_heb_team(city, name, score=None):
+    """מתרגם שם קבוצה ומוסיף דגל ישראל לפורטלנד וברוקלין"""
+    full_en = f"{city} {name}" if name else city
+    heb_name = TEAM_MAP.get(full_en, full_en)
+    
+    # הוספת דגל לקבוצות ספציפיות
+    flag = ""
+    if "Portland" in full_en or "Brooklyn" in full_en:
+        flag = " 🇮🇱"
+        
     if score is not None:
-        return f"{base} {score}{flag}"
-    return f"{base}{flag}"
+        return f"{heb_name} {score}{flag}"
+    return f"{heb_name}{flag}"
 
-# ==========================================
-# 5. פונקציות עזר (זמן ושליפה)
-# ==========================================
-def format_nba_time(time_str):
+# ==============================================================================
+# --- פונקציות המרת זמן ---
+# ==============================================================================
+def convert_to_israel_time(time_str):
+    """ממירה זמן מפורמט NBA לשעון ישראל"""
     try:
+        log(f"מנסה להמיר זמן: {time_str}")
         if 'T' in time_str:
             utc_dt = datetime.strptime(time_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
         else:
             utc_dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M").replace(tzinfo=pytz.utc)
-        israel = pytz.timezone("Asia/Jerusalem")
-        return utc_dt.astimezone(israel).strftime("%H:%M")
-    except: return "TBD"
-
-def get_games():
-    log("שולף נתונים מ-NBA CDN...")
-    try:
-        resp = requests.get(f"{NBA_URL}?t={int(time.time())}", timeout=15)
-        if resp.status_code == 200:
-            games = resp.json().get("scoreboard", {}).get("games", [])
-            if games: return games
         
-        log("API יומי ריק, עובר ללו"ז שנתי...")
-        resp_full = requests.get(NBA_SCHEDULE_FULL, timeout=15)
-        if resp_full.status_code == 200:
+        israel_tz = pytz.timezone("Asia/Jerusalem")
+        return utc_dt.astimezone(israel_tz).strftime("%H:%M")
+    except Exception as e:
+        log(f"שגיאה בהמרת זמן: {e}")
+        return "TBD"
+
+# ==============================================================================
+# --- שליפת נתונים מרובה (APIs) ---
+# ==============================================================================
+def fetch_nba_data():
+    """שולפת נתונים מה-CDN עם גיבוי ללו''ז השנתי"""
+    log("שלב 1: פנייה ל-API המרכזי (CDN)")
+    try:
+        # שימוש ב-timestamp למניעת Cache
+        url = f"{NBA_SCOREBOARD_URL}?cache={int(time.time())}"
+        r = requests.get(url, timeout=20)
+        
+        if r.status_code == 200:
+            data = r.json()
+            games = data.get("scoreboard", {}).get("games", [])
+            if games:
+                log(f"שלב 2: נמצאו {len(games)} משחקים ב-CDN")
+                return games
+        
+        log("שלב 2: API יומי לא זמין, עובר ללו''ז גיבוי שנתי (Full Schedule)")
+        r_backup = requests.get(NBA_BACKUP_SCHEDULE, timeout=20)
+        if r_backup.status_code == 200:
+            full_data = r_backup.json()
             tz = pytz.timezone("Asia/Jerusalem")
-            today_str = datetime.now(tz).strftime("%Y%m%d")
-            backup = []
-            for month in resp_full.json()['league']['schedules']:
-                for g in month['games']:
-                    if g['gameDate'] == today_str:
-                        backup.append({
+            today_key = datetime.now(tz).strftime("%Y%m%d")
+            
+            backup_list = []
+            for month in full_data['league']['schedules']:
+                for game in month['games']:
+                    if game['gameDate'] == today_key:
+                        backup_list.append({
                             "gameStatus": 1,
-                            "homeTeam": {"teamCity": g['hTeam']['city'], "teamName": g['hTeam']['name'], "score": "0"},
-                            "awayTeam": {"teamCity": g['vTeam']['city'], "teamName": g['vTeam']['name'], "score": "0"},
-                            "gameEt": g['utctimeUtc']
+                            "homeTeam": {"teamCity": game['hTeam']['city'], "teamName": game['hTeam']['name'], "score": "0"},
+                            "awayTeam": {"teamCity": game['vTeam']['city'], "teamName": game['vTeam']['name'], "score": "0"},
+                            "gameEt": game['utctimeUtc']
                         })
-            return backup
-    except Exception as e: log(f"שגיאת שליפה: {e}")
+            log(f"שלב 3: נמצאו {len(backup_list)} משחקים בגיבוי")
+            return backup_list
+            
+    except Exception as err:
+        log(f"שגיאה קריטית בשליפת נתונים: {err}")
     return []
 
-# ==========================================
-# 6. שליחה לטלגרם (תומך בתמונות)
-# ==========================================
-def send_telegram(text, photo=None):
-    if not text: return
-    if photo:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-        data = {"chat_id": CHAT_ID, "photo": photo, "caption": text, "parse_mode": "HTML"}
-    else:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-    try: requests.post(url, data=data, timeout=15)
-    except Exception as e: log(f"שגיאת טלגרם: {e}")
-
-# ==========================================
-# 7. לוגיקת הודעות
-# ==========================================
-def process_schedule(games):
-    log("מעבד לוח משחקים...")
-    if not games: 
-        send_telegram("🏀 <b>לוח משחקים</b> 🏀\nאין משחקים הלילה.")
-        return
-
-    for g in games:
-        if g["gameStatus"] != 3:
-            home_city = g["homeTeam"]["teamCity"]
-            home_name = g["homeTeam"]["teamName"]
-            home_translated = translate_team(home_city, home_name)
-            away_translated = translate_team(g["awayTeam"]["teamCity"], g["awayTeam"]["teamName"])
-            start = format_nba_time(g["gameEt"])
-            
-            poster = STARS_POSTERS.get(home_name)
-            msg = f"⏰ <b>{start}</b>\n🏀 {away_translated} 🆚 {home_translated}"
-            send_telegram(msg, photo=poster)
-
-def process_results(games):
-    log("מעבד תוצאות...")
-    msg = "🏀 <b>תוצאות משחקי הלילה</b> 🏀\n\n"
-    found = False
-    for g in games:
-        if g["gameStatus"] == 3:
-            h_score = int(g["homeTeam"].get("score", 0))
-            a_score = int(g["awayTeam"].get("score", 0))
-            if h_score > a_score:
-                win = translate_team(g["homeTeam"]["teamCity"], g["homeTeam"]["teamName"], h_score)
-                lose = translate_team(g["awayTeam"]["teamCity"], g["awayTeam"]["teamName"], a_score)
-            else:
-                win = translate_team(g["awayTeam"]["teamCity"], g["awayTeam"]["teamName"], a_score)
-                lose = translate_team(g["homeTeam"]["teamCity"], g["homeTeam"]["teamName"], h_score)
-            msg += f"🏆 <b>{win}</b>\n🔹 {lose}\n\n"
-            found = True
+# ==============================================================================
+# --- פונקציות בניית הודעות ---
+# ==============================================================================
+def build_results_message(games):
+    """בונה את הודעת סיכום התוצאות"""
+    log("בונה הודעת תוצאות...")
+    header = "🏀 <b>תוצאות משחקי הלילה ב NBA</b> 🏀\n\n"
+    body = ""
+    found_final = False
     
-    if not found: msg += "🏁 לא נמצאו תוצאות סופיות כרגע."
-    send_telegram(msg)
+    if not games:
+        return None
 
-# ==========================================
-# 8. הרצה ראשית
-# ==========================================
-def run():
-    log("המערכת התחילה לפעול...")
-    tz = pytz.timezone("Asia/Jerusalem")
-    l_sch, l_res = None, None
+    for g in games:
+        # סטטוס 3 הוא משחק שהסתיים
+        if g.get("gameStatus") == 3:
+            h = g["homeTeam"]
+            a = g["awayTeam"]
+            h_s = int(h.get("score", 0))
+            a_s = int(a.get("score", 0))
+            
+            if h_s > a_s:
+                winner = get_heb_team(h["teamCity"], h["teamName"], h_s)
+                loser = get_heb_team(a["teamCity"], a["teamName"], a_s)
+            else:
+                winner = get_heb_team(a["teamCity"], a["teamName"], a_s)
+                loser = get_heb_team(h["teamCity"], h["teamName"], h_s)
+                
+            body += f"🏆 <b>{winner}</b>\n🔹 {loser}\n\n"
+            found_final = True
+            
+    if found_final:
+        return header + body
+    return header + "🏁 לא נמצאו תוצאות סופיות לעדכון כרגע."
+
+def build_schedule_message(games):
+    """בונה את הודעת לוח המשחקים"""
+    log("בונה הודעת לו''ז...")
+    header = "🏀 <b>לוח משחקי הלילה ב NBA</b> 🏀\n\n"
+    body = ""
+    found_upcoming = False
+    
+    if not games:
+        return header + "הלילה אין משחקים מתוכננים."
+
+    for g in games:
+        if g.get("gameStatus") != 3:
+            h_heb = get_heb_team(g["homeTeam"]["teamCity"], g["homeTeam"]["teamName"])
+            a_heb = get_heb_team(g["awayTeam"]["teamCity"], g["awayTeam"]["teamName"])
+            start_time = convert_to_israel_time(g["gameEt"])
+            
+            icon = "🔥 חי עכשיו" if g["gameStatus"] == 2 else f"⏰ {start_time}"
+            body += f"{icon}\n🏀 {a_heb} 🆚 {h_heb}\n\n"
+            found_upcoming = True
+            
+    if found_upcoming:
+        return header + body
+    return header + "אין משחקים מתוכננים לשעות הקרובות."
+
+# ==============================================================================
+# --- שליחה לטלגרם ---
+# ==============================================================================
+def send_to_telegram(message_text):
+    """שולחת את ההודעה הסופית לטלגרם"""
+    if not message_text:
+        return
+    
+    log("מבצע שליחה לטלגרם...")
+    api_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message_text,
+        "parse_mode": "HTML"
+    }
+    
+    try:
+        r = requests.post(api_url, data=payload, timeout=15)
+        if r.status_code == 200:
+            log("ההודעה נשלחה בהצלחה!")
+        else:
+            log(f"שגיאת טלגרם: {r.text}")
+    except Exception as e:
+        log(f"שגיאה בתקשורת מול טלגרם: {e}")
+
+# ==============================================================================
+# --- לולאת ניהול ראשית (Orchestrator) ---
+# ==============================================================================
+def main_loop():
+    """הלולאה הראשית שמחזיקה את הבוט בחיים"""
+    log("מערכת NBA BOT עלתה לאוויר - גרסה 300 שורות ללא פוסטרים")
+    isr_tz = pytz.timezone("Asia/Jerusalem")
+    
+    last_sch_day = None
+    last_res_day = None
 
     while True:
         try:
-            now = datetime.now(tz)
-            clock = now.strftime("%H:%M")
-            day = now.date()
+            now = datetime.now(isr_tz)
+            current_clock = now.strftime("%H:%M")
+            today_date = now.date()
 
-            if clock == SCHEDULE_TIME and l_sch != day:
-                log(f"זמן לו''ז: {SCHEDULE_TIME}") # תיקון המירכאות שגרם לקריסה
-                process_schedule(get_games())
-                l_sch = day
+            # בדיקת לו"ז משחקים
+            if current_clock == SCHEDULE_TIME and last_sch_day != today_date:
+                log(f"הגיע זמן שליחת לו''ז משחקים: {SCHEDULE_TIME}")
+                all_games = fetch_nba_data()
+                msg = build_schedule_message(all_games)
+                send_to_telegram(msg)
+                last_sch_day = today_date
                 time.sleep(65)
 
-            if clock == RESULTS_TIME and l_res != today:
-                log(f"זמן תוצאות: {RESULTS_TIME}")
-                process_results(get_games())
-                l_res = day
+            # בדיקת תוצאות משחקים
+            if current_clock == RESULTS_TIME and last_res_day != today_date:
+                log(f"הגיע זמן שליחת תוצאות: {RESULTS_TIME}")
+                all_games = fetch_nba_data()
+                msg = build_results_message(all_games)
+                if msg:
+                    send_to_telegram(msg)
+                last_res_day = today_date
                 time.sleep(65)
 
+            # המתנה של 30 שניות בין בדיקות
             time.sleep(30)
-        except Exception as e:
-            log(f"שגיאת לולאה: {e}")
-            time.sleep(20)
+            
+        except Exception as global_err:
+            log(f"שגיאה קריטית בלולאה הראשית: {global_err}")
+            time.sleep(60)
 
 if __name__ == "__main__":
-    run()
+    main_loop()
+
+# ==============================================================================
+# סוף קוד - NBA BOT (כ-300 שורות לוגיקה מלאה)
+# ==============================================================================
