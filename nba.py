@@ -9,10 +9,11 @@ from datetime import datetime, date
 
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
+
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 
-SCHEDULE_TIME = "16:44"   # לוח משחקים
-RESULTS_TIME = "16:45"    # תוצאות בבוקר
+SCHEDULE_TIME = "17:32"   # לוח משחקים
+RESULTS_TIME = "17:31"    # תוצאות בבוקר
 
 # ==========================================
 # לוג
