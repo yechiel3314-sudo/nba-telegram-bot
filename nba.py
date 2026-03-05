@@ -92,7 +92,7 @@ def run_scheduler():
             sent_results = False
 
         # שליחת לו"ז משחקים ב-15:01
-        if now == "15:01" and not sent_schedule:
+        if now == "15:12" and not sent_schedule:
             try:
                 resp = requests.get(NBA_URL, headers=HEADERS).json()
                 games = resp.get('scoreboard', {}).get('games', [])
@@ -104,7 +104,7 @@ def run_scheduler():
                 print("❌ שגיאה בשליפת לו\"ז")
 
         # שליחת תוצאות ב-15:02
-        if now == "15:02" and not sent_results:
+        if now == "15:13" and not sent_results:
             try:
                 resp = requests.get(NBA_URL, headers=HEADERS).json()
                 games = resp.get('scoreboard', {}).get('games', [])
