@@ -8,11 +8,10 @@ from datetime import datetime
 # ==========================================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-# כתובת ה-API של הלו"ז הכללי לגיבוי
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 
-SCHEDULE_TIME = "15:31"
-RESULTS_TIME = "15:32"
+SCHEDULE_TIME = "15:35"
+RESULTS_TIME = "15:36"
 
 TEAM_TRANSLATIONS = {
     "Atlanta Hawks": "אטלנטה הוקס", "Boston Celtics": "בוסטון סלטיקס",
@@ -32,12 +31,18 @@ TEAM_TRANSLATIONS = {
     "Utah Jazz": "יוטה ג'אז", "Washington Wizards": "וושינגטון וויזארדס"
 }
 
-def translate_team(city, name):
+def translate_team(city, name, score=None):
     full = f"{city} {name}"
     base_name = TEAM_TRANSLATIONS.get(full, full)
-    # הוספת דגל ישראל בסוף אם מדובר בברוקלין או פורטלנד
+    
+    # סידור השורה עם דגל ישראל בסוף (מטפל בבעיית המספרים)
     if "Brooklyn" in full or "Portland" in full:
+        if score is not None:
+            return f"{base_name} {score} 🇮🇱"
         return f"{base_name} 🇮🇱"
+    
+    if score is not None:
+        return f"{base_name} {score}"
     return base_name
 
 def format_nba_time(time_str):
@@ -57,7 +62,7 @@ def get_schedule_msg(games):
     msg = "‏🏀 <b>לוח משחקי הלילה</b> 🏀\n\n"
     found = False
     for g in games:
-        # מציג משחקים שטרם התחילו או נמצאים בשידור (לא סטטוס 3)
+        # לוקח משחקים שטרם הסתיימו
         if g['gameStatus'] != 3:
             home = translate_team(g['homeTeam']['teamCity'], g['homeTeam']['teamName'])
             away = translate_team(g['awayTeam']['teamCity'], g['awayTeam']['teamName'])
@@ -71,15 +76,17 @@ def get_results_msg(games):
     found = False
     for g in games:
         if g['gameStatus'] == 3:
-            h_name = translate_team(g['homeTeam']['teamCity'], g['homeTeam']['teamName'])
-            a_name = translate_team(g['awayTeam']['teamCity'], g['awayTeam']['teamName'])
             h_score = g['homeTeam']['score']
             a_score = g['awayTeam']['score']
             
             if h_score > a_score:
-                msg += f"‏🏆 <b>{h_name} {h_score}</b>\n‏▫️ {a_name} {a_score}\n\n"
+                win_text = translate_team(g['homeTeam']['teamCity'], g['homeTeam']['teamName'], h_score)
+                lose_text = translate_team(g['awayTeam']['teamCity'], g['awayTeam']['teamName'], a_score)
+                msg += f"‏🏆 <b>{win_text}</b>\n‏🔹 {lose_text}\n\n"
             else:
-                msg += f"‏🏆 <b>{a_name} {a_score}</b>\n‏▫️ {h_name} {h_score}\n\n"
+                win_text = translate_team(g['awayTeam']['teamCity'], g['awayTeam']['teamName'], a_score)
+                lose_text = translate_team(g['homeTeam']['teamCity'], g['homeTeam']['teamName'], h_score)
+                msg += f"‏🏆 <b>{win_text}</b>\n‏🔹 {lose_text}\n\n"
             found = True
     return msg if found else "‏🏀 <b>לא נמצאו תוצאות סופיות מהלילה.</b>"
 
@@ -96,7 +103,7 @@ def send_to_telegram(text):
 # ==========================================
 
 def run():
-    print(f"🚀 הבוט הופעל! לו\"ז: {SCHEDULE_TIME} | תוצאות: {RESULTS_TIME}")
+    print(f"🚀 בוט NBA פעיל. לו\"ז: {SCHEDULE_TIME} | תוצאות: {RESULTS_TIME}")
     sent_s = sent_r = False
     
     while True:
@@ -108,21 +115,27 @@ def run():
 
         if now == SCHEDULE_TIME and not sent_s:
             try:
-                resp = requests.get(NBA_URL).json()
+                # קריאה ל-API
+                resp = requests.get(NBA_URL, timeout=10).json()
                 games = resp.get('scoreboard', {}).get('games', [])
+                
+                # אם ה-API ריק, מנסים שוב אחרי 5 שניות או שולחים הודעת שגיאה ללוג
+                if not games:
+                    print("⚠️ API returned empty games list")
+                
                 send_to_telegram(get_schedule_msg(games))
                 sent_s = True
-            except:
-                print("Error in Schedule fetch")
+            except Exception as e:
+                print(f"Error Schedule: {e}")
 
         if now == RESULTS_TIME and not sent_r:
             try:
-                resp = requests.get(NBA_URL).json()
+                resp = requests.get(NBA_URL, timeout=10).json()
                 games = resp.get('scoreboard', {}).get('games', [])
                 send_to_telegram(get_results_msg(games))
                 sent_r = True
-            except:
-                print("Error in Results fetch")
+            except Exception as e:
+                print(f"Error Results: {e}")
         
         time.sleep(30)
 
