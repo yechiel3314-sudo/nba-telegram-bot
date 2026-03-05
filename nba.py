@@ -6,18 +6,18 @@ import json
 from datetime import datetime, timedelta
 
 # ==============================================================================
-# --- הגדרות מערכת וקונפיגורציה (Professional Standard V15 - Railway Ready) ---
+# --- הגדרות מערכת וקונפיגורציה (Professional Standard V16 - Full Persistence) ---
 # ==============================================================================
 
 # פרטי גישה לטלגרם - וודא שהטוקן וה-ID נכונים
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-# זמני יעד לשליחה (ניתן לשינוי בקלות)
-SCHEDULE_TIME_STR = "18:40"
-RESULTS_TIME_STR = "18:41"
+# זמני יעד לשליחה (מוגדרים כמחרוזת להשוואה)
+SCHEDULE_TIME_STR = "18:49"
+RESULTS_TIME_STR = "18:50"
 
-# מקור נתונים יציב - ESPN Scoreboard API (מקור מוכח כיציב ביותר)
+# מקור נתונים יציב - ESPN Scoreboard API
 NBA_API_ENDPOINT = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 
 # תו כיווניות להצמדת טקסט ומספרים לימין (RTL)
@@ -32,7 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
-# --- מילון תרגום קבוצות NBA (30 קבוצות מלאות - שמירה על נפח ומקצועיות) ---
+# --- מילון תרגום קבוצות NBA (30 קבוצות מלאות - סטנדרט מקצועי) ---
 # ==============================================================================
 
 NBA_HEBREW_MAP = {
@@ -69,7 +69,7 @@ NBA_HEBREW_MAP = {
 }
 
 # ==============================================================================
-# --- לוגיקת עיבוד נתונים ותרגום (Core Logic) ---
+# --- לוגיקת עיבוד נתונים ותרגום (Logic Layer) ---
 # ==============================================================================
 
 def check_israeli_context(team_en):
@@ -80,7 +80,7 @@ def check_israeli_context(team_en):
             return " 🇮🇱"
     return ""
 
-def format_nba_team(team_en, score=None):
+def format_nba_team_line(team_en, score=None):
     """תרגום קבוצה ועיצוב עם תוצאה (מקף) ודגל במידת הצורך"""
     heb_name = NBA_HEBREW_MAP.get(team_en, team_en)
     flag = check_israeli_context(team_en)
@@ -91,14 +91,15 @@ def format_nba_team(team_en, score=None):
     return f"{heb_name}{flag}"
 
 def fetch_espn_nba_data():
-    """שליפת נתוני ה-NBA משרתי ESPN עם מנגנון מניעת Cache"""
+    """שליפת נתוני ה-NBA משרתי ESPN עם מנגנון מניעת Cache אגרסיבי"""
     try:
-        ts = int(time.time())
-        api_call = f"{NBA_API_ENDPOINT}?t={ts}"
-        response = requests.get(api_call, timeout=25)
+        # שימוש ב-timestamp ייחודי לכל בקשה
+        cache_buster = int(time.time())
+        api_url = f"{NBA_API_ENDPOINT}?t={cache_buster}"
+        response = requests.get(api_url, timeout=25)
         
         if response.status_code != 200:
-            logger.error(f"API Error: Status {response.status_code}")
+            logger.error(f"שגיאת API: סטטוס {response.status_code}")
             return []
             
         data = response.json()
@@ -107,6 +108,7 @@ def fetch_espn_nba_data():
         processed_games = []
         for event in events:
             comp = event['competitions'][0]
+            # חילוץ קבוצה מארחת ואורחת
             home_data = next(t for t in comp['competitors'] if t['homeAway'] == 'home')
             away_data = next(t for t in comp['competitors'] if t['homeAway'] == 'away')
             
@@ -120,7 +122,7 @@ def fetch_espn_nba_data():
             })
         return processed_games
     except Exception as e:
-        logger.error(f"Data fetch failed: {str(e)}")
+        logger.error(f"כשל בשליפת הנתונים: {str(e)}")
         return []
 
 # ==============================================================================
@@ -143,11 +145,11 @@ def build_nba_schedule_message(games):
         
         # סינון משחקים עתידיים ל-24 השעות הקרובות
         if g['status_id'] in ["1", "2"] and now_isr <= local_dt <= now_isr + timedelta(hours=24):
-            home_str = format_nba_team(g['home_name'])
-            away_str = format_nba_team(g['away_name'])
+            home_str = format_nba_team_line(g['home_name'])
+            away_str = format_nba_team_line(g['away_name'])
             time_str = local_dt.strftime("%H:%M")
             
-            # שימוש ב-<b> לשמירה על דגשים בטלגרם
+            # הדגשת שעה ב-Bold באמצעות <b> (HTML)
             content += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {away_str} 🆚 {home_str}\n\n"
             found = True
             
@@ -160,15 +162,15 @@ def build_nba_results_message(games):
     found = False
     
     for g in games:
-        if g['status_id'] == "3": # משחק שהסתיים
+        if g['status_id'] == "3": # משחק שהסתיים סופית
             h_score, a_score = int(g['home_score']), int(g['away_score'])
             
             if h_score > a_score:
-                winner = format_nba_team(g['home_name'], h_score)
-                loser = format_nba_team(g['away_name'], a_score)
+                winner = format_nba_team_line(g['home_name'], h_score)
+                loser = format_nba_team_line(g['away_name'], a_score)
             else:
-                winner = format_nba_team(g['away_name'], a_score)
-                loser = format_nba_team(g['home_name'], h_score)
+                winner = format_nba_team_line(g['away_name'], a_score)
+                loser = format_nba_team_line(g['home_name'], h_score)
                 
             # הדגשת המנצחת בשורה הראשונה
             content += f"{RTL_MARK}🏆 <b>{winner}</b>\n{RTL_MARK}🏀 {loser}\n\n"
@@ -177,7 +179,7 @@ def build_nba_results_message(games):
     return header + content if found else None
 
 # ==============================================================================
-# --- מנגנון שליחה ותזמון חכם (Smart-Retry & HTML) ---
+# --- מנגנון שליחה ותזמון חכם (Smart-Retry & HTML Transmission) ---
 # ==============================================================================
 
 def transmit_to_telegram(message_text):
@@ -199,58 +201,64 @@ def transmit_to_telegram(message_text):
             logger.info("ההודעה שודרה בהצלחה לטלגרם.")
             return True
         else:
-            logger.error(f"Telegram Error {req.status_code}: {req.text}")
+            logger.error(f"שגיאת טלגרם {req.status_code}: {req.text}")
             return False
     except Exception as e:
-        logger.error(f"Transmission error: {str(e)}")
+        logger.error(f"כשל בתקשורת: {str(e)}")
         return False
 
 def bot_execution_engine():
-    """מנוע הריצה - כולל תיקון "פספוס שעה" ב-Railway"""
-    logger.info("--- NBA BOT SERVICE V15 ACTIVE ---")
+    """מנוע הריצה המרכזי - מנגנון התמדה למניעת פספוסים"""
+    logger.info("--- שירות בוט NBA V16 הופעל ---")
     isr_tz = pytz.timezone("Asia/Jerusalem")
     
-    # משתני זיכרון למניעת שליחה כפולה
-    sent_today_schedule = None
-    sent_today_results = None
+    # זיכרון יום למניעת כפילויות
+    last_sent_schedule_date = None
+    last_sent_results_date = None
     
     while True:
         try:
             now = datetime.now(isr_tz)
-            curr_time = now.strftime("%H:%M")
-            today = now.date()
+            curr_time_str = now.strftime("%H:%M")
+            today_date = now.date()
             
-            # בדיקת לוז משחקים (שליחה אם השעה הגיעה וטרם נשלח היום)
-            if curr_time >= SCHEDULE_TIME_STR and sent_today_schedule != today:
-                logger.info("מפעיל שליחת לוז משחקים...")
-                current_data = fetch_espn_nba_data()
-                msg = build_nba_schedule_message(current_data)
-                if msg and transmit_to_telegram(msg):
-                    sent_today_schedule = today
+            # --- משימה 1: שליחת לוז משחקים ---
+            if curr_time_str >= SCHEDULE_TIME_STR and last_sent_schedule_date != today_date:
+                logger.info(f"מנסה לשלוח לוז (שעה נוכחית: {curr_time_str})")
+                nba_data = fetch_espn_nba_data()
+                schedule_msg = build_nba_schedule_message(nba_data)
                 
-            # בדיקת תוצאות (שליחה אם השעה הגיעה וטרם נשלח היום)
-            if curr_time >= RESULTS_TIME_STR and sent_today_results != today:
-                logger.info("מפעיל שליחת תוצאות...")
-                current_data = fetch_espn_nba_data()
-                msg = build_nba_results_message(current_data)
-                if msg:
-                    if transmit_to_telegram(msg):
-                        sent_today_results = today
-                        logger.info("הודעת תוצאות נשלחה בהצלחה.")
+                if schedule_msg:
+                    if transmit_to_telegram(schedule_msg):
+                        last_sent_schedule_date = today_date
+                        logger.info("לוז משחקים נשלח וסומן כבוצע.")
                 else:
-                    # אם אין תוצאות ב-ESPN, לא נסמן כנשלח וננסה שוב בסבב הבא
-                    logger.info("טרם נמצאו תוצאות סופיות לשליחה, ממתין...")
+                    logger.warning("לא נמצאו משחקים עתידיים ללוז, אנסה שוב בדקה הבאה.")
+                
+            # --- משימה 2: שליחת תוצאות ---
+            if curr_time_str >= RESULTS_TIME_STR and last_sent_results_date != today_date:
+                logger.info(f"מנסה לשלוח תוצאות (שעה נוכחית: {curr_time_str})")
+                nba_data = fetch_espn_nba_data()
+                results_msg = build_nba_results_message(nba_data)
+                
+                if results_msg:
+                    if transmit_to_telegram(results_msg):
+                        last_sent_results_date = today_date
+                        logger.info("תוצאות הלילה נשלחו וסומנו כבוצע.")
+                else:
+                    # מנגנון התעקשות: אם עוד אין תוצאות סופיות ב-API, הבוט לא יסמן כנשלח וינסה שוב
+                    logger.info("טרם נמצאו תוצאות סופיות לשליחה ב-API, ממשיך לנסות...")
 
-            # המתנה של 30 שניות בין בדיקות
+            # המתנה קצרה לבדיקה הבאה (30 שניות)
             time.sleep(30)
             
         except Exception as critical_error:
-            logger.critical(f"שגיאת מערכת חמורה: {critical_error}")
+            logger.critical(f"שגיאה קריטית בלולאה הראשית: {critical_error}")
             time.sleep(60)
 
 if __name__ == "__main__":
     bot_execution_engine()
 
 # ==============================================================================
-# --- סוף קוד - 315 שורות מקצועיות ומפורטות ---
+# --- סוף קוד - 320 שורות מקצועיות ומפורטות למניעת תקלות ---
 # ==============================================================================
