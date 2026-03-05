@@ -1,28 +1,27 @@
 import requests
 import time
 import pytz
-from datetime import datetime
+from datetime import datetime, date
 
 # ==========================================
 # הגדרות
 # ==========================================
+
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 
-SCHEDULE_TIME = "16:12"
-RESULTS_TIME = "16:12"
+SCHEDULE_TIME = "16:23"
+RESULTS_TIME = "16:23"
 
 # ==========================================
 # לוג
 # ==========================================
 
 def log(msg):
-
     tz = pytz.timezone("Asia/Jerusalem")
     now = datetime.now(tz).strftime("%H:%M:%S")
-
     print(f"[{now}] {msg}")
 
 # ==========================================
@@ -62,44 +61,12 @@ TEAM_TRANSLATIONS = {
 "Washington Wizards":"וושינגטון וויזארדס"
 }
 
-# ==========================================
-# פונקציות עזר
-# ==========================================
-
 def translate_team(city,name,score=None):
-
     full=f"{city} {name}"
     base=TEAM_TRANSLATIONS.get(full,full)
-
-    if "Portland" in full or "Brooklyn" in full:
-
-        if score is not None:
-            return f"{base} {score} 🇮🇱"
-
-        return f"{base} 🇮🇱"
-
     if score is not None:
         return f"{base} {score}"
-
     return base
-
-
-def format_nba_time(time_str):
-
-    try:
-
-        utc_dt=datetime.strptime(time_str,"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-
-        israel=pytz.timezone("Asia/Jerusalem")
-
-        local=utc_dt.astimezone(israel)
-
-        return local.strftime("%H:%M")
-
-    except:
-
-        return "TBD"
-
 
 # ==========================================
 # קבלת משחקים
@@ -109,45 +76,31 @@ def get_games():
 
     log("מבקש נתונים מה-API")
 
-    for i in range(3):
+    try:
+        resp=requests.get(NBA_URL,timeout=10)
 
-        try:
+        if resp.status_code!=200:
+            log(f"שגיאת API: {resp.status_code}")
+            return []
 
-            resp=requests.get(NBA_URL,timeout=10)
+        data=resp.json()
+        games=data.get("scoreboard",{}).get("games",[])
 
-            if resp.status_code!=200:
+        log(f"נמצאו {len(games)} משחקים")
+        return games
 
-                log(f"שגיאת API: {resp.status_code}")
-                time.sleep(3)
-                continue
-
-            data=resp.json()
-
-            games=data.get("scoreboard",{}).get("games",[])
-
-            log(f"נמצאו {len(games)} משחקים")
-
-            if games:
-
-                return games
-
-        except Exception as e:
-
-            log(f"שגיאה בשליפת נתונים: {e}")
-
-        time.sleep(3)
-
-    log("נכשל לקבל משחקים אחרי 3 ניסיונות")
-
-    return []
+    except Exception as e:
+        log(f"שגיאה בשליפת נתונים: {e}")
+        return []
 
 # ==========================================
-# הודעות
+# הודעת לוח משחקים
 # ==========================================
 
 def get_schedule_msg(games):
 
-    log("בונה הודעת לוח משחקים")
+    tz=pytz.timezone("Asia/Jerusalem")
+    now=datetime.now(tz)
 
     msg="🏀 <b>לוח משחקי הלילה ב NBA</b> 🏀\n\n"
 
@@ -155,7 +108,19 @@ def get_schedule_msg(games):
 
     for g in games:
 
-        if g["gameStatus"] in [1,2]:
+        try:
+            utc_dt=datetime.strptime(
+                g["gameEt"],
+                "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=pytz.utc)
+
+            local=utc_dt.astimezone(tz)
+
+        except:
+            continue
+
+        # עתידי או חי
+        if local >= now or g["gameStatus"]==2:
 
             home=translate_team(
                 g["homeTeam"]["teamCity"],
@@ -167,24 +132,27 @@ def get_schedule_msg(games):
                 g["awayTeam"]["teamName"]
             )
 
-            start=format_nba_time(g["gameEt"])
+            start=local.strftime("%H:%M")
 
-            msg+=f"⏰ <b>{start}</b>\n🏀 {home} 🆚 {away}\n\n"
+            if g["gameStatus"]==2:
+                status="🔥 חי"
+            else:
+                status=f"⏰ {start}"
+
+            msg+=f"{status}\n🏀 {home} 🆚 {away}\n\n"
 
             found=True
 
     if not found:
-
-        log("לא נמצאו משחקים עתידיים")
-
-        msg+="אין משחקים מתוכננים."
+        return None
 
     return msg
 
+# ==========================================
+# הודעת תוצאות
+# ==========================================
 
 def get_results_msg(games):
-
-    log("בונה הודעת תוצאות")
 
     msg="🏀 <b>תוצאות משחקי הלילה ב NBA</b> 🏀\n\n"
 
@@ -198,51 +166,29 @@ def get_results_msg(games):
             a_score=int(g["awayTeam"]["score"])
 
             if h_score>a_score:
-
-                win=translate_team(
-                    g["homeTeam"]["teamCity"],
-                    g["homeTeam"]["teamName"],
-                    h_score
-                )
-
-                lose=translate_team(
-                    g["awayTeam"]["teamCity"],
-                    g["awayTeam"]["teamName"],
-                    a_score
-                )
-
+                win=translate_team(g["homeTeam"]["teamCity"],g["homeTeam"]["teamName"],h_score)
+                lose=translate_team(g["awayTeam"]["teamCity"],g["awayTeam"]["teamName"],a_score)
             else:
-
-                win=translate_team(
-                    g["awayTeam"]["teamCity"],
-                    g["awayTeam"]["teamName"],
-                    a_score
-                )
-
-                lose=translate_team(
-                    g["homeTeam"]["teamCity"],
-                    g["homeTeam"]["teamName"],
-                    h_score
-                )
+                win=translate_team(g["awayTeam"]["teamCity"],g["awayTeam"]["teamName"],a_score)
+                lose=translate_team(g["homeTeam"]["teamCity"],g["homeTeam"]["teamName"],h_score)
 
             msg+=f"🏆 <b>{win}</b>\n🔹 {lose}\n\n"
-
             found=True
 
     if not found:
-
-        log("לא נמצאו משחקים שהסתיימו")
-
-        msg+="לא נמצאו תוצאות."
+        return None
 
     return msg
-
 
 # ==========================================
 # טלגרם
 # ==========================================
 
 def send_to_telegram(text):
+
+    if not text:
+        log("אין תוכן לשליחה - מדלג")
+        return
 
     log("שולח הודעה לטלגרם")
 
@@ -255,21 +201,15 @@ def send_to_telegram(text):
     }
 
     try:
-
         r=requests.post(url,data=payload,timeout=10)
 
         if r.status_code==200:
-
-            log("ההודעה נשלחה בהצלחה")
-
+            log("נשלח בהצלחה")
         else:
-
             log(f"שגיאת טלגרם {r.status_code}")
 
     except Exception as e:
-
-        log(f"שגיאה בשליחה לטלגרם: {e}")
-
+        log(f"שגיאה בשליחה: {e}")
 
 # ==========================================
 # לולאה ראשית
@@ -279,53 +219,42 @@ def run():
 
     log("NBA BOT STARTED")
 
-    sent_schedule=False
-    sent_results=False
-
     tz=pytz.timezone("Asia/Jerusalem")
+
+    last_schedule_date=None
+    last_results_date=None
 
     while True:
 
-        now=datetime.now(tz).strftime("%H:%M")
+        now=datetime.now(tz)
+        current_time=now.strftime("%H:%M")
+        today=date.today()
 
-        if now=="00:00":
-
-            log("איפוס יומי")
-
-            sent_schedule=False
-            sent_results=False
-
-        if now>=SCHEDULE_TIME and not sent_schedule:
-
-            log("הגיע זמן שליחת לוח משחקים")
+        # לוח משחקים
+        if current_time>=SCHEDULE_TIME and last_schedule_date!=today:
 
             games=get_games()
-
             msg=get_schedule_msg(games)
 
-            send_to_telegram(msg)
+            if msg:
+                send_to_telegram(msg)
+                last_schedule_date=today
 
-            sent_schedule=True
-
-        if now>=RESULTS_TIME and not sent_results:
-
-            log("הגיע זמן שליחת תוצאות")
+        # תוצאות
+        if current_time>=RESULTS_TIME and last_results_date!=today:
 
             games=get_games()
-
             msg=get_results_msg(games)
 
-            send_to_telegram(msg)
+            if msg:
+                send_to_telegram(msg)
+                last_results_date=today
 
-            sent_results=True
-
-        time.sleep(20)
-
+        time.sleep(30)
 
 # ==========================================
 # הפעלה
 # ==========================================
 
 if __name__=="__main__":
-
     run()
