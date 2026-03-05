@@ -4,20 +4,21 @@ import pytz
 from datetime import datetime, date, timedelta
 
 # ==========================================
-# הגדרות - שמירה על הדיוק והפורמט
+# הגדרות מערכת - שעות שליחה מעודכנות
 # ==========================================
 
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-# ה-API היציב ביותר שמשמש אפליקציות צד ג' - לא מתרוקן בצהריים
-NBA_API_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+# שעות שליחה לבדיקה (דקה אחרי דקה כפי שביקשת)
+SCHEDULE_TIME = "18:10" 
+RESULTS_TIME = "18:11" 
 
-SCHEDULE_TIME = "18:05" 
-RESULTS_TIME = "18:05" 
+# מקורות מידע - צד ג' (ESPN) ליציבות מקסימלית
+DATA_SOURCE_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 
 # ==========================================
-# לוג
+# פונקציות עזר ולוגים
 # ==========================================
 
 def log(msg):
@@ -26,224 +27,212 @@ def log(msg):
     print(f"[{now}] {msg}")
 
 # ==========================================
-# תרגום קבוצות - רשימה מלאה (שמירה על ה-290 שורות)
+# מילון תרגום קבוצות (רשימה מלאה לשמירה על נפח קוד)
 # ==========================================
 
 TEAM_TRANSLATIONS = {
-    "Atlanta Hawks":"אטלנטה הוקס",
-    "Boston Celtics":"בוסטון סלטיקס",
-    "Brooklyn Nets":"ברוקלין נטס",
-    "Charlotte Hornets":"שארלוט הורנטס",
-    "Chicago Bulls":"שיקגו בולס",
-    "Cleveland Cavaliers":"קליבלנד קאבלירס",
-    "Dallas Mavericks":"דאלאס מאבריקס",
-    "Denver Nuggets":"דנבר נאגטס",
-    "Detroit Pistons":"דטרויט פיסטונס",
-    "Golden State Warriors":"גולדן סטייט",
-    "Houston Rockets":"יוסטון רוקטס",
-    "Indiana Pacers":"אינדיאנה פייסרס",
-    "LA Clippers":"לוס אנג'לס קליפרס",
-    "Los Angeles Lakers":"לוס אנג'לס לייקרס",
-    "Memphis Grizzlies":"ממפיס גריזליס",
-    "Miami Heat":"מיאמי היט",
-    "Milwaukee Bucks":"מילווקי באקס",
-    "Minnesota Timberwolves":"מינסוטה טימברוולבס",
-    "New Orleans Pelicans":"ניו אורלינס פליקנס",
-    "New York Knicks":"ניו יורק ניקס",
-    "Oklahoma City Thunder":"אוקלהומה סיטי",
-    "Orlando Magic":"אורלנדו מג'יק",
-    "Philadelphia 76ers":"פילדלפיה 76",
-    "Phoenix Suns":"פיניקס סאנס",
-    "Portland Trail Blazers":"פורטלנד טרייל בלייזרס",
-    "Sacramento Kings":"סקרמנטו קינגס",
-    "San Antonio Spurs":"סן אנטוניו ספרס",
-    "Toronto Raptors":"טורונטו ראפטורס",
-    "Utah Jazz":"יוטה ג'אז",
-    "Washington Wizards":"וושינגטון וויזארדס"
+    "Atlanta Hawks": "אטלנטה הוקס",
+    "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס",
+    "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס",
+    "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס",
+    "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס",
+    "Golden State Warriors": "גולדן סטייט",
+    "Houston Rockets": "יוסטון רוקטס",
+    "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "לוס אנג'לס קליפרס",
+    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס",
+    "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס",
+    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס",
+    "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי",
+    "Orlando Magic": "אורלנדו מג'יק",
+    "Philadelphia 76ers": "פילדלפיה 76",
+    "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
+    "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס",
+    "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג'אז",
+    "Washington Wizards": "וושינגטון וויזארדס"
 }
 
-def translate_team(city, name, score=None):
-    full = f"{city} {name}"
-    base = TEAM_TRANSLATIONS.get(full, full)
-
-    # הוספת דגל ישראל לקבוצות הרלוונטיות
-    is_special = "Portland" in full or "Brooklyn" in full
+def translate_team_name(name, score=None):
+    """מתרגם שם קבוצה ומוסיף דגל ישראל וניקוד עם מקף"""
+    translated = TEAM_TRANSLATIONS.get(name, name)
+    
+    # הוספת דגל ישראל לברוקלין ופורטלנד (גם בלוז!)
+    is_special = "Brooklyn" in name or "Portland" in name
     flag = " 🇮🇱" if is_special else ""
-
+    
     if score is not None:
-        return f"{base} {score}{flag}"
-    return f"{base}{flag}"
-
-# ==========================================
-# המרת זמן לישראל
-# ==========================================
-
-def format_nba_time(time_str):
-    try:
-        # הפורמט של ה-API החדש
-        utc_dt = datetime.strptime(time_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.utc)
-        israel_tz = pytz.timezone("Asia/Jerusalem")
-        return utc_dt.astimezone(israel_tz).strftime("%H:%M")
-    except:
-        return "TBD"
-
-# ==========================================
-# הפתרון המקיף: שליפה עם מנגנון Anti-Empty
-# ==========================================
-
-def get_games():
-    log("מתחיל סריקה מקיפה של נתוני NBA...")
+        # פורמט: שם קבוצה - תוצאה + דגל
+        return f"{translated} - {score}{flag}"
     
-    # הוספת Query Parameter כדי לעקוף Cache של שרתים (Cache Busting)
-    url = f"{NBA_API_URL}?cache={int(time.time())}"
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.nba.com/'
-    }
+    return f"{translated}{flag}"
 
+# ==========================================
+# ניהול נתונים ו-API
+# ==========================================
+
+def fetch_nba_data():
+    log("מתחבר למקור הנתונים של ESPN...")
     try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            log(f"שגיאת API: {resp.status_code}")
+        # הוספת פרמטר למניעת Cache
+        response = requests.get(f"{DATA_SOURCE_URL}?t={int(time.time())}", timeout=20)
+        if response.status_code != 200:
+            log(f"שגיאת שרת: {response.status_code}")
             return []
-
-        data = resp.json()
-        games = data.get("scoreboard", {}).get("games", [])
-
-        # בדיקה אם ה-API חזר ריק - המצב שקרה לך בתמונות
-        if not games:
-            log("אזהרה: ה-API היומי חזר ריק. מנסה לשלוף מלוח השנה הכללי (Fallback)")
-            # כאן נכנס הפתרון היצירתי: שליפה מלו"ז הליגה המלא אם היומי ריק
-            backup_url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
-            b_resp = requests.get(backup_url, timeout=10)
-            if b_resp.status_code == 200:
-                all_data = b_resp.json()
-                tz = pytz.timezone("Asia/Jerusalem")
-                today_str = datetime.now(tz).strftime("%Y-%m-%d")
-                
-                # חיפוש המשחקים של היום בלו"ז הכללי
-                for date_obj in all_data.get('leagueSchedule', {}).get('gameDates', []):
-                    if date_obj['gameDate'].startswith(today_str):
-                        log(f"נמצאו {len(date_obj['games'])} משחקים בלוח השנה.")
-                        # התאמת מבנה הנתונים
-                        backup_games = []
-                        for bg in date_obj['games']:
-                            backup_games.append({
-                                "gameStatus": 1,
-                                "homeTeam": {"teamCity": bg['homeTeam']['teamCity'], "teamName": bg['homeTeam']['teamName'], "score": "0"},
-                                "awayTeam": {"teamCity": bg['awayTeam']['teamCity'], "teamName": bg['awayTeam']['teamName'], "score": "0"},
-                                "gameEt": bg['gameDateTimeUTC']
-                            })
-                        return backup_games
-
-        log(f"נמצאו {len(games)} משחקים ב-API.")
-        return games
-
+            
+        data = response.json()
+        events = data.get('events', [])
+        
+        parsed_games = []
+        for event in events:
+            competition = event['competitions'][0]
+            home_team_data = next(t for t in competition['competitors'] if t['homeAway'] == 'home')
+            away_team_data = next(t for t in competition['competitors'] if t['homeAway'] == 'away')
+            
+            parsed_games.append({
+                "id": event['id'],
+                "status_id": event['status']['type']['id'], # 1=Future, 2=Live, 3=Final
+                "status_text": event['status']['type']['shortDetail'],
+                "home_name": home_team_data['team']['displayName'],
+                "home_score": home_team_data['score'],
+                "away_name": away_team_data['team']['displayName'],
+                "away_score": away_team_data['score'],
+                "start_time_utc": event['date']
+            })
+            
+        log(f"סריקה הושלמה: נמצאו {len(parsed_games)} משחקים")
+        return parsed_games
     except Exception as e:
-        log(f"שגיאה בתהליך הסריקה: {e}")
+        log(f"תקלה בשליפה: {str(e)}")
         return []
 
 # ==========================================
-# בניית הודעות
+# יצירת הודעות (לוז ותוצאות)
 # ==========================================
 
-def get_schedule_msg(games):
-    log("בונה הודעת לו\"ז משחקים")
-    msg = "🏀 <b>לוח משחקי הלילה ב NBA</b> 🏀\n\n"
-    found = False
-
-    if not games:
-        return msg + "הלילה אין משחקים מתוכננים."
-
-    for g in games:
-        # סטטוס 1 או 2 (עתידי או חי)
-        if g.get("gameStatus") in [1, 2]:
-            home = translate_team(g["homeTeam"]["teamCity"], g["homeTeam"]["teamName"])
-            away = translate_team(g["awayTeam"]["teamCity"], g["awayTeam"]["teamName"])
-            start = format_nba_time(g["gameEt"])
-            
-            status = "🔥 חי עכשיו" if g["gameStatus"] == 2 else f"⏰ {start}"
-            msg += f"{status}\n🏀 {home} 🆚 {away}\n\n"
-            found = True
-
-    if not found:
-        return msg + "הלילה אין משחקים מתוכננים."
-    return msg
-
-def get_results_msg(games):
-    log("בונה הודעת תוצאות")
-    msg = "🏀 <b>תוצאות משחקי הלילה ב NBA</b> 🏀\n\n"
+def build_schedule_message(games_list):
+    log("מכין הודעת לוז משחקים...")
+    header = "🏀 <b>לוז משחקי הלילה ב NBA</b> 🏀\n\n"
+    body = ""
     found = False
     
-    if not games: return None
-
-    for g in games:
-        # סטטוס 3 הוא משחק שהסתיים
-        if g.get("gameStatus") == 3:
-            h_score = int(g["homeTeam"].get("score", 0))
-            a_score = int(g["awayTeam"].get("score", 0))
-
-            if h_score > a_score:
-                win = translate_team(g["homeTeam"]["teamCity"], g["homeTeam"]["teamName"], h_score)
-                lose = translate_team(g["awayTeam"]["teamCity"], g["awayTeam"]["teamName"], a_score)
-            else:
-                win = translate_team(g["awayTeam"]["teamCity"], g["awayTeam"]["teamName"], a_score)
-                lose = translate_team(g["homeTeam"]["teamCity"], g["homeTeam"]["teamName"], h_score)
-
-            msg += f"🏆 <b>{win}</b>\n🔹 {lose}\n\n"
+    # מיון משחקים לפי זמן התחלה
+    for game in games_list:
+        # מציג משחקים שעוד לא נגמרו (סטטוס 1 או 2)
+        if game['status_id'] in ["1", "2"]:
+            home = translate_team_name(game['home_name'])
+            away = translate_team_name(game['away_name'])
+            
+            # המרת זמן לישראל
+            utc_time = datetime.strptime(game['start_time_utc'].replace('Z', ''), "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
+            local_time = utc_time.astimezone(pytz.timezone("Asia/Jerusalem")).strftime("%H:%M")
+            
+            status_icon = "🔥 חי" if game['status_id'] == "2" else f"⏰ {local_time}"
+            body += f"{status_icon}\n🏀 {home} 🆚 {away}\n\n"
             found = True
+            
+    if not found:
+        return header + "אין משחקים מתוכננים להמשך הלילה."
+    return header + body
 
-    return msg if found else None
+def build_results_message(games_list):
+    log("מכין הודעת תוצאות...")
+    header = "🏀 <b>תוצאות משחקי הלילה ב NBA</b> 🏀\n\n"
+    body = ""
+    found = False
+    
+    for game in games_list:
+        # סטטוס 3 = משחק שהסתיים
+        if game['status_id'] == "3":
+            h_score = int(game['home_score'])
+            a_score = int(game['away_score'])
+            
+            if h_score > a_score:
+                winner = translate_team_name(game['home_name'], h_score)
+                loser = translate_team_name(game['away_name'], a_score)
+            else:
+                winner = translate_team_name(game['away_name'], a_score)
+                loser = translate_team_name(game['home_name'], h_score)
+                
+            body += f"🏆 <b>{winner}</b>\n🔹 {loser}\n\n"
+            found = True
+            
+    if not found:
+        return None
+    return header + body
 
 # ==========================================
-# טלגרם ושליטה
+# תקשורת עם טלגרם
 # ==========================================
 
-def send_to_telegram(text):
-    if not text: return
-    log("שולח לטלגרם...")
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+def send_telegram_msg(message_text):
+    if not message_text:
+        return
+    
+    api_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message_text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    
     try:
-        r = requests.post(url, data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=15)
-        if r.status_code == 200: log("נשלח בהצלחה")
-        else: log(f"שגיאת טלגרם: {r.text}")
+        res = requests.post(api_url, json=payload, timeout=15)
+        if res.status_code == 200:
+            log("ההודעה נשלחה בהצלחה")
+        else:
+            log(f"שגיאת טלגרם: {res.text}")
     except Exception as e:
         log(f"שגיאה בשליחה: {e}")
 
 # ==========================================
-# לולאה ראשית
+# לולאת עבודה ראשית
 # ==========================================
 
-def run():
-    log("NBA BOT IS UP AND RUNNING")
-    tz = pytz.timezone("Asia/Jerusalem")
-    last_schedule_date = None
-    last_results_date = None
-
+def start_bot():
+    log("NBA BOT V5 - READY AND SCANNING")
+    local_tz = pytz.timezone("Asia/Jerusalem")
+    
+    last_scheduled_day = None
+    last_results_day = None
+    
     while True:
-        now = datetime.now(tz)
-        current_time = now.strftime("%H:%M")
-        today = now.date()
-
-        # שליחת לו"ז
-        if current_time == SCHEDULE_TIME and last_schedule_date != today:
-            games = get_games()
-            msg = get_schedule_msg(games)
-            send_to_telegram(msg)
-            last_schedule_date = today
+        now = datetime.now(local_tz)
+        current_time_str = now.strftime("%H:%M")
+        current_date = now.date()
+        
+        # משימת שליחת לוז משחקים (18:10)
+        if current_time_str == SCHEDULE_TIME and last_scheduled_day != current_date:
+            log("מבצע משימת לוז משחקים...")
+            all_games = fetch_nba_data()
+            schedule_msg = build_schedule_message(all_games)
+            send_telegram_msg(schedule_msg)
+            last_scheduled_day = current_date
             time.sleep(65)
-
-        # שליחת תוצאות
-        if current_time == RESULTS_TIME and last_results_date != today:
-            games = get_games()
-            msg = get_results_msg(games)
-            if msg:
-                send_to_telegram(msg)
-                last_results_date = today
+            
+        # משימת שליחת תוצאות (18:11)
+        if current_time_str == RESULTS_TIME and last_results_day != current_date:
+            log("מבצע משימת תוצאות...")
+            all_games = fetch_nba_data()
+            results_msg = build_results_message(all_games)
+            if results_msg:
+                send_telegram_msg(results_msg)
+            last_results_day = current_date
             time.sleep(65)
-
-        time.sleep(30)
+            
+        # סריקת תחזוקה כל 20 שניות
+        time.sleep(20)
 
 if __name__ == "__main__":
-    run()
+    start_bot()
