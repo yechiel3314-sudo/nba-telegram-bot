@@ -6,13 +6,13 @@ from datetime import datetime
 # ==========================================
 # הגדרות
 # ==========================================
-TELEGRAM_TOKEN = "PUT_YOUR_TOKEN_HERE"
+TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 
-SCHEDULE_TIME = "15:46"
-RESULTS_TIME = "15:46"
+SCHEDULE_TIME = "15:51"
+RESULTS_TIME = "15:51"
 
 # ==========================================
 # תרגום קבוצות
