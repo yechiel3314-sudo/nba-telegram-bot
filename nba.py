@@ -11,12 +11,24 @@ CHAT_ID = "-1003808107418"
 
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 
-SCHEDULE_TIME = "16:02"
-RESULTS_TIME = "15:02"
+SCHEDULE_TIME = "16:12"
+RESULTS_TIME = "16:12"
+
+# ==========================================
+# לוג
+# ==========================================
+
+def log(msg):
+
+    tz = pytz.timezone("Asia/Jerusalem")
+    now = datetime.now(tz).strftime("%H:%M:%S")
+
+    print(f"[{now}] {msg}")
 
 # ==========================================
 # תרגום קבוצות
 # ==========================================
+
 TEAM_TRANSLATIONS = {
 "Atlanta Hawks":"אטלנטה הוקס",
 "Boston Celtics":"בוסטון סלטיקס",
@@ -59,7 +71,6 @@ def translate_team(city,name,score=None):
     full=f"{city} {name}"
     base=TEAM_TRANSLATIONS.get(full,full)
 
-    # קבוצות עם דגל ישראל
     if "Portland" in full or "Brooklyn" in full:
 
         if score is not None:
@@ -90,30 +101,53 @@ def format_nba_time(time_str):
         return "TBD"
 
 
+# ==========================================
+# קבלת משחקים
+# ==========================================
+
 def get_games():
 
-    try:
+    log("מבקש נתונים מה-API")
 
-        resp=requests.get(NBA_URL,timeout=10).json()
+    for i in range(3):
 
-        games=resp.get("scoreboard",{}).get("games",[])
+        try:
 
-        if not games:
-            time.sleep(5)
-            resp=requests.get(NBA_URL,timeout=10).json()
-            games=resp.get("scoreboard",{}).get("games",[])
+            resp=requests.get(NBA_URL,timeout=10)
 
-        return games
+            if resp.status_code!=200:
 
-    except:
+                log(f"שגיאת API: {resp.status_code}")
+                time.sleep(3)
+                continue
 
-        return []
+            data=resp.json()
+
+            games=data.get("scoreboard",{}).get("games",[])
+
+            log(f"נמצאו {len(games)} משחקים")
+
+            if games:
+
+                return games
+
+        except Exception as e:
+
+            log(f"שגיאה בשליפת נתונים: {e}")
+
+        time.sleep(3)
+
+    log("נכשל לקבל משחקים אחרי 3 ניסיונות")
+
+    return []
 
 # ==========================================
 # הודעות
 # ==========================================
 
 def get_schedule_msg(games):
+
+    log("בונה הודעת לוח משחקים")
 
     msg="🏀 <b>לוח משחקי הלילה ב NBA</b> 🏀\n\n"
 
@@ -141,12 +175,16 @@ def get_schedule_msg(games):
 
     if not found:
 
+        log("לא נמצאו משחקים עתידיים")
+
         msg+="אין משחקים מתוכננים."
 
     return msg
 
 
 def get_results_msg(games):
+
+    log("בונה הודעת תוצאות")
 
     msg="🏀 <b>תוצאות משחקי הלילה ב NBA</b> 🏀\n\n"
 
@@ -193,6 +231,8 @@ def get_results_msg(games):
 
     if not found:
 
+        log("לא נמצאו משחקים שהסתיימו")
+
         msg+="לא נמצאו תוצאות."
 
     return msg
@@ -204,6 +244,8 @@ def get_results_msg(games):
 
 def send_to_telegram(text):
 
+    log("שולח הודעה לטלגרם")
+
     url=f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     payload={
@@ -214,11 +256,19 @@ def send_to_telegram(text):
 
     try:
 
-        requests.post(url,data=payload,timeout=10)
+        r=requests.post(url,data=payload,timeout=10)
 
-    except:
+        if r.status_code==200:
 
-        pass
+            log("ההודעה נשלחה בהצלחה")
+
+        else:
+
+            log(f"שגיאת טלגרם {r.status_code}")
+
+    except Exception as e:
+
+        log(f"שגיאה בשליחה לטלגרם: {e}")
 
 
 # ==========================================
@@ -227,7 +277,7 @@ def send_to_telegram(text):
 
 def run():
 
-    print("NBA BOT STARTED")
+    log("NBA BOT STARTED")
 
     sent_schedule=False
     sent_results=False
@@ -240,10 +290,14 @@ def run():
 
         if now=="00:00":
 
+            log("איפוס יומי")
+
             sent_schedule=False
             sent_results=False
 
         if now>=SCHEDULE_TIME and not sent_schedule:
+
+            log("הגיע זמן שליחת לוח משחקים")
 
             games=get_games()
 
@@ -254,6 +308,8 @@ def run():
             sent_schedule=True
 
         if now>=RESULTS_TIME and not sent_results:
+
+            log("הגיע זמן שליחת תוצאות")
 
             games=get_games()
 
