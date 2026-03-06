@@ -16,6 +16,57 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 translator = GoogleTranslator(source='en', target='iw')
 
+# ==========================================
+# מערכת Cache למניעת הודעות כפולות
+# ==========================================
+
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_cache(data):
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+def already_sent(key):
+    return cache.get(key, False)
+
+def mark_sent(key):
+    cache[key] = True
+    save_cache(cache)
+
+cache = load_cache()
+
+# ==========================================
+# שליחת הודעה לטלגרם עם מניעת כפילויות
+# ==========================================
+
+def send_telegram(message, key=None):
+
+    # אם יש מזהה הודעה - נבדוק שלא נשלח כבר
+    if key:
+        if already_sent(key):
+            return
+        mark_sent(key)
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    data = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+
+    try:
+        requests.post(url, data=data)
+    except Exception as e:
+        print("Telegram Error:", e)
+
 NBA_TEAMS_HEBREW = {
     "Atlanta Hawks": "אטלנטה הוקס", "Boston Celtics": "בוסטון סלטיקס",
     "Brooklyn Nets": "ברוקלין נטס", "Charlotte Hornets": "שארלוט הורנטס",
@@ -214,6 +265,9 @@ NBA_PLAYERS_HEB = {
     "Christian Braun": "כריסטיאן בראון", "Peyton Watson": "פייטון ווטסון", "Dario Saric": "דאריו שאריץ'", "Julian Strawther": "ג'וליאן סטראותר", "DeAndre Jordan": "דיאנדרה ג'ורדן",
     "Zeke Nnaji": "זיק נאג'י", "Hunter Tyson": "האנטר טייסון", "Vlatko Cancar": "בלאטקו צ'נצ'אר", "DaRon Holmes II": "דארון הולמס", "Jalen Pickett": "ג'יילן פיקט",
     "Trey Alexander": "טריי אלכסנדר", "PJ Hall": "פי.ג'יי הול", "Spencer Jones": "ספנסר ג'ונס"
+
+    # --- הוספה לבד ---
+    "DeMar DeRozan": "דמאר דרוזן
 }
 
 def load_cache():
