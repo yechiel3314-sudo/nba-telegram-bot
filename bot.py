@@ -266,8 +266,6 @@ NBA_PLAYERS_HEB = {
     "Zeke Nnaji": "זיק נאג'י", "Hunter Tyson": "האנטר טייסון", "Vlatko Cancar": "בלאטקו צ'נצ'אר", "DaRon Holmes II": "דארון הולמס", "Jalen Pickett": "ג'יילן פיקט",
     "Trey Alexander": "טריי אלכסנדר", "PJ Hall": "פי.ג'יי הול", "Spencer Jones": "ספנסר ג'ונס"
 
-    # --- הוספה לבד ---
-    "DeMar DeRozan": "דמאר דרוזן"
 }
 
 def load_cache():
@@ -515,6 +513,7 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
 
