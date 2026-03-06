@@ -14,8 +14,8 @@ CHAT_ID = "-1003808107418"
 
 # זמני שליחה - עודכנו לזמן הקרוב לבדיקה שלך
 # אם עכשיו 00:06, הקוד ינסה לשלוח ב-00:11
-SCHEDULE_TIME_STR = "01:52"
-RESULTS_TIME_STR = "01:52"
+SCHEDULE_TIME_STR = "02:10"
+RESULTS_TIME_STR = "02:10"
 
 # מקורות מידע היברידיים (חיבור כפול)
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
