@@ -267,7 +267,7 @@ NBA_PLAYERS_HEB = {
     "Trey Alexander": "טריי אלכסנדר", "PJ Hall": "פי.ג'יי הול", "Spencer Jones": "ספנסר ג'ונס"
 
     # --- הוספה לבד ---
-    "DeMar DeRozan": "דמאר דרוזן" # תוקן כאן
+    "DeMar DeRozan": "דמאר דרוזן",
 }
 
 def load_cache():
@@ -515,5 +515,6 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
 
