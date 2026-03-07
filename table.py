@@ -13,7 +13,7 @@ TELEGRAM_TOKEN = "8284141482:AAGG1vPtJrLeAvL7kADMeuFGbEydIq08ib0"
 CHAT_ID = "-1003714393119" 
 
 CHECK_INTERVAL = 60  # בדיקה כל דקה
-CHECK_START = "08:30" # מתי להתחיל לחפש את הטבלה בבוקר
+CHECK_START = "23:35" # מתי להתחיל לחפש את הטבלה בבוקר
 
 # הלינק ל-RSS שסיפקת
 RSS_URL = "https://rss.app/feeds/9s9KfJp1JqkVZ3Yl.xml"
