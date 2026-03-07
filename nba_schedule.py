@@ -9,12 +9,12 @@ from datetime import datetime, timedelta
 # ==============================================================================
 
 # הטוקן החדש שסיפקת
-TELEGRAM_TOKEN = "8284141482:AAGG1vPtJrLeAvL7kADMeuFGbEydIq08ib0"
+TELEGRAM_TOKEN = "8284141482:AAGG1vPtJrleAvl7kADMeufGbEydIq08ib0"
 # שים לב לוודא שה-CHAT_ID נכון עבור ערוץ הניסויים שלך
 CHAT_ID = "-1003714393119" 
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "21:25"
+SCHEDULE_TIME_STR = "21:33"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
