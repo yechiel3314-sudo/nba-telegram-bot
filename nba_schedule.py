@@ -88,7 +88,7 @@ def get_nba_schedule():
 def build_schedule_msg(data):
     isr_tz = pytz.timezone('Asia/Jerusalem')
     now = datetime.now(isr_tz)
-    header = f"{RTL_MARK}🏀 ══ <b>לו"ז משחקי הלילה ב NBA</b> ══ 🏀\n\n"
+    header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב NBA</b> ══ 🏀\n\n"
     body = ""
     found = False
     
