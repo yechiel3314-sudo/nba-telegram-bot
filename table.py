@@ -7,49 +7,45 @@ import re
 from datetime import datetime
 
 # ===============================
-# הגדרות (מעודכן עם הפרטים שלך)
+# הגדרות (Token & Chat ID שלך)
 # ===============================
 TELEGRAM_TOKEN = "8284141482:AAGG1vPtJrLeAvL7kADMeuFGbEydIq08ib0"
 CHAT_ID = "-1003714393119" 
 
-CHECK_INTERVAL = 60  # בדיקה כל דקה
-CHECK_START = "23:35" # מתי להתחיל לחפש את הטבלה בבוקר
+CHECK_INTERVAL = 60 
+CHECK_START = "23:42" # זמן הבדיקה הקרוב
 
-# הלינק ל-RSS שסיפקת
 RSS_URL = "https://rss.app/feeds/9s9KfJp1JqkVZ3Yl.xml"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
-# ===============================
-# שליפת הפוסט וזיהוי התמונה
-# ===============================
 def get_latest_post():
     try:
         feed = feedparser.parse(RSS_URL)
         if not feed.entries:
+            logger.warning("RSS Feed is empty!")
             return None
 
-        # עובר על 5 הפוסטים האחרונים (למקרה שהעלו משהו לפני הטבלה)
-        for post in feed.entries[:5]:
+        for post in feed.entries[:10]: # בודק את 10 הפוסטים האחרונים
             title = post.title.lower()
+            logger.info(f"Checking post title: {title}") # זה יגיד לנו מה הבוט רואה
             
-            # בדיקה אם זה הפוסט של GoatFlex לפי המילים שביקשת
-            if "nba standings update" in title or "standing" in title:
+            # חיפוש גמיש יותר למילה Standings
+            if "standing" in title:
                 image = None
-                
-                # ניסיון 1: שליפה מ-media_content
                 if "media_content" in post:
                     image = post.media_content[0]["url"]
-                # ניסיון 2: חיפוש לינק לתמונה בתוך התיאור (לפעמים ה-RSS מחביא את זה שם)
                 elif "description" in post:
                     img_match = re.search(r'src="([^"]+)"', post.description)
                     if img_match:
                         image = img_match.group(1)
 
                 if image:
+                    logger.info(f"MATCH FOUND! Image URL: {image}")
                     return {"id": post.id, "image": image}
         
+        logger.info("No post with 'standings' found in the last 10 entries.")
     except Exception as e:
         logger.error(f"RSS error: {e}")
     return None
@@ -59,7 +55,7 @@ def send_to_telegram(image):
     payload = {
         "chat_id": CHAT_ID,
         "photo": image,
-        "caption": "🏀 <b>NBA Standings Update</b>\nהטבלה היומית המעודכנת",
+        "caption": "🏀 <b>NBA Standings Update</b>",
         "parse_mode": "HTML"
     }
     try:
@@ -69,9 +65,6 @@ def send_to_telegram(image):
         logger.error(f"Telegram error: {e}")
         return False
 
-# ===============================
-# לולאה ראשית
-# ===============================
 def run_bot():
     tz = pytz.timezone("Asia/Jerusalem")
     last_sent_id = None
@@ -84,27 +77,29 @@ def run_bot():
             now = datetime.now(tz)
             current_time = now.strftime("%H:%M")
 
-            # בדיקה אם הגיע זמן השליחה וטרם נשלח להיום
             if current_time >= CHECK_START and not sent_today:
+                logger.info(f"Time reached ({current_time}). Checking RSS...")
                 post = get_latest_post()
                 
-                if post and post["id"] != last_sent_id:
-                    logger.info(f"Found new standings! ID: {post['id']}")
+                if post:
                     if send_to_telegram(post["image"]):
                         last_sent_id = post["id"]
                         sent_today = True
-                        logger.info("Image sent successfully.")
+                        logger.info("Success! Image sent to Telegram.")
+                    else:
+                        logger.error("Failed to send image.")
+                else:
+                    # אם לא מצא, ננסה שוב בעוד דקה עד שיימצא או עד סוף היום
+                    logger.warning("Standings not found yet, will retry in 60 seconds...")
 
-            # איפוס בחצות
             if current_time == "00:01":
                 sent_today = False
-                logger.info("Daily reset performed.")
+                logger.info("Daily reset.")
 
             time.sleep(CHECK_INTERVAL)
-
         except Exception as e:
             logger.error(f"Main loop error: {e}")
-            time.sleep(60)
+            time.sleep(30)
 
 if __name__ == "__main__":
     run_bot()
