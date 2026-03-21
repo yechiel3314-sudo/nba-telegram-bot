@@ -527,7 +527,7 @@ def run():
         except Exception as e:
             print(f"❌ שגיאה בלוגיקה: {e}")
         
-        time.sleep(15)
+        time.sleep(10)
 
 if __name__ == "__main__":
     run()
