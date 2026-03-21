@@ -454,13 +454,31 @@ def run():
                             headers=HEADERS
                         ).json()
 
-                        m, p = format_msg(b_resp['game'], "סיום המשחק", is_final=True)
-                        send_telegram(m, p)
+                        final_period = b_resp['game'].get('period', 4)
 
+                        # ✅ אם יש הארכה (period > 4)
+                        if final_period > 4:
+                            # שליחת סיום רבע 4 (כמו רבע רגיל)
+                            q4_key = "end_q4_sent"
+                            if q4_key not in log:
+                                m_q4, p_q4 = format_msg(b_resp['game'], "סיום רבע 4")
+                                send_telegram(m_q4, p_q4)
+                                log.append(q4_key)
+                            # שליחת סיום הארכה כהודעת סיום משחק
+                            m, p = format_msg(
+                                b_resp['game'],
+                                f"סיום המשחק (אחרי הארכה {final_period-4})",
+                                is_final=True
+                            )
+                            send_telegram(m, p)
+                        else:
+                            # משחק רגיל ללא הארכה
+                            m, p = format_msg(b_resp['game'], "סיום המשחק", is_final=True)
+                            send_telegram(m, p)
                         log.append(game_final_key)
                         save_cache()
                         print(f"🏁 נשלח סיום משחק {gid}")
-                        
+
                 # ⛔ אם המשחק לא הסתיים – מטפלים רק במחצית ורבעים
                 elif status != 3:
 
