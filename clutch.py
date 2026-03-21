@@ -364,7 +364,7 @@ def format_clutch_msg(game_box, raw_clock):
         leader_text = "שוויון"
 
     msg = "‏🚨 <b>התראת קלאץ'!</b> 🚨\n"
-    msg += f"‏🏀 <b>{away_name} 🆚 {home_name}</b>\n\n"
+    msg += f"\u200f🏀 <b>{a_full} 🆚 {h_full}</b> 🏀\n\n"
 
     if away_score == home_score:
         msg += f"‏🔥 <b>שוויון {away_score} - {home_score}</b>\n\n"
