@@ -1,5 +1,5 @@
+python-telegram-bot==20.8
 requests==2.31.0
-moviepy==1.0.3
-deep_translator==1.11.4
+beautifulsoup4==4.12.3
+pandas==2.2.1
 pytz==2024.1
-feedparser
