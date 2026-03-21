@@ -3,3 +3,6 @@ requests
 beautifulsoup4
 pandas
 pytz
+deep-translator
+feedparser
+moviepy==1.0.3
