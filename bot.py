@@ -615,7 +615,7 @@ def run():
         print("\n" + "="*50, flush=True)
 
         current_time = datetime.now().strftime("%H:%M:%S")
-        print(f"🔍 [{current_time}] סריקה חדשה התחילה", flush=True)
+        print(f"🔄 סורק משחקים... [{current_time}]", flush=True)
 
         try:
             data = fetch_json(NBA_URL)
@@ -628,6 +628,7 @@ def run():
             games = data.get("scoreboard", {}).get("games", [])
             print(f"📊 נמצאו {len(games)} משחקים", flush=True)
 
+            live_games = []
             sent_any_update = False
 
             for game in games:
@@ -637,14 +638,18 @@ def run():
                     away_score = game.get("awayTeam", {}).get("score", 0)
                     home_score = game.get("homeTeam", {}).get("score", 0)
 
+                    status = game.get("gameStatus")
+                    period = game.get("period")
+
                     print(
-                        f"🎮 משחק {game.get('gameId')} | "
-                        f"{away} {away_score} - {home_score} {home} | "
-                        f"סטטוס: {game.get('gameStatus')} | "
-                        f"רבע: {game.get('period')} | "
-                        f"{game.get('gameStatusText')}",
+                        f"🎮 {away} {away_score} - {home_score} {home} | "
+                        f"סטטוס: {status} | רבע: {period}",
                         flush=True
                     )
+
+                    # זיהוי משחק חי
+                    if status == 2:
+                        live_games.append(game)
 
                     triggered = handle_game(game)
 
@@ -656,10 +661,21 @@ def run():
                     print(f"❌ שגיאה במשחק {game.get('gameId')}", flush=True)
                     traceback.print_exc()
 
-            if not sent_any_update:
-                print("😴 לא נשלחו עדכונים בסריקה הזו", flush=True)
+            # לוג משחקים חיים
+            if live_games:
+                print(f"🔥 יש {len(live_games)} משחקים חיים עכשיו!", flush=True)
+
+                # 👉 אם אתה רוצה גם לשלוח לטלגרם כל סריקה (אפשר למחוק אם לא רוצה ספאם)
+                send_telegram(f"🔄 סורק משחקים חיים... [{current_time}]")
+
             else:
-                print("🚨 נשלחו עדכונים בסריקה הזו!", flush=True)
+                print("📭 אין משחקים חיים כרגע", flush=True)
+
+            # האם נשלח עדכון אמיתי
+            if not sent_any_update:
+                print("😴 אין עדכוני משחק חדשים", flush=True)
+            else:
+                print("🚨 נשלחו עדכוני משחק!", flush=True)
 
         except Exception as e:
             import traceback
