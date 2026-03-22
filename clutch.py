@@ -270,28 +270,41 @@ def get_top_scorer(team_obj: dict) -> str:
         pass
     return "לא זמין"
 
+sent_clutch = {}
+
 def build_clutch_message(event: dict) -> str | None:
     status = event.get("status", {})
     status_type = status.get("type", {})
+
+    # רק משחקים חיים
     if status_type.get("state") != "in":
         return None
 
+    game_id = event.get("id")
     period = status.get("period")
     clock = status.get("displayClock", "")
-    if period != 4:
-        return None
 
     clock_seconds = clock_to_seconds(clock)
-    if clock_seconds is None or clock_seconds >= 240:
+    if clock_seconds is None:
+        return None
+
+    # קלאץ' = רבע 4 או הארכה + פחות מ-4 דקות
+    if period < 4 or clock_seconds >= 240:
+        return None
+
+    # מניעת ספאם (רק פעם אחת לכל משחק)
+    if sent_clutch.get(game_id):
         return None
 
     competition = event.get("competitions", [{}])[0]
     competitors = competition.get("competitors", [])
+
     if len(competitors) < 2:
         return None
 
     away = None
     home = None
+
     for comp in competitors:
         if comp.get("homeAway") == "away":
             away = comp
@@ -312,8 +325,13 @@ def build_clutch_message(event: dict) -> str | None:
         return None
 
     diff = abs(away_score - home_score)
+
+    # רק משחק צמוד
     if diff > 3:
         return None
+
+    # סימון שכבר שלחנו
+    sent_clutch[game_id] = True
 
     if away_score > home_score:
         leader_name = away_name
@@ -338,7 +356,7 @@ def build_clutch_message(event: dict) -> str | None:
         msg += f"{RTL}🔥 <b>{leader_name} מובילה {score_line}</b> 🔥\n\n"
 
     msg += f"{RTL}⏱️ <b>זמן לסיום:</b> {clock}\n\n"
-    msg += f"{RTL}📍 <b>הקלעים הבולטים במשחק:</b>\n"
+    msg += f"{RTL}📍 <b>קלעים מובילים:</b>\n"
     msg += f"{RTL}🏆 <b>{away_name}:</b> {away_scorer}\n"
     msg += f"{RTL}🏆 <b>{home_name}:</b> {home_scorer}\n\n"
     msg += f"{RTL}🚨 <b>כנסו עכשיו למשחק!</b>"
