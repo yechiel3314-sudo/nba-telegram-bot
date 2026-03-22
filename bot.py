@@ -334,18 +334,11 @@ def send_telegram(text):
 
 def fetch_json(url):
     try:
-        print(f"🌐 שולח בקשה ל-API...", flush=True)
         response = requests.get(url, headers=HEADERS, timeout=15)
-
         if response.status_code != 200:
-            print(f"⚠️ API Error {response.status_code} on URL: {url}", flush=True)
             return {}
-
-        print("✅ התקבל מידע מה-API", flush=True)
         return response.json()
-
-    except Exception as e:
-        print(f"📡 Network Error: {e}", flush=True)
+    except Exception:
         return {}
 
 def fetch_boxscore(game_id):
@@ -609,29 +602,23 @@ def handle_game(game_data):
 # הרצה
 # ==========================================
 def run():
-    print("🚀 הבוט התחיל לעבוד", flush=True)
-
     while True:
         try:
             current_time = datetime.now().strftime("%H:%M:%S")
-
-            # 🔥 זה מה שרצית
             print(f"🔄 סורק משחקים... [{current_time}]", flush=True)
 
             data = fetch_json(NBA_URL)
 
-            if not data or "scoreboard" not in data:
-                print("⚠️ אין נתונים מה-API", flush=True)
-            else:
+            if data and "scoreboard" in data:
                 games = data.get("scoreboard", {}).get("games", [])
-                print(f"📊 נמצאו {len(games)} משחקים", flush=True)
 
-        except Exception as e:
-            import traceback
-            print("❌ שגיאה:", flush=True)
-            traceback.print_exc()
+                # אם אתה רוצה שהבוט כן יעבוד מאחורי הקלעים
+                for game in games:
+                    handle_game(game)
 
-        # ⏱️ זה מבטיח 15 שניות
+        except Exception:
+            pass  # שקט מוחלט
+
         time.sleep(15)
 
 # ==========================================
