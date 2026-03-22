@@ -3,6 +3,7 @@ import time
 import json
 import os
 from datetime import datetime
+import threading
 from deep_translator import GoogleTranslator
 
 # ==========================================
