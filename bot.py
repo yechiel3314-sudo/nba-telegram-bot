@@ -601,34 +601,23 @@ def handle_game(game_data):
 # ==========================================
 # הרצה
 # ==========================================
-def run():
-    print("🚀 BOT STARTED", flush=True)
+def run_loop():
+    print("🚀 LOOP MODE", flush=True)
 
     while True:
         try:
-            current_time = datetime.now().strftime("%H:%M:%S")
-            print(f"🔄 סורק משחקים... [{current_time}]", flush=True)
-
+            print("🔄 בדיקה...", flush=True)
             data = fetch_json(NBA_URL)
 
             if data and "scoreboard" in data:
                 games = data.get("scoreboard", {}).get("games", [])
-                print(f"📊 משחקים: {len(games)}", flush=True)
-
                 for game in games:
                     handle_game(game)
 
-            else:
-                print("⚠️ אין נתונים", flush=True)
-
         except Exception as e:
-            print(f"❌ שגיאה: {e}", flush=True)
+            print("❌ שגיאה:", e, flush=True)
 
-        # חשוב: גם אם sleep נשבר – זה לא ימות
-        try:
-            time.sleep(15)
-        except:
-            pass
+        time.sleep(15)
 
 # ==========================================
 # נקודת התחלה של הקובץ
