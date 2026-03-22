@@ -324,20 +324,28 @@ def send_telegram(text):
         "parse_mode": "HTML"
     }
     try:
-        requests.post(url, data=data, timeout=15)
+        res = requests.post(url, data=data, timeout=15)
+        if res.status_code == 200:
+            print("📤 הודעה נשלחה לטלגרם ✔", flush=True)
+        else:
+            print(f"❌ שגיאת שליחה לטלגרם: {res.status_code}", flush=True)
     except Exception as e:
-        print("Telegram Error:", e)
+        print("❌ Telegram Error:", e, flush=True)
 
 def fetch_json(url):
     try:
+        print(f"🌐 שולח בקשה ל-API...", flush=True)
         response = requests.get(url, headers=HEADERS, timeout=15)
-        # אם הסטטוס לא 200 (למשל 403 או 429), נדפיס ללוג ולא נקרוס
+
         if response.status_code != 200:
             print(f"⚠️ API Error {response.status_code} on URL: {url}", flush=True)
             return {}
+
+        print("✅ התקבל מידע מה-API", flush=True)
         return response.json()
+
     except Exception as e:
-        print(f"📡 Network Error (Timeout/Connection): {e}", flush=True)
+        print(f"📡 Network Error: {e}", flush=True)
         return {}
 
 def fetch_boxscore(game_id):
@@ -601,66 +609,63 @@ def handle_game(game_data):
 # הרצה
 # ==========================================
 def run():
-    print("🚀 נכנס ל-run", flush=True)
-    print("🚀 בוט NBA פעיל - עם לוגים מלאים", flush=True)
+    print("🚀 הבוט התחיל לעבוד", flush=True)
 
     while True:
-        print("💓 לולאה התחילה", flush=True)
+        print("\n" + "="*50, flush=True)
+
+        current_time = datetime.now().strftime("%H:%M:%S")
+        print(f"🔍 [{current_time}] סריקה חדשה התחילה", flush=True)
 
         try:
-            current_time = datetime.now().strftime("%H:%M:%S")
-            print(f"🔍 [{current_time}] סורק משחקים...", flush=True)
-
-            # ================================
-            # שליפת נתונים
-            # ================================
             data = fetch_json(NBA_URL)
-            print("📡 אחרי fetch", flush=True)
 
-            if not data:
-                print("⚠️ אין דאטה בכלל מה-API", flush=True)
-
-            if "scoreboard" not in data:
-                print("⚠️ אין scoreboard בנתונים", flush=True)
-                time.sleep(30)
+            if not data or "scoreboard" not in data:
+                print("⚠️ אין נתונים מה-API", flush=True)
+                time.sleep(15)
                 continue
 
-            # ================================
-            # משחקים
-            # ================================
             games = data.get("scoreboard", {}).get("games", [])
             print(f"📊 נמצאו {len(games)} משחקים", flush=True)
 
-            if not games:
-                print("📭 אין משחקים פעילים כרגע", flush=True)
+            sent_any_update = False
 
-            # ================================
-            # מעבר על משחקים
-            # ================================
             for game in games:
                 try:
+                    away = game.get("awayTeam", {}).get("teamName", "לא ידוע")
+                    home = game.get("homeTeam", {}).get("teamName", "לא ידוע")
+                    away_score = game.get("awayTeam", {}).get("score", 0)
+                    home_score = game.get("homeTeam", {}).get("score", 0)
+
                     print(
-                        f"🎮 בודק משחק: {game.get('gameId')} | "
+                        f"🎮 משחק {game.get('gameId')} | "
+                        f"{away} {away_score} - {home_score} {home} | "
                         f"סטטוס: {game.get('gameStatus')} | "
-                        f"רבע: {game.get('period')}",
+                        f"רבע: {game.get('period')} | "
+                        f"{game.get('gameStatusText')}",
                         flush=True
                     )
 
-                    handle_game(game)
+                    triggered = handle_game(game)
+
+                    if triggered:
+                        sent_any_update = True
 
                 except Exception as game_error:
                     import traceback
                     print(f"❌ שגיאה במשחק {game.get('gameId')}", flush=True)
                     traceback.print_exc()
 
+            if not sent_any_update:
+                print("😴 לא נשלחו עדכונים בסריקה הזו", flush=True)
+            else:
+                print("🚨 נשלחו עדכונים בסריקה הזו!", flush=True)
+
         except Exception as e:
             import traceback
-            print("❌ שגיאה כללית בלולאה:", flush=True)
+            print("❌ שגיאה כללית:", flush=True)
             traceback.print_exc()
 
-        # ================================
-        # השהיה בין סריקות
-        # ================================
         print("⏳ מחכה 15 שניות...\n", flush=True)
         time.sleep(15)
 
