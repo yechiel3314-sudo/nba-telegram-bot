@@ -609,15 +609,21 @@ def run():
 
             data = fetch_json(NBA_URL)
 
-            if data and "scoreboard" in data:
-                games = data.get("scoreboard", {}).get("games", [])
+            if not data:
+                print("⚠️ לא התקבל מידע מהשרת", flush=True)
 
-                # אם אתה רוצה שהבוט כן יעבוד מאחורי הקלעים
+            elif "scoreboard" in data:
+                games = data.get("scoreboard", {}).get("games", [])
+                print(f"📊 נמצאו {len(games)} משחקים", flush=True)
+
                 for game in games:
                     handle_game(game)
 
-        except Exception:
-            pass  # שקט מוחלט
+            else:
+                print("⚠️ מבנה נתונים לא תקין", flush=True)
+
+        except Exception as e:
+            print(f"❌ שגיאה בלולאה: {e}", flush=True)
 
         time.sleep(15)
 
