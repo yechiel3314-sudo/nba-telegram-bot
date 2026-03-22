@@ -329,7 +329,16 @@ def send_telegram(text):
         print("Telegram Error:", e)
 
 def fetch_json(url):
-    return requests.get(url, headers=HEADERS, timeout=15).json()
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=15)
+        # אם הסטטוס לא 200 (למשל 403 או 429), נדפיס ללוג ולא נקרוס
+        if response.status_code != 200:
+            print(f"⚠️ API Error {response.status_code} on URL: {url}", flush=True)
+            return {}
+        return response.json()
+    except Exception as e:
+        print(f"📡 Network Error (Timeout/Connection): {e}", flush=True)
+        return {}
 
 def fetch_boxscore(game_id):
     url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json"
@@ -589,25 +598,30 @@ def handle_game(game_data):
 # הרצה
 # ==========================================
 def run():
-    print("🚀 בוט NBA פעיל - עם לוגיקת הארכות מסודרת")
+    print("🚀 בוט NBA פעיל - עם לוגיקת הארכות מסודרת", flush=True)
     while True:
         try:
             current_time = datetime.now().strftime("%H:%M:%S")
-            print(f"🔍 [{current_time}] סורק משחקים...")
+            print(f"🔍 [{current_time}] סורק משחקים...", flush=True)
 
             data = fetch_json(NBA_URL)
+            if not data or "scoreboard" not in data:
+                print("⚠️ אזהרה: ה-API לא החזיר נתונים.", flush=True)
+                time.sleep(30)
+                continue
+
             games = data.get("scoreboard", {}).get("games", [])
+            
+            if not games:
+                print("📭 אין משחקים פעילים כרגע.", flush=True)
 
             for game in games:
                 try:
                     handle_game(game)
                 except Exception as game_error:
-                    print(f"❌ שגיאה במשחק {game.get('gameId')}: {game_error}")
+                    print(f"❌ שגיאה במשחק {game.get('gameId')}: {game_error}", flush=True)
 
         except Exception as e:
-            print(f"❌ שגיאה כללית: {e}")
+            print(f"❌ שגיאה כללית בלולאה: {e}", flush=True)
 
-        time.sleep(10)
-
-if __name__ == "__main__":
-    run()
+        time.sleep(15) # קצב סריקה יציב ובטוח
