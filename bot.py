@@ -597,31 +597,76 @@ def handle_game(game_data):
 # ==========================================
 # הרצה
 # ==========================================
+# ==========================================
+# הרצה
+# ==========================================
 def run():
-    print("🚀 בוט NBA פעיל - עם לוגיקת הארכות מסודרת", flush=True)
+    print("🚀 נכנס ל-run", flush=True)
+    print("🚀 בוט NBA פעיל - עם לוגים מלאים", flush=True)
+
     while True:
+        print("💓 לולאה התחילה", flush=True)
+
         try:
             current_time = datetime.now().strftime("%H:%M:%S")
             print(f"🔍 [{current_time}] סורק משחקים...", flush=True)
 
+            # ================================
+            # שליפת נתונים
+            # ================================
             data = fetch_json(NBA_URL)
-            if not data or "scoreboard" not in data:
-                print("⚠️ אזהרה: ה-API לא החזיר נתונים.", flush=True)
+            print("📡 אחרי fetch", flush=True)
+
+            if not data:
+                print("⚠️ אין דאטה בכלל מה-API", flush=True)
+
+            if "scoreboard" not in data:
+                print("⚠️ אין scoreboard בנתונים", flush=True)
                 time.sleep(30)
                 continue
 
+            # ================================
+            # משחקים
+            # ================================
             games = data.get("scoreboard", {}).get("games", [])
-            
-            if not games:
-                print("📭 אין משחקים פעילים כרגע.", flush=True)
+            print(f"📊 נמצאו {len(games)} משחקים", flush=True)
 
+            if not games:
+                print("📭 אין משחקים פעילים כרגע", flush=True)
+
+            # ================================
+            # מעבר על משחקים
+            # ================================
             for game in games:
                 try:
+                    print(
+                        f"🎮 בודק משחק: {game.get('gameId')} | "
+                        f"סטטוס: {game.get('gameStatus')} | "
+                        f"רבע: {game.get('period')}",
+                        flush=True
+                    )
+
                     handle_game(game)
+
                 except Exception as game_error:
-                    print(f"❌ שגיאה במשחק {game.get('gameId')}: {game_error}", flush=True)
+                    import traceback
+                    print(f"❌ שגיאה במשחק {game.get('gameId')}", flush=True)
+                    traceback.print_exc()
 
         except Exception as e:
-            print(f"❌ שגיאה כללית בלולאה: {e}", flush=True)
+            import traceback
+            print("❌ שגיאה כללית בלולאה:", flush=True)
+            traceback.print_exc()
 
-        time.sleep(15) # קצב סריקה יציב ובטוח
+        # ================================
+        # השהיה בין סריקות
+        # ================================
+        print("⏳ מחכה 15 שניות...\n", flush=True)
+        time.sleep(15)
+
+
+# ==========================================
+# נקודת התחלה של הקובץ
+# ==========================================
+if __name__ == "__main__":
+    run()
