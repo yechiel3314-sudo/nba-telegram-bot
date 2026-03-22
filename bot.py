@@ -602,13 +602,20 @@ def handle_game(game_data):
 # ==========================================
 # הרצה
 # ==========================================
+def safe_sleep(seconds):
+    for i in range(seconds):
+        print(f"⏳ {i+1}/{seconds}", flush=True)
+        time.sleep(1)
+
 def run():
-    print("🚀 BOT STARTED (SMART LOOP)", flush=True)
+    print("🚀 BOT STARTED (ULTRA SAFE)", flush=True)
 
     while True:
         try:
+            print("\n🔥 LOOP TICK", flush=True)
+
             current_time = datetime.now().strftime("%H:%M:%S")
-            print(f"\n🔄 סורק משחקים... [{current_time}]", flush=True)
+            print(f"🔄 סורק משחקים... [{current_time}]", flush=True)
 
             data = fetch_json(NBA_URL)
 
@@ -618,26 +625,18 @@ def run():
 
                 for game in games:
                     try:
+                        print(f"🎯 מטפל במשחק {game.get('gameId')}", flush=True)
                         handle_game(game)
                     except Exception as e:
-                        print(f"❌ שגיאה במשחק בודד: {e}", flush=True)
-
+                        print(f"❌ שגיאה במשחק: {e}", flush=True)
             else:
-                print("⚠️ אין נתונים מה-API", flush=True)
+                print("⚠️ אין נתונים", flush=True)
 
         except Exception as e:
             print(f"❌ שגיאה כללית: {e}", flush=True)
 
-        # חשוב מאוד — שלא ימות
-        print("⏳ מחכה 15 שניות...\n", flush=True)
-
-        try:
-            time.sleep(15)
-        except Exception as e:
-            print(f"❌ שגיאת sleep: {e}", flush=True)
-
-# ==========================================
-# נקודת התחלה של הקובץ
-# ==========================================
+        print("💓 עדיין חי", flush=True)
+        safe_sleep(10)
+        
 if __name__ == "__main__":
     run()
