@@ -1,42 +1,60 @@
 import requests
-import time
-import json
-import os
-import random
+from deep_translator import GoogleTranslator
 
-# ===============================
-# הגדרות וטוקנים
-# ===============================
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-CACHE_FILE = "clutch_cache.json"
+def send_telegram_message(message: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"שגיאה בשליחה לטלגרם: {e}")
 
-# ===============================
-# מילון תרגום קבוצות
-# ===============================
-TEAM_TRANSLATIONS = {
-    "Atlanta Hawks": "אטלנטה הוקס", "Boston Celtics": "בוסטון סלטיקס",
-    "Brooklyn Nets": "ברוקלין נטס", "Charlotte Hornets": "שארלוט הורנטס",
-    "Chicago Bulls": "שיקגו בולס", "Cleveland Cavaliers": "קליבלנד קאבלירס",
-    "Dallas Mavericks": "דאלאס מאבריקס", "Denver Nuggets": "דנבר נאגטס",
-    "Detroit Pistons": "דטרויט פיסטונס", "Golden State Warriors": "גולדן סטייט ווריורס",
-    "Houston Rockets": "יוסטון רוקטס", "Indiana Pacers": "אינדיאנה פייסרס",
-    "LA Clippers": "לוס אנג'לס קליפרס", "Los Angeles Lakers": "לוס אנג'לס לייקרס",
-    "Memphis Grizzlies": "ממפיס גריזליס", "Miami Heat": "מיאמי היט",
-    "Milwaukee Bucks": "מילווקי באקס", "Minnesota Timberwolves": "מינסוטה טימברוולבס",
-    "New Orleans Pelicans": "ניו אורלינס פליקנס", "New York Knicks": "ניו יורק ניקס",
-    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר", "Orlando Magic": "אורלנדו מג'יק",
-    "Philadelphia 76ers": "פילדלפיה 76", "Phoenix Suns": "פיניקס סאנס",
-    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס", "Sacramento Kings": "סקרמנטו קינגס",
-    "San Antonio Spurs": "סן אנטוניו ספרס", "Toronto Raptors": "טורונטו ראפטורס",
-    "Utah Jazz": "יוטה ג'אז", "Washington Wizards": "וושינגטון וויזארדס"
+NBA_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+RTL = "\u200f"
+
+translator = GoogleTranslator(source="en", target="iw")
+
+TEAM_FIXES = {
+    "Dallas Mavericks": "דאלאס מאבריקס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
+    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
+    "Golden State Warriors": "גולדן סטייט ווריורס",
+    "Boston Celtics": "בוסטון סלטיקס",
+    "Miami Heat": "מיאמי היט",
+    "Phoenix Suns": "פיניקס סאנס",
+    "Denver Nuggets": "דנבר נאגטס",
+    "Milwaukee Bucks": "מילווקי באקס",
+    "Philadelphia 76ers": "פילדלפיה 76",
+    "New York Knicks": "ניו יורק ניקס",
+    "Brooklyn Nets": "ברוקלין נטס",
+    "Chicago Bulls": "שיקגו בולס",
+    "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Atlanta Hawks": "אטלנטה הוקס",
+    "Orlando Magic": "אורלנדו מג'יק",
+    "Indiana Pacers": "אינדיאנה פייסרס",
+    "Toronto Raptors": "טורונטו ראפטורס",
+    "Washington Wizards": "וושינגטון וויזארדס",
+    "Detroit Pistons": "דטרויט פיסטונס",
+    "San Antonio Spurs": "סן אנטוניו ספרס",
+    "Houston Rockets": "יוסטון רוקטס",
+    "Memphis Grizzlies": "ממפיס גריזליס",
+    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
+    "Utah Jazz": "יוטה ג'אז",
+    "Sacramento Kings": "סקרמנטו קינגס",
+    "Charlotte Hornets": "שארלוט הורנטס",
+    "LA Clippers": "לוס אנג'לס קליפרס",
 }
 
-# כאן תוכל להוסיף את רשימת השחקנים המתורגמת שלך
-NBA_PLAYERS_HEB = {
+PLAYER_FIXES = {
     # --- פורטלנד טרייל בלייזרס ---
     "Deni Avdija": "דני אבדיה", "Jrue Holiday": "ג'רו הולידיי", "Jerami Grant": "ג'ראמי גרנט", "Scoot Henderson": "סקוט הנדרסון", "Donovan Clingan": "דונובן קלינגן",
     "Shaedon Sharpe": "שיידון שארפ", "Damian Lillard": "דמיאן לילארד", "Yang Hansen": "יאנג הנסן", "Vit Krejci": "ויט קרייצ'י", "Toumani Camara": "טומאני קמארה",
@@ -219,165 +237,138 @@ NBA_PLAYERS_HEB = {
 
 }
 
-# ===============================
-# עזרי טקסט
-# ===============================
-ENDINGS = [
-    "מי תיקח את זה עד הסוף?!",
-    "דרמה אמיתית על הפרקט!",
-    "כל התקפה קריטית עכשיו!",
-    "המשחק על הקצה!",
-    "זה הולך להיות סיום משוגע!",
-    "הלחץ בשיאו!",
-    "לא למצמץ עכשיו!"
-]
-
-def translate_team(team_name):
-    return TEAM_TRANSLATIONS.get(team_name, team_name)
-
-def translate_player(player_name):
-    return PLAYER_TRANSLATIONS.get(player_name, player_name)
-
-# ===============================
-# ניהול Cache
-# ===============================
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r") as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
-
-cache = load_cache()
-
-def save_cache():
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f)
-
-# ===============================
-# לוגיקת קלאץ'
-# ===============================
-def is_clutch(game):
+def tr_name(text: str) -> str:
+    if not text:
+        return ""
+    if text in TEAM_FIXES:
+        return TEAM_FIXES[text]
+    if text in PLAYER_FIXES:
+        return PLAYER_FIXES[text]
     try:
-        period = game.get('period', 0)
-        clock = game.get('gameClock', "00:00")
+        return translator.translate(text)
+    except Exception:
+        return text
 
-        if not clock or ":" not in clock:
-            return False
+def clock_to_seconds(clock: str) -> int | None:
+    try:
+        if ":" not in clock:
+            return None
+        mm, ss = clock.split(":")
+        return int(mm) * 60 + int(ss)
+    except Exception:
+        return None
 
-        # הסרת סימונים מיותרים מהזמן (כמו PT)
-        clean_clock = clock.replace("PT", "").replace("M", "").replace("S", "")
-        parts = clean_clock.split(":")
-        
-        minutes = int(parts[0])
-        seconds = int(parts[1].split(".")[0]) # התעלמות ממילישניות
-        total_seconds = minutes * 60 + seconds
+def get_top_scorer(team_obj: dict) -> str:
+    try:
+        leaders = team_obj.get("leaders", [])
+        for leader in leaders:
+            if leader.get("name") == "points" and leader.get("leaders"):
+                athlete = leader["leaders"][0]["athlete"]["displayName"]
+                points = leader["leaders"][0]["displayValue"]
+                return f"{tr_name(athlete)} ({points} נק')"
+    except Exception:
+        pass
+    return "לא זמין"
 
-        home = game['homeTeam']['score']
-        away = game['awayTeam']['score']
-        diff = abs(home - away)
+def build_clutch_message(event: dict) -> str | None:
+    status = event.get("status", {})
+    status_type = status.get("type", {})
+    if status_type.get("state") != "in":
+        return None
 
-        # הגדרת קלאץ': רבע 4 (או הארכה), פחות מ-4 דקות לסיום, הפרש 3 ומטה
-        return period >= 4 and total_seconds <= 240 and diff <= 3
-    except Exception as e:
-        return False
+    period = status.get("period")
+    clock = status.get("displayClock", "")
+    if period != 4:
+        return None
 
-def get_top_scorer(team):
-    players = team.get('players', [])
-    if not players:
-        return ("לא ידוע", 0)
+    clock_seconds = clock_to_seconds(clock)
+    if clock_seconds is None or clock_seconds >= 240:
+        return None
 
-    top = max(players, key=lambda p: p['statistics']['points'])
-    full_name = f"{top['firstName']} {top['familyName']}"
-    translated_name = translate_player(full_name)
-    pts = top['statistics']['points']
+    competition = event.get("competitions", [{}])[0]
+    competitors = competition.get("competitors", [])
+    if len(competitors) < 2:
+        return None
 
-    return (translated_name, pts)
+    away = None
+    home = None
+    for comp in competitors:
+        if comp.get("homeAway") == "away":
+            away = comp
+        elif comp.get("homeAway") == "home":
+            home = comp
 
-# ===============================
-# יצירת הודעה
-# ===============================
-def clutch_message(game):
-    home = game['homeTeam']
-    away = game['awayTeam']
+    if not away or not home:
+        away = competitors[0]
+        home = competitors[1]
 
-    h_full_name = f"{home['teamCity']} {home['teamName']}"
-    a_full_name = f"{away['teamCity']} {away['teamName']}"
-    
-    h_hebrew = translate_team(h_full_name)
-    a_hebrew = translate_team(a_full_name)
+    away_name = tr_name(away["team"]["displayName"])
+    home_name = tr_name(home["team"]["displayName"])
 
-    h_score = home['score']
-    a_score = away['score']
-    clock = game.get('gameClock', "00:00").replace("PT", "")
+    try:
+        away_score = int(away["score"])
+        home_score = int(home["score"])
+    except Exception:
+        return None
 
-    if h_score > a_score:
-        leader = h_hebrew
-    elif a_score > h_score:
-        leader = a_hebrew
+    diff = abs(away_score - home_score)
+    if diff > 3:
+        return None
+
+    if away_score > home_score:
+        leader_name = away_name
+        score_line = f"{away_score} - {home_score}"
+    elif home_score > away_score:
+        leader_name = home_name
+        score_line = f"{home_score} - {away_score}"
     else:
-        leader = "שוויון"
+        leader_name = "שוויון"
+        score_line = f"{away_score} - {home_score}"
 
-    h_player, h_pts = get_top_scorer(home)
-    a_player, a_pts = get_top_scorer(away)
+    away_scorer = get_top_scorer(away)
+    home_scorer = get_top_scorer(home)
 
-    msg = f"🚨 <b>התראת קלאץ'!</b> 🚨\n" \
-          f"🏀 {a_hebrew} 🆚 {h_hebrew} 🏀\n\n" \
-          f"🔥 <b>{leader}</b> מובילה {h_score} - {a_score} 🔥\n\n" \
-          f"⏱️ זמן נשאר לסיום: {clock}\n\n" \
-          f"📍 <b>קלעים מובילים:</b>\n" \
-          f"🏆 {h_hebrew}: {h_player} ({h_pts} נק')\n" \
-          f"🏆 {a_hebrew}: {a_player} ({a_pts} נק')\n\n" \
-          f"💬 {random.choice(ENDINGS)}"
+    msg = ""
+    msg += f"{RTL}🚨 <b>התראת קלאץ'!</b> 🚨\n"
+    msg += f"{RTL}🏀 <b>{away_name} 🆚 {home_name}</b> 🏀\n\n"
+
+    if leader_name == "שוויון":
+        msg += f"{RTL}🔥 <b>שוויון {score_line}</b> 🔥\n\n"
+    else:
+        msg += f"{RTL}🔥 <b>{leader_name} מובילה {score_line}</b> 🔥\n\n"
+
+    msg += f"{RTL}⏱️ <b>זמן לסיום:</b> {clock}\n\n"
+    msg += f"{RTL}📍 <b>הקלעים הבולטים במשחק:</b>\n"
+    msg += f"{RTL}🏆 <b>{away_name}:</b> {away_scorer}\n"
+    msg += f"{RTL}🏆 <b>{home_name}:</b> {home_scorer}\n\n"
+    msg += f"{RTL}🚨 <b>כנסו עכשיו למשחק!</b>"
 
     return msg
 
-# ===============================
-# תקשורת ושליחה
-# ===============================
-def send_telegram(text):
+def check_all_nba_clutch():
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
-        requests.post(url, data=payload, timeout=10)
+        resp = requests.get(NBA_SCOREBOARD, timeout=10)
+        data = resp.json()
+        found_any = False
+
+        for event in data.get("events", []):
+            msg = build_clutch_message(event)
+            if msg:
+                found_any = True
+                # שליחה לטלגרם
+                send_telegram_message(msg) 
+                
+                # הדפסה ללוג (בשביל שתוכל לראות מה קרה ב-GitHub)
+                print("=" * 80)
+                print(f"נשלחה הודעה לטלגרם: {event.get('name')}")
+                print(msg)
+                print("=" * 80)
+
+        if not found_any:
+            print("אין כרגע משחק קלאץ' שעומד בתנאים: רבע 4, פחות מ-4 דקות, והפרש 3 ומטה.")
+            
     except Exception as e:
-        print("Telegram error:", e)
-
-def run():
-    print("🚀 NBA Clutch Bot Hebrew is running...")
-    
-    while True:
-        try:
-            resp = requests.get(NBA_URL, headers=HEADERS, timeout=10).json()
-            games = resp.get('scoreboard', {}).get('games', [])
-
-            for g in games:
-                gid = g['gameId']
-                status = g['gameStatus'] # 2 זה משחק פעיל
-
-                if status == 2:
-                    if gid not in cache:
-                        cache[gid] = []
-
-                    # קבלת בוקס-סקור מעודכן לכל משחק פעיל
-                    box_url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
-                    box = requests.get(box_url, headers=HEADERS, timeout=10).json()
-                    game_data = box['game']
-
-                    if is_clutch(game_data):
-                        if "CLUTCH_SENT" not in cache[gid]:
-                            msg = clutch_message(game_data)
-                            send_telegram(msg)
-                            cache[gid].append("CLUTCH_SENT")
-                            save_cache()
-                            print(f"✅ הודעת קלאץ' נשלחה למשחק {gid}")
-
-        except Exception as e:
-            print("Main Loop Error:", e)
-
-        time.sleep(30) # בדיקה כל 30 שניות כדי לא להעמיס על ה-API
+        print(f"שגיאה בתהליך הבדיקה: {e}")
 
 if __name__ == "__main__":
-    run()
+    check_all_nba_clutch()
