@@ -601,26 +601,37 @@ def handle_game(game_data):
 # ==========================================
 # הרצה
 # ==========================================
-def run_loop():
-    print("🚀 LOOP MODE", flush=True)
+def run():
+    print("🚀 BOT STARTED (SMART LOOP)", flush=True)
 
-    while True:
+    def job():
         try:
-            print("🔄 בדיקה...", flush=True)
+            current_time = datetime.now().strftime("%H:%M:%S")
+            print(f"🔄 סורק משחקים... [{current_time}]", flush=True)
+
             data = fetch_json(NBA_URL)
 
             if data and "scoreboard" in data:
                 games = data.get("scoreboard", {}).get("games", [])
+                print(f"📊 משחקים: {len(games)}", flush=True)
+
                 for game in games:
                     handle_game(game)
+            else:
+                print("⚠️ אין נתונים", flush=True)
 
         except Exception as e:
-            print("❌ שגיאה:", e, flush=True)
+            print(f"❌ שגיאה: {e}", flush=True)
 
-        time.sleep(15)
+        # הכי חשוב — זה מה שגורם לזה לרוץ כל 15 שניות בלי להיתקע
+        threading.Timer(15, job).start()
+
+    # התחלה ראשונית
+    job()
+
 
 # ==========================================
 # נקודת התחלה של הקובץ
 # ==========================================
 if __name__ == "__main__":
-    run_scheduler()
+    run()
