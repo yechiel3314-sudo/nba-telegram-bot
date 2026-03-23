@@ -93,7 +93,7 @@ def run_scheduler():
     asyncio.run(send_daily_update())
 
 # תזמון מדויק ל-01:02
-schedule.every().day.at("01:02").do(run_scheduler)
+schedule.every().day.at("01:04").do(run_scheduler)
 
 print(f"הבוט @MyTestNbaBot רץ. העדכון הבא ב-01:02 ל-ID: {MY_CHAT_ID}")
 
