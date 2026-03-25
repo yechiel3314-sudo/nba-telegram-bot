@@ -126,30 +126,51 @@ async def send_daily_update():
     print(f"[LOG] מתחיל דו\"ח... {datetime.now().strftime('%H:%M:%S')}")
 
     categories = [
+        # --- כדורגל ישראלי ---
         ("בליגת העל 🇮🇱", "soccer", "isr.1"),
         ("בליגה הלאומית 🇮🇱", "soccer", "isr.2"),
-        ("בליגת האלופות 🇪🇺", "soccer", "uefa.champions"),
-        ("בליגה האירופית 🇪🇺", "soccer", "uefa.europa"),
-        ("בקונפרנס ליג 🇪🇺", "soccer", "uefa.europa.conf"),
+        ("בגביע המדינה 🇮🇱", "soccer", "isr.cup"),
+
+        # --- נבחרות - טורנירים ומוקדמות ---
+        ("במשחקי ידידות (נבחרות) ⚽", "soccer", "fifa.friendly"),
+        ("במוקדמות מונדיאל 🌍", "soccer", "fifa.worldq"),
+        ("במונדיאל 🏆", "soccer", "fifa.world"),
+        ("ביורו 🇪🇺", "soccer", "uefa.euro"),
+        ("במוקדמות יורו 🇪🇺", "soccer", "uefa.euroq"),
+        ("בליגת האומות 🇪🇺", "soccer", "uefa.nations"),
+        ("בקופה אמריקה 🌎", "soccer", "conmebol.america"),
+        ("באליפות אפריקה 🌍", "soccer", "caf.nations"),
+        ("בגביע אסיה 🌏", "soccer", "afc.asian.cup"),
+        ("בגביע הזהב (קונקאקאף) 🌎", "soccer", "concacaf.gold"),
+
+        # --- נבחרות ישראל (צעירות) ---
+        ("בנבחרת ישראל הצעירה (U21) 🇮🇱", "soccer", "uefa.euro.u21.q"),
+        ("בנבחרת ישראל נוער (U19) 🇮🇱", "soccer", "uefa.euro.u19"),
+
+        # --- ליגות אירופיות בכירות ---
+        ("בליגה האנגלית 🏴󠁧󠁢󠁥󠁮󠁧󠁿", "soccer", "eng.1"),
         ("בליגה הספרדית 🇪🇸", "soccer", "esp.1"),
-        ("בליגה האנגלית 🏴", "soccer", "eng.1"),
         ("בליגה האיטלקית 🇮🇹", "soccer", "ita.1"),
         ("בליגה הגרמנית 🇩🇪", "soccer", "ger.1"),
         ("בליגה הצרפתית 🇫🇷", "soccer", "fra.1"),
         ("בליגה ההולנדית 🇳🇱", "soccer", "ned.1"),
+        ("בליגה הבלגית 🇧🇪", "soccer", "bel.1"),
         ("בליגה הסעודית 🇸🇦", "soccer", "ksa.1"),
-        ("בליגת MLS (אינטר מיאמי בלבד) 🇺🇸", "soccer", "usa.1"),
 
-        # 🇮🇱 נבחרות ישראל
-        ("נבחרת ישראל 🇮🇱", "soccer", "fifa.friendly"),
-        ("נבחרת ישראל 🇮🇱 מוקדמות מונדיאל", "soccer", "fifa.worldq"),
-        ("נבחרת ישראל 🇮🇱 מוקדמות יורו", "soccer", "uefa.euroq"),
-        ("נבחרת ישראל 🇮🇱 יורו", "soccer", "uefa.euro"),
-        ("נבחרת ישראל 🇮🇱 ליגת האומות", "soccer", "uefa.nations"),
+        # --- מפעלים אירופיים וגביעים ---
+        ("בליגת האלופות 🇪🇺", "soccer", "uefa.champions"),
+        ("בליגה האירופית 🇪🇺", "soccer", "uefa.europa"),
+        ("בקונפרנס ליג 🇪🇺", "soccer", "uefa.europa.conf"),
+        ("בגביע האנגלי (FA) 🏴󠁧󠁢󠁥󠁮󠁧󠁿", "soccer", "eng.fa"),
+        ("בגביע המלך הספרדי 🇪🇸", "soccer", "esp.copa_del_rey"),
 
-        # 🏀
-        ("יורוליג 🏀", "basketball", "euroleague"),
-        ("יורוקאפ 🏀", "basketball", "eurocup")
+        # --- ארה"ב (אינטר מיאמי בלבד) ---
+        ("בליגת MLS (אינטר מיאמי) 🇺🇸", "soccer", "usa.1"),
+
+        # --- כדורסל ---
+        ("ביורוליג 🏀", "basketball", "mens-euroleague"),
+        ("ביורוקאפ 🏀", "basketball", "eurocup"),
+        ("בליגת האלופות של פיב\"א 🏀", "basketball", "mens-champions-league") # תיקון השם כאן
     ]
 
     report = []
