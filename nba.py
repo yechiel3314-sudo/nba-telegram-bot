@@ -38,7 +38,7 @@ TEAM_TRANSLATIONS = {
     "Dallas Mavericks":"דאלאס מאבריקס",
     "Denver Nuggets":"דנבר נאגטס",
     "Detroit Pistons":"דטרויט פיסטונס",
-    "Golden State Warriors":"גולדן סטייט",
+    "Golden State Warriors":"גולדן סטייט ווריורס",
     "Houston Rockets":"יוסטון רוקטס",
     "Indiana Pacers":"אינדיאנה פייסרס",
     "LA Clippers":"לוס אנג'לס קליפרס",
