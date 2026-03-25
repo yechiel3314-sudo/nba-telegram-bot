@@ -6,6 +6,7 @@ from telegram import Bot
 from datetime import datetime, timedelta
 import html
 import traceback
+from googletrans import Translator # ספריית התרגום החדשה
 
 # ==========================================
 # הגדרות
@@ -14,15 +15,26 @@ TOKEN = '8284141482:AAGG1vPtJrleAvl7kADMeufGbEydIq08ib0'
 MY_CHAT_ID = '-1003820726077'
 
 bot = Bot(token=TOKEN)
+translator = Translator()
+
+# ==========================================
+# פונקציית תרגום אוטומטית (Google Translate)
+# ==========================================
+def auto_translate(text):
+    try:
+        # ניסיון לתרגם לעברית
+        translation = translator.translate(text, dest='he')
+        return translation.text
+    except Exception as e:
+        print(f"[DEBUG] תרגום נכשל עבור {text}: {e}")
+        return text # אם נכשל, יחזיר את השם המקורי באנגלית
 
 # ==========================================
 # שליחה בטוחה
 # ==========================================
 async def safe_send(text):
     MAX_LEN = 4000
-
     if len(text) > MAX_LEN:
-        print("[WARN] הודעה ארוכה מדי - חותך")
         text = text[:MAX_LEN]
 
     safe_text = html.escape(text)
@@ -32,182 +44,134 @@ async def safe_send(text):
         try:
             print(f"[LOG] ניסיון שליחה {i+1}")
             await bot.send_message(chat_id=MY_CHAT_ID, text=safe_text, parse_mode='HTML')
-            print("[SUCCESS] נשלח!")
             return
         except Exception as e:
-            print(f"[ERROR] ניסיון {i+1} נכשל: {e}")
+            print(f"[ERROR] שליחה נכשלה: {e}")
             await asyncio.sleep(2)
-
-    print("[FATAL] נכשל לשלוח הודעה")
 
 # ==========================================
 # שליפת תוצאות
 # ==========================================
 def get_espn_scores(sport, league, title):
-    print(f"[LOG] בודק: {title}")
-
+    print(f"[LOG] סורק: {title}")
     now = datetime.now()
     yesterday = (now - timedelta(days=1)).strftime("%Y%m%d")
     today = now.strftime("%Y%m%d")
 
     results = []
-
     for date_str in [yesterday, today]:
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard?dates={date_str}"
-
-        for attempt in range(3):
-            try:
-                r = requests.get(url, timeout=15)
-                data = r.json()
-                events = data.get("events", [])
-                break
-            except Exception as e:
-                print(f"[ERROR] API ניסיון {attempt+1}: {e}")
-                time.sleep(1)
-        else:
+        try:
+            r = requests.get(url, timeout=15)
+            data = r.json()
+            events = data.get("events", [])
+        except:
             continue
 
         for event in events:
             try:
                 comp = event['competitions'][0]['competitors']
-
                 home = comp[0]
                 away = comp[1]
 
-                home_team = home['team']['displayName']
-                away_team = away['team']['displayName']
+                home_name_en = home['team']['displayName']
+                away_name_en = away['team']['displayName']
+                
+                # תרגום אוטומטי
+                home_team = auto_translate(home_name_en)
+                away_team = auto_translate(away_name_en)
 
                 status = event['status']['type']['completed']
-                if not status:
-                    continue
+                if not status: continue
 
-                # =========================
-                # 🇮🇱 נבחרת ישראל בלבד (ליגות נבחרות)
-                # =========================
+                # סינון נבחרת ישראל
                 if "נבחרת ישראל" in title:
-                    teams_text = f"{home_team} {away_team}".lower()
-
-                    if "israel" not in teams_text:
+                    if "israel" not in home_name_en.lower() and "israel" not in away_name_en.lower():
+                        continue
+                    if "women" in home_name_en.lower() or "women" in away_name_en.lower():
                         continue
 
-                    # סינון נשים
-                    if "women" in teams_text or "w" in teams_text:
-                        continue
-
-                # =========================
-                # אינטר מיאמי
-                # =========================
-                if league == "usa.1" and "Inter Miami" not in [home_team, away_team]:
+                # סינון אינטר מיאמי
+                if league == "usa.1" and "Inter Miami" not in [home_name_en, away_name_en]:
                     continue
 
-                home_score = int(home['score'])
-                away_score = int(away['score'])
+                h_score = int(home['score'])
+                a_score = int(away['score'])
 
-                if home_score > away_score:
-                    line = f"{home_team} מנצחת {home_score} - {away_score} את {away_team}"
-                elif away_score > home_score:
-                    line = f"{away_team} מנצחת {away_score} - {home_score} את {home_team}"
+                if h_score > a_score:
+                    line = f"{home_team} מנצחת {h_score} - {a_score} את {away_team}"
+                elif a_score > h_score:
+                    line = f"{away_team} מנצחת {a_score} - {h_score} את {home_team}"
                 else:
-                    line = f"{home_team} ו{away_team} נפרדות בתיקו {home_score} - {away_score}"
+                    line = f"{home_team} ו{away_team} נפרדו בתיקו {h_score} - {a_score}"
 
                 if line not in results:
                     results.append(line)
-
-            except Exception as e:
-                print("[ERROR] בעיבוד משחק")
-                print(traceback.format_exc())
-
+            except:
+                continue
     return results
 
 # ==========================================
 # דו"ח יומי
 # ==========================================
 async def send_daily_update():
-    print(f"[LOG] מתחיל דו\"ח... {datetime.now().strftime('%H:%M:%S')}")
-
     categories = [
-        # --- כדורגל ישראלי ---
-        ("בליגת העל 🇮🇱", "soccer", "isr.1"),
-        ("בליגה הלאומית 🇮🇱", "soccer", "isr.2"),
-        ("בגביע המדינה 🇮🇱", "soccer", "isr.cup"),
-
-        # --- נבחרות - טורנירים ומוקדמות ---
+        # --- נבחרות - כיסוי מקסימלי ---
         ("במשחקי ידידות (נבחרות) ⚽", "soccer", "fifa.friendly"),
         ("במוקדמות מונדיאל 🌍", "soccer", "fifa.worldq"),
         ("במונדיאל 🏆", "soccer", "fifa.world"),
         ("ביורו 🇪🇺", "soccer", "uefa.euro"),
         ("במוקדמות יורו 🇪🇺", "soccer", "uefa.euroq"),
         ("בליגת האומות 🇪🇺", "soccer", "uefa.nations"),
-        ("בקופה אמריקה 🌎", "soccer", "conmebol.america"),
+        ("במוקדמות אליפות אפריקה 🌍", "soccer", "caf.nations.q"),
         ("באליפות אפריקה 🌍", "soccer", "caf.nations"),
+        ("בקופה אמריקה 🌎", "soccer", "conmebol.america"),
+        ("במוקדמות קופה אמריקה 🌎", "soccer", "conmebol.america.q"),
         ("בגביע אסיה 🌏", "soccer", "afc.asian.cup"),
-        ("בגביע הזהב (קונקאקאף) 🌎", "soccer", "concacaf.gold"),
+        ("במוקדמות גביע אסיה 🌏", "soccer", "afc.asian.cup.q"),
+        ("בגביע הזהב (CONCACAF) 🌎", "soccer", "concacaf.gold"),
+        ("בליגת האומות (CONCACAF) 🌎", "soccer", "concacaf.nations"),
 
-        # --- נבחרות ישראל (צעירות) ---
+        # --- נבחרות ישראל (כולל נוער ונערים) ---
         ("בנבחרת ישראל הצעירה (U21) 🇮🇱", "soccer", "uefa.euro.u21.q"),
         ("בנבחרת ישראל נוער (U19) 🇮🇱", "soccer", "uefa.euro.u19"),
+        ("בנבחרת ישראל נערים (U17) 🇮🇱", "soccer", "uefa.euro.u17"),
 
-        # --- ליגות אירופיות בכירות ---
+        # --- ליגות וגביעים ---
+        ("בליגת העל 🇮🇱", "soccer", "isr.1"),
+        ("בליגה הלאומית 🇮🇱", "soccer", "isr.2"),
         ("בליגה האנגלית 🏴󠁧󠁢󠁥󠁮󠁧󠁿", "soccer", "eng.1"),
         ("בליגה הספרדית 🇪🇸", "soccer", "esp.1"),
         ("בליגה האיטלקית 🇮🇹", "soccer", "ita.1"),
-        ("בליגה הגרמנית 🇩🇪", "soccer", "ger.1"),
-        ("בליגה הצרפתית 🇫🇷", "soccer", "fra.1"),
-        ("בליגה ההולנדית 🇳🇱", "soccer", "ned.1"),
-        ("בליגה הבלגית 🇧🇪", "soccer", "bel.1"),
-        ("בליגה הסעודית 🇸🇦", "soccer", "ksa.1"),
-
-        # --- מפעלים אירופיים וגביעים ---
         ("בליגת האלופות 🇪🇺", "soccer", "uefa.champions"),
-        ("בליגה האירופית 🇪🇺", "soccer", "uefa.europa"),
-        ("בקונפרנס ליג 🇪🇺", "soccer", "uefa.europa.conf"),
-        ("בגביע האנגלי (FA) 🏴󠁧󠁢󠁥󠁮󠁧󠁿", "soccer", "eng.fa"),
-        ("בגביע המלך הספרדי 🇪🇸", "soccer", "esp.copa_del_rey"),
-
-        # --- ארה"ב (אינטר מיאמי בלבד) ---
         ("בליגת MLS (אינטר מיאמי) 🇺🇸", "soccer", "usa.1"),
 
         # --- כדורסל ---
         ("ביורוליג 🏀", "basketball", "mens-euroleague"),
         ("ביורוקאפ 🏀", "basketball", "eurocup"),
-        ("בליגת האלופות של פיב\"א 🏀", "basketball", "mens-champions-league") # תיקון השם כאן
+        ("בליגת האלופות של פיב\"א 🏀", "basketball", "mens-champions-league")
     ]
 
     report = []
-
     for title, sport, league in categories:
         scores = get_espn_scores(sport, league, title)
         if scores:
             report.append(f"<b>{title}</b>")
-            for s in scores:
-                report.append(f"• {s}")
+            for s in scores: report.append(f"• {s}")
             report.append("")
 
-    if report:
-        msg = "\n".join(report)
-        await safe_send(msg)
-    else:
-        await safe_send("📭 אין משחקים ב-24 שעות האחרונות")
+    msg = "\n".join(report) if report else "📭 אין משחקים ב-24 שעות האחרונות"
+    await safe_send(msg)
 
-# ==========================================
-# הרצה
-# ==========================================
 def run_now():
-    print("[LOG] הרצה מיידית")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(send_daily_update())
 
-# ==========================================
-# תזמון
-# ==========================================
 schedule.every().day.at("00:00").do(run_now)
-
-print("🚀 הבוט עלה לאוויר (גרסה מושלמת)")
-
+print("🚀 הבוט מעודכן עם תרגום גוגל אוטומטי...")
 run_now()
 
-print("[LOG] ממתין...")
 while True:
     schedule.run_pending()
     time.sleep(15)
