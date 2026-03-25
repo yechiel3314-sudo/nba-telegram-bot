@@ -3,10 +3,11 @@ import schedule
 import time
 import requests
 from telegram import Bot
+from telegram.constants import ParseMode
 from datetime import datetime, timedelta
 import html
 import traceback
-from googletrans import Translator # ספריית התרגום החדשה
+from googletrans import Translator
 
 # ==========================================
 # הגדרות
@@ -22,12 +23,11 @@ translator = Translator()
 # ==========================================
 def auto_translate(text):
     try:
-        # ניסיון לתרגם לעברית
         translation = translator.translate(text, dest='he')
         return translation.text
     except Exception as e:
         print(f"[DEBUG] תרגום נכשל עבור {text}: {e}")
-        return text # אם נכשל, יחזיר את השם המקורי באנגלית
+        return text 
 
 # ==========================================
 # שליחה בטוחה
@@ -43,7 +43,7 @@ async def safe_send(text):
     for i in range(3):
         try:
             print(f"[LOG] ניסיון שליחה {i+1}")
-            await bot.send_message(chat_id=MY_CHAT_ID, text=safe_text, parse_mode='HTML')
+            await bot.send_message(chat_id=MY_CHAT_ID, text=safe_text, parse_mode=ParseMode.HTML)
             return
         except Exception as e:
             print(f"[ERROR] שליחה נכשלה: {e}")
@@ -77,21 +77,18 @@ def get_espn_scores(sport, league, title):
                 home_name_en = home['team']['displayName']
                 away_name_en = away['team']['displayName']
                 
-                # תרגום אוטומטי
                 home_team = auto_translate(home_name_en)
                 away_team = auto_translate(away_name_en)
 
                 status = event['status']['type']['completed']
                 if not status: continue
 
-                # סינון נבחרת ישראל
                 if "נבחרת ישראל" in title:
                     if "israel" not in home_name_en.lower() and "israel" not in away_name_en.lower():
                         continue
                     if "women" in home_name_en.lower() or "women" in away_name_en.lower():
                         continue
 
-                # סינון אינטר מיאמי
                 if league == "usa.1" and "Inter Miami" not in [home_name_en, away_name_en]:
                     continue
 
@@ -112,11 +109,10 @@ def get_espn_scores(sport, league, title):
     return results
 
 # ==========================================
-# דו"ח יומי
+# דו"ח יומי - כל הליגות והנבחרות (27 קטגוריות)
 # ==========================================
 async def send_daily_update():
     categories = [
-        # --- נבחרות - כיסוי מקסימלי ---
         ("במשחקי ידידות (נבחרות) ⚽", "soccer", "fifa.friendly"),
         ("במוקדמות מונדיאל 🌍", "soccer", "fifa.worldq"),
         ("במונדיאל 🏆", "soccer", "fifa.world"),
@@ -131,13 +127,9 @@ async def send_daily_update():
         ("במוקדמות גביע אסיה 🌏", "soccer", "afc.asian.cup.q"),
         ("בגביע הזהב (CONCACAF) 🌎", "soccer", "concacaf.gold"),
         ("בליגת האומות (CONCACAF) 🌎", "soccer", "concacaf.nations"),
-
-        # --- נבחרות ישראל (כולל נוער ונערים) ---
         ("בנבחרת ישראל הצעירה (U21) 🇮🇱", "soccer", "uefa.euro.u21.q"),
         ("בנבחרת ישראל נוער (U19) 🇮🇱", "soccer", "uefa.euro.u19"),
         ("בנבחרת ישראל נערים (U17) 🇮🇱", "soccer", "uefa.euro.u17"),
-
-        # --- ליגות וגביעים ---
         ("בליגת העל 🇮🇱", "soccer", "isr.1"),
         ("בליגה הלאומית 🇮🇱", "soccer", "isr.2"),
         ("בליגה האנגלית 🏴󠁧󠁢󠁥󠁮󠁧󠁿", "soccer", "eng.1"),
@@ -145,8 +137,6 @@ async def send_daily_update():
         ("בליגה האיטלקית 🇮🇹", "soccer", "ita.1"),
         ("בליגת האלופות 🇪🇺", "soccer", "uefa.champions"),
         ("בליגת MLS (אינטר מיאמי) 🇺🇸", "soccer", "usa.1"),
-
-        # --- כדורסל ---
         ("ביורוליג 🏀", "basketball", "mens-euroleague"),
         ("ביורוקאפ 🏀", "basketball", "eurocup"),
         ("בליגת האלופות של פיב\"א 🏀", "basketball", "mens-champions-league")
@@ -169,7 +159,7 @@ def run_now():
     loop.run_until_complete(send_daily_update())
 
 schedule.every().day.at("00:00").do(run_now)
-print("🚀 הבוט מעודכן עם תרגום גוגל אוטומטי...")
+print("🚀 הבוט מעודכן ורץ (כל הליגות + גרסה 20.8)...")
 run_now()
 
 while True:
