@@ -2,6 +2,7 @@ import requests
 import time
 import json
 import os
+import html
 from datetime import datetime
 from deep_translator import GoogleTranslator
 
@@ -15,57 +16,6 @@ CACHE_FILE = "nba_cache.json"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
 
 translator = GoogleTranslator(source='en', target='iw')
-
-# ==========================================
-# מערכת Cache למניעת הודעות כפולות
-# ==========================================
-
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_cache(data):
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f)
-
-def already_sent(key):
-    return cache.get(key, False)
-
-def mark_sent(key):
-    cache[key] = True
-    save_cache(cache)
-
-cache = load_cache()
-
-# ==========================================
-# שליחת הודעה לטלגרם עם מניעת כפילויות
-# ==========================================
-
-def send_telegram(message, key=None):
-
-    # אם יש מזהה הודעה - נבדוק שלא נשלח כבר
-    if key:
-        if already_sent(key):
-            return
-        mark_sent(key)
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-
-    try:
-        requests.post(url, data=data)
-    except Exception as e:
-        print("Telegram Error:", e)
 
 NBA_TEAMS_HEBREW = {
     "Atlanta Hawks": "אטלנטה הוקס", "Boston Celtics": "בוסטון סלטיקס",
@@ -278,66 +228,80 @@ def load_cache():
                 if "games" not in data:
                     data["games"] = {}
                 return data
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ שגיאה בטעינת cache: {e}")
     return {"names": {}, "games": {}}
 
 cache = load_cache()
 
 def save_cache():
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=4, ensure_ascii=False)
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ שגיאה בשמירת cache: {e}")
 
 def translate_name(name):
     if not name:
         return ""
 
-    # שלב א': בדיקה במילון השחקנים המעודכן שלך (NBA_PLAYERS_HEB)
+    # 1. בדיקה במילון שחקנים
     if name in NBA_PLAYERS_HEB:
         return NBA_PLAYERS_HEB[name]
     
-    # שלב ב': בדיקה במילון הקבוצות (אם השם הוא שם של קבוצה)
+    # 2. בדיקה במילון קבוצות
     if name in NBA_TEAMS_HEBREW:
         return NBA_TEAMS_HEBREW[name]
 
-    # שלב ג': בדיקה ב-Cache (כדי לא לתרגם פעמיים בגוגל שמות שכבר מצאנו)
+    # 3. בדיקה ב-cache
     if name in cache["names"]:
         return cache["names"][name]
 
-    # שלב ד': תרגום אוטומטי בגוגל (כגיבוי לשחקנים חסרים)
+    # 4. תרגום אוטומטי
     try:
-        clean_name = name.replace("Jr.", "").replace("III", "").strip()
+        clean_name = (
+            name.replace("Jr.", "")
+                .replace("III", "")
+                .replace("II", "")
+                .strip()
+        )
         translated = translator.translate(clean_name)
 
         cache["names"][name] = translated
         save_cache()
         return translated
     except Exception as e:
-        print(f"Error translating {name}: {e}")
+        print(f"❌ Error translating {name}: {e}")
         return name
 
 def get_stat_line(p):
-    s = p['statistics']
-    line = f"{s['points']} נק', {s['reboundsTotal']} רב', {s['assists']} אס'"
+    s = p.get('statistics', {})
+    points = s.get('points', 0)
+    rebounds = s.get('reboundsTotal', 0)
+    assists = s.get('assists', 0)
+
+    line = f"{points} נק', {rebounds} רב', {assists} אס'"
+
     if s.get('steals', 0) > 0:
         line += f", {s['steals']} חט'"
     if s.get('blocks', 0) > 0:
         line += f", {s['blocks']} חס'"
+
     return line
 
 def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama_text=None):
     photo_url = None
     away, home = box['awayTeam'], box['homeTeam']
-    
+
     a_full = translate_name(f"{away['teamCity']} {away['teamName']}")
     h_full = translate_name(f"{home['teamCity']} {home['teamName']}")
-    
+
     period = box.get('period', 0)
     s_space = "ㅤ"
-    
+
     combined_len = len(a_full) + len(h_full)
     padding = max(0, 22 - combined_len)
-    
+
     if is_drama:
         header_emoji = "😱"
     elif is_final:
@@ -346,135 +310,237 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
         header_emoji = "🚀"
     else:
         header_emoji = "⏱️"
-    
+
     header_text = f"{header_emoji} <b>{label}</b> {header_emoji}"
     msg = f"\u200f{header_text}\n"
     msg += f"\u200f🏀 <b>{a_full} 🆚 {h_full}</b> 🏀{s_space * padding}\n\n"
 
+    # =========================
+    # הודעת פתיחה
+    # =========================
     if is_start:
         if period == 1:
             for team in [away, home]:
                 t_full_name = translate_name(f"{team['teamCity']} {team['teamName']}")
-                starters = [translate_name(f"{p['firstName']} {p['familyName']}") for p in team['players'] if p.get('starter') == '1']
-                out = [translate_name(f"{p['firstName']} {p['familyName']}") for p in team['players'] if p.get('status') == 'INACTIVE']
-                
+
+                starters = [
+                    translate_name(f"{p.get('firstName', '')} {p.get('familyName', '')}".strip())
+                    for p in team.get('players', [])
+                    if p.get('starter') == '1'
+                ]
+
+                out = [
+                    translate_name(f"{p.get('firstName', '')} {p.get('familyName', '')}".strip())
+                    for p in team.get('players', [])
+                    if p.get('status') == 'INACTIVE'
+                ]
+
                 msg += f"\u200f🏀 <b>{t_full_name}</b>\n"
                 msg += f"\u200f📍 <b>חמישייה:</b> {', '.join(starters) if starters else 'טרם פורסם'}\n"
                 if out:
                     msg += f"\u200f❌ <b>חיסורים:</b> {', '.join(out[:5])}\n"
                 msg += "\n"
-        
+
         return msg, None
 
-    score_str = f"<b>{max(away['score'], home['score'])} - {min(away['score'], home['score'])}</b>"
-    
+    # =========================
+    # הודעת דרמה
+    # =========================
+    away_score = int(away.get('score', 0))
+    home_score = int(home.get('score', 0))
+    score_str = f"<b>{max(away_score, home_score)} - {min(away_score, home_score)}</b>"
+
     if is_drama:
         if drama_text is None:
             drama_text = f"טירוף! שוויון {score_str} הולכים להארכה!"
         msg += f"\u200f🔥 <b>{drama_text}</b> 🔥\n\n"
         return msg, None
 
-    leader_name = a_full if away['score'] > home['score'] else h_full
-    win_emoji = "🏆" if is_final else "🔥"
-    if away['score'] == home['score']:
+    # =========================
+    # כותרת תוצאה
+    # =========================
+    if away_score == home_score:
         msg += f"\u200f🔥 <b>שוויון {score_str}</b> 🔥\n\n"
     else:
+        leader_name = a_full if away_score > home_score else h_full
+        win_emoji = "🏆" if is_final else "🔥"
         action = "מנצחת" if is_final else "מובילה"
         msg += f"\u200f{win_emoji} <b>{leader_name} {action} {score_str}</b> {win_emoji}\n\n"
 
-    count = 3 if (period >= 4 or is_final) else 2
+    # =========================
+    # כמה שחקנים להציג
+    # =========================
+    count = 3 if is_final else 2
+
     for team in [away, home]:
         t_full_stats = translate_name(f"{team['teamCity']} {team['teamName']}")
         msg += f"\u200f📍 <b>{t_full_stats}:</b>\n"
+
+        players_with_points = [
+            p for p in team.get('players', [])
+            if p.get('statistics', {}).get('points', 0) > 0
+        ]
+
         top = sorted(
-            [p for p in team['players'] if p['statistics']['points'] > 0],
-            key=lambda x: x['statistics']['points'],
+            players_with_points,
+            key=lambda x: x.get('statistics', {}).get('points', 0),
             reverse=True
         )[:count]
+
+        if not top:
+            msg += "\u200fאין עדיין סטטיסטיקה בולטת\n\n"
+            continue
+
         for i, p in enumerate(top):
             medal = ["🥇", "🥈", "🥉"][i]
-            msg += f"\u200f{medal} <b>{translate_name(p['firstName']+' '+p['familyName'])}</b>: {get_stat_line(p)}\n"
+            player_name = translate_name(f"{p.get('firstName', '')} {p.get('familyName', '')}".strip())
+            msg += f"\u200f{medal} <b>{player_name}</b>: {get_stat_line(p)}\n"
+
         msg += "\n"
 
+    # =========================
+    # MVP רק בסיום משחק
+    # =========================
     if is_final:
-        all_p = away['players'] + home['players']
-        mvp = max(
-            all_p,
-            key=lambda x: x['statistics']['points'] + x['statistics']['reboundsTotal'] + x['statistics']['assists']
-        )
-        msg += f"\u200f🏆 <b>ה-MVP של המשחק: {translate_name(mvp['firstName']+' '+mvp['familyName'])}</b>\n"
-        msg += f"\u200f📊 {get_stat_line(mvp)}\n"
-        photo_url = None
-    
+        all_p = away.get('players', []) + home.get('players', [])
+
+        valid_players = [p for p in all_p if p.get('statistics')]
+        if valid_players:
+            mvp = max(
+                valid_players,
+                key=lambda x: (
+                    x.get('statistics', {}).get('points', 0) +
+                    x.get('statistics', {}).get('reboundsTotal', 0) +
+                    x.get('statistics', {}).get('assists', 0)
+                )
+            )
+
+            mvp_name = translate_name(f"{mvp.get('firstName', '')} {mvp.get('familyName', '')}".strip())
+            msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_name}</b>\n"
+            msg += f"\u200f📊 {get_stat_line(mvp)}\n"
+
     return msg, photo_url
 
 def send_telegram(text, photo_url=None):
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
+
+    # שומרים רק על תגיות שאנחנו משתמשים בהן
+    safe_text = html.escape(text)
+    safe_text = safe_text.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+
     try:
         if photo_url:
             r = requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-                data={**payload, "photo": photo_url, "caption": text},
+                data={**payload, "photo": photo_url, "caption": safe_text},
                 timeout=20
             )
             if r.status_code == 200:
+                print("📸 תמונה נשלחה בהצלחה")
                 return
-        requests.post(
+            else:
+                print(f"⚠️ sendPhoto נכשל: {r.status_code} | {r.text}")
+
+        r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={**payload, "text": text},
+            data={**payload, "text": safe_text},
             timeout=15
         )
-    except:
-        pass
+
+        if r.status_code != 200:
+            print(f"⚠️ sendMessage נכשל: {r.status_code} | {r.text}")
+        else:
+            print("📨 הודעה נשלחה בהצלחה")
+
+    except Exception as e:
+        print(f"❌ שגיאה בשליחת טלגרם: {e}")
+
+def safe_get_json(url, timeout=10):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"❌ שגיאה בבקשת JSON: {url} | {e}")
+        return None
+
+def get_boxscore(gid):
+    url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
+    data = safe_get_json(url, timeout=10)
+    if not data or "game" not in data:
+        print(f"⚠️ boxscore לא תקין עבור משחק {gid}")
+        return None
+    return data
 
 def run():
     print("🚀 בוט NBA משודרג - גרסה מלאה (250+ שורות) - כולל הארכות ופוסטר כוכב ביתי!")
+
     while True:
         try:
             current_time = datetime.now().strftime("%H:%M:%S")
             print(f"🔍 [{current_time}] סורק משחקים...")
+
             resp = requests.get(NBA_URL, headers=HEADERS, timeout=10).json()
             games = resp.get('scoreboard', {}).get('games', [])
 
             for g in games:
-                gid, status, period, txt = g['gameId'], g['gameStatus'], g.get('period', 0), g.get('gameStatusText', '').lower()
+                gid = g['gameId']
+                status = g['gameStatus']
+                period = g.get('period', 0)
+                txt = g.get('gameStatusText', '').lower()
+
                 if gid not in cache["games"]:
                     cache["games"][gid] = []
+
                 log = cache["games"][gid]
                 game_final_key = "FINAL_SENT"
 
-                # --- 1. הודעות יצא לדרך (רבע 1 עם חמישיות, רבע 3 פשוט) ---
+                # ==========================================
+                # 1. פתיחת משחק / רבע 3
+                # ==========================================
                 if status == 2 and period in [1, 3] and f"q{period}" in txt:
                     s_key = f"start_q{period}"
+
                     if s_key not in log:
                         b_resp = requests.get(
                             f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
-                            headers=HEADERS
+                            headers=HEADERS,
+                            timeout=10
                         ).json()
+
                         label = "המשחק יצא לדרך!" if period == 1 else f"רבע {period} יצא לדרך!"
                         m, p = format_msg(b_resp['game'], label, is_start=True)
                         send_telegram(m, p)
+
                         log.append(s_key)
                         save_cache()
                         print(f"✅ נשלחה פתיחת רבע {period}: {gid}")
 
-                # --- 2. מחצית (כמו רבע רגיל, רק כותרת שונה) ---
+                # ==========================================
+                # 2. מחצית
+                # ==========================================
                 if status == 2 and "half" in txt and txt not in log:
                     b_resp = requests.get(
                         f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
-                        headers=HEADERS
+                        headers=HEADERS,
+                        timeout=10
                     ).json()
+
                     m, p = format_msg(b_resp['game'], "סיום מחצית")
                     send_telegram(m, p)
+
                     log.append(txt)
                     save_cache()
                     print(f"⏱ נשלחה מחצית {gid}")
 
-                # --- 3. סיום רבעים רגילים (1-3) ---
+                # ==========================================
+                # 3. סיום רבעים רגילים (1-3)
+                # ==========================================
                 elif status == 2 and "end" in txt and period < 4 and txt not in log:
                     b_resp = requests.get(
                         f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
-                        headers=HEADERS
+                        headers=HEADERS,
+                        timeout=10
                     ).json()
 
                     m, p = format_msg(b_resp['game'], f"סיום רבע {period}")
@@ -484,24 +550,33 @@ def run():
                     save_cache()
                     print(f"⏱ נשלח סיום רבע {period} {gid}")
 
-                # --- 4. סיום רבע 4 + דרמה אם שוויון ---
+                # ==========================================
+                # 4. סיום רבע 4 - רק אם יש שוויון (כלומר הולכים להארכה)
+                # ==========================================
                 elif status == 2 and "end" in txt and period == 4 and txt not in log:
                     b_resp = requests.get(
                         f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
-                        headers=HEADERS
+                        headers=HEADERS,
+                        timeout=10
                     ).json()
 
-                    m, p = format_msg(b_resp['game'], "סיום רבע 4")
-                    send_telegram(m, p)
-                    log.append(txt)
-                    save_cache()
-                    print(f"⏱ נשלח סיום רבע 4 {gid}")
+                    home_score = int(g['homeTeam']['score'])
+                    away_score = int(g['awayTeam']['score'])
 
-                    if g['homeTeam']['score'] == g['awayTeam']['score']:
-                        d_key = f"drama_q4"
+                    # אם יש שוויון - שולחים סיום רבע 4 + דרמה
+                    if home_score == away_score:
+                        m, p = format_msg(b_resp['game'], "סיום רבע 4")
+                        send_telegram(m, p)
+
+                        log.append(txt)
+                        save_cache()
+                        print(f"⏱ נשלח סיום רבע 4 {gid}")
+
+                        d_key = "drama_q4"
                         if d_key not in log:
-                            score_txt = f"{g['homeTeam']['score']} - {g['awayTeam']['score']}"
+                            score_txt = f"{home_score} - {away_score}"
                             drama_txt = f"טירוף! שוויון {score_txt} הולכים להארכה!"
+
                             m, p = format_msg(
                                 b_resp['game'],
                                 "דרמה ב-NBA!",
@@ -509,44 +584,53 @@ def run():
                                 drama_text=drama_txt
                             )
                             send_telegram(m, p)
+
                             log.append(d_key)
                             save_cache()
                             print(f"😱 נשלחה הודעת דרמה אחרי רבע 4: {gid}")
+                    else:
+                        # אם המשחק הוכרע בסוף רבע 4 - לא שולחים כלום כאן
+                        # מחכים רק לסיום המשחק (status == 3)
+                        log.append(txt)
+                        save_cache()
+                        print(f"⏭ דילוג על סיום רבע 4 כי המשחק הוכרע: {gid}")
 
-                # --- 5. סיום הארכות (רק אם המשחק עדיין לא הסתיים) ---
+                # ==========================================
+                # 5. סיום הארכה - רק אם יש עוד הארכה!
+                # ==========================================
                 elif status == 2 and "end" in txt and period > 4 and txt not in log:
                     b_resp = requests.get(
                         f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
-                        headers=HEADERS
+                        headers=HEADERS,
+                        timeout=10
                     ).json()
 
+                    home_score = int(g['homeTeam']['score'])
+                    away_score = int(g['awayTeam']['score'])
                     ot_num = period - 4
 
-                    # OT1: לא נכתוב "הארכה 1"
-                    if ot_num == 1:
-                        label_ot = "סיום הארכה"
+                    # אם אין שוויון - לא שולחים "סיום הארכה"
+                    # מחכים רק ל"סיום משחק"
+                    if home_score != away_score:
+                        log.append(txt)
+                        save_cache()
+                        print(f"⏭ דילוג על סיום הארכה {ot_num} כי המשחק הוכרע: {gid}")
+
                     else:
-                        label_ot = f"סיום הארכה {ot_num}"
+                        # אם יש שוויון - כן שולחים סיום הארכה
+                        label_ot = "סיום הארכה" if ot_num == 1 else f"סיום הארכה {ot_num}"
+                        m, p = format_msg(b_resp['game'], label_ot)
+                        send_telegram(m, p)
 
-                    m, p = format_msg(b_resp['game'], label_ot)
-                    send_telegram(m, p)
+                        log.append(txt)
+                        save_cache()
+                        print(f"⏱ נשלחה {label_ot} {gid}")
 
-                    log.append(txt)
-                    save_cache()
-                    print(f"⏱ נשלחה {label_ot} {gid}")
-
-                    # אם עדיין שוויון, נשלח דרמה להארכה הבאה
-                    if g['homeTeam']['score'] == g['awayTeam']['score']:
+                        # ואז שולחים הודעת דרמה להארכה הבאה
                         drama_key = f"drama_ot_{period}"
                         if drama_key not in log:
-                            if ot_num == 1:
-                                next_ot_txt = "טירוף! שוויון {score} הולכים להארכה 2!"
-                            else:
-                                next_ot_txt = f"טירוף! שוויון {g['homeTeam']['score']} - {g['awayTeam']['score']} הולכים להארכה {ot_num + 1}!"
-
-                            # תיקון לטקסט של OT1 כדי שייצא עם התוצאה
-                            if ot_num == 1:
-                                next_ot_txt = f"טירוף! שוויון {g['homeTeam']['score']} - {g['awayTeam']['score']} הולכים להארכה 2!"
+                            score_txt = f"{home_score} - {away_score}"
+                            next_ot_txt = f"טירוף! שוויון {score_txt} הולכים להארכה {ot_num + 1}!"
 
                             m, p = format_msg(
                                 b_resp['game'],
@@ -555,19 +639,24 @@ def run():
                                 drama_text=next_ot_txt
                             )
                             send_telegram(m, p)
+
                             log.append(drama_key)
                             save_cache()
                             print(f"😱 נשלחה דרמה אחרי הארכה {ot_num}: {gid}")
 
-                # --- 6. סיום משחק ---
+                # ==========================================
+                # 6. סיום משחק
+                # ==========================================
                 if status == 3 and game_final_key not in log:
                     b_resp = requests.get(
                         f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
-                        headers=HEADERS
+                        headers=HEADERS,
+                        timeout=10
                     ).json()
 
                     final_period = b_resp['game'].get('period', 4)
                     label_final = "סיום המשחק"
+
                     if final_period > 4:
                         label_final += f" (אחרי הארכה {final_period - 4})"
 
@@ -580,7 +669,7 @@ def run():
 
         except Exception as e:
             print(f"❌ שגיאה בלוגיקה: {e}")
-        
+
         time.sleep(10)
 
 if __name__ == "__main__":
