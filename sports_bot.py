@@ -10,7 +10,7 @@ import traceback
 # ==========================================
 # הגדרות
 # ==========================================
-TOKEN = '8284141482:AAGG1VPtJrLeAvl7kADMeufGbEYdIq08ib0'
+TOKEN = '8284141482:AAGG1vPtJrleAvl7kADMeufGbEydIq08ib0'
 MY_CHAT_ID = '-1003820726077'
 
 bot = Bot(token=TOKEN)
