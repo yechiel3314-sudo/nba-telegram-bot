@@ -6,7 +6,7 @@ from telegram import Bot
 from telegram.constants import ParseMode
 from datetime import datetime, timedelta
 from deep_translator import GoogleTranslator
-from hebcal import HebrewDate # חובה להוסיף hebcal ל-requirements
+from hebcal.hebrew_date import HebrewDate
 
 # ==========================================
 # הגדרות מערכת
