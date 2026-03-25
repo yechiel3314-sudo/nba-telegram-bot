@@ -39,11 +39,12 @@ def auto_translate(text):
     if not text: return text
     try:
         log_step(f"מנסה לתרגם: {text}")
+        # הוספת הגבלת זמן כדי שלא יתקע את הבוט
         translation = translator.translate(text, dest='he')
         return translation.text
     except Exception as e:
-        log_error(f"תרגום נכשל עבור {text}", e)
-        return text 
+        log_error(f"התרגום נתקע או נכשל עבור {text}, ממשיך באנגלית", e)
+        return text # מחזיר אנגלית במקום להיתקע
 
 # ==========================================
 # שליחה בטוחה לטלגרם (Async 20.8)
