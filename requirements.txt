@@ -8,4 +8,3 @@ feedparser
 moviepy==1.0.3
 schedule==1.2.1
 googletrans==4.0.0-rc1
-python-telegram-bot==13.15
