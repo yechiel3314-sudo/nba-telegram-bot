@@ -11,8 +11,8 @@ from urllib3.util.retry import Retry
 # ==========================================
 # הגדרות
 # ==========================================
-TOKEN = "PUT_YOUR_TOKEN"
-CHAT_ID = "PUT_YOUR_CHAT_ID"
+TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
+CHAT_ID = "-1003808107418"
 STATE_FILE = "nba_israeli_final_v23.json"
 
 RTL = "\u202B"
