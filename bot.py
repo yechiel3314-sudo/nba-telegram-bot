@@ -214,7 +214,7 @@ NBA_PLAYERS_HEB = {
     "Nikola Jokic": "ניקולה יוקיץ'", "Jamal Murray": "ג'מאל מארי", "Michael Porter Jr.": "מייקל פורטר ג'וניור", "Aaron Gordon": "ארון גורדון", "Russell Westbrook": "ראסל ווסטברוק",
     "Christian Braun": "כריסטיאן בראון", "Peyton Watson": "פייטון ווטסון", "Dario Saric": "דאריו שאריץ'", "Julian Strawther": "ג'וליאן סטראותר", "DeAndre Jordan": "דיאנדרה ג'ורדן",
     "Zeke Nnaji": "זיק נאג'י", "Hunter Tyson": "האנטר טייסון", "Vlatko Cancar": "בלאטקו צ'נצ'אר", "DaRon Holmes II": "דארון הולמס", "Jalen Pickett": "ג'יילן פיקט",
-    "Trey Alexander": "טריי אלכסנדר", "PJ Hall": "פי.ג'יי הול", "Spencer Jones": "ספנסר ג'ונס"
+    "Trey Alexander": "טריי אלכסנדר", "PJ Hall": "פי.ג'יי הול", "Spencer Jones": "ספנסר ג'ונס",
 
     # --- שמות להוספה ---
     "DeMar DeRozan": "דמאר דרוזן", "Tidjane Salaun": "טיג'אן סאלון", "Kristaps Porzingis": "קריסטאפס פורזינגיס", "VJ Edgecombe": "וי.ג'יי אדג'קום",
