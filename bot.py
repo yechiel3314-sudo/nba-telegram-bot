@@ -202,7 +202,7 @@ NBA_PLAYERS_HEB = {
     "Stephen Curry": "סטף קרי", "Draymond Green": "דריימונד גרין", "Jonathan Kuminga": "ג'ונתן קומינגה", "Andrew Wiggins": "אנדרו ויגינס", "Brandin Podziemski": "ברנדין פודז'מסקי",
     "Buddy Hield": "באדי הילד", "De'Anthony Melton": "דיאנתוני מלטון", "Kyle Anderson": "קייל אנדרסון", "Trayce Jackson-Davis": "טרייס ג'קסון-דייוויס", "Moses Moody": "מוזס מודי",
     "Kevon Looney": "קאבון לוני", "Gary Payton II": "גארי פייטון ג'וניור", "Lindy Waters III": "לינדי ווטרס", "Gui Santos": "גאי סנטוס", "Quint Post": "קווינטן פוסט",
-    "Pat Spencer": "פאט ספנסר", "Reece Beekman": "ריס ביקמן", "Jerome Robinson": "ג'רום רובינסון",
+    "Pat Spencer": "פט ספנסר", "Reece Beekman": "ריס ביקמן", "Jerome Robinson": "ג'רום רובינסון",
 
     # --- לוס אנג'לס קליפרס ---
     "James Harden": "ג'יימס הארדן", "Kawhi Leonard": "קוואי לנארד", "Norman Powell": "נורמן פאוול", "Ivica Zubac": "איביצה זובאץ", "Derrick Jones Jr.": "דריק ג'ונס ג'וניור",
@@ -217,7 +217,7 @@ NBA_PLAYERS_HEB = {
     "Trey Alexander": "טריי אלכסנדר", "PJ Hall": "פי ג'יי הול", "Spencer Jones": "ספנסר ג'ונס",
 
     # --- שמות להוספה ---
-    "DeMar DeRozan": "דמאר דרוזן", "Tidjane Salaun": "טיג'אן סאלון", "Kristaps Porzingis": "קריסטאפס פורזינגיס", "VJ Edgecombe": "וי.ג'יי אדג'קום",
+    "DeMar DeRozan": "דמאר דרוזן", "Tidjane Salaun": "טיג'אן סאלון", "Kristaps Porziņģis": "קריסטאפס פורזינגיס", "VJ Edgecombe": "וי.ג'יי אדג'קום",
 
 }
 
