@@ -10,9 +10,9 @@ from urllib3.util.retry import Retry
 # ==========================================
 # הגדרות
 # ==========================================
-TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-CHAT_ID = "-1003808107418"
-STATE_FILE = "nba_israeli_final_v24.json"
+TOKEN = "YOUR_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
+STATE_FILE = "nba_israeli_final_v28.json"
 
 RTL = "\u202B"
 
@@ -25,10 +25,23 @@ PLAYER_HEBREW_NAMES = {
 PLAYER_IMAGES = {
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
-    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg?im=Resize=(1920)"
+    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg"
 }
 
 ISRAELI_PLAYERS = set(PLAYER_HEBREW_NAMES.keys())
+
+TEAM_HEBREW = {
+    "ATL": "אטלנטה הוקס", "BOS": "בוסטון סלטיקס", "BKN": "ברוקלין נטס",
+    "CHA": "שארלוט הורנטס", "CHI": "שיקגו בולס", "CLE": "קליבלנד קאבלירס",
+    "DAL": "דאלאס מאבריקס", "DEN": "דנבר נאגטס", "DET": "דטרויט פיסטונס",
+    "GSW": "גולדן סטייט ווריורס", "HOU": "יוסטון רוקטס", "IND": "אינדיאנה פייסרס",
+    "LAC": "לוס אנג'לס קליפרס", "LAL": "לוס אנג'לס לייקרס", "MEM": "ממפיס גריזליס",
+    "MIA": "מיאמי היט", "MIL": "מילווקי באקס", "MIN": "מינסוטה טימברוולבס",
+    "NOP": "ניו אורלינס פליקנס", "NYK": "ניו יורק ניקס", "OKC": "אוקלהומה סיטי ת'אנדר",
+    "ORL": "אורלנדו מג'יק", "PHI": "פילדלפיה סבנטי סיקסרס", "PHX": "פיניקס סאנס",
+    "POR": "פורטלנד טרייל בלייזרס", "SAC": "סקרמנטו קינגס", "SAS": "סן אנטוניו ספרס",
+    "TOR": "טורונטו ראפטורס", "UTA": "יוטה ג'אז", "WAS": "וושינגטון וויזארדס"
+}
 
 SB_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 BOX_URL = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
@@ -84,23 +97,27 @@ def format_minutes(raw):
 # ==========================================
 # בניית הודעה
 # ==========================================
-def build_msg(p, label):
+def build_msg(p, stage_text, game_info):
     full = f"{p.get('firstName')} {p.get('familyName')}"
     if p.get("status") == "INACTIVE":
         return None
+
     stats = p.get("statistics") or {}
     mins = format_minutes(stats.get("minutesCalculated"))
     name_he = PLAYER_HEBREW_NAMES.get(full, full)
+
+    away_he = TEAM_HEBREW.get(game_info["away"], game_info["away"])
+    home_he = TEAM_HEBREW.get(game_info["home"], game_info["home"])
+
+    teams_line = f"🏀 {away_he} 🆚 {home_he} 🏀"
+
     def g(x): return stats.get(x) or 0
-    if mins == "0:00":
-        return RTL + (
-            f"🇮🇱 <b>{name_he}</b>\n"
-            f"📍 <b>{label}</b>\n"
-            f"⏱️ טרם עלה לפרקט"
-        )
+
     return RTL + (
-        f"🇮🇱 <b>הלגיונרים: {name_he}</b> 🇮🇱\n\n"
-        f"🏀 <b>סטטיסטיקה מלאה ({label}):</b>\n"
+        f"🇮🇱 <b>לגיונרים: {name_he}</b> 🇮🇱\n"
+        f"{teams_line}\n\n"
+        f"📊 <b>סטטיסטיקה מלאה</b>\n"
+        f"{stage_text}\n\n"
         f"🎯 <b>נקודות:</b> {g('points')}\n"
         f"🏀 <b>מהשדה:</b> {g('fieldGoalsMade')}/{g('fieldGoalsAttempted')} | "
         f"<b>לשלוש:</b> {g('threePointersMade')}/{g('threePointersAttempted')} | "
@@ -111,7 +128,7 @@ def build_msg(p, label):
         f"🚫 <b>חסימות:</b> {g('blocks')}\n"
         f"⚠️ <b>איבודים:</b> {g('turnovers')}\n"
         f"📊 <b>פלוס מינוס:</b> {g('plusMinusPoints') if g('plusMinusPoints') <= 0 else '+' + str(g('plusMinusPoints'))}\n"
-        f"⏱️ <b>דקות:</b> {mins}"
+        f"🕒 <b>דקות:</b> {mins}"
     )
 
 # ==========================================
@@ -132,94 +149,81 @@ def send_photo(text, photo_url):
     except:
         pass
 
-def send(text):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={
-                "chat_id": CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML"
-            },
-            timeout=15
-        )
-    except:
-        pass
-
 # ==========================================
 # ריצה
 # ==========================================
 def run():
     state = load_state()
+
     while True:
         try:
             sb = get_json(SB_URL)
             if not sb:
                 time.sleep(30)
                 continue
+
             for g in sb["scoreboard"]["games"]:
                 gid = g["gameId"]
-                if g["gameStatus"] == 1:
-                    continue
+
                 if gid not in state["games"]:
-                    state["games"][gid] = {"events": [], "final": False}
+                    state["games"][gid] = {"events": []}
+
                 gs = state["games"][gid]
+
+                period = g["period"]
+                txt = g["gameStatusText"].lower()
+
+                stage_text = None
+
+                # רבעים / מחצית
+                if "end" in txt or "half" in txt:
+                    if period == 1:
+                        stage_text = "⏱️ סיום רבע 1 ⏱️"
+                    elif period == 2:
+                        stage_text = "⏱️ מחצית ⏱️"
+                    elif period == 3:
+                        stage_text = "⏱️ סיום רבע 3 ⏱️"
+                    elif period == 4 and g["gameStatus"] != 3:
+                        stage_text = "⏱️ סיום רבע 4 ⏱️"
+
+                # סיום משחק
+                if g["gameStatus"] == 3:
+                    ot = max(0, period - 4)
+                    if ot == 0:
+                        stage_text = "🏁 סיום המשחק 🏁"
+                    else:
+                        stage_text = f"🏁 סיום המשחק לאחר הארכה {ot} 🏁"
+
+                if not stage_text or stage_text in gs["events"]:
+                    continue
 
                 box = get_json(BOX_URL.format(gid=gid))
                 if not box:
                     continue
+
                 game = box["game"]
 
-                # סיום רבע או מחצית או הארכה
-                key_base = f"{g['period']}_{g['gameStatusText']}"
-                period = g['period']
-                txt = g['gameStatusText']
+                game_info = {
+                    "away": game["awayTeam"]["teamTricode"],
+                    "home": game["homeTeam"]["teamTricode"]
+                }
 
-                label = None
-                send_event = False
+                for t in ["awayTeam", "homeTeam"]:
+                    for p in game[t]["players"]:
+                        full = f"{p['firstName']} {p['familyName']}"
+                        if full in ISRAELI_PLAYERS:
+                            msg = build_msg(p, stage_text, game_info)
+                            if msg:
+                                photo = PLAYER_IMAGES.get(full)
+                                if photo:
+                                    send_photo(msg, photo)
 
-                # רבע 1,2,3,4 רגילים
-                if txt.lower() in ["end of period", "end of quarter", "half time", "end of quarter 4"]:
-                    if period == 1:
-                        label = "סיום רבע 1"
-                        send_event = True
-                    elif period == 2:
-                        label = "מחצית"
-                        send_event = True
-                    elif period == 3:
-                        label = "סיום רבע 3"
-                        send_event = True
-                    elif period == 4 and g["gameStatus"] != 3:
-                        label = "סיום רבע 4"
-                        send_event = True
-                    # הארכות
-                    elif period >= 5 and g["gameStatus"] != 3:
-                        label = f"סיום הארכה {period-4}"
-                        send_event = True
-
-                # סיום המשחק
-                if g["gameStatus"] == 3 and not gs["final"]:
-                    label = "סיום המשחק"
-                    send_event = True
-                    gs["final"] = True
-
-                if send_event and key_base not in gs["events"]:
-                    for t in ["awayTeam", "homeTeam"]:
-                        for p in game[t]["players"]:
-                            full = f"{p['firstName']} {p['familyName']}"
-                            if full in ISRAELI_PLAYERS:
-                                msg = build_msg(p, label)
-                                if msg:
-                                    photo = PLAYER_IMAGES.get(full)
-                                    if photo:
-                                        send_photo(msg, photo)
-                                    else:
-                                        send(msg)
-                    gs["events"].append(key_base)
-                    save_state(state)
+                gs["events"].append(stage_text)
+                save_state(state)
 
         except Exception as e:
             print("ERROR:", e)
+
         time.sleep(30)
 
 if __name__ == "__main__":
