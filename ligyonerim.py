@@ -3,7 +3,6 @@ import re
 import json
 import time
 import logging
-
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -13,7 +12,7 @@ from urllib3.util.retry import Retry
 # ==========================================
 TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-STATE_FILE = "nba_israeli_final_v23.json"
+STATE_FILE = "nba_israeli_final_v24.json"
 
 RTL = "\u202B"
 
@@ -23,7 +22,6 @@ PLAYER_HEBREW_NAMES = {
     "Danny Wolf": "דני וולף"
 }
 
-# 🔥 התמונות שלך
 PLAYER_IMAGES = {
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
@@ -76,39 +74,32 @@ def save_state(s):
 def format_minutes(raw):
     if not raw:
         return "0:00"
-
     m = re.match(r"PT(\d+)M(?:(\d+))?", raw)
     if not m:
         return "0:00"
-
     mins = int(m.group(1))
     secs = int(m.group(2) or 0)
     return f"{mins}:{str(secs).zfill(2)}"
 
 # ==========================================
-# הודעה
+# בניית הודעה
 # ==========================================
 def build_msg(p, label):
     full = f"{p.get('firstName')} {p.get('familyName')}"
-
     if p.get("status") == "INACTIVE":
         return None
-
     stats = p.get("statistics") or {}
     mins = format_minutes(stats.get("minutesCalculated"))
     name_he = PLAYER_HEBREW_NAMES.get(full, full)
-
     def g(x): return stats.get(x) or 0
-
     if mins == "0:00":
         return RTL + (
             f"🇮🇱 <b>{name_he}</b>\n"
             f"📍 <b>{label}</b>\n"
             f"⏱️ טרם עלה לפרקט"
         )
-
     return RTL + (
-        f"🇮🇱 <b>גאווה ישראלית: {name_he}</b> 🇮🇱\n\n"
+        f"🇮🇱 <b>הלגיונרים: {name_he}</b> 🇮🇱\n\n"
         f"🏀 <b>סטטיסטיקה מלאה ({label}):</b>\n"
         f"🎯 <b>נקודות:</b> {g('points')}\n"
         f"🏀 <b>מהשדה:</b> {g('fieldGoalsMade')}/{g('fieldGoalsAttempted')} | "
@@ -124,7 +115,7 @@ def build_msg(p, label):
     )
 
 # ==========================================
-# שליחת תמונה
+# שליחה
 # ==========================================
 def send_photo(text, photo_url):
     try:
@@ -160,92 +151,76 @@ def send(text):
 # ==========================================
 def run():
     state = load_state()
-
     while True:
         try:
             sb = get_json(SB_URL)
             if not sb:
                 time.sleep(30)
                 continue
-
             for g in sb["scoreboard"]["games"]:
                 gid = g["gameId"]
-
-                if g["gameStatus"] <= 1:
+                if g["gameStatus"] == 1:
                     continue
-
                 if gid not in state["games"]:
                     state["games"][gid] = {"events": [], "final": False}
-
                 gs = state["games"][gid]
 
                 box = get_json(BOX_URL.format(gid=gid))
                 if not box:
                     continue
-
                 game = box["game"]
-                txt = g["gameStatusText"]
 
-                if ("End" in txt or "Half" in txt):
+                # סיום רבע או מחצית או הארכה
+                key_base = f"{g['period']}_{g['gameStatusText']}"
+                period = g['period']
+                txt = g['gameStatusText']
 
-                    label = None
+                label = None
+                send_event = False
 
-                    if "Half" in txt:
+                # רבע 1,2,3,4 רגילים
+                if txt.lower() in ["end of period", "end of quarter", "half time", "end of quarter 4"]:
+                    if period == 1:
+                        label = "סיום רבע 1"
+                        send_event = True
+                    elif period == 2:
                         label = "מחצית"
+                        send_event = True
+                    elif period == 3:
+                        label = "סיום רבע 3"
+                        send_event = True
+                    elif period == 4 and g["gameStatus"] != 3:
+                        label = "סיום רבע 4"
+                        send_event = True
+                    # הארכות
+                    elif period >= 5 and g["gameStatus"] != 3:
+                        label = f"סיום הארכה {period-4}"
+                        send_event = True
 
-                    elif g["period"] in [1, 2, 3]:
-                        label = f"סיום רבע {g['period']}"
-
-                    elif g["period"] == 4:
-                        if g["gameStatus"] != 3:
-                            label = "סיום רבע 4"
-
-                    elif g["period"] >= 5:
-                        if g["gameStatus"] != 3:
-                            if g["period"] > 5:
-                                label = f"סיום הארכה {g['period'] - 4}"
-
-                    key = f"{g['period']}_{txt}"
-
-                    if label and key not in gs["events"]:
-                        for t in ["awayTeam", "homeTeam"]:
-                            for p in game[t]["players"]:
-                                full = f"{p['firstName']} {p['familyName']}"
-
-                                if full in ISRAELI_PLAYERS:
-                                    msg = build_msg(p, label)
-                                    if msg:
-                                        photo = PLAYER_IMAGES.get(full)
-                                        if photo:
-                                            send_photo(msg, photo)
-                                        else:
-                                            send(msg)
-
-                        gs["events"].append(key)
-                        save_state(state)
-
+                # סיום המשחק
                 if g["gameStatus"] == 3 and not gs["final"]:
+                    label = "סיום המשחק"
+                    send_event = True
+                    gs["final"] = True
+
+                if send_event and key_base not in gs["events"]:
                     for t in ["awayTeam", "homeTeam"]:
                         for p in game[t]["players"]:
                             full = f"{p['firstName']} {p['familyName']}"
-
                             if full in ISRAELI_PLAYERS:
-                                msg = build_msg(p, "סיום המשחק")
+                                msg = build_msg(p, label)
                                 if msg:
                                     photo = PLAYER_IMAGES.get(full)
                                     if photo:
                                         send_photo(msg, photo)
                                     else:
                                         send(msg)
-
-                    gs["final"] = True
+                    gs["events"].append(key_base)
                     save_state(state)
 
         except Exception as e:
             print("ERROR:", e)
-
         time.sleep(30)
-
 
 if __name__ == "__main__":
     run()
