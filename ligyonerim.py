@@ -12,7 +12,7 @@ from urllib3.util.retry import Retry
 # ==========================================
 TOKEN = "YOUR_TOKEN"
 CHAT_ID = "YOUR_CHAT_ID"
-STATE_FILE = "nba_israeli_final_v28.json"
+STATE_FILE = "nba_israeli_final_v29.json"
 
 RTL = "\u202B"
 
@@ -109,15 +109,15 @@ def build_msg(p, stage_text, game_info):
     away_he = TEAM_HEBREW.get(game_info["away"], game_info["away"])
     home_he = TEAM_HEBREW.get(game_info["home"], game_info["home"])
 
-    teams_line = f"🏀 {away_he} 🆚 {home_he} 🏀"
+    teams_line = f"🏀 <b>{away_he} 🆚 {home_he}</b> 🏀"
 
     def g(x): return stats.get(x) or 0
 
     return RTL + (
         f"🇮🇱 <b>לגיונרים: {name_he}</b> 🇮🇱\n"
         f"{teams_line}\n\n"
-        f"📊 <b>סטטיסטיקה מלאה</b>\n"
-        f"{stage_text}\n\n"
+        f"📊 <b>סטטיסטיקה מלאה:</b>\n"
+        f"<b>{stage_text}</b>\n\n"
         f"🎯 <b>נקודות:</b> {g('points')}\n"
         f"🏀 <b>מהשדה:</b> {g('fieldGoalsMade')}/{g('fieldGoalsAttempted')} | "
         f"<b>לשלוש:</b> {g('threePointersMade')}/{g('threePointersAttempted')} | "
@@ -175,7 +175,6 @@ def run():
 
                 stage_text = None
 
-                # רבעים / מחצית
                 if "end" in txt or "half" in txt:
                     if period == 1:
                         stage_text = "⏱️ סיום רבע 1 ⏱️"
@@ -186,7 +185,6 @@ def run():
                     elif period == 4 and g["gameStatus"] != 3:
                         stage_text = "⏱️ סיום רבע 4 ⏱️"
 
-                # סיום משחק
                 if g["gameStatus"] == 3:
                     ot = max(0, period - 4)
                     if ot == 0:
@@ -224,7 +222,7 @@ def run():
         except Exception as e:
             print("ERROR:", e)
 
-        time.sleep(30)
+        time.sleep(20)
 
 if __name__ == "__main__":
     run()
