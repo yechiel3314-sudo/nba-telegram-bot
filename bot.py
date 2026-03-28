@@ -217,7 +217,7 @@ NBA_PLAYERS_HEB = {
     "Trey Alexander": "טריי אלכסנדר", "PJ Hall": "פי ג'יי הול", "Spencer Jones": "ספנסר ג'ונס",
 
     # --- שמות להוספה ---
-    "DeMar DeRozan": "דמאר דרוזן", "Tidjane Salaun": "טיג'אן סאלון", "Kristaps Porziņģis": "קריסטאפס פורזינגיס", "VJ Edgecombe": "וי.ג'יי אדג'קום",
+    "DeMar DeRozan": "דמאר דרוזן", "Tidjane Salaün": "טיג'אן סאלון", "Kristaps Porziņģis": "קריסטאפס פורזינגיס", "VJ Edgecombe": "וי.ג'יי אדג'קום",
 
 }
 
