@@ -49,7 +49,7 @@ TEAM_TRANSLATIONS = {
     "Minnesota Timberwolves":"מינסוטה טימברוולבס",
     "New Orleans Pelicans":"ניו אורלינס פליקנס",
     "New York Knicks":"ניו יורק ניקס",
-    "Oklahoma City Thunder":"אוקלהומה סיטי",
+    "Oklahoma City Thunder":"אוקלהומה סיטי ת'אנדר",
     "Orlando Magic":"אורלנדו מג'יק",
     "Philadelphia 76ers":"פילדלפיה 76",
     "Phoenix Suns":"פיניקס סאנס",
