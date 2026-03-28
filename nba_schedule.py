@@ -149,7 +149,7 @@ def build_schedule_msg(data):
         # הצגת משחקים שעתידים להתקיים ב-24 השעות הקרובות
         if g['id'] in ["1", "2"] and now <= local_dt <= now + timedelta(hours=24):
             time_str = local_dt.strftime("%H:%M")
-            body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
+            body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {RTL_MARK}{format_team(g['away'])} 🆚 {RTL_MARK}{format_team(g['home'])}\n\n"
             found = True
             
     return header + body if found else None
