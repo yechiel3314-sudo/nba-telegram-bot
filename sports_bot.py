@@ -6,12 +6,6 @@ import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
-try:
-    import yt_dlp
-except ImportError:
-    print("❌ yt_dlp לא מותקן!")
-    exit(1)
-
 # ==============================
 # הגדרות
 # ==============================
@@ -111,41 +105,64 @@ def build_message(title):
     return "משחק NBA 🏀"
 
 # ==============================
-# ❗ סינון Shorts לפי duration
+# ❗ ביטול בדיקת Shorts (כדי למנוע קריסות)
 # ==============================
 def is_short(url):
-    try:
-        ydl_opts = {
-            'quiet': True,
-            'skip_download': True
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-        duration = info.get("duration", 0)
-
-        if duration and duration < 70:
-            return True
-
-        return False
-
-    except:
-        return False
+    return False
 
 # ==============================
-# הורדה
+# 🔥 הורדה (Multi API)
 # ==============================
 def download_video(url, filename="video.mp4"):
-    try:
-        ydl_opts = {
-            'format': 'best[height<=480]',
-            'outtmpl': filename,
-            'quiet': True
-        }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+    def api1():
+        try:
+            print("🌐 API1")
+            r = requests.get(f"https://p.oceansaver.in/ajax/download?url={url}", timeout=10)
+            return r.json().get("url")
+        except:
+            return None
+
+    def api2():
+        try:
+            print("🌐 API2")
+            r = requests.post("https://api.cobalt.tools/api/json", json={
+                "url": url,
+                "vCodec": "h264",
+                "vQuality": "480"
+            }, timeout=10)
+            return r.json().get("url")
+        except:
+            return None
+
+    def api3():
+        try:
+            print("🌐 API3")
+            r = requests.get(f"https://ytdl.pw/api/download?url={url}", timeout=10)
+            return r.json().get("url")
+        except:
+            return None
+
+    download_url = None
+
+    for api in [api1, api2, api3]:
+        download_url = api()
+        if download_url:
+            print("✅ נמצא לינק")
+            break
+
+    if not download_url:
+        print("❌ כל ה־API נכשלו")
+        return None
+
+    try:
+        print("⬇️ מוריד...")
+        r = requests.get(download_url, stream=True, timeout=30)
+
+        with open(filename, "wb") as f:
+            for chunk in r.iter_content(1024 * 1024):
+                if chunk:
+                    f.write(chunk)
 
         return filename
 
@@ -176,10 +193,10 @@ def send_video(text, url):
         if r.status_code != 200:
             print("❌ שגיאה בשליחה:", r.text)
         else:
-            print("✅ נשלח בהצלחה")
+            print("✅ נשלח")
 
     except Exception as e:
-        print("❌ קריסה בשליחה:", e)
+        print("❌ קריסה:", e)
 
     finally:
         if os.path.exists(file_path):
@@ -209,14 +226,14 @@ def get_videos():
         return videos
 
     except Exception as e:
-        print("❌ שגיאה RSS:", e)
+        print("❌ RSS:", e)
         return []
 
 # ==============================
 # FIRST RUN
 # ==============================
 def first_run():
-    print("🚀 FIRST RUN (24H)")
+    print("🚀 FIRST RUN")
 
     sent = set()
     videos = get_videos()
@@ -224,23 +241,11 @@ def first_run():
     cutoff = now_utc() - timedelta(hours=24)
     recent = [v for v in videos if v[3] >= cutoff]
 
-    debug(f"Recent videos: {len(recent)}")
-
     for vid, title, url, _ in recent:
-
-        # ❌ סינון Shorts לפי כותרת
         if "short" in title.lower():
-            print("⏭️ דילוג SHORT (title)")
             continue
 
-        # ❌ סינון לפי אורך
-        if is_short(url):
-            print("⏭️ דילוג SHORT (duration)")
-            continue
-
-        # ❌ רק משחקים
         if "recap" not in title.lower() and "highlight" not in title.lower():
-            print("⏭️ לא משחק")
             continue
 
         msg = build_message(title)
@@ -257,7 +262,7 @@ def first_run():
 # LOOP
 # ==============================
 def loop():
-    print("🤖 BOT STARTED")
+    print("🤖 BOT RUNNING")
 
     while True:
         try:
@@ -265,20 +270,12 @@ def loop():
             videos = get_videos()
 
             new_videos = [v for v in videos if v[0] not in sent]
-            debug(f"New videos: {len(new_videos)}")
 
             for vid, title, url, _ in new_videos:
-
                 if "short" in title.lower():
-                    print("⏭️ דילוג SHORT")
-                    continue
-
-                if is_short(url):
-                    print("⏭️ דילוג SHORT (duration)")
                     continue
 
                 if "recap" not in title.lower() and "highlight" not in title.lower():
-                    print("⏭️ לא משחק")
                     continue
 
                 msg = build_message(title)
@@ -291,7 +288,7 @@ def loop():
                 time.sleep(10)
 
         except Exception as e:
-            print("❌ LOOP ERROR:", e)
+            print("❌ LOOP:", e)
 
         time.sleep(120)
 
