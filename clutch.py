@@ -83,8 +83,8 @@ def build_clutch_message(event: dict):
     if clock_seconds is None:
         return None
 
-    # קלאץ' = רבע 4 או הארכה + פחות מ-4 דקות
-    if period < 4 or clock_seconds >= 240:
+    # קלאץ' = רבע 4 או הארכה + פחות מ-3 דקות
+    if period < 4 or clock_seconds >= 180:
         return None
 
     # מניעת ספאם (רק פעם אחת לכל משחק)
@@ -139,7 +139,7 @@ def build_clutch_message(event: dict):
         score_line = f"{away_score} - {home_score}"
 
     msg = ""
-    msg += f"{RTL}🚨 <b>התראת קלאץ'!</b> 🚨\n"
+    msg += f"{RTL}🚨 <b>התראת קלאץ'!</b> 🚨\n\n"
     msg += f"{RTL}🏀 <b>{away_name} 🆚 {home_name}</b> 🏀\n\n"
 
     if leader_name == "שוויון":
@@ -148,7 +148,7 @@ def build_clutch_message(event: dict):
         msg += f"{RTL}🔥 <b>{leader_name} מובילה {score_line}</b> 🔥\n\n"
 
     msg += f"{RTL}⏱️ <b>זמן לסיום:</b> {clock}\n\n"
-    msg += f"{RTL}🚨 <b>כנסו עכשיו למשחק!</b>"
+    msg += f"{RTL}⚡ <b>הכל יכול להתהפך עכשיו</b>"
 
     return msg
 
