@@ -3,17 +3,17 @@ import time
 import re
 import json
 import os
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
 # ==============================
 # הגדרות
 # ==============================
 CHANNEL_ID = "UC0v-tlzsn0QZwJnkiaUSJVQ"
+API_KEY = "AIzaSyAHEN7hSaTejSUH53CACsM5dzDANrvsR6U"
+
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-RSS_URL = f"https://www.youtube.com/feeds/videos.xml?channel_id={CHANNEL_ID}"
 DATA_FILE = "sent_videos.json"
 
 # ==============================
@@ -105,117 +105,53 @@ def build_message(title):
     return "משחק NBA 🏀"
 
 # ==============================
-# ❗ ביטול בדיקת Shorts (כדי למנוע קריסות)
-# ==============================
-def is_short(url):
-    return False
-
-# ==============================
-# 🔥 הורדה (Multi API)
-# ==============================
-def download_video(url, filename="video.mp4"):
-
-    def api1():
-        try:
-            print("🌐 API1")
-            r = requests.get(f"https://p.oceansaver.in/ajax/download?url={url}", timeout=10)
-            return r.json().get("url")
-        except:
-            return None
-
-    def api2():
-        try:
-            print("🌐 API2")
-            r = requests.post("https://api.cobalt.tools/api/json", json={
-                "url": url,
-                "vCodec": "h264",
-                "vQuality": "480"
-            }, timeout=10)
-            return r.json().get("url")
-        except:
-            return None
-
-    def api3():
-        try:
-            print("🌐 API3")
-            r = requests.get(f"https://ytdl.pw/api/download?url={url}", timeout=10)
-            return r.json().get("url")
-        except:
-            return None
-
-    download_url = None
-
-    for api in [api1, api2, api3]:
-        download_url = api()
-        if download_url:
-            print("✅ נמצא לינק")
-            break
-
-    if not download_url:
-        print("❌ כל ה־API נכשלו")
-        return None
-
-    try:
-        print("⬇️ מוריד...")
-        r = requests.get(download_url, stream=True, timeout=30)
-
-        with open(filename, "wb") as f:
-            for chunk in r.iter_content(1024 * 1024):
-                if chunk:
-                    f.write(chunk)
-
-        return filename
-
-    except Exception as e:
-        print("❌ שגיאה בהורדה:", e)
-        return None
-
-# ==============================
 # שליחה
 # ==============================
 def send_video(text, url):
-    file_path = download_video(url)
-
-    if not file_path:
-        return
-
     try:
-        with open(file_path, 'rb') as f:
-            r = requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo",
-                data={
-                    "chat_id": CHAT_ID,
-                    "caption": text
-                },
-                files={"video": f}
-            )
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={
+                "chat_id": CHAT_ID,
+                "text": f"{text}\n{url}"
+            }
+        )
 
-        if r.status_code != 200:
-            print("❌ שגיאה בשליחה:", r.text)
-        else:
+        if r.status_code == 200:
             print("✅ נשלח")
+        else:
+            print("❌ שגיאה:", r.text)
 
     except Exception as e:
         print("❌ קריסה:", e)
 
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
 # ==============================
-# RSS
+# 🔥 YouTube API
 # ==============================
 def get_videos():
     try:
-        r = requests.get(RSS_URL)
-        root = ET.fromstring(r.content)
+        url = "https://www.googleapis.com/youtube/v3/search"
+
+        params = {
+            "key": API_KEY,
+            "channelId": CHANNEL_ID,
+            "part": "snippet",
+            "order": "date",
+            "maxResults": 50
+        }
+
+        r = requests.get(url, params=params)
+        data = r.json()
 
         videos = []
 
-        for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
-            vid = entry.find("{http://www.youtube.com/xml/schemas/2015}videoId").text
-            title = entry.find("{http://www.w3.org/2005/Atom}title").text
-            published = entry.find("{http://www.w3.org/2005/Atom}published").text
+        for item in data.get("items", []):
+            if item["id"]["kind"] != "youtube#video":
+                continue
+
+            vid = item["id"]["videoId"]
+            title = item["snippet"]["title"]
+            published = item["snippet"]["publishedAt"]
 
             published_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
             url = f"https://www.youtube.com/watch?v={vid}"
@@ -226,11 +162,11 @@ def get_videos():
         return videos
 
     except Exception as e:
-        print("❌ RSS:", e)
+        print("❌ API ERROR:", e)
         return []
 
 # ==============================
-# FIRST RUN
+# FIRST RUN (24 שעות אחורה)
 # ==============================
 def first_run():
     print("🚀 FIRST RUN")
@@ -241,7 +177,10 @@ def first_run():
     cutoff = now_utc() - timedelta(hours=24)
     recent = [v for v in videos if v[3] >= cutoff]
 
+    debug(f"Recent videos: {len(recent)}")
+
     for vid, title, url, _ in recent:
+
         if "short" in title.lower():
             continue
 
@@ -252,9 +191,9 @@ def first_run():
         print("📤", msg)
 
         send_video(msg, url)
-        sent.add(vid)
 
-        time.sleep(10)
+        sent.add(vid)
+        time.sleep(20)
 
     save_sent(sent)
 
@@ -262,36 +201,54 @@ def first_run():
 # LOOP
 # ==============================
 def loop():
-    print("🤖 BOT RUNNING")
+    print("🤖 BOT STARTED")
+
+    last_run_date = None
 
     while True:
-        try:
-            sent = load_sent()
-            videos = get_videos()
+        now = datetime.now()
 
-            new_videos = [v for v in videos if v[0] not in sent]
+        # ⏰ רק ב־09:30
+        if now.hour == 9 and now.minute == 30:
+            if last_run_date != now.date():
+                print("🚀 09:30 RUN")
 
-            for vid, title, url, _ in new_videos:
-                if "short" in title.lower():
-                    continue
+                sent = load_sent()
+                videos = get_videos()
 
-                if "recap" not in title.lower() and "highlight" not in title.lower():
-                    continue
+                cutoff = now_utc() - timedelta(hours=24)
+                recent = [v for v in videos if v[3] >= cutoff]
 
-                msg = build_message(title)
-                print("📤", msg)
+                debug(f"Recent videos: {len(recent)}")
 
-                send_video(msg, url)
-                sent.add(vid)
-                save_sent(sent)
+                for vid, title, url, _ in recent:
 
-                time.sleep(10)
+                    if "short" in title.lower():
+                        continue
 
-        except Exception as e:
-            print("❌ LOOP:", e)
+                    if "recap" not in title.lower() and "highlight" not in title.lower():
+                        continue
 
-        time.sleep(120)
+                    if vid in sent:
+                        continue
 
+                    msg = build_message(title)
+                    print("📤", msg)
+
+                    send_video(msg, url)
+
+                    sent.add(vid)
+                    save_sent(sent)
+
+                    time.sleep(20)
+
+                last_run_date = now.date()
+
+                # שלא ירוץ שוב באותה דקה
+                time.sleep(60)
+
+        # ⏳ בודק כל 20 שניות אם הגיע הזמן
+        time.sleep(20)
 # ==============================
 # START
 # ==============================
