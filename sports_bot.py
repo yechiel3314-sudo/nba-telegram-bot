@@ -5,12 +5,17 @@ import json
 import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-import yt_dlp
+
+try:
+    import yt_dlp
+except ImportError:
+    print("❌ yt_dlp לא מותקן!")
+    exit(1)
 
 # ==============================
 # הגדרות
 # ==============================
-CHANNEL_ID = "UCV4xOVpbcV8SdueDCOxLXtQ"
+CHANNEL_ID = "UC0v-tlzsn0QZwJnkiaUSJVQ"
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
@@ -55,6 +60,15 @@ TEAM_TRANSLATIONS = {
 }
 
 # ==============================
+# כלים
+# ==============================
+def debug(msg):
+    print(f"[DEBUG] {msg}", flush=True)
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+# ==============================
 # זיכרון
 # ==============================
 def load_sent():
@@ -97,12 +111,35 @@ def build_message(title):
     return "משחק NBA 🏀"
 
 # ==============================
-# הורדת וידאו
+# ❗ סינון Shorts לפי duration
+# ==============================
+def is_short(url):
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'skip_download': True
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        duration = info.get("duration", 0)
+
+        if duration and duration < 70:
+            return True
+
+        return False
+
+    except:
+        return False
+
+# ==============================
+# הורדה
 # ==============================
 def download_video(url, filename="video.mp4"):
     try:
         ydl_opts = {
-            'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
+            'format': 'best[height<=480]',
             'outtmpl': filename,
             'quiet': True
         }
@@ -117,34 +154,13 @@ def download_video(url, filename="video.mp4"):
         return None
 
 # ==============================
-# שליחת וידאו
+# שליחה
 # ==============================
 def send_video(text, url):
     file_path = download_video(url)
 
     if not file_path:
         return
-
-    size_mb = os.path.getsize(file_path) / (1024 * 1024)
-
-    # אם גדול מדי → איכות נמוכה
-    if size_mb > 50:
-        print("⚠️ גדול מדי, מוריד איכות...")
-        os.remove(file_path)
-
-        try:
-            ydl_opts = {
-                'format': 'worst',
-                'outtmpl': file_path,
-                'quiet': True
-            }
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-
-        except Exception as e:
-            print("❌ שגיאה בהורדה נמוכה:", e)
-            return
 
     try:
         with open(file_path, 'rb') as f:
@@ -159,6 +175,8 @@ def send_video(text, url):
 
         if r.status_code != 200:
             print("❌ שגיאה בשליחה:", r.text)
+        else:
+            print("✅ נשלח בהצלחה")
 
     except Exception as e:
         print("❌ קריסה בשליחה:", e)
@@ -187,6 +205,7 @@ def get_videos():
 
             videos.append((vid, title, url, published_dt))
 
+        debug(f"Found {len(videos)} videos")
         return videos
 
     except Exception as e:
@@ -194,76 +213,93 @@ def get_videos():
         return []
 
 # ==============================
-# הרצה ראשונית (24 שעות)
+# FIRST RUN
 # ==============================
 def first_run():
-    print("🚀 הרצה ראשונית")
+    print("🚀 FIRST RUN (24H)")
 
     sent = set()
     videos = get_videos()
 
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=24)
-
+    cutoff = now_utc() - timedelta(hours=24)
     recent = [v for v in videos if v[3] >= cutoff]
 
+    debug(f"Recent videos: {len(recent)}")
+
     for vid, title, url, _ in recent:
+
+        # ❌ סינון Shorts לפי כותרת
+        if "short" in title.lower():
+            print("⏭️ דילוג SHORT (title)")
+            continue
+
+        # ❌ סינון לפי אורך
+        if is_short(url):
+            print("⏭️ דילוג SHORT (duration)")
+            continue
+
+        # ❌ רק משחקים
+        if "recap" not in title.lower() and "highlight" not in title.lower():
+            print("⏭️ לא משחק")
+            continue
+
         msg = build_message(title)
-
         print("📤", msg)
-        send_video(msg, url)
 
+        send_video(msg, url)
         sent.add(vid)
-        time.sleep(20)
+
+        time.sleep(10)
 
     save_sent(sent)
 
 # ==============================
-# הרצה יומית (09:30)
+# LOOP
 # ==============================
-def daily_run():
-    print("📅 בדיקה יומית")
-
-    sent = load_sent()
-    videos = get_videos()
-
-    new_videos = [v for v in videos if v[0] not in sent]
-
-    for vid, title, url, _ in new_videos:
-        msg = build_message(title)
-
-        print("📤", msg)
-        send_video(msg, url)
-
-        sent.add(vid)
-        save_sent(sent)
-
-        time.sleep(20)
-
-# ==============================
-# לולאה
-# ==============================
-def main():
-    if not os.path.exists(DATA_FILE):
-        first_run()
-
-    print("🤖 הבוט פועל...")
-
-    last_run_date = None
+def loop():
+    print("🤖 BOT STARTED")
 
     while True:
-        now = datetime.now()
+        try:
+            sent = load_sent()
+            videos = get_videos()
 
-        if now.hour == 9 and now.minute == 30:
-            if last_run_date != now.date():
-                daily_run()
-                last_run_date = now.date()
-                time.sleep(60)
+            new_videos = [v for v in videos if v[0] not in sent]
+            debug(f"New videos: {len(new_videos)}")
 
-        time.sleep(20)
+            for vid, title, url, _ in new_videos:
+
+                if "short" in title.lower():
+                    print("⏭️ דילוג SHORT")
+                    continue
+
+                if is_short(url):
+                    print("⏭️ דילוג SHORT (duration)")
+                    continue
+
+                if "recap" not in title.lower() and "highlight" not in title.lower():
+                    print("⏭️ לא משחק")
+                    continue
+
+                msg = build_message(title)
+                print("📤", msg)
+
+                send_video(msg, url)
+                sent.add(vid)
+                save_sent(sent)
+
+                time.sleep(10)
+
+        except Exception as e:
+            print("❌ LOOP ERROR:", e)
+
+        time.sleep(120)
 
 # ==============================
 # START
 # ==============================
 if __name__ == "__main__":
-    main()
+    if not os.path.exists(DATA_FILE):
+        first_run()
+
+    loop()
