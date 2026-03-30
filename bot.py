@@ -109,13 +109,13 @@ NBA_PLAYERS_HEB = {
     "David Roddy": "דייוויד רודי", "Mouhamed Gueye": "מוחמד גיי", "Keaton Wallace": "קיטון וואלאס",
 
     # --- ברוקלין נטס ---
-    "Michael Porter Jr.": "מייקל פורטר ג'וניור", "Nic Claxton": "ניק קלקסטון", "Noah Clowney": "נואה קלאוני", "Egor Demin": "איגור דמין", "Nolan Traore": "נולן טראורה",
+    "Michael Porter Jr.": "מייקל פורטר ג'וניור", "Nic Claxton": "ניק קלקסטון", "Noah Clowney": "נואה קלאוני", "Egor Demin": "איגור דיומין", "Nolan Traore": "נולן טראורה",
     "Ben Saraf": "בן שרף", "Danny Wolf": "דני וולף", "Ziaire Williams": "זיאייר ויליאמס", "Day'Ron Sharpe": "דיירון שארפ", "Drake Powell": "דרייק פאוול",
     "Dariq Whitehead": "דאריק וייטהד", "Jalen Wilson": "ג'יילן וילסון", "Cam Johnson": "קמרון ג'ונסון", "Trendon Watford": "טרנדון ווטפורד", "Keon Johnson": "קיון ג'ונסון",
     "Tyrese Martin": "טייריס מרטין", "Jaylen Martin": "ג'יילן מרטין", "Cui Yongxi": "יונשי קוי",
 
     # --- שארלוט הורנטס ---
-    "LaMelo Ball": "לאמלו בול", "Brandon Miller": "ברנדון מילר", "Kon Knueppel": "קון קנופל", "Miles Bridges": "מיילס ברידג'ס", "Coby White": "קובי וייט",
+    "LaMelo Ball": "לאמלו בול", "Brandon Miller": "ברנדון מילר", "Kon Knueppel": "קון קוניפל", "Miles Bridges": "מיילס ברידג'ס", "Coby White": "קובי וייט",
     "Grant Williams": "גראנט ויליאמס", "Tidjane Salaun": "טיג'אן סאלון", "Moussa Diabate": "מוסא דיאבטה", "Josh Green": "ג'וש גרין", "Nick Richards": "ניק ריצ'רדס",
     "Tre Mann": "טרה מאן", "Vasilije Micic": "ואסיליה מיציץ'", "Mark Williams": "מארק ויליאמס", "Seth Curry": "סת' קארי", "Cody Martin": "קודי מרטין",
     "Nick Smith Jr.": "ניק סמית' ג'וניור", "KJ Simpson": "קיי.ג'יי סימפסון", "Taj Gibson": "טאג' גיבסון",
@@ -292,6 +292,58 @@ def get_stat_line(p):
 
     return line
 
+def to_num(v):
+    try:
+        return float(v or 0)
+    except Exception:
+        return 0.0
+
+
+def calculate_mvp_score(p):
+    s = p.get("statistics", {})
+
+    points = to_num(s.get("points"))
+    rebounds = to_num(s.get("reboundsTotal"))
+    assists = to_num(s.get("assists"))
+    steals = to_num(s.get("steals"))
+    blocks = to_num(s.get("blocks"))
+    turnovers = to_num(s.get("turnovers"))
+    plus_minus = to_num(s.get("plusMinus"))
+
+    # נוסחה דטרמיניסטית ודי קרובה לתחושת "MVP"
+    return (
+        points * 5.0 +
+        plus_minus * 3.0 +
+        assists * 2.0 +
+        rebounds * 1.8 +
+        steals * 3.5 +
+        blocks * 3.5 -
+        turnovers * 2.5
+    )
+
+
+def mvp_sort_key(p):
+    s = p.get("statistics", {})
+    name = f"{p.get('firstName', '')} {p.get('familyName', '')}".strip().lower()
+
+    try:
+        pid = int(p.get("personId") or p.get("playerId") or 0)
+    except Exception:
+        pid = 0
+
+    return (
+        calculate_mvp_score(p),
+        to_num(s.get("points")),
+        to_num(s.get("plusMinus")),
+        to_num(s.get("assists")),
+        to_num(s.get("reboundsTotal")),
+        to_num(s.get("steals")),
+        to_num(s.get("blocks")),
+        -to_num(s.get("turnovers")),
+        -pid,
+        name
+    )
+
 def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama_text=None):
     photo_url = None
     away, home = box['awayTeam'], box['homeTeam']
@@ -404,25 +456,25 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
     # =========================
     # MVP רק בסיום משחק
     # =========================
+        # =========================
+    # MVP רק בסיום משחק
+    # =========================
     if is_final:
-        all_p = away.get('players', []) + home.get('players', [])
+        away_score = int(away.get("score", 0))
+        home_score = int(home.get("score", 0))
 
-        valid_players = [p for p in all_p if p.get('statistics')]
-        if valid_players:
-            mvp = max(
-                valid_players,
-                key=lambda x: (
-                    x.get('statistics', {}).get('points', 0) +
-                    x.get('statistics', {}).get('reboundsTotal', 0) +
-                    x.get('statistics', {}).get('assists', 0)
-                )
-            )
+        if away_score > home_score:
+            candidates = [p for p in away.get("players", []) if p.get("statistics")]
+        elif home_score > away_score:
+            candidates = [p for p in home.get("players", []) if p.get("statistics")]
+        else:
+            candidates = [p for p in (away.get("players", []) + home.get("players", [])) if p.get("statistics")]
 
+        if candidates:
+            mvp = sorted(candidates, key=mvp_sort_key, reverse=True)[0]
             mvp_name = translate_name(f"{mvp.get('firstName', '')} {mvp.get('familyName', '')}".strip())
             msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_name}</b>\n"
             msg += f"\u200f📊 {get_stat_line(mvp)}\n"
-
-    return msg, photo_url
 
 def send_telegram(text, photo_url=None):
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
