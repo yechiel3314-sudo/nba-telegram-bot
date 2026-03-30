@@ -405,12 +405,6 @@ def run_engine():
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            # 🔒 אם כבר נשלח היום → חוסם 100% כפילויות
-            if state.get("last_sent_date") == today_str:
-                logger.info("⛔ Already sent today - skipping")
-                time.sleep(CHECK_INTERVAL)
-                continue
-
             # ⏱️ בדיקה של רבע שעה
             last_try_time = state.get("last_try_time")
             should_run = False
