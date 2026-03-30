@@ -243,9 +243,9 @@ def build_schedule_msg(data):
     isr_tz = pytz.timezone("Asia/Jerusalem")
     now = datetime.now(isr_tz)
 
-    # חלון משחקים חכם: עכשיו ועד 36 שעות קדימה
+    # חלון משחקים חכם: עכשיו ועד 24 שעות קדימה
     window_start = now
-    window_end = now + timedelta(hours=36)
+    window_end = now + timedelta(hours=24)
 
     header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב-NBA</b> ══ 🏀\n\n"
     body = ""
