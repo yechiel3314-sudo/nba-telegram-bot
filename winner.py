@@ -13,7 +13,7 @@ MY_CHAT_ID = '-1003820726077'
 bot = telebot.TeleBot(TOKEN)
 DB_FILE = 'nba_bet_db.json'
 
-# --- מילון תרגום ---
+# --- מילון תרגום קבוצות ---
 TEAM_NAMES_HE = {
     "Lakers": "לוס אנג'לס לייקרס", "Celtics": "בוסטון סלטיקס", 
     "Warriors": "גולדן סטייט ווריורס", "Nuggets": "דנבר נאגטס", 
@@ -34,12 +34,6 @@ TEAM_NAMES_HE = {
 
 def translate(name):
     return TEAM_NAMES_HE.get(name, name)
-
-# --- מתיחת ההודעה לרוחב מקסימלי ---
-def pad_text(text, target_width=45):
-    invisible_space = "⠀" 
-    # חישוב אורך הטקסט והוספת רווחים שקופים בסוף כדי למתוח את הבועה
-    return text + (invisible_space * (target_width - len(text)))
 
 def load_db():
     if os.path.exists(DB_FILE):
@@ -81,9 +75,8 @@ def send_betting_board():
             h_full = translate(g['homeTeam']['teamName'])
             a_full = translate(g['awayTeam']['teamName'])
             
-            # יצירת טקסט רחב
-            base_text = f"🏀 {a_full} 🆚 {h_full} 🏀"
-            msg_text = pad_text(base_text)
+            # הודעה נקייה ללא רווחים מלאכותיים
+            msg_text = f"🏀 {a_full} 🆚 {h_full} 🏀"
             
             markup = types.InlineKeyboardMarkup()
             btn_away = types.InlineKeyboardButton(f"🚀 {a_full.split()[-1]}", callback_data=f"b_{gid}_{g['awayTeam']['teamName']}")
@@ -93,7 +86,8 @@ def send_betting_board():
             bot.send_message(MY_CHAT_ID, msg_text, reply_markup=markup, parse_mode="Markdown")
             
         bot.send_message(MY_CHAT_ID, "🏆 **מי יהיה אלוף הלילה? שלחו הימורים!**", parse_mode="Markdown")
-    except: pass
+    except Exception as e:
+        print(f"Error sending board: {e}")
 
 def update_and_summary():
     db = load_db()
@@ -121,28 +115,34 @@ def update_and_summary():
                 table += f"{medals[i]} מקום {i+1}: {data['name']} - {data['score']} נק'\n"
             bot.send_message(MY_CHAT_ID, table, parse_mode="Markdown")
             save_db(db)
-    except: pass
+    except Exception as e:
+        print(f"Error in summary: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('b_'))
 def handle_bet(call):
     _, gid, choice = call.data.split('_')
     user_id, user_name = str(call.from_user.id), call.from_user.first_name
+    
     if is_game_started(gid):
         bot.answer_callback_query(call.id, "🚫 המשחק כבר התחיל!", show_alert=True)
         return
+        
     db = load_db()
     if gid not in db['daily_bets']: db['daily_bets'][gid] = {}
     u_info = db['daily_bets'][gid].get(user_id, {"count": 0})
+
     if u_info["count"] >= 2:
         bot.answer_callback_query(call.id, "❌ ניתן לשנות הימור פעם אחת בלבד!", show_alert=True)
         return
+
     db['daily_bets'][gid][user_id] = {"name": user_name, "choice": choice, "count": u_info["count"] + 1}
     save_db(db)
     
+    # הודעות צפות (Toast) - נעלמות מעצמן ללא צורך בלחיצה על OK
     if u_info["count"] == 0:
-        bot.answer_callback_query(call.id, "✅ נקלט! נותר לך עוד שינוי אחד בלבד.", show_alert=True)
+        bot.answer_callback_query(call.id, "✅ נקלט! נותר לך עוד שינוי אחד בלבד.", show_alert=False)
     else:
-        bot.answer_callback_query(call.id, "⚠️ ההימור שונה (זהו השינוי האחרון!).", show_alert=True)
+        bot.answer_callback_query(call.id, "⚠️ ההימור שונה (זהו השינוי האחרון!).", show_alert=False)
 
 def run_scheduler():
     schedule.every().day.at("18:15").do(send_betting_board)
@@ -154,13 +154,11 @@ def run_scheduler():
 if __name__ == "__main__":
     print("🚀 הבוט התחיל לעבוד...")
     
-    # שליחה מיידית של הלוח לצורך בדיקה
+    # שליחה מיידית לצורך בדיקה
     send_betting_board() 
 
-    # הפעלת התזמון ב-Thread נפרד
     threading.Thread(target=run_scheduler, daemon=True).start()
     
-    # הרצת הבוט עם הגנה משגיאות
     while True:
         try:
             bot.infinity_polling(skip_pending=True, timeout=10, long_polling_timeout=5)
