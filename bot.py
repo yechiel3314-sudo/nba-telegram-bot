@@ -476,7 +476,8 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
             msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_name}</b>\n"
             msg += f"\u200f📊 {get_stat_line(mvp)}\n"
 
-return msg, None
+    # השורה הזו צריכה להיות מוזזת פנימה ככה:
+    return msg, None
 
 def send_telegram(text, photo_url=None):
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
