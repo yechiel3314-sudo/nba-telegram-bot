@@ -151,18 +151,19 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(60)
 
-iif __name__ == "__main__":
+if __name__ == "__main__":
     print("🚀 הבוט התחיל לעבוד...")
     
-    # --- שים לב לשורה הזו: ---
-    send_betting_board()  # <--- תוסיף את זה כדי שישלח הודעה מיד כשאתה מריץ
-    # -----------------------
+    # שליחה מיידית של הלוח לצורך בדיקה
+    send_betting_board() 
 
+    # הפעלת התזמון ב-Thread נפרד
     threading.Thread(target=run_scheduler, daemon=True).start()
     
-    # infinity_polling עם skip_pending=True עוזר למנוע כפילויות של הודעות ישנות
-    try:
-        bot.infinity_polling(skip_pending=True)
-    except Exception as e:
-        print(f"Error: {e}")
-        time.sleep(5)
+    # הרצת הבוט עם הגנה משגיאות
+    while True:
+        try:
+            bot.infinity_polling(skip_pending=True, timeout=10, long_polling_timeout=5)
+        except Exception as e:
+            print(f"Polling error: {e}")
+            time.sleep(5)
