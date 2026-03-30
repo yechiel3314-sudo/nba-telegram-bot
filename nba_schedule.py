@@ -283,10 +283,8 @@ def build_schedule_msg(data):
 
     for local_dt, g in found_games:
         time_str = local_dt.strftime("%H:%M")
-        date_str = local_dt.strftime("%d/%m")
 
         body += (
-            f"{RTL_MARK}📅 <b>{date_str}</b>\n"
             f"{RTL_MARK}⏰ <b>{time_str}</b>\n"
             f"{RTL_MARK}🏀 {RTL_MARK}{format_team(g['away'])} 🆚 {RTL_MARK}{format_team(g['home'])}\n\n"
         )
