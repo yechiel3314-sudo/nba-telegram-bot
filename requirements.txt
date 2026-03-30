@@ -9,3 +9,4 @@ moviepy==1.0.3
 schedule==1.2.1
 hebcal
 yt-dlp
+pyTelegramBotAPI
