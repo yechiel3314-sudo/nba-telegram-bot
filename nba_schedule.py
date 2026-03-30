@@ -258,11 +258,10 @@ def build_schedule_msg(data):
 
             local_dt = utc_dt.astimezone(isr_tz)
 
-            logger.info(
-                f"Checking game: {g['away']} @ {g['home']} | "
-                f"StatusID={g['id']} | Status={g.get('status_name', '')} | "
-                f"Local={local_dt.strftime('%Y-%m-%d %H:%M')}"
-            )
+            if in_window:
+                logger.info(
+                    f"InWindow | {now.strftime('%H:%M:%S')} | LastSent={state.get('last_sent_date')}"
+                )
 
             is_upcoming = (
                 g["id"] in ["1", "2"] or
