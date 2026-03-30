@@ -365,6 +365,25 @@ def should_attempt_send(now, state):
 # --- מנגנון ריצה ראשי ---
 # ==============================================================================
 
+# ==============================================================================
+# --- הגדרות זמן ---
+# ==============================================================================
+
+SCHEDULE_START = "18:00"
+SCHEDULE_END = "19:00"
+CHECK_INTERVAL = 60  # בדיקה כל דקה
+RETRY_EVERY_MINUTES = 15
+
+
+def is_in_schedule_window(now):
+    start = datetime.strptime(SCHEDULE_START, "%H:%M").time()
+    end = datetime.strptime(SCHEDULE_END, "%H:%M").time()
+    return start <= now.time() < end  # ✔ תיקון חשוב
+
+# ==============================================================================
+# --- מנגנון ריצה ראשי (מעודכן) ---
+# ==============================================================================
+
 def run_engine():
     logger.info("🏀 NBA SCHEDULE BOT STARTED")
     tz = pytz.timezone("Asia/Jerusalem")
@@ -373,53 +392,75 @@ def run_engine():
         try:
             now = datetime.now(tz)
             state = load_state()
+            today_str = now.strftime("%Y-%m-%d")
 
             logger.info(
-                f"Heartbeat | Now: {now.strftime('%Y-%m-%d %H:%M:%S')} | "
-                f"Last sent date: {state.get('last_sent_date')} | "
-                f"Last try: {state.get('last_try_time')}"
+                f"Heartbeat | {now.strftime('%Y-%m-%d %H:%M:%S')} | "
+                f"InWindow={is_in_schedule_window(now)} | "
+                f"LastSent={state.get('last_sent_date')}"
             )
 
-            if should_attempt_send(now, state):
-                logger.info("Starting schedule fetch/send cycle...")
+            # ❌ מחוץ לחלון זמן → לא עושה כלום
+            if not is_in_schedule_window(now):
+                time.sleep(CHECK_INTERVAL)
+                continue
 
-                # רושמים שהיה ניסיון כדי למנוע ספאם בלולאה
+            # 🔒 אם כבר נשלח היום → חוסם 100% כפילויות
+            if state.get("last_sent_date") == today_str:
+                logger.info("⛔ Already sent today - skipping")
+                time.sleep(CHECK_INTERVAL)
+                continue
+
+            # ⏱️ בדיקה של רבע שעה
+            last_try_time = state.get("last_try_time")
+            should_run = False
+
+            if not last_try_time:
+                should_run = True
+            else:
+                try:
+                    last_try_dt = datetime.fromisoformat(last_try_time)
+                    if last_try_dt.tzinfo is None:
+                        last_try_dt = tz.localize(last_try_dt)
+
+                    minutes = (now - last_try_dt).total_seconds() / 60
+
+                    if minutes >= RETRY_EVERY_MINUTES:
+                        should_run = True
+
+                except Exception:
+                    should_run = True
+
+            if should_run:
+                logger.info("🚀 Running schedule send attempt...")
+
                 state["last_try_time"] = now.isoformat()
                 save_state(state)
 
                 data = get_nba_schedule()
-                logger.info(f"Fetched {len(data)} total games from ESPN")
+                logger.info(f"Fetched {len(data)} games")
 
                 msg = build_schedule_msg(data)
 
                 if msg:
-                    msg_hash = get_message_hash(msg)
+                    sent = send_to_telegram(msg)
 
-                    # הגנה נוספת נגד כפילות במקרה נדיר
-                    if (
-                        state.get("last_sent_date") == now.strftime("%Y-%m-%d") and
-                        state.get("last_successful_message_hash") == msg_hash
-                    ):
-                        logger.info("Duplicate message detected. Skipping send.")
+                    if sent:
+                        state["last_sent_date"] = today_str
+                        state["last_successful_message_hash"] = get_message_hash(msg)
+                        save_state(state)
+                        logger.info("✅ Message sent successfully")
                     else:
-                        sent = send_to_telegram(msg)
+                        logger.warning("❌ Failed sending to Telegram")
 
-                        if sent:
-                            state["last_sent_date"] = now.strftime("%Y-%m-%d")
-                            state["last_successful_message_hash"] = msg_hash
-                            save_state(state)
-                            logger.info(f"✅ Daily schedule sent successfully for {state['last_sent_date']}")
-                        else:
-                            logger.warning("⚠️ Telegram send failed. Will retry later.")
                 else:
-                    logger.info("ℹ️ No upcoming games found yet. Will retry in 15 minutes.")
+                    logger.info("ℹ️ No games found yet")
 
             time.sleep(CHECK_INTERVAL)
 
         except Exception as e:
-            logger.error(f"Loop Error: {e}")
-            time.sleep(60)
-
+            logger.error(f"💥 Loop Error: {e}")
+            time.sleep(20)
 # ==============================================================================
 # --- MAIN ---
 # ==============================================================================
