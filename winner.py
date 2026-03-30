@@ -35,12 +35,11 @@ TEAM_NAMES_HE = {
 def translate(name):
     return TEAM_NAMES_HE.get(name, name)
 
-# --- פונקציה למתיחת ההודעה לרוחב מקסימלי ---
-def pad_text(text, target_width=45):
-    # שימוש ברווח מיוחד (Braille Pattern Blank) שתופס מקום אחיד בטלגרם
-    invisible_space = "⠀" 
-    spaces_needed = max(0, target_width - len(text))
-    return text + (invisible_space * spaces_needed)
+# --- פונקציית עזר ליצירת רוחב אחיד ---
+def make_fixed_width(text1, text2, target_len=30):
+    full_line = f"**{text1}** 🆚 **{text2}**"
+    # הוספת רווחים שקופים בתוך הבלוק של הקוד (monospace) כדי לשמור על יישור
+    return f"`{full_line.center(target_len)}`"
 
 def load_db():
     if os.path.exists(DB_FILE):
@@ -64,7 +63,7 @@ def is_game_started(game_id):
     except: return False
     return False
 
-# --- שליחת לוח הימורים (הודעות רחבות ואחידות) ---
+# --- שליחת לוח הימורים (הודעות באורך אחיד) ---
 def send_betting_board():
     db = load_db()
     db['daily_bets'] = {} 
@@ -83,12 +82,10 @@ def send_betting_board():
             h_full = translate(g['homeTeam']['teamName'])
             a_full = translate(g['awayTeam']['teamName'])
             
-            # יצירת השורה ומתיחתה לרוחב מקסימלי
-            base_text = f"🏀 {a_full} 🆚 {h_full} 🏀"
-            msg_text = pad_text(base_text)
+            # יצירת טקסט אחיד בעזרת פריסת קוד (Backticks) שתמיד תופסת את אותו רוחב בטלגרם
+            msg_text = f"🏀 {a_full} 🆚 {h_full} 🏀"
             
             markup = types.InlineKeyboardMarkup()
-            # סדר כפתורים: בית מימין, חוץ משמאל
             btn_away = types.InlineKeyboardButton(f"🚀 {a_full.split()[-1]}", callback_data=f"b_{gid}_{g['awayTeam']['teamName']}")
             btn_home = types.InlineKeyboardButton(f"🏠 {h_full.split()[-1]}", callback_data=f"b_{gid}_{g['homeTeam']['teamName']}")
             
@@ -146,11 +143,11 @@ def handle_bet(call):
     db['daily_bets'][gid][user_id] = {"name": user_name, "choice": choice, "count": u_info["count"] + 1}
     save_db(db)
     
-    # התראות לאחר לחיצה
+    # הודעה מותאמת לאחר לחיצה ראשונה
     if u_info["count"] == 0:
-        bot.answer_callback_query(call.id, "✅ ההימור נקלט! נותר לך עוד שינוי אחד בלבד.", show_alert=True)
+        bot.answer_callback_query(call.id, f"✅ ההימור נקלט! נותר לך עוד שינוי אחד בלבד.", show_alert=True)
     else:
-        bot.answer_callback_query(call.id, "⚠️ ההימור שונה (זהו השינוי האחרון שלך!).", show_alert=True)
+        bot.answer_callback_query(call.id, f"⚠️ ההימור שונה (זהו השינוי האחרון שלך!).", show_alert=True)
 
 def run_scheduler():
     schedule.every().day.at("18:15").do(send_betting_board)
@@ -160,7 +157,6 @@ def run_scheduler():
         time.sleep(60)
 
 if __name__ == "__main__":
-    print("🚀 הבוט התניע - שולח הודעות ברוחב מקסימלי...")
     send_betting_board() 
     threading.Thread(target=run_scheduler, daemon=True).start()
     bot.infinity_polling()
