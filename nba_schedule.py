@@ -1,214 +1,98 @@
 import requests
 import time
-import pytz
-import logging
 import json
+import os
 from datetime import datetime, timedelta
 
-# ==============================================================================
-# --- הגדרות ---
-# ==============================================================================
-
+# הגדרות בוט ו-API
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
-STATE_FILE = "schedule_state.json"
+STATE_FILE = "nba_bot_state.json"
 
-RETRY_EVERY_MINUTES = 15
-SCHEDULE_START = "20:13"
-SCHEDULE_END = "21:38"
-RTL_MARK = "\u200f"
-
-logging.basicConfig(
-level=logging.INFO,
-format='%(asctime)s - [%(levelname)s] - %(message)s',
-datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
-
-NBA_HEBREW_MAP = {
-"Atlanta Hawks": "אטלנטה הוקס",
-"Boston Celtics": "בוסטון סלטיקס",
-"Brooklyn Nets": "ברוקלין נטס",
-"Charlotte Hornets": "שארלוט הורנטס",
-"Chicago Bulls": "שיקגו בולס",
-"Cleveland Cavaliers": "קליבלנד קאבלירס",
-"Dallas Mavericks": "דאלאס מאבריקס",
-"Denver Nuggets": "דנבר נאגטס",
-"Detroit Pistons": "דטרויט פיסטונס",
-"Golden State Warriors": "גולדן סטייט ווריורס",
-"Houston Rockets": "יוסטון רוקטס",
-"Indiana Pacers": "אינדיאנה פייסרס",
-"LA Clippers": "לוס אנג'לס קליפרס",
-"Los Angeles Lakers": "לוס אנג'לס לייקרס",
-"Memphis Grizzlies": "ממפיס גריזליס",
-"Miami Heat": "מיאמי היט",
-"Milwaukee Bucks": "מילווקי באקס",
-"Minnesota Timberwolves": "מינסוטה טימברוולבס",
-"New Orleans Pelicans": "ניו אורלינס פליקנס",
-"New York Knicks": "ניו יורק ניקס",
-"Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
-"Orlando Magic": "אורלנדו מג'יק",
-"Philadelphia 76ers": "פילדלפיה 76",
-"Phoenix Suns": "פיניקס סאנס",
-"Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
-"Sacramento Kings": "סקרמנטו קינגס",
-"San Antonio Spurs": "סן אנטוניו ספרס",
-"Toronto Raptors": "טורונטו ראפטורס",
-"Utah Jazz": "יוטה ג'אז",
-"Washington Wizards": "וושינגטון וויזארדס"
+# מילון שמות קבוצות מלא בעברית
+TEAM_NAMES_HEB = {
+    "Atlanta Hawks": "אטלנטה הוקס", "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס", "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס", "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס", "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס", "Golden State Warriors": "גולדן סטייט ווריירס",
+    "Houston Rockets": "יוסטון רוקטס", "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "ל.א קליפרס", "Los Angeles Lakers": "ל.א לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס", "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס", "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס", "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר", "Orlando Magic": "אורלנדו מג'יק",
+    "Philadelphia 76ers": "פילדלפיה 76", "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס", "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס", "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג'אז", "Washington Wizards": "וושינגטון וויזארדס"
 }
 
-# ==============================================================================
-# --- סטייט ---
-# ==============================================================================
-
-def load_state():
-    default = {"last_sent_date": None, "last_try_time": None}
+def send_telegram_msg(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            for k in default:
-                if k not in data:
-                    data[k] = default[k]
-            return data
-    except:
-        return default
-
-def save_state(state):
-    try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        requests.post(url, json=payload)
     except Exception as e:
-        logger.error(f"Failed to save state: {e}")
+        print(f"Error sending message: {e}")
 
-# ==============================================================================
-# --- עזר ---
-# ==============================================================================
-
-def get_israeli_flag(name):
-    return " 🇮🇱" if any(x in name for x in ["Brooklyn","Portland"]) else ""
-
-def format_team(name):
-    return f"{NBA_HEBREW_MAP.get(name,name)}{get_israeli_flag(name)}"
-
-def parse_iso_datetime(raw):
+def get_daily_schedule():
+    url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
     try:
-        return datetime.fromisoformat(raw.replace("Z","+00:00"))
-    except:
-        return None
-
-def get_message_hash(text):
-    return str(hash(text.strip()))
-
-# ==============================================================================
-# --- שליחה לטלגרם ---
-# ==============================================================================
-
-def send_to_telegram(text):
-    if not text:
-        return False
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id":CHAT_ID,"text":text,"parse_mode":"HTML","disable_web_page_preview":True},
-            timeout=15
-        )
-        if r.status_code==200:
-            logger.info("✅ Message sent successfully")
-            return True
-        logger.error(f"Telegram Error: {r.text}")
-        return False
+        response = requests.get(url).json()
+        games = response.get('scoreboard', {}).get('games')
+        
+        if not games:
+            return "🏀 אין משחקים מתוכננים להיום."
+        
+        msg = "🗓️ <b>לוח משחקי הלילה ב-NBA:</b>\n\n"
+        
+        for game in games:
+            home = game['homeTeam']['teamName']
+            away = game['awayTeam']['teamName']
+            
+            home_h = TEAM_NAMES_HEB.get(home, home)
+            away_h = TEAM_NAMES_HEB.get(away, away)
+            
+            # עיבוד זמן המשחק
+            game_time_str = game['gameEt'] # פורמט: 2024-03-30T19:00:00Z
+            dt_utc = datetime.strptime(game_time_str, "%Y-%m-%dT%H:%M:%SZ")
+            dt_israel = dt_utc + timedelta(hours=2)
+            time_str = dt_israel.strftime("%H:%M")
+            
+            msg += f"⏰ {time_str} | {away_h} 🆚 {home_h}\n"
+        
+        msg += "\n<b>צפייה מהנה!</b> 🏀"
+        return msg
     except Exception as e:
-        logger.error(f"Send Error: {e}")
-        return False
+        print(f"Schedule error: {e}")
+        return "⚠️ תקלה במשיכת לוח המשחקים."
 
-# ==============================================================================
-# --- בניית הודעה (סימולציה) ---
-# ==============================================================================
+def monitor_nba():
+    print("NBA Monitor Started...")
+    sent_today = False
+    last_date = ""
 
-def build_schedule_msg(data):
-    tz = pytz.timezone("Asia/Jerusalem")
-    now = datetime.now(tz)
-    header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב-NBA</b> ══ 🏀\n\n"
-    body = ""
-    for g in data:
-        local_dt = parse_iso_datetime(g["time"]).astimezone(tz)
-        time_str = local_dt.strftime("%H:%M")
-        body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
-    return header+body if body else None
-
-# ==============================================================================
-# --- סימולציה עם נתונים לדוגמה ---
-# ==============================================================================
-
-def simulate_nba_data():
-    tz = pytz.timezone("Asia/Jerusalem")
-    now = datetime.now(tz)
-    # נתונים מדומים לשלושה משחקים
-    return [
-        {"time": (now+timedelta(minutes=10)).isoformat(), "home":"Los Angeles Lakers", "away":"Boston Celtics", "id":"1", "status_name":"scheduled"},
-        {"time": (now+timedelta(minutes=40)).isoformat(), "home":"Brooklyn Nets", "away":"Miami Heat", "id":"1", "status_name":"scheduled"},
-        {"time": (now+timedelta(minutes=90)).isoformat(), "home":"Golden State Warriors", "away":"Chicago Bulls", "id":"1", "status_name":"scheduled"},
-    ]
-
-# ==============================================================================
-# --- מנגנון ריצה: רק כל רבע שעה בין 18:00 ל-19:30 ---
-# ==============================================================================
-
-def run_engine():
-    logger.info("🏀 NBA SCHEDULE BOT STARTED")
-    tz = pytz.timezone("Asia/Jerusalem")
-    state = load_state()
     while True:
-        now = datetime.now(tz)
-        today = now.strftime("%Y-%m-%d")
-        start = datetime.strptime(f"{today} {SCHEDULE_START}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-        end = datetime.strptime(f"{today} {SCHEDULE_END}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+        current_date = now.strftime("%Y-%m-%d")
 
-        if now < start or now > end:
-            sleep_sec = max((start-now).total_seconds(), 60)
-            logger.info(f"Outside window. Sleeping {int(sleep_sec)} sec")
-            time.sleep(sleep_sec)
-            continue
+        # איפוס המשתנה ביום חדש
+        if current_date != last_date:
+            sent_today = False
+            last_date = current_date
 
-        if state.get("last_sent_date")==today:
-            logger.info("Message already sent today. Sleeping until next day.")
-            time.sleep(3600)
-            continue
+        # שליחה ב-18:00
+        if current_time == "18:00" and not sent_today:
+            print("Sending daily schedule...")
+            schedule_msg = get_daily_schedule()
+            send_telegram_msg(schedule_msg)
+            sent_today = True
+            time.sleep(60)
 
-        last_try = state.get("last_try_time")
-        should_run = False
-        if not last_try:
-            should_run = True
-        else:
-            dt = datetime.fromisoformat(last_try)
-            if dt.tzinfo is None: dt = tz.localize(dt)
-            if (now-dt).total_seconds()/60 >= RETRY_EVERY_MINUTES:
-                should_run = True
+        # המתנה קצרה כדי לא להעמיס על המעבד
+        time.sleep(30)
 
-        if should_run:
-            logger.info("🚀 Attempting to send NBA schedule...")
-            state["last_try_time"] = now.isoformat()
-            save_state(state)
-
-            # --- כאן הסימולציה ---
-            data = simulate_nba_data()
-            msg = build_schedule_msg(data)
-            if msg:
-                print("\n--- SIMULATION MESSAGE ---\n")
-                print(msg) # מדפיס למסך במקום לשלוח בטלגרם
-                print("\n--- END OF SIMULATION ---\n")
-                state["last_sent_date"]=today
-                save_state(state)
-            else:
-                logger.info("No games yet.")
-
-        # מחכה עד לניסיון הבא (כל רבע שעה)
-        time.sleep(RETRY_EVERY_MINUTES*60)
-
-# ==============================================================================
-# --- MAIN ---
-# ==============================================================================
-
-if __name__=="__main__":
-    run_engine()
+if __name__ == "__main__":
+    monitor_nba()
