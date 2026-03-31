@@ -84,7 +84,7 @@ def monitor_nba():
             last_date = current_date
 
         # שליחה ב-18:00
-        if current_time == "18:00" and not sent_today:
+        if current_time == "20:22" and not sent_today:
             print("Sending daily schedule...")
             schedule_msg = get_daily_schedule()
             send_telegram_msg(schedule_msg)
