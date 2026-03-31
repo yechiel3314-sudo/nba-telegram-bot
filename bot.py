@@ -531,7 +531,9 @@ def get_boxscore(gid):
     return data
 
 def run():
-    print("🚀 בוט NBA משודרג - גרסה מלאה (250+ שורות) - כולל הארכות ופוסטר כוכב ביתי!")
+    print("🚀 בוט NBA משודרג - גרסה מלאה- כולל הארכותי!")
+
+    first_run = True  # 👈 זה כל הסיפור
 
     while True:
         try:
@@ -541,6 +543,51 @@ def run():
             resp = requests.get(NBA_URL, headers=HEADERS, timeout=10).json()
             games = resp.get('scoreboard', {}).get('games', [])
 
+            # ==========================================
+            # סיבוב ראשון - רק מילוי cache בלי שליחה
+            # ==========================================
+            if first_run:
+                print("⚡ אתחול ראשוני - לא נשלחות הודעות")
+
+                for g in games:
+                    gid = g['gameId']
+                    status = g['gameStatus']
+                    period = g.get('period', 0)
+                    txt = g.get('gameStatusText', '').lower()
+
+                    if gid not in cache["games"]:
+                        cache["games"][gid] = []
+
+                    log = cache["games"][gid]
+
+                    if status == 2:
+                        # פתיחות
+                        if period in [1, 3] and f"q{period}" in txt:
+                            log.append(f"start_q{period}")
+
+                        # מחצית / סיום רבע
+                        if "half" in txt:
+                            log.append(txt)
+                        if "end" in txt:
+                            log.append(txt)
+
+                        # דרמות
+                        if period == 4:
+                            log.append("drama_q4")
+
+                        if period > 4:
+                            log.append(f"drama_ot_{period}")
+
+                    elif status == 3:
+                        log.append("FINAL_SENT")
+
+                save_cache()
+                first_run = False
+                continue  # 👈 מדלג על שליחה בסיבוב הזה
+
+            # ==========================================
+            # מכאן הקוד שלך — ללא שינוי
+            # ==========================================
             for g in games:
                 gid = g['gameId']
                 status = g['gameStatus']
@@ -552,6 +599,8 @@ def run():
 
                 log = cache["games"][gid]
                 game_final_key = "FINAL_SENT"
+
+                # (כל הקוד שלך ממשיך מפה בדיוק כמו שהוא)
 
                 # ==========================================
                 # 1. פתיחת משחק / רבע 3
