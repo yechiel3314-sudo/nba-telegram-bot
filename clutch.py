@@ -84,7 +84,7 @@ def clock_to_seconds(clock: str):
 
 
 # ==============================
-# זיכרון התראות שנשלחו
+# זיכרון התראות
 # ==============================
 sent_clutch = {}
 sent_last45 = {}
@@ -108,18 +108,8 @@ def build_message(event: dict, alert_type: str):
     if len(competitors) < 2:
         return None
 
-    away = None
-    home = None
-
-    for comp in competitors:
-        if comp.get("homeAway") == "away":
-            away = comp
-        elif comp.get("homeAway") == "home":
-            home = comp
-
-    if not away or not home:
-        away = competitors[0]
-        home = competitors[1]
+    away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[0])
+    home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[1])
 
     away_name = tr_name(away["team"]["displayName"])
     home_name = tr_name(home["team"]["displayName"])
@@ -140,15 +130,12 @@ def build_message(event: dict, alert_type: str):
         leader_name = "שוויון"
         score_line = f"{away_score} - {home_score}"
 
-    # כותרת + סיום לפי סוג התראה
     if alert_type == "clutch":
         title = "🚨 <b>התראת קלאץ'!</b> 🚨"
         ending = "⚡ <b>הכל יכול להתהפך עכשיו!</b>"
-    elif alert_type == "last45":
-        title = "🚨 <b>התראת קלאץ' שניות אחרונות!</b> 🚨"
-        ending = "⏳ <b>כל מהלך עכשיו מכריע!</b>"
     else:
-        return None
+        title = "🚨 <b>התראת קלאץ! 45 שניות אחרונות!</b> 🚨"
+        ending = "⏳ <b>כל מהלך עכשיו מכריע!</b>"
 
     msg = ""
     msg += f"{RTL}{title}\n\n"
@@ -177,7 +164,6 @@ def check_all_nba_clutch():
             status = event.get("status", {})
             status_type = status.get("type", {})
 
-            # רק משחקים חיים
             if status_type.get("state") != "in":
                 continue
 
@@ -208,36 +194,23 @@ def check_all_nba_clutch():
                 continue
 
             # =========================
-            # 1) התראת קלאץ' רגילה
-            # רק רבע 4 (לא הארכה)
-            # פחות מ-4 דקות
+            # קלאץ'
             # =========================
             if period == 4 and clock_seconds < 240 and not sent_clutch.get(game_id):
                 msg = build_message(event, "clutch")
                 if msg:
                     send_telegram_message(msg)
                     sent_clutch[game_id] = True
-
-                    print("=" * 80)
-                    print("🚨 נשלחה התראת קלאץ'")
-                    print(msg)
-                    print("=" * 80)
+                    time.sleep(1)
 
             # =========================
-            # 2) התראת שניות אחרונות
-            # רבע 4 או הארכה
-            # 45 שניות או פחות
+            # 45 שניות - תמיד ישלח גם אם נכנס ב-00:40
             # =========================
             if period >= 4 and clock_seconds <= 45 and not sent_last45.get(game_id):
                 msg = build_message(event, "last45")
                 if msg:
                     send_telegram_message(msg)
                     sent_last45[game_id] = True
-
-                    print("=" * 80)
-                    print("⏳ נשלחה התראת שניות אחרונות")
-                    print(msg)
-                    print("=" * 80)
 
     except Exception as e:
         print(f"❌ שגיאה כללית: {e}")
@@ -251,4 +224,4 @@ if __name__ == "__main__":
 
     while True:
         check_all_nba_clutch()
-        time.sleep(10)
+        time.sleep(5)
