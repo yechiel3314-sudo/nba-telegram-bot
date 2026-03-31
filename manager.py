@@ -71,7 +71,7 @@ def sun_times(now: datetime):
 # חגים יהודיים לפי ישראל, בלי חול המועד
 # =====================
 def holiday_name_for_date(py_date):
-    heb_date = dates.HebrewDate(py_date.year, py_date.month, py_date.day)
+    heb_date = dates.GregorianDate(py_date.year, py_date.month, py_date.day).to_heb()
     return heb_date.holiday(israel=True, include_working_days=False)
 
 
