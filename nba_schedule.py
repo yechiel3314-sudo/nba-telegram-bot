@@ -73,7 +73,7 @@ def run_bot():
             last_date = current_date
 
         # כאן הלוגיקה המקורית - שליחה ב-18:00 בדיוק
-        if current_time == "18:00" and not sent_today:
+        if current_time == "20:28" and not sent_today:
             message = get_formatted_nba_schedule()
             
             # שליחת ההודעה לטלגרם
