@@ -14,8 +14,8 @@ from pyluach import dates
 # =====================
 # הגדרות
 # =====================
-TELEGRAM_TOKEN = "YOUR_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
+CHAT_ID = "-1003808107418"
 
 FILES = [
     "bot.py",
@@ -27,10 +27,10 @@ FILES = [
 ]
 
 # כמה דקות לפני שקיעה בשישי להתחיל לעצור
-PRE_SHABBAT_MINUTES = 20
+PRE_SHABBAT_MINUTES = 60
 
 # כמה דקות אחרי יציאת שבת לחזור לפעילות
-POST_SHABBAT_MINUTES = 10
+POST_SHABBAT_MINUTES = 15
 
 # כמה זמן להמתין בפתיחה כדי לא לשכפל תהליכים שכבר הופעלו ע"י ה-start command
 BOOT_GRACE_SECONDS = 45
@@ -192,18 +192,18 @@ def start_missing():
 
     for script in FILES:
         running = managed.get(script, [])
-        alive = []
 
+        alive = []
         for p in running:
             try:
-                if p.is_running():
+                if p.is_running() and p.status() != psutil.STATUS_ZOMBIE:
                     alive.append(p)
             except Exception:
                 pass
 
-        if not alive:
+        # רק אם אין בכלל תהליך פעיל
+        if len(alive) == 0:
             subprocess.Popen([sys.executable, script])
-
 
 # =====================
 # לולאה ראשית
