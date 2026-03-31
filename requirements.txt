@@ -10,6 +10,6 @@ schedule==1.2.1
 hebcal
 yt-dlp
 pyTelegramBotAPI
-psutil
-astral
-pyluach
+pyluach==0.2.5
+astral==2.2
+psutil==5.9.5
