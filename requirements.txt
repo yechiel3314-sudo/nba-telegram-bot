@@ -10,3 +10,6 @@ schedule==1.2.1
 hebcal
 yt-dlp
 pyTelegramBotAPI
+psutil
+astral
+pyluach
