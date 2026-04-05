@@ -433,25 +433,24 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
     # כותרת תוצאה
     # =========================
     if away_score == home_score:
-    msg += f"\u200f🔥 <b>שוויון {score_str}</b> 🔥\n\n"
-else:
-    leader_name = a_full if away_score > home_score else h_full
-    diff = abs(away_score - home_score)
-
-    if is_final:
-        win_emoji = "🏆"
-
-        if diff >= 25:
-            action = "מפרקת"
-        elif diff >= 15:
-            action = "מביסה"
-        else:
-            action = "מנצחת"
+        msg += f"\u200f🔥 <b>שוויון {score_str}</b> 🔥\n\n"
     else:
-        win_emoji = "🔥"
-        action = "מובילה"
+        leader_name = a_full if away_score > home_score else h_full
+        win_emoji = "🏆" if is_final else "🔥"
 
-    msg += f"\u200f{win_emoji} <b>{leader_name} {action} {score_str}</b> {win_emoji}\n\n"
+        if is_final:
+            diff = abs(away_score - home_score)
+
+            if diff >= 25:
+                action = "מפרקת"
+            elif diff >= 15:
+                action = "מביסה"
+            else:
+                action = "מנצחת"
+        else:
+            action = "מובילה"
+
+        msg += f"\u200f{win_emoji} <b>{leader_name} {action} {score_str}</b> {win_emoji}\n\n"
 
     # =========================
     # כמה שחקנים להציג
