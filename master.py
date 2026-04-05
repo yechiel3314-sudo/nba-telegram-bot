@@ -1,242 +1,427 @@
 import os
 import sys
 import time
-import signal
+import logging
 import subprocess
 from datetime import datetime, timedelta
 
-import requests
+import psutil
 import pytz
 from astral import LocationInfo
 from astral.sun import sun
-from hdate import HDateInfo
-
+from pyluach import dates
 
 # =========================================================
 # הגדרות
 # =========================================================
-TZ = pytz.timezone("Asia/Jerusalem")
-CITY = LocationInfo("Jerusalem", "Israel", "Asia/Jerusalem", 31.7683, 35.2137)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
 
-TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-CHAT_ID = "-1003808107418"
-
-# רשימת הסקריפטים שירוצו במקביל
-SCRIPTS = [
+FILES = [
     "bot.py",
     "nba.py",
     "clutch.py",
     "ligyonerim.py",
+    "winner.py",
     "nba_schedule.py",
 ]
 
-# כמה דקות אחרי השקיעה נחשב מוצ"ש
-MOTZEI_SHABBAT_OFFSET_MINUTES = 40
+# כמה דקות לפני שקיעה בשישי לעצור
+PRE_SHABBAT_MINUTES = 60
 
-# כל כמה שניות המנהל בודק מצב
-LOOP_SLEEP_SECONDS = 30
+# כמה דקות אחרי צאת שבת/חג לחזור
+POST_SHABBAT_MINUTES = 15
 
-# כל כמה שניות לבדוק מחדש כשיש שבת/חג
-REST_SLEEP_SECONDS = 60
+# כמה זמן לחכות בתחילת ריצה כדי למנוע כפילויות
+BOOT_GRACE_SECONDS = 45
+
+# כל כמה זמן לבדוק
+CHECK_EVERY_SECONDS = 60
+
+# אזור זמן ומיקום
+tz = pytz.timezone("Asia/Jerusalem")
+city = LocationInfo("Tel Aviv", "Israel", "Asia/Jerusalem", 32.0853, 34.7818)
+
+last_mode = None
+started_at = datetime.now(tz)
+
+# =========================================================
+# לוגים
+# =========================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_DIR, "manager.log"), encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+
+logger = logging.getLogger("manager")
 
 
 # =========================================================
-# טלגרם
+# בדיקות מערכת
 # =========================================================
-def send_telegram(message: str) -> None:
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        return
+def check_files_exist():
+    logger.info("בודק שכל קבצי הבוטים קיימים...")
+
+    all_ok = True
+
+    for script in FILES:
+        path = os.path.join(BASE_DIR, script)
+        if os.path.exists(path):
+            logger.info(f"קובץ קיים: {script}")
+        else:
+            logger.error(f"קובץ חסר: {script}")
+            all_ok = False
+
+    return all_ok
+
+
+# =========================================================
+# חישובי שקיעה / צאת
+# =========================================================
+def sun_times(now: datetime):
+    """
+    מחזיר (שקיעה, צאת) לפי היום הנוכחי.
+    מובטח שהזמנים יהיו עם timezone תואם ל-Asia/Jerusalem.
+    """
+    s = sun(city.observer, date=now.date(), tzinfo=tz)
+
+    sunset = s["sunset"]
+    dusk = s["dusk"]
+
+    if sunset.tzinfo is None:
+        sunset = tz.localize(sunset)
+    else:
+        sunset = sunset.astimezone(tz)
+
+    if dusk.tzinfo is None:
+        dusk = tz.localize(dusk)
+    else:
+        dusk = dusk.astimezone(tz)
+
+    return sunset, dusk
+
+
+# =========================================================
+# חגים יהודיים
+# =========================================================
+def holiday_name_for_date(py_date):
+    """
+    מחזיר שם חג אם התאריך הוא חג, אחרת None.
+    מנסה להיות תואם לגרסאות שונות של pyluach.
+    """
+    try:
+        heb_date = dates.GregorianDate(py_date.year, py_date.month, py_date.day).to_heb()
+    except Exception as e:
+        logger.exception(f"שגיאה בהמרת תאריך ל-heb: {e}")
+        return None
 
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(
-            url,
-            data={
-                "chat_id": CHAT_ID,
-                "text": message,
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
+        holiday = heb_date.holiday(israel=True, include_working_days=False)
+    except TypeError:
+        try:
+            holiday = heb_date.holiday(israel=True)
+        except Exception as e:
+            logger.exception(f"שגיאה בזיהוי חג: {e}")
+            return None
     except Exception as e:
-        print(f"⚠️ Telegram send failed: {e}")
+        logger.exception(f"שגיאה בזיהוי חג: {e}")
+        return None
+
+    return holiday if holiday else None
 
 
-# =========================================================
-# זמן ויום
-# =========================================================
-def now_local() -> datetime:
-    return datetime.now(TZ)
+def is_shabbat_locked(now: datetime) -> bool:
+    sunset, dusk = sun_times(now)
 
-
-def today_date():
-    return now_local().date()
-
-
-def sunset_for(date_obj):
-    return sun(CITY.observer, date=date_obj, tzinfo=TZ)["sunset"]
-
-
-# =========================================================
-# שבת
-# =========================================================
-def is_shabbat() -> bool:
-    now = now_local()
-    weekday = now.weekday()  # Monday=0 ... Sunday=6
-
-    today = now.date()
-    yesterday = today - timedelta(days=1)
-
-    sunset_today = sunset_for(today)
-    sunset_yesterday = sunset_for(yesterday)
-
-    # שישי אחרי שקיעה
-    if weekday == 4 and now >= sunset_today:
+    # שישי - PRE_SHABBAT_MINUTES לפני שקיעה
+    if now.weekday() == 4 and now >= sunset - timedelta(minutes=PRE_SHABBAT_MINUTES):
         return True
 
-    # שבת עד צאת שבת (40 דקות אחרי שקיעת שישי)
-    if weekday == 5:
-        motzei = sunset_yesterday + timedelta(minutes=MOTZEI_SHABBAT_OFFSET_MINUTES)
-        if now <= motzei:
-            return True
+    # שבת - עד POST_SHABBAT_MINUTES אחרי צאת שבת
+    if now.weekday() == 5 and now <= dusk + timedelta(minutes=POST_SHABBAT_MINUTES):
+        return True
 
     return False
 
 
+def is_holiday_locked(now: datetime) -> bool:
+    sunset, dusk = sun_times(now)
+    today_holiday = holiday_name_for_date(now.date())
+    tomorrow_holiday = holiday_name_for_date(now.date() + timedelta(days=1))
+
+    # ביום חג עצמו: עד X דקות אחרי צאת החג
+    if today_holiday:
+        return now <= dusk + timedelta(minutes=POST_SHABBAT_MINUTES)
+
+    # ערב חג: מהשקיעה
+    if tomorrow_holiday and now >= sunset:
+        return True
+
+    return False
+
+
+def get_mode(now: datetime) -> str:
+    if is_shabbat_locked(now):
+        return "shabbat"
+    if is_holiday_locked(now):
+        return "holiday"
+    return "regular"
+
+
 # =========================================================
-# חגים בישראל בלבד
+# זיהוי תהליכים
 # =========================================================
-def is_holiday() -> bool:
-    # diaspora=False => ישראל בלבד, בלי חו"ל
-    info = HDateInfo(today_date(), diaspora=False)
-    return bool(info.is_holiday)
+def script_from_cmdline(cmdline):
+    if not cmdline:
+        return None
 
-
-def is_work_time() -> bool:
-    return not (is_shabbat() or is_holiday())
-
-
-# =========================================================
-# ניהול תהליכים
-# =========================================================
-processes = {}  # script_name -> subprocess.Popen
-
-
-def start_script(script: str) -> None:
-    if script in processes and processes[script].poll() is None:
-        return
-
-    if not os.path.exists(script):
-        print(f"❌ {script} לא קיים - מדלג")
-        return
-
-    print(f"🚀 מפעיל {script}")
-    p = subprocess.Popen(
-        [sys.executable, "-u", script],
-        stdout=None,
-        stderr=None,
-    )
-    processes[script] = p
-
-
-def stop_script(script: str) -> None:
-    p = processes.get(script)
-    if not p:
-        return
-
-    if p.poll() is not None:
-        processes.pop(script, None)
-        return
-
-    try:
-        p.terminate()
-        p.wait(timeout=5)
-    except Exception:
+    for part in cmdline:
         try:
-            p.kill()
+            base = os.path.basename(str(part).strip('"').strip("'"))
+            if base in FILES:
+                return base
         except Exception:
-            pass
-    finally:
-        processes.pop(script, None)
-
-
-def start_all() -> None:
-    for script in SCRIPTS:
-        start_script(script)
-        time.sleep(2)
-
-
-def stop_all() -> None:
-    print("⛔ שבת/חג - עוצר את כל הבוטים...")
-    for script in list(processes.keys()):
-        stop_script(script)
-
-
-def check_processes() -> None:
-    for script in SCRIPTS:
-        p = processes.get(script)
-        if not p:
             continue
 
-        if p.poll() is not None:
-            exit_code = p.returncode
-            print(f"⚠️ {script} נפל (קוד יציאה: {exit_code}) - מפעיל מחדש")
+    return None
+
+
+def scan_managed_processes():
+    found = {f: [] for f in FILES}
+
+    for proc in psutil.process_iter(attrs=["pid", "cmdline", "status"]):
+        try:
+            if proc.info["pid"] == os.getpid():
+                continue
+
+            cmdline = proc.info.get("cmdline") or []
+            script = script_from_cmdline(cmdline)
+
+            if script:
+                found[script].append(proc)
+
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception as e:
+            logger.exception(f"שגיאה בסריקת תהליך: {e}")
+
+    return found
+
+
+def is_process_alive(proc):
+    try:
+        return proc.is_running() and proc.status() not in [psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD]
+    except Exception:
+        return False
+
+
+# =========================================================
+# עצירה
+# =========================================================
+def stop_processes(process_list):
+    if not process_list:
+        return
+
+    pids = [p.pid for p in process_list]
+    logger.info(f"עוצר תהליכים: {pids}")
+
+    for p in process_list:
+        try:
+            p.terminate()
+            logger.info(f"נשלח terminate ל-PID {p.pid}")
+        except Exception as e:
+            logger.warning(f"terminate נכשל עבור PID {p.pid}: {e}")
+
+    try:
+        gone, alive = psutil.wait_procs(process_list, timeout=10)
+    except Exception as e:
+        logger.warning(f"wait_procs נכשל: {e}")
+        alive = process_list
+
+    if not alive:
+        logger.info("כל התהליכים נעצרו בהצלחה")
+        return
+
+    logger.warning("יש תהליכים שעדיין חיים - מבצע kill")
+
+    for p in alive:
+        try:
+            if is_process_alive(p):
+                p.kill()
+                logger.info(f"בוצע KILL ל-PID {p.pid}")
+        except Exception as e:
+            logger.warning(f"kill נכשל עבור PID {p.pid}: {e}")
+
+    try:
+        psutil.wait_procs(alive, timeout=5)
+    except Exception:
+        pass
+
+
+def stop_all_running():
+    managed = scan_managed_processes()
+    unique = {}
+
+    for script, plist in managed.items():
+        for p in plist:
+            unique[p.pid] = p
+
+    if unique:
+        stop_processes(list(unique.values()))
+    else:
+        logger.info("לא נמצאו תהליכים לעצירה")
+
+
+# =========================================================
+# הפעלה
+# =========================================================
+def start_script(script):
+    script_path = os.path.join(BASE_DIR, script)
+
+    if not os.path.exists(script_path):
+        logger.error(f"לא ניתן להפעיל - קובץ חסר: {script_path}")
+        return False
+
+    log_file_path = os.path.join(LOGS_DIR, f"{os.path.splitext(script)[0]}.log")
+
+    try:
+        logger.info(f"מריץ פקודה: {sys.executable} {script_path}")
+
+        with open(log_file_path, "a", encoding="utf-8") as log_file:
+            popen_kwargs = dict(
+                cwd=BASE_DIR,
+                stdout=log_file,
+                stderr=log_file,
+                stdin=subprocess.DEVNULL,
+            )
+
+            # start_new_session מתאים ללינוקס/ריילווי.
+            # אם תריץ מקומית ב-Windows, נשתמש בלי זה.
+            if os.name != "nt":
+                popen_kwargs["start_new_session"] = True
+
+            process = subprocess.Popen(
+                [sys.executable, script_path],
+                **popen_kwargs,
+            )
+
+        logger.info(f"הופעל {script} | PID={process.pid}")
+        return True
+
+    except Exception as e:
+        logger.exception(f"שגיאה בהפעלת {script}: {e}")
+        return False
+
+
+def start_missing():
+    managed = scan_managed_processes()
+
+    for script in FILES:
+        running = managed.get(script, [])
+        alive = [p for p in running if is_process_alive(p)]
+
+        if len(alive) == 0:
+            logger.info(f"{script} לא רץ - מפעיל")
             start_script(script)
+        else:
+            logger.info(f"{script} כבר רץ | PIDs={[p.pid for p in alive]}")
 
 
 # =========================================================
-# לוגיקת מצב
+# מצב מערכת
 # =========================================================
-def mode_name(work_time: bool) -> str:
-    return "work" if work_time else "rest"
+def log_status(mode):
+    managed = scan_managed_processes()
+    summary = {}
+
+    for script, plist in managed.items():
+        alive = []
+        for p in plist:
+            if is_process_alive(p):
+                alive.append(p.pid)
+        summary[script] = alive
+
+    logger.info(f"מצב מערכת: {mode} | תהליכים פעילים: {summary}")
 
 
-def main() -> None:
-    print("🔥 Master Bot Manager הופעל בהצלחה")
+# =========================================================
+# בדיקות פתיחה
+# =========================================================
+def startup_checks():
+    logger.info("=" * 80)
+    logger.info("MANAGER STARTED")
+    logger.info("=" * 80)
 
-    running = False
-    last_mode = None
+    if not check_files_exist():
+        logger.critical("עצירה: חסרים קבצים.")
+        return False
+
+    try:
+        now = datetime.now(tz)
+        sunset, dusk = sun_times(now)
+        logger.info(f"זמן נוכחי: {now}")
+        logger.info(f"שקיעה היום: {sunset}")
+        logger.info(f"צאת היום: {dusk}")
+        logger.info(f"חג היום: {holiday_name_for_date(now.date())}")
+        logger.info(f"חג מחר: {holiday_name_for_date(now.date() + timedelta(days=1))}")
+        logger.info(f"מצב מחושב כרגע: {get_mode(now)}")
+    except Exception as e:
+        logger.exception(f"שגיאה בבדיקות פתיחה: {e}")
+        return False
+
+    return True
+
+
+# =========================================================
+# לולאה ראשית
+# =========================================================
+def run():
+    global last_mode
+
+    if not startup_checks():
+        return
+
+    logger.info(f"ממתין {BOOT_GRACE_SECONDS} שניות כדי למנוע כפילויות...")
+    while (datetime.now(tz) - started_at).total_seconds() < BOOT_GRACE_SECONDS:
+        time.sleep(1)
+
+    logger.info("מתחיל לולאת ניהול ראשית")
 
     while True:
         try:
-            work_time = is_work_time()
-            current_mode = mode_name(work_time)
+            now = datetime.now(tz)
+            mode = get_mode(now)
 
-            # שינוי מצב: נכנסנו לשבת/חג
-            if last_mode is not None and current_mode != last_mode:
-                if current_mode == "rest":
-                    send_telegram("שבת שלום חברים! נתראה במוצ\"ש עם כוחות מחודשים. 💪")
-                else:
-                    send_telegram("שבוע טוב! 🌙 הבוט זמין ושב לעדכן כרגיל.")
+            logger.info(f"בדיקת מחזור | זמן: {now.strftime('%Y-%m-%d %H:%M:%S')} | mode={mode}")
 
-            last_mode = current_mode
+            if mode != last_mode:
+                logger.info(f"שינוי מצב: {last_mode} -> {mode}")
 
-            if not work_time:
-                if running:
-                    stop_all()
-                    running = False
+                if mode in ["shabbat", "holiday"]:
+                    logger.info("נכנס למצב נעילה - עוצר את כל הבוטים")
+                    stop_all_running()
 
-                print(f"😴 [{now_local().strftime('%H:%M:%S')}] שבת/חג - בהמתנה...")
-                time.sleep(REST_SLEEP_SECONDS)
-                continue
+                elif mode == "regular":
+                    logger.info("חזר למצב רגיל - מפעיל בוטים חסרים")
+                    start_missing()
 
-            # זמן חול
-            if not running:
-                print(f"🌅 [{now_local().strftime('%H:%M:%S')}] זמן חול - מפעיל בוטים")
-                start_all()
-                running = True
+                last_mode = mode
 
-            check_processes()
+            if mode == "regular":
+                start_missing()
 
-        except KeyboardInterrupt:
-            print("🛑 הופסק ידנית")
-            stop_all()
-            break
+            log_status(mode)
+
         except Exception as e:
-            print(f"❌ שגיאה קריטית במנהל: {e}")
+            logger.exception(f"שגיאה בלולאה הראשית: {e}")
 
-        time.sleep(LOOP_SLEEP_SECONDS)
+        time.sleep(CHECK_EVERY_SECONDS)
 
 
 if __name__ == "__main__":
-    main()
+    run()
