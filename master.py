@@ -159,19 +159,39 @@ def is_shabbat_locked(now: datetime) -> bool:
 
 def is_holiday_locked(now: datetime) -> bool:
     sunset, dusk = sun_times(now)
-    today = holiday_name_for_date(now.date())
-    tomorrow = holiday_name_for_date(now.date() + timedelta(days=1))
 
-    # אם זה חול המועד – לא נועלים
-    if today and "Chol" in str(today):
+    heb = dates.GregorianDate(now.year, now.month, now.day).to_heb()
+    h = heb.holiday(israel=True)
+
+    # רשימת ימים שהם יום טוב (נעילה)
+    YOM_TOV = [
+        "Pesach I",
+        "Pesach VII",
+        "Shavuot",
+        "Rosh Hashana I",
+        "Rosh Hashana II",
+        "Yom Kippur",
+        "Sukkot I",
+        "Shemini Atzeret",
+        "Simchat Torah",
+    ]
+
+    # אם זה לא יום טוב → זה חול המועד → לא נועלים
+    if str(h) not in YOM_TOV:
         return False
 
-    # חג עצמו
-    if today:
+    # ביום חג עצמו
+    if h:
         return now <= dusk + timedelta(minutes=POST_SHABBAT_MINUTES)
 
     # ערב חג
-    if tomorrow and "Chol" not in str(tomorrow) and now >= sunset:
+    tomorrow = dates.GregorianDate(
+        (now + timedelta(days=1)).year,
+        (now + timedelta(days=1)).month,
+        (now + timedelta(days=1)).day
+    ).to_heb().holiday(israel=True)
+
+    if tomorrow and str(tomorrow) in YOM_TOV and now >= sunset:
         return True
 
     return False
