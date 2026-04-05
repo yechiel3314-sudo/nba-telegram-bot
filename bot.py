@@ -221,6 +221,13 @@ NBA_PLAYERS_HEB = {
 
 }
 
+BAD_TRANSLATIONS_FIXES = {
+    "שחור דולף": "נאסיר ליטל",
+    "ירמיהו פחד": "ג'רמיה פירס",
+    "ישעיהו הרטנשטיין": "אייזיאה הרטנשטיין",
+    "ישעיהו ליברס": "אייזיאה ליברס",
+}
+
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
@@ -248,14 +255,23 @@ def translate_name(name):
     if not name:
         return ""
 
+    # 1) אם השם כבר קיים במילון שחקנים
     if name in NBA_PLAYERS_HEB:
         return NBA_PLAYERS_HEB[name]
 
+    # 2) אם זה שם קבוצה
     if name in NBA_TEAMS_HEBREW:
         return NBA_TEAMS_HEBREW[name]
 
+    # 3) אם כבר שמרנו תרגום ידני/קודם
     if name in cache["names"]:
-        return cache["names"][name]
+        cached_name = cache["names"][name]
+        if cached_name in BAD_TRANSLATIONS_FIXES:
+            fixed = BAD_TRANSLATIONS_FIXES[cached_name]
+            cache["names"][name] = fixed
+            save_cache()
+            return fixed
+        return cached_name
 
     try:
         clean_name = (
@@ -264,15 +280,21 @@ def translate_name(name):
                 .replace("II", "")
                 .strip()
         )
+
         translated = translator.translate(clean_name)
+        print(f"🌍 תרגום גוגל: {name} -> {translated}")
+
+        # 4) תיקון תרגומים גרועים
+        if translated in BAD_TRANSLATIONS_FIXES:
+            translated = BAD_TRANSLATIONS_FIXES[translated]
 
         cache["names"][name] = translated
         save_cache()
         return translated
+
     except Exception as e:
         print(f"❌ Error translating {name}: {e}")
         return name
-
 def get_stat_line(p):
     s = p.get('statistics', {})
     points = s.get('points', 0)
@@ -411,12 +433,25 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
     # כותרת תוצאה
     # =========================
     if away_score == home_score:
-        msg += f"\u200f🔥 <b>שוויון {score_str}</b> 🔥\n\n"
+    msg += f"\u200f🔥 <b>שוויון {score_str}</b> 🔥\n\n"
+else:
+    leader_name = a_full if away_score > home_score else h_full
+    diff = abs(away_score - home_score)
+
+    if is_final:
+        win_emoji = "🏆"
+
+        if diff >= 25:
+            action = "מפרקת"
+        elif diff >= 15:
+            action = "מביסה"
+        else:
+            action = "מנצחת"
     else:
-        leader_name = a_full if away_score > home_score else h_full
-        win_emoji = "🏆" if is_final else "🔥"
-        action = "מנצחת" if is_final else "מובילה"
-        msg += f"\u200f{win_emoji} <b>{leader_name} {action} {score_str}</b> {win_emoji}\n\n"
+        win_emoji = "🔥"
+        action = "מובילה"
+
+    msg += f"\u200f{win_emoji} <b>{leader_name} {action} {score_str}</b> {win_emoji}\n\n"
 
     # =========================
     # כמה שחקנים להציג
