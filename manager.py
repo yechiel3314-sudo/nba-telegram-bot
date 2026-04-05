@@ -84,16 +84,55 @@ def check_files_exist():
 # חישובי שקיעה / צאת
 # =========================================================
 def sun_times(now: datetime):
+    """
+    מחזיר (שקיעה, צאת) לפי היום הנוכחי.
+    מובטח שהזמנים יהיו עם timezone תואם ל-Asia/Jerusalem.
+    """
     s = sun(city.observer, date=now.date(), tzinfo=tz)
-    return s["sunset"], s["dusk"]
+
+    sunset = s["sunset"]
+    dusk = s["dusk"]
+
+    if sunset.tzinfo is None:
+        sunset = tz.localize(sunset)
+    else:
+        sunset = sunset.astimezone(tz)
+
+    if dusk.tzinfo is None:
+        dusk = tz.localize(dusk)
+    else:
+        dusk = dusk.astimezone(tz)
+
+    return sunset, dusk
 
 
 # =========================================================
-# חגים יהודיים (ללא 2 ימי חג)
+# חגים יהודיים
 # =========================================================
 def holiday_name_for_date(py_date):
-    heb_date = dates.GregorianDate(py_date.year, py_date.month, py_date.day).to_heb()
-    return heb_date.holiday(israel=True, include_working_days=False)
+    """
+    מחזיר שם חג אם התאריך הוא חג, אחרת None.
+    מנסה להיות תואם לגרסאות שונות של pyluach.
+    """
+    try:
+        heb_date = dates.GregorianDate(py_date.year, py_date.month, py_date.day).to_heb()
+    except Exception as e:
+        logger.exception(f"שגיאה בהמרת תאריך ל-heb: {e}")
+        return None
+
+    try:
+        holiday = heb_date.holiday(israel=True, include_working_days=False)
+    except TypeError:
+        try:
+            holiday = heb_date.holiday(israel=True)
+        except Exception as e:
+            logger.exception(f"שגיאה בזיהוי חג: {e}")
+            return None
+    except Exception as e:
+        logger.exception(f"שגיאה בזיהוי חג: {e}")
+        return None
+
+    return holiday if holiday else None
 
 
 def is_shabbat_locked(now: datetime) -> bool:
@@ -198,32 +237,30 @@ def stop_processes(process_list):
         except Exception as e:
             logger.warning(f"terminate נכשל עבור PID {p.pid}: {e}")
 
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        still_alive = []
+    try:
+        gone, alive = psutil.wait_procs(process_list, timeout=10)
+    except Exception as e:
+        logger.warning(f"wait_procs נכשל: {e}")
+        alive = process_list
 
-        for p in process_list:
-            try:
-                if is_process_alive(p):
-                    still_alive.append(p)
-            except Exception:
-                continue
-
-        if not still_alive:
-            logger.info("כל התהליכים נעצרו בהצלחה")
-            return
-
-        time.sleep(0.5)
+    if not alive:
+        logger.info("כל התהליכים נעצרו בהצלחה")
+        return
 
     logger.warning("יש תהליכים שעדיין חיים - מבצע kill")
 
-    for p in process_list:
+    for p in alive:
         try:
             if is_process_alive(p):
                 p.kill()
                 logger.info(f"בוצע KILL ל-PID {p.pid}")
         except Exception as e:
             logger.warning(f"kill נכשל עבור PID {p.pid}: {e}")
+
+    try:
+        psutil.wait_procs(alive, timeout=5)
+    except Exception:
+        pass
 
 
 def stop_all_running():
@@ -253,16 +290,25 @@ def start_script(script):
     log_file_path = os.path.join(LOGS_DIR, f"{os.path.splitext(script)[0]}.log")
 
     try:
-        log_file = open(log_file_path, "a", encoding="utf-8")
+        logger.info(f"מריץ פקודה: {sys.executable} {script_path}")
 
-        process = subprocess.Popen(
-            [sys.executable, script_path],
-            cwd=BASE_DIR,
-            stdout=log_file,
-            stderr=log_file,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        with open(log_file_path, "a", encoding="utf-8") as log_file:
+            popen_kwargs = dict(
+                cwd=BASE_DIR,
+                stdout=log_file,
+                stderr=log_file,
+                stdin=subprocess.DEVNULL,
+            )
+
+            # start_new_session מתאים ללינוקס/ריילווי.
+            # אם תריץ מקומית ב-Windows, נשתמש בלי זה.
+            if os.name != "nt":
+                popen_kwargs["start_new_session"] = True
+
+            process = subprocess.Popen(
+                [sys.executable, script_path],
+                **popen_kwargs,
+            )
 
         logger.info(f"הופעל {script} | PID={process.pid}")
         return True
