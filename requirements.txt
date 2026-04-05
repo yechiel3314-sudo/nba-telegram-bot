@@ -12,4 +12,3 @@ psutil==5.9.8
 astral==3.2
 pyluach==2.2.0
 hdate==0.10.0
-astral==3.2
