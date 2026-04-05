@@ -228,6 +228,12 @@ BAD_TRANSLATIONS_FIXES = {
     "ישעיהו ליברס": "אייזיאה ליברס",
 }
 
+PLAYER_PHOTOS = {
+    "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
+    "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
+    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
+}
+
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
@@ -295,6 +301,46 @@ def translate_name(name):
     except Exception as e:
         print(f"❌ Error translating {name}: {e}")
         return name
+
+def get_player_photo(player):
+    """
+    מחזיר קישור לתמונה של שחקן אם קיים ב-PLAYER_PHOTOS
+    """
+    first = player.get("firstName", "").strip()
+    last = player.get("familyName", "").strip()
+    full_name = f"{first} {last}".strip()
+
+    print(f"🔎 מחפש תמונה עבור MVP: {full_name}")
+
+    # בדיקה רגילה
+    if full_name in PLAYER_PHOTOS:
+        print(f"✅ נמצאה תמונה עבור: {full_name}")
+        return PLAYER_PHOTOS[full_name]
+
+    # נסיון לנרמל שמות עם תווים מיוחדים
+    normalized = (
+        full_name.replace("ć", "c")
+                 .replace("č", "c")
+                 .replace("š", "s")
+                 .replace("ž", "z")
+                 .replace("đ", "d")
+                 .replace("ñ", "n")
+                 .replace("é", "e")
+                 .replace("á", "a")
+                 .replace("ó", "o")
+                 .replace("í", "i")
+                 .replace("ū", "u")
+                 .replace("ņ", "n")
+                 .replace("ģ", "g")
+    )
+
+    if normalized in PLAYER_PHOTOS:
+        print(f"✅ נמצאה תמונה אחרי נרמול עבור: {normalized}")
+        return PLAYER_PHOTOS[normalized]
+
+    print(f"📸 אין תמונה עבור: {full_name}")
+    return None
+    
 def get_stat_line(p):
     s = p.get('statistics', {})
     points = s.get('points', 0)
@@ -486,9 +532,6 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
     # =========================
     # MVP רק בסיום משחק
     # =========================
-        # =========================
-    # MVP רק בסיום משחק
-    # =========================
     if is_final:
         away_score = int(away.get("score", 0))
         home_score = int(home.get("score", 0))
@@ -503,31 +546,40 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
         if candidates:
             mvp = sorted(candidates, key=mvp_sort_key, reverse=True)[0]
             mvp_name = translate_name(f"{mvp.get('firstName', '')} {mvp.get('familyName', '')}".strip())
+
             msg += f"\u200f🏆 <b>ה-MVP של המשחק: {mvp_name}</b>\n"
             msg += f"\u200f📊 {get_stat_line(mvp)}\n"
 
-    # השורה הזו צריכה להיות מוזזת פנימה ככה:
-    return msg, None
+            # חיפוש תמונה ל-MVP
+            photo_url = get_player_photo(mvp)
+
+    return msg, photo_url
 
 def send_telegram(text, photo_url=None):
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
 
-    # שומרים רק על תגיות שאנחנו משתמשים בהן
     safe_text = html.escape(text)
     safe_text = safe_text.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
 
     try:
         if photo_url:
-            r = requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-                data={**payload, "photo": photo_url, "caption": safe_text},
-                timeout=20
-            )
-            if r.status_code == 200:
-                print("📸 תמונה נשלחה בהצלחה")
-                return
-            else:
-                print(f"⚠️ sendPhoto נכשל: {r.status_code} | {r.text}")
+            try:
+                print(f"📸 מנסה לשלוח תמונת MVP: {photo_url}")
+                r = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+                    data={**payload, "photo": photo_url, "caption": safe_text},
+                    timeout=20
+                )
+
+                if r.status_code == 200:
+                    print("📸 תמונת MVP נשלחה בהצלחה")
+                    return
+                else:
+                    print(f"⚠️ sendPhoto נכשל: {r.status_code} | {r.text}")
+                    print("↪️ עובר לשליחת טקסט רגילה...")
+            except Exception as e:
+                print(f"⚠️ שגיאה בשליחת תמונה: {e}")
+                print("↪️ עובר לשליחת טקסט רגילה...")
 
         r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -805,7 +857,6 @@ def run():
             print(f"❌ שגיאה כללית בלולאה: {e}")
 
         time.sleep(10)
-
 
 if __name__ == "__main__":
     run()
