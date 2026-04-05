@@ -248,17 +248,20 @@ def translate_name(name):
     if not name:
         return ""
 
-    # 1. בדיקה במילון שחקנים
+    # 1. בדיקה במילון שחקנים ידני
     if name in NBA_PLAYERS_HEB:
         return NBA_PLAYERS_HEB[name]
     
-    # 2. בדיקה במילון קבוצות
+    # 2. בדיקה במילון קבוצות ידני
     if name in NBA_TEAMS_HEBREW:
         return NBA_TEAMS_HEBREW[name]
 
-    # 3. בדיקה ב-cache
+    # 3. בדיקה ב-cache (אם תרגמת משהו בעבר הוא עדיין שם)
     if name in cache["names"]:
         return cache["names"][name]
+
+    # 4. אם לא נמצא - פשוט תחזיר את השם המקורי (באנגלית)
+    return name
 
     # 4. תרגום אוטומטי
     try:
