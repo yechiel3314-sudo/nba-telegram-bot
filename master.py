@@ -37,7 +37,7 @@ POST_SHABBAT_MINUTES = 15
 BOOT_GRACE_SECONDS = 45
 
 # כל כמה זמן לבדוק
-CHECK_EVERY_SECONDS = 60
+CHECK_EVERY_SECONDS = 10
 
 # אזור זמן ומיקום
 tz = pytz.timezone("Asia/Jerusalem")
@@ -110,6 +110,14 @@ def sun_times(now: datetime):
 # חגים יהודיים
 # =========================================================
 def holiday_name_for_date(py_date):
+    heb_date = dates.GregorianDate(py_date.year, py_date.month, py_date.day).to_heb()
+
+    try:
+        holiday = heb_date.holiday(israel=True, include_working_days=True)
+    except:
+        holiday = heb_date.holiday(israel=True)
+
+    return holiday if holiday else None
     """
     מחזיר שם חג אם התאריך הוא חג, אחרת None.
     מנסה להיות תואם לגרסאות שונות של pyluach.
@@ -151,19 +159,22 @@ def is_shabbat_locked(now: datetime) -> bool:
 
 def is_holiday_locked(now: datetime) -> bool:
     sunset, dusk = sun_times(now)
-    today_holiday = holiday_name_for_date(now.date())
-    tomorrow_holiday = holiday_name_for_date(now.date() + timedelta(days=1))
+    today = holiday_name_for_date(now.date())
+    tomorrow = holiday_name_for_date(now.date() + timedelta(days=1))
 
-    # ביום חג עצמו: עד X דקות אחרי צאת החג
-    if today_holiday:
+    # אם זה חול המועד – לא נועלים
+    if today and "Chol" in str(today):
+        return False
+
+    # חג עצמו
+    if today:
         return now <= dusk + timedelta(minutes=POST_SHABBAT_MINUTES)
 
-    # ערב חג: מהשקיעה
-    if tomorrow_holiday and now >= sunset:
+    # ערב חג
+    if tomorrow and "Chol" not in str(tomorrow) and now >= sunset:
         return True
 
     return False
-
 
 def get_mode(now: datetime) -> str:
     if is_shabbat_locked(now):
