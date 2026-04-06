@@ -4,8 +4,8 @@ import time
 # ==============================
 # הגדרות טלגרם
 # ==============================
-TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
-CHAT_ID = "-1003808107418"
+TELEGRAM_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"
+CHAT_ID = "PUT_YOUR_CHAT_ID_HERE"
 
 def send_telegram_message(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -51,6 +51,7 @@ TEAM_FIXES = {
     "Houston Rockets": "יוסטון רוקטס",
     "Indiana Pacers": "אינדיאנה פייסרס",
     "LA Clippers": "לוס אנג'לס קליפרס",
+    "Los Angeles Clippers": "לוס אנג'לס קליפרס",
     "Los Angeles Lakers": "לוס אנג'לס לייקרס",
     "Memphis Grizzlies": "ממפיס גריזליס",
     "Miami Heat": "מיאמי היט",
@@ -82,6 +83,21 @@ def clock_to_seconds(clock: str):
     except:
         return None
 
+def get_competitors(event: dict):
+    competition = event.get("competitions", [{}])[0]
+    competitors = competition.get("competitors", [])
+    if len(competitors) < 2:
+        return None, None
+
+    away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+    home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+
+    if away is None or home is None:
+        away = competitors[0]
+        home = competitors[1]
+
+    return away, home
+
 
 # ==============================
 # זיכרון התראות
@@ -101,20 +117,13 @@ def build_message(event: dict, alert_type: str):
         return None
 
     clock = status.get("displayClock", "")
-
-    competition = event.get("competitions", [{}])[0]
-    competitors = competition.get("competitors", [])
-
-    if len(competitors) < 2:
+    away, home = get_competitors(event)
+    if not away or not home:
         return None
 
-    away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[0])
-    home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[1])
-
-    away_name = tr_name(away["team"]["displayName"])
-    home_name = tr_name(home["team"]["displayName"])
-
     try:
+        away_name = tr_name(away["team"]["displayName"])
+        home_name = tr_name(home["team"]["displayName"])
         away_score = int(away["score"])
         home_score = int(home["score"])
     except:
@@ -132,10 +141,10 @@ def build_message(event: dict, alert_type: str):
 
     if alert_type == "clutch":
         title = "🚨 <b>התראת קלאץ'!</b> 🚨"
-        ending = "⚡ <b>הכל יכול להתהפך עכשיו!</b>"
+        ending = "✨ <b>הכל יכול להתהפך עכשיו!</b> ✨"
     else:
-        title = "🚨 <b>התראת קלאץ! 45 שניות אחרונות!</b> 🚨"
-        ending = "⏳ <b>כל מהלך עכשיו מכריע!</b>"
+        title = "🚨 <b>התראת קלאץ! דקה אחרונה</b> 🚨"
+        ending = "⏳ <b>כל מהלך עכשיו מכריע!</b> ⏳"
 
     msg = ""
     msg += f"{RTL}{title}\n\n"
@@ -158,6 +167,7 @@ def build_message(event: dict, alert_type: str):
 def check_all_nba_clutch():
     try:
         resp = requests.get(NBA_SCOREBOARD, timeout=10)
+        resp.raise_for_status()
         data = resp.json()
 
         for event in data.get("events", []):
@@ -168,49 +178,45 @@ def check_all_nba_clutch():
                 continue
 
             game_id = event.get("id")
-            period = status.get("period")
+            period = status.get("period", 0)
             clock = status.get("displayClock", "")
 
             clock_seconds = clock_to_seconds(clock)
             if clock_seconds is None:
                 continue
 
-            competition = event.get("competitions", [{}])[0]
-            competitors = competition.get("competitors", [])
-
-            if len(competitors) < 2:
+            away, home = get_competitors(event)
+            if not away or not home:
                 continue
 
             try:
-                score1 = int(competitors[0]["score"])
-                score2 = int(competitors[1]["score"])
+                score1 = int(away["score"])
+                score2 = int(home["score"])
             except:
                 continue
 
             diff = abs(score1 - score2)
 
-            # רק משחק צמוד
-            if diff > 3:
-                continue
-
             # =========================
-            # קלאץ'
-            # =========================
-            if period == 4 and clock_seconds < 240 and not sent_clutch.get(game_id):
-                msg = build_message(event, "clutch")
-                if msg:
-                    send_telegram_message(msg)
-                    sent_clutch[game_id] = True
-                    time.sleep(1)
-
-            # =========================
-            # 45 שניות - תמיד ישלח גם אם נכנס ב-00:40
+            # 45 שניות אחרונות - תמיד
             # =========================
             if period >= 4 and clock_seconds <= 45 and not sent_last45.get(game_id):
                 msg = build_message(event, "last45")
                 if msg:
                     send_telegram_message(msg)
                     sent_last45[game_id] = True
+                    time.sleep(1)
+
+            # =========================
+            # קלאץ' - רק אם המשחק צמוד
+            # ורק מ-3:30 דקות לסיום
+            # =========================
+            if diff <= 3 and period == 4 and clock_seconds <= 210 and not sent_clutch.get(game_id):
+                msg = build_message(event, "clutch")
+                if msg:
+                    send_telegram_message(msg)
+                    sent_clutch[game_id] = True
+                    time.sleep(1)
 
     except Exception as e:
         print(f"❌ שגיאה כללית: {e}")
