@@ -41,6 +41,7 @@ NBA_HEBREW_MAP = {
     "Milwaukee Bucks": "מילווקי באקס", "Minnesota Timberwolves": "מינסוטה טימברוולבס",
     "New Orleans Pelicans": "ניו אורלינס פליקנס", "New York Knicks": "ניו יורק ניקס",
     "Oklahoma City Thunder": "אוקלהומה סיטי", "Orlando Magic": "אורלנדו מג'יק",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר", "Orlando Magic": "אורלנדו מג'יק",
     "Philadelphia 76ers": "פילדלפיה 76", "Phoenix Suns": "פיניקס סאנס",
     "Portland Trail Blazers": "פורטלנד טרייל בלייזרס", "Sacramento Kings": "סקרמנטו קינגס",
     "San Antonio Spurs": "סן אנטוניו ספרס", "Toronto Raptors": "טורונטו ראפטורס",
@@ -62,58 +63,9 @@ def format_team(name_en):
     return f"{heb}{flag}"
 
 def get_nba_schedule():
-    """שליפת לו"ז מ-ESPN בצורה יציבה יותר"""
     """שליפת לו"ז מ-ESPN"""
     schedule = []
-
     try:
-        url = f"{ESPN_API_URL}?_={int(time.time())}"
-
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json,text/plain,*/*",
-            "Referer": "https://www.espn.com/",
-        }
-
-        r = requests.get(url, headers=headers, timeout=20)
-        r.raise_for_status()
-
-        payload = r.json()
-        events = payload.get("events", [])
-
-        if not events:
-            logger.warning("ESPN returned no events.")
-            return schedule
-
-        for ev in events:
-            try:
-                competitions = ev.get("competitions", [])
-                if not competitions:
-                    continue
-
-                comp = competitions[0]
-                competitors = comp.get("competitors", [])
-
-                home = next((t for t in competitors if t.get("homeAway") == "home"), None)
-                away = next((t for t in competitors if t.get("homeAway") == "away"), None)
-
-                if not home or not away:
-                    continue
-
-                # זמן המשחק – תומך גם ב-Z וגם ב-+00:00
-                raw_time = ev.get("date")
-                if not raw_time:
-                    continue
-
-                utc_dt = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
-
-                # סטטוס משחק – נרמול למחרוזת
-                status_id = str(
-                    ev.get("status", {})
-                      .get("type", {})
-                      .get("id", "")
-                )
-
         r = requests.get(f"{ESPN_API_URL}?t={int(time.time())}", timeout=15)
         if r.status_code == 200:
             events = r.json().get('events', [])
@@ -122,26 +74,13 @@ def get_nba_schedule():
                 home = next(t for t in comp['competitors'] if t['homeAway'] == 'home')
                 away = next(t for t in comp['competitors'] if t['homeAway'] == 'away')
                 schedule.append({
-                    "id": status_id,
-                    "time": utc_dt.isoformat(),
-                    "home": home.get("team", {}).get("displayName", ""),
-                    "away": away.get("team", {}).get("displayName", "")
                     "id": ev['status']['type']['id'],
                     "time": ev['date'],
                     "home": home['team']['displayName'],
                     "away": away['team']['displayName']
                 })
-
-            except Exception as e:
-                logger.warning(f"Skipping one event due to parse error: {e}")
-                continue
-
-        # מיון לפי זמן כדי שההודעה תגיע מסודרת
-        schedule.sort(key=lambda x: x["time"])
-
     except Exception as e:
         logger.error(f"Schedule Fetch Error: {e}")
-
     return schedule
 
 # ==============================================================================
@@ -157,7 +96,6 @@ def build_schedule_msg(data):
 
     for g in data:
         # המרת זמן ה-UTC לזמן ישראל
-        utc_dt = datetime.fromisoformat(g['time'])
         utc_dt = datetime.strptime(g['time'].replace('Z', ''), "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
         local_dt = utc_dt.astimezone(isr_tz)
 
@@ -165,7 +103,6 @@ def build_schedule_msg(data):
         if g['id'] in ["1", "2"] and now <= local_dt <= now + timedelta(hours=24):
             time_str = local_dt.strftime("%H:%M")
             body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
-            body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {RTL_MARK}{format_team(g['away'])} 🆚 {RTL_MARK}{format_team(g['home'])}\n\n"
             found = True
 
     return header + body if found else None
