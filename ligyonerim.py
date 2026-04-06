@@ -11,7 +11,7 @@ from urllib3.util.retry import Retry
 # ==========================================
 # הגדרות
 # ==========================================
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz1rM_Glpske3OxTJrE")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE")
 CHAT_ID = os.getenv("CHAT_ID", "-1003808107418")
 STATE_FILE = "nba_israeli_state.json"
 
