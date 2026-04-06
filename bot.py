@@ -234,6 +234,9 @@ LAYER_PHOTOS = {
     "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
     "Cooper Flagg": "https://cdn.nba.com/teams/uploads/sites/1610612742/2026/04/RHZ03839.jpg?im=Resize=(1920)",
     "Donovan Mitchell": "https://cdn.nba.com/teams/uploads/sites/1610612739/2026/04/preview-TS-1.png?im=Resize=(1920)",
+    "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small",
+    "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096",
+    "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large",
 }
 
 def load_cache():
