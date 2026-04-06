@@ -229,12 +229,12 @@ def get_play_status(player):
 def build_msg(player, stage_text, game_info):
     full = f"{player.get('firstName', '')} {player.get('familyName', '')}".strip()
 
-    if player.get("status") == "INACTIVE":
-        return None
+    # בדיקה ראשונית: אם לא שיחק והמנוחה/פציעה, אין הודעה
+    played, rest_reason = get_play_status(player)
+    if not played and rest_reason in ("פציעה", "מנוחה", "מחלה", "החלטת מאמן", "הרחקה"):
+        return None  # לא שולחים הודעה
 
     stats = player.get("statistics") or {}
-
-    played, rest_reason = get_play_status(player)
     mins_raw = stats.get("minutesCalculated")
 
     name_he = PLAYER_HEBREW_NAMES.get(full, full)
@@ -251,30 +251,25 @@ def build_msg(player, stage_text, game_info):
         "",
     ]
 
-    if not played:
-        if rest_reason:
-            lines.append(rtl(f"🛋️ <b>לא שותף / מנוחה:</b> {esc(rest_reason)}"))
-        else:
-            lines.append(rtl("🛋️ <b>לא שותף / מנוחה</b>"))
-    else:
-        def g(key):
-            return stats.get(key) or 0
+    # אם כן שיחק, מציגים סטטיסטיקה מלאה
+    def g(key):
+        return stats.get(key) or 0
 
-        lines.extend([
-            rtl(f"🎯 <b>נקודות:</b> {g('points')}"),
-            rtl(
-                f"🏀 <b>מהשדה:</b> {g('fieldGoalsMade')}/{g('fieldGoalsAttempted')} | "
-                f"<b>לשלוש:</b> {g('threePointersMade')}/{g('threePointersAttempted')} | "
-                f"<b>מהעונשין:</b> {g('freeThrowsMade')}/{g('freeThrowsAttempted')}"
-            ),
-            rtl(f"💪 <b>ריבאונדים:</b> {g('reboundsTotal')}"),
-            rtl(f"🪄 <b>אסיסטים:</b> {g('assists')}"),
-            rtl(f"🧤 <b>חטיפות:</b> {g('steals')}"),
-            rtl(f"🚫 <b>חסימות:</b> {g('blocks')}"),
-            rtl(f"⚠️ <b>איבודים:</b> {g('turnovers')}"),
-            rtl(f"📊 <b>פלוס מינוס:</b> {format_plus_minus(g('plusMinusPoints'))}"),
-            rtl(f"🕒 <b>דקות:</b> {format_minutes_seconds(mins_raw)}"),
-        ])
+    lines.extend([
+        rtl(f"🎯 <b>נקודות:</b> {g('points')}"),
+        rtl(
+            f"🏀 <b>מהשדה:</b> {g('fieldGoalsMade')}/{g('fieldGoalsAttempted')} | "
+            f"<b>לשלוש:</b> {g('threePointersMade')}/{g('threePointersAttempted')} | "
+            f"<b>מהעונשין:</b> {g('freeThrowsMade')}/{g('freeThrowsAttempted')}"
+        ),
+        rtl(f"💪 <b>ריבאונדים:</b> {g('reboundsTotal')}"),
+        rtl(f"🪄 <b>אסיסטים:</b> {g('assists')}"),
+        rtl(f"🧤 <b>חטיפות:</b> {g('steals')}"),
+        rtl(f"🚫 <b>חסימות:</b> {g('blocks')}"),
+        rtl(f"⚠️ <b>איבודים:</b> {g('turnovers')}"),
+        rtl(f"📊 <b>פלוס מינוס:</b> {format_plus_minus(g('plusMinusPoints'))}"),
+        rtl(f"🕒 <b>דקות:</b> {format_minutes_seconds(mins_raw)}"),
+    ])
 
     return "\n".join(lines)
 
