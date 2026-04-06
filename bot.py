@@ -228,7 +228,7 @@ BAD_TRANSLATIONS_FIXES = {
     "מקסים ריינאו": "מקסים ריינו"
 }
 
-PLAYER_PHOTOS = {
+LAYER_PHOTOS = {
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
     "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
@@ -243,6 +243,7 @@ PLAYER_PHOTOS = {
     "Miles Bridges": "https://pbs.twimg.com/media/HE8YBE_bwAAnSBM?format=jpg&name=medium",
     "Brandon Miller": "https://pbs.twimg.com/media/HD4YQaxWYAAIrqo?format=jpg&name=medium",
     "Coby White": "https://pbs.twimg.com/media/HE9T5e5WcAAXUbU?format=jpg&name=small",
+    "Paolo Banchero": "https://pbs.twimg.com/media/HEYXKEtWQAAsvRJ?format=jpg&name=4096x4096",
 }
 
 def load_cache():
@@ -421,6 +422,7 @@ def mvp_sort_key(p):
 
 def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama_text=None):
     photo_url = None
+    
     away, home = box['awayTeam'], box['homeTeam']
 
     a_full = translate_name(f"{away['teamCity']} {away['teamName']}")
