@@ -229,76 +229,116 @@ BAD_TRANSLATIONS_FIXES = {
 }
 
 LAYER_PHOTOS = {
-    # --- שארלוט הורנטס (CHA) ---
-    "LaMelo Ball": "https://pbs.twimg.com/media/HEyLKYVb0AAt_T3?format=jpg&name=small", # למלו בול
-    "Miles Bridges": "https://pbs.twimg.com/media/HE8YBE_bwAAnSBM?format=jpg&name=medium", # מיילס ברידג'ס
-    "Brandon Miller": "https://pbs.twimg.com/media/HD4YQaxWYAAIrqo?format=jpg&name=medium", # ברנדון מילר
-    "Coby White": "https://pbs.twimg.com/media/HE9T5e5WcAAXUbU?format=jpg&name=small", # קובי וייט
-    "Kon Knueppel": "https://pbs.twimg.com/media/HFDbM0WXcAAfizY?format=jpg&name=small", # קון קוניפל (עבר לשארלוט)
-
-    # --- אינדיאנה פייסרס (IND) ---
-    "Pascal Siakam": "https://pbs.twimg.com/media/GL7hFFiW4AAOdID?format=jpg&name=small", # פסקל סיאקם
-    "Andrew Nembhard": "https://pbs.twimg.com/media/HFAUUMhXAAACuXc?format=jpg&name=small", # אנדרו נמבהארד
-    "Duncan Robinson": "https://pbs.twimg.com/media/HEKI4zOXAAA5alk?format=jpg&name=large", # דאנקן רובינסון (עבר לאינדיאנה)
-
-    # --- קליבלנד קאבלירס (CLE) ---
-    "Donovan Mitchell": "https://i.iheart.com/v3/re/assets.getty/69d39478e34e77ebb4e689bb?ops=max(1060,0),quality(80)", # דונובן מיטשל
-    "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large", # ג'יימס הארדן
-
-    # --- יוסטון רוקטס (HOU) ---
-    "Kevin Durant": "https://pbs.twimg.com/media/HERYmDBbYAQn6qH?format=jpg&name=medium", # קווין דוראנט
-
-    # --- דאלאס מאבריקס (DAL) ---
-    "Cooper Flagg": "https://pbs.twimg.com/media/HFOAjTZX0AApO14?format=jpg&name=small", # קופר פלאג
-
-    # --- גולדן סטייט ווריורס (GSW) ---
-    "Stephen Curry": "https://pbs.twimg.com/media/HFMZOjNa0AAbr_X?format=png&name=large", # סטף קרי
-    "Draymond Green": "https://pbs.twimg.com/media/HDki7SYXoAAGSl6?format=jpg&name=large", # דריימונד גרין
-    "Brandin Podziemski": "https://pbs.twimg.com/media/HEJD73qXwAECtyg?format=jpg&name=large", # ברנדין פודז'ימסקי
-    "Kristaps Porzingis": "https://pbs.twimg.com/media/HEoKtyjasAAgQOW?format=jpg&name=large", # קריסטפס פורזינגיס
-
-    # --- לוס אנג'לס לייקרס (LAL) ---
-    "Luka Doncic": "https://pbs.twimg.com/media/HEyyfuRXcAIfvk1?format=jpg&name=large", # לוקה דונצ'יץ'
-
-    # --- ברוקלין נטס (BKN) ---
-    "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",   # בן שרף
-    "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",  # דני וולף
-
-    # --- פורטלנד טרייל בלייזרס (POR) ---
-    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg", # דני אבדיה
-    "Jrue Holiday": "https://pbs.twimg.com/media/HE9I-Z0WAAA8tte?format=jpg&name=large", # ג'רו הולידיי
-
-    # --- סן אנטוניו ספרס (SAS) ---
-    "De'Aaron Fox": "https://pbs.twimg.com/media/HFF_wLcaoAAaG3e?format=jpg&name=small", # דיארון פוקס
-    "Stephon Castle": "https://pbs.twimg.com/media/HDQdkthXAAAuQWe?format=jpg&name=4096x4096", # סטפון קאסטל
-    "Victor Wembanyama": "https://pbs.twimg.com/media/HE4BF_XbAAAG1Rn?format=jpg&name=large", # ויקטור ומבניאמה
-
-    # --- ממפיס גריזליס (MEM) ---
-    "Rayan Rupert": "https://pbs.twimg.com/media/HFK-IMba8AAOUqk?format=jpg&name=large", # ריאן רופרט
-    "Jaylen Wells": "https://pbs.twimg.com/media/HCh8V-JXoAAbdTD?format=jpg&name=large", # ג'יילן ולס
-
-    # --- אוקלהומה סיטי ת'אנדר (OKC) ---
-    "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096", # שיי גילג'ס-אלכסנדר
-    "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small", # צ'ט הולמגרן
-    "Jalen Williams": "https://pbs.twimg.com/media/HFL4YjkWYAERxSJ?format=jpg&name=large", # ג'יילן וויליאמס
-
-    # --- דטרויט פיסטונס (DET) ---
-    "Cade Cunningham": "https://pbs.twimg.com/media/HCg83iJXYAAeXNj?format=jpg&name=large", # קייד קאנינגאהם
-    "Jalen Duren": "https://pbs.twimg.com/media/HE6ujcDW8AAKQzb?format=jpg&name=medium", # ג'יילן דורן
-
-    # --- דנבר נאגטס (DEN) ---
-    "Nikola Jokic": "https://pbs.twimg.com/media/HE6I760XUAAzL3U?format=jpg&name=medium", # ניקולה יוקיץ'
-    "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large", # ג'מאל מארי
-
-    # --- לוס אנג'לס קליפרס (LAC) ---
-    "Ivica Zubac": "https://pbs.twimg.com/media/HD4r0qvbYAAN44M?format=jpg&name=4096x4096", # איביצה זובאץ
+    # --- פילדלפיה 76 (PHI) ---
+    "Joel Embiid": "https://pbs.twimg.com/media/Gi_Y0rXXUAAesyw?format=jpg&name=small", # ג'ואל אמביד
+    "Paul George": "https://pbs.twimg.com/media/HFBkIV_bMAAtkJ4?format=jpg&name=900x900", # פול ג'ורג'
+    "Tyrese Maxey": "https://pbs.twimg.com/media/GbzB1sFWEAsJ-qm?format=jpg&name=large", # טייריס מקסי
+    "V.J. Edgecombe": "https://pbs.twimg.com/media/G8lFpK2XcAE20MB?format=jpg&name=medium", # וי ג'יי אדג'קום
 
     # --- אורלנדו מג'יק (ORL) ---
     "Paolo Banchero": "https://pbs.twimg.com/media/HEYXKEtWQAAsvRJ?format=jpg&name=4096x4096", # פאולו באנקרו
+    "Desmond Bane": "https://pbs.twimg.com/media/HFCk3GObUAA-ZPS?format=jpg&name=large", # דזמונד ביין (עבר לאורלנדו)
+    "Anthony Black": "https://pbs.twimg.com/media/G92xPPeWYAA3zNs?format=jpg&name=large", # אנתוני בלאק
+
+    # --- אטלנטה הוקס (ATL) ---
+    "Jalen Johnson": "https://pbs.twimg.com/media/HEdWYpEaYAAjsLp?format=jpg&name=4096x4096",
+    "C.J. McCollum": "https://pbs.twimg.com/media/HFDyZBkWQAANpGb?format=jpg&name=large",
+    "Jonathan Kuminga": "https://pbs.twimg.com/media/HCBaan5bcAA7fTP?format=jpg&name=4096x4096",
+    "Dyson Daniels": "https://pbs.twimg.com/media/HFBtqW3boAApV26?format=jpg&name=large",
+    "Nickeil Alexander-Walker": "https://pbs.twimg.com/media/HE3TGiNbQAATlRD?format=png&name=900x900",
+
+    # --- פורטלנד טרייל בלייזרס (POR) ---
+    "Deni Avdija": "https://pbs.twimg.com/media/HFGSriabwAA6jEP?format=jpg&name=large",
+    "Jrue Holiday": "https://pbs.twimg.com/media/HE9WF-6WoAA0FZ3?format=jpg&name=large",
+    "Scoot Henderson": "https://pbs.twimg.com/media/HDWBwvSasAAaq-U?format=jpg&name=large",
+    "Shaedon Sharpe": "https://pbs.twimg.com/media/G8s37tHWEAE-Il2?format=jpg&name=medium",
+    "Toumani Camara": "https://pbs.twimg.com/media/HE_c3NzW4AAdAtH?format=jpg&name=4096x4096",
+    "Donovan Clingan": "https://pbs.twimg.com/media/HD5ZLK_XEAAYf-J?format=png&name=900x900",
+    "Jerami Grant": "https://pbs.twimg.com/media/HD5sFEJboAEx5MY?format=png&name=900x900",
 
     # --- ניו יורק ניקס (NYK) ---
-    "Jalen Brunson": "https://pbs.twimg.com/media/HEWQkV2b0AE5QdL?format=jpg&name=4096x4096", # ג'יילן ברונסון
+    "Jalen Brunson": "https://pbs.twimg.com/media/HDS9_92XQAEDtUw?format=jpg&name=large",
+    "Karl-Anthony Towns": "https://pbs.twimg.com/media/HFBCrBVXEAAc6Nq?format=jpg&name=small",
+    "OG Anunoby": "https://pbs.twimg.com/media/GDcyl68aAAAQ_WR?format=jpg&name=large",
+    "Josh Hart": "https://pbs.twimg.com/media/GHyvj-4aYAA0aoq?format=jpg&name=4096x4096",
+
+    # --- לוס אנג'לס לייקרס (LAL) ---
+    "Luka Doncic": "https://pbs.twimg.com/media/HEyyfuRXcAIfvk1?format=jpg&name=large",
+    "LeBron James": "https://pbs.twimg.com/media/HEuD_HjbMAA6i5v?format=jpg&name=large",
+    "Austin Reaves": "https://pbs.twimg.com/media/HCi-STObIAALKq4?format=jpg&name=large",
+    "Luke Kennard": "https://pbs.twimg.com/media/HC6_x8Oa4AA9fZg?format=jpg&name=large",
+
+    # --- פיניקס סאנס (PHX) ---
+    "Devin Booker": "https://pbs.twimg.com/media/HErmPOCawAA6E52?format=jpg&name=small",
+    "Jalen Green": "https://pbs.twimg.com/media/HErmPOCawAA6E52?format=jpg&name=small",
+    "Dillon Brooks": "https://pbs.twimg.com/media/HE7UfEXacAAgI_G?format=jpg&name=large",
+
+    # --- בוסטון סלטיקס (BOS) ---
+    "Jayson Tatum": "https://pbs.twimg.com/media/HE3UmrYbUAE2mnN?format=jpg&name=900x900",
+    "Jaylen Brown": "https://pbs.twimg.com/media/G7NwhP8WMAAs3zg?format=jpg&name=4096x4096",
+    "Derrick White": "https://pbs.twimg.com/media/GlUsMUdXUAAaRq6?format=jpg&name=4096x4096",
+    "Payton Pritchard": "https://pbs.twimg.com/media/GlUsLkFaIAAj6_i?format=jpg&name=4096x4096",
+    "Neemias Queta": "https://pbs.twimg.com/media/HFMIwKXaYAAgGq6?format=jpg&name=4096x4096",
+
+    # --- אינדיאנה פייסרס (IND) ---
+    "Ivica Zubac": "https://pbs.twimg.com/media/HD4r0qvbYAAN44M?format=jpg&name=4096x4096",
+    "Pascal Siakam": "https://pbs.twimg.com/media/GL7hFFiW4AAOdID?format=jpg&name=small",
+    "Andrew Nembhard": "https://pbs.twimg.com/media/HFAUUMhXAAACuXc?format=jpg&name=small",
+    "Duncan Robinson": "https://pbs.twimg.com/media/HEKI4zOXAAA5alk?format=jpg&name=large",
+
+    # --- יוסטון רוקטס (HOU) ---
+    "Alperen Sengun": "https://pbs.twimg.com/media/HDvmRFhXwAE2TZJ?format=jpg&name=large",
+    "Kevin Durant": "https://pbs.twimg.com/media/HCsjhN6XwAAJP3K?format=jpg&name=large",
+
+    # --- שארלוט הורנטס (CHA) ---
+    "LaMelo Ball": "https://pbs.twimg.com/media/HFLzHA2WAAErS4C?format=jpg&name=small",
+    "Coby White": "https://pbs.twimg.com/media/HE9T5e5WcAAXUbU?format=jpg&name=small",
+    "Kon Knueppel": "https://pbs.twimg.com/media/HFDbM0WXcAAfizY?format=jpg&name=small",
+    "Brandon Miller": "https://pbs.twimg.com/media/HD4YQaxWYAAIrqo?format=jpg&name=medium",
+    "Miles Bridges": "https://pbs.twimg.com/media/HE8YBE_bwAAnSBM?format=jpg&name=medium",
+
+    # --- סן אנטוניו ספרס (SAS) ---
+    "De'Aaron Fox": "https://pbs.twimg.com/media/HFF_wLcaoAAaG3e?format=jpg&name=small",
+    "Victor Wembanyama": "https://pbs.twimg.com/media/HE4BF_XbAAAG1Rn?format=jpg&name=large",
+    "Stephon Castle": "https://pbs.twimg.com/media/HDQdkthXAAAuQWe?format=jpg&name=4096x4096",
+
+    # --- גולדן סטייט ווריורס (GSW) ---
+    "Stephen Curry": "https://pbs.twimg.com/media/HFMZOjNa0AAbr_X?format=png&name=large",
+    "Draymond Green": "https://pbs.twimg.com/media/HDki7SYXoAAGSl6?format=jpg&name=large",
+    "Brandin Podziemski": "https://pbs.twimg.com/media/HEJD73qXwAECtyg?format=jpg&name=large",
+    "Kristaps Porzingis": "https://pbs.twimg.com/media/HEoKtyjasAAgQOW?format=jpg&name=large",
+
+    # --- דטרויט פיסטונס (DET) ---
+    "Cade Cunningham": "https://pbs.twimg.com/media/HCg83iJXYAAeXNj?format=jpg&name=large",
+    "Jalen Duren": "https://pbs.twimg.com/media/HE6ujcDW8AAKQzb?format=jpg&name=medium",
+    "Daniss Jenkins": "https://pbs.twimg.com/media/HE8d7JYboAAmdjq?format=jpg&name=large",
+    "Tobias Harris": "https://pbs.twimg.com/media/HFErsVXW4AEALYu?format=jpg&name=large",
+
+    # --- אוקלהומה סיטי ת'אנדר (OKC) ---
+    "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096",
+    "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small",
+    "Jalen Williams": "https://pbs.twimg.com/media/HFL4YjkWYAERxSJ?format=jpg&name=large",
+
+    # --- קליבלנד קאבלירס (CLE) ---
+    "Donovan Mitchell": "https://i.iheart.com/v3/re/assets.getty/69d39478e34e77ebb4e689bb?ops=max(1060,0),quality(80)",
+    "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large",
+
+    # --- ברוקלין נטס (BKN) ---
+    "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
+    "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
+
+    # --- ממפיס גריזליס (MEM) ---
+    "Rayan Rupert": "https://pbs.twimg.com/media/HFK-IMba8AAOUqk?format=jpg&name=large",
+    "Jaylen Wells": "https://pbs.twimg.com/media/HCh8V-JXoAAbdTD?format=jpg&name=large",
+
+    # --- דאלאס מאבריקס (DAL) ---
+    "Cooper Flagg": "https://pbs.twimg.com/media/HFOAjTZX0AApO14?format=jpg&name=small",
+
+    # --- דנבר נאגטס (DEN) ---
+    "Nikola Jokic": "https://pbs.twimg.com/media/HE6I760XUAAzL3U?format=jpg&name=medium",
+    "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large",
 }
+
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
