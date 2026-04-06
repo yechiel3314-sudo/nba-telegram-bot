@@ -229,21 +229,29 @@ BAD_TRANSLATIONS_FIXES = {
 }
 
 LAYER_PHOTOS = {
-    "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
-    "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
-    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
-    "Cooper Flagg": "https://cdn.nba.com/teams/uploads/sites/1610612742/2026/04/RHZ03839.jpg?im=Resize=(1920)",
-    "Donovan Mitchell": "https://pbs.twimg.com/media/HFLgEehXYAAPjHC?format=jpg&name=4096x4096",
-    "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small",
-    "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096",
-    "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large",
-    "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large",
-    "LaMelo Ball": "https://pbs.twimg.com/media/HEyLKYVb0AAt_T3?format=jpg&name=small",
-    "Kon Knueppel": "https://pbs.twimg.com/media/HFDbM0WXcAAfizY?format=jpg&name=small",
-    "Miles Bridges": "https://pbs.twimg.com/media/HE8YBE_bwAAnSBM?format=jpg&name=medium",
-    "Brandon Miller": "https://pbs.twimg.com/media/HD4YQaxWYAAIrqo?format=jpg&name=medium",
-    "Coby White": "https://pbs.twimg.com/media/HE9T5e5WcAAXUbU?format=jpg&name=small",
-    "Paolo Banchero": "https://pbs.twimg.com/media/HEYXKEtWQAAsvRJ?format=jpg&name=4096x4096",
+    "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",  # דני וולף
+    "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",   # בן שרף
+    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg", # דני אבדיה
+    "Cooper Flagg": "https://pbs.twimg.com/media/HFML7VJaAAAik9W?format=jpg&name=large", # קופר פלאג (עודכן)
+    "Donovan Mitchell": "https://pbs.twimg.com/media/HEwUOeLaQAApNE_?format=jpg&name=4096x4096", # דונובן מיטשל (עודכן)
+    "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small", # צ'ט הולמגרן
+    "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096", # שיי גילג'ס-אלכסנדר
+    "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large", # ג'מאל מארי
+    "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large", # ג'יימס הארדן
+    "LaMelo Ball": "https://pbs.twimg.com/media/HEyLKYVb0AAt_T3?format=jpg&name=small", # למלו בול
+    "Kon Knueppel": "https://pbs.twimg.com/media/HFDbM0WXcAAfizY?format=jpg&name=small", # קון קוניפל
+    "Miles Bridges": "https://pbs.twimg.com/media/HE8YBE_bwAAnSBM?format=jpg&name=medium", # מיילס ברידג'ס
+    "Brandon Miller": "https://pbs.twimg.com/media/HD4YQaxWYAAIrqo?format=jpg&name=medium", # ברנדון מילר
+    "Coby White": "https://pbs.twimg.com/media/HE9T5e5WcAAXUbU?format=jpg&name=small", # קובי וייט
+    "Paolo Banchero": "https://pbs.twimg.com/media/HEYXKEtWQAAsvRJ?format=jpg&name=4096x4096", # פאולו באנקרו
+    "Jalen Williams": "https://pbs.twimg.com/media/HFL4YjkWYAERxSJ?format=jpg&name=large", # ג'יילן וויליאמס (OKC #8)
+    "Jrue Holiday": "https://pbs.twimg.com/media/HE9I-Z0WAAA8tte?format=jpg&name=large", # ג'רו הולידיי
+    "Jalen Duren": "https://pbs.twimg.com/media/HE6ujcDW8AAKQzb?format=jpg&name=medium", # ג'יילן דורן
+    "Nikola Jokic": "https://pbs.twimg.com/media/HE6I760XUAAzL3U?format=jpg&name=medium", # ניקולה יוקיץ'
+    "Victor Wembanyama": "https://pbs.twimg.com/media/HE4BF_XbAAAG1Rn?format=jpg&name=large", # ויקטור ומבניאמה
+    "Luka Doncic": "https://pbs.twimg.com/media/HEyyfuRXcAIfvk1?format=jpg&name=large", # לוקה דונצ'יץ'
+    "Jalen Brunson": "https://pbs.twimg.com/media/HEWQkV2b0AE5QdL?format=jpg&name=4096x4096", # ג'יילן ברונסון
+    "Kevin Durant": "https://pbs.twimg.com/media/HERYmDBbYAQn6qH?format=jpg&name=medium", # קווין דוראנט
 }
 
 def load_cache():
