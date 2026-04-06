@@ -314,43 +314,43 @@ def translate_name(name):
         return name
 
 def get_player_photo(player):
-    """
-    מחזיר קישור לתמונה של שחקן אם קיים ב-PLAYER_PHOTOS
-    """
-    first = player.get("firstName", "").strip()
-    last = player.get("familyName", "").strip()
-    full_name = f"{first} {last}".strip()
+    try:
+        first = (player.get("firstName") or "").strip()
+        last = (player.get("familyName") or "").strip()
+        full_name = f"{first} {last}".strip()
 
-    print(f"🔎 מחפש תמונה עבור MVP: {full_name}")
+        if not full_name:
+            print("⚠️ אין שם שחקן")
+            return None
 
-    # בדיקה רגילה
-    if full_name in PLAYER_PHOTOS:
-        print(f"✅ נמצאה תמונה עבור: {full_name}")
-        return PLAYER_PHOTOS[full_name]
+        print(f"🔎 מחפש תמונה עבור: {full_name}")
 
-    # נסיון לנרמל שמות עם תווים מיוחדים
-    normalized = (
-        full_name.replace("ć", "c")
-                 .replace("č", "c")
-                 .replace("š", "s")
-                 .replace("ž", "z")
-                 .replace("đ", "d")
-                 .replace("ñ", "n")
-                 .replace("é", "e")
-                 .replace("á", "a")
-                 .replace("ó", "o")
-                 .replace("í", "i")
-                 .replace("ū", "u")
-                 .replace("ņ", "n")
-                 .replace("ģ", "g")
-    )
+        # בדיקה רגילה
+        if full_name in PLAYER_PHOTOS:
+            return PLAYER_PHOTOS[full_name]
 
-    if normalized in PLAYER_PHOTOS:
-        print(f"✅ נמצאה תמונה אחרי נרמול עבור: {normalized}")
-        return PLAYER_PHOTOS[normalized]
+        # נרמול תווים
+        normalized = (
+            full_name.replace("ć", "c")
+                     .replace("č", "c")
+                     .replace("š", "s")
+                     .replace("ž", "z")
+                     .replace("đ", "d")
+                     .replace("ñ", "n")
+                     .replace("é", "e")
+                     .replace("á", "a")
+                     .replace("ó", "o")
+                     .replace("í", "i")
+        )
 
-    print(f"📸 אין תמונה עבור: {full_name}")
-    return None
+        if normalized in PLAYER_PHOTOS:
+            return PLAYER_PHOTOS[normalized]
+
+        return None
+
+    except Exception as e:
+        print(f"❌ שגיאה בשליפת תמונת שחקן: {e}")
+        return None
     
 def get_stat_line(p):
     s = p.get('statistics', {})
