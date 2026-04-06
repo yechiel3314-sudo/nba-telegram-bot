@@ -13,7 +13,7 @@ import os
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dp9rM_1rGGlpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-SCHEDULE_TIME = "16:51"  # זמן שליחת לוח המשחקים
+SCHEDULE_TIME = "16:53"  # זמן שליחת לוח המשחקים
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 STATE_FILE = "nba_schedule_state.json"
 
@@ -102,17 +102,16 @@ def save_state(state):
         log(f"שגיאה בשמירת state: {e}")
 
 # ==========================================
-# שליפת משחקים
+# שליפת משחקים (תוקן!)
 # ==========================================
 
 def get_games():
     log("מבקש נתונים מה-API לצורך לוח משחקים")
     try:
-        resp = requests.get(f"{NBA_URL}?cache={int(time.time())}", timeout=15)
+        resp = requests.get(f"{ESPN_API_URL}?cache={int(time.time())}", timeout=15)
         if resp.status_code == 200:
             data = resp.json()
-            games = data.get("events", [])
-            return games
+            return data.get("events", [])
         else:
             log(f"שגיאה בשליפה: {resp.status_code} | {resp.text}")
     except Exception as e:
@@ -120,24 +119,17 @@ def get_games():
     return []
 
 # ==========================================
-# עזר לניתוח תאריך ESPN
+# עזר לניתוח תאריך (תוקן!)
 # ==========================================
 
 def parse_espn_datetime(dt_str):
-    """
-    תומך בפורמטים נפוצים של ESPN:
-    2026-04-06T22:30Z
-    2026-04-06T22:30:00Z
-    2026-04-06T22:30:00.000Z
-    """
     if not dt_str:
         return None
-
     try:
         clean = dt_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean)
-        return dt
-    except Exception:
+        return datetime.fromisoformat(clean)
+    except Exception as e:
+        log(f"שגיאה בפענוח זמן: {dt_str} | {e}")
         return None
 
 # ==========================================
@@ -163,8 +155,6 @@ def get_schedule_msg(games):
 
             comp = competitions[0]
             competitors = comp.get("competitors", [])
-            if len(competitors) < 2:
-                continue
 
             home = next((t for t in competitors if t.get("homeAway") == "home"), None)
             away = next((t for t in competitors if t.get("homeAway") == "away"), None)
@@ -180,34 +170,18 @@ def get_schedule_msg(games):
 
             local_dt = game_dt.astimezone(tz)
 
-            # מציג רק משחקים ב-24 השעות הקרובות
             if now <= local_dt <= now + timedelta(hours=24):
                 time_str = local_dt.strftime("%H:%M")
-                away_name = away["team"]["displayName"]
-                home_name = home["team"]["displayName"]
 
                 msg += f"⏰ <b>{time_str}</b>\n"
-                msg += f"🏀 {translate_team(*split_team_name(away_name))} 🆚 {translate_team(*split_team_name(home_name))}\n\n"
+                msg += f"🏀 {away['team']['displayName']} 🆚 {home['team']['displayName']}\n\n"
+
                 found = True
 
         except Exception as e:
             log(f"שגיאה בבניית משחק: {e}")
 
     return msg if found else None
-
-# ==========================================
-# פיצול שם קבוצה לצורך translate_team
-# ==========================================
-
-def split_team_name(full_name):
-    """
-    ESPN מחזיר displayName כמו:
-    Brooklyn Nets
-    Los Angeles Lakers
-    ולכן אנחנו משתמשים בשם המלא ב-city,
-    ונותנים name ריק כדי לשמור תאימות למבנה שלך.
-    """
-    return full_name, ""
 
 # ==========================================
 # שליחה לטלגרם
@@ -241,13 +215,14 @@ def send_to_telegram(text):
         return False
 
 # ==========================================
-# לולאה ראשית
+# לולאה ראשית (כמו שלך)
 # ==========================================
 
 def run():
     log("NBA SCHEDULE BOT STARTED - SCHEDULE ONLY MODE")
     tz = pytz.timezone("Asia/Jerusalem")
     last_sent_date = None
+
     state = load_state()
     if "last_sent_date" in state:
         last_sent_date = datetime.strptime(state["last_sent_date"], "%Y-%m-%d").date()
@@ -257,7 +232,6 @@ def run():
         current_time = now.strftime("%H:%M")
         today = now.date()
 
-        # בדיקה אם הגיעה השעה לשלוח ואם עדיין לא שלחנו היום
         if current_time == SCHEDULE_TIME and last_sent_date != today:
             games = get_games()
             msg = get_schedule_msg(games)
@@ -274,7 +248,7 @@ def run():
                 state["last_sent_date"] = today.strftime("%Y-%m-%d")
                 save_state(state)
 
-            time.sleep(65)  # מונע כפילויות בתוך אותה דקה
+            time.sleep(65)
 
         time.sleep(30)
 
