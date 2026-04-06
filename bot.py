@@ -229,31 +229,76 @@ BAD_TRANSLATIONS_FIXES = {
 }
 
 LAYER_PHOTOS = {
-    "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",  # דני וולף
-    "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",   # בן שרף
-    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg", # דני אבדיה
-    "Cooper Flagg": "https://pbs.twimg.com/media/HFML7VJaAAAik9W?format=jpg&name=large", # קופר פלאג (עודכן)
-    "Donovan Mitchell": "https://pbs.twimg.com/media/HEwUOeLaQAApNE_?format=jpg&name=4096x4096", # דונובן מיטשל (עודכן)
-    "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small", # צ'ט הולמגרן
-    "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096", # שיי גילג'ס-אלכסנדר
-    "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large", # ג'מאל מארי
-    "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large", # ג'יימס הארדן
+    # --- שארלוט הורנטס (CHA) ---
     "LaMelo Ball": "https://pbs.twimg.com/media/HEyLKYVb0AAt_T3?format=jpg&name=small", # למלו בול
-    "Kon Knueppel": "https://pbs.twimg.com/media/HFDbM0WXcAAfizY?format=jpg&name=small", # קון קוניפל
     "Miles Bridges": "https://pbs.twimg.com/media/HE8YBE_bwAAnSBM?format=jpg&name=medium", # מיילס ברידג'ס
     "Brandon Miller": "https://pbs.twimg.com/media/HD4YQaxWYAAIrqo?format=jpg&name=medium", # ברנדון מילר
     "Coby White": "https://pbs.twimg.com/media/HE9T5e5WcAAXUbU?format=jpg&name=small", # קובי וייט
-    "Paolo Banchero": "https://pbs.twimg.com/media/HEYXKEtWQAAsvRJ?format=jpg&name=4096x4096", # פאולו באנקרו
-    "Jalen Williams": "https://pbs.twimg.com/media/HFL4YjkWYAERxSJ?format=jpg&name=large", # ג'יילן וויליאמס (OKC #8)
-    "Jrue Holiday": "https://pbs.twimg.com/media/HE9I-Z0WAAA8tte?format=jpg&name=large", # ג'רו הולידיי
-    "Jalen Duren": "https://pbs.twimg.com/media/HE6ujcDW8AAKQzb?format=jpg&name=medium", # ג'יילן דורן
-    "Nikola Jokic": "https://pbs.twimg.com/media/HE6I760XUAAzL3U?format=jpg&name=medium", # ניקולה יוקיץ'
-    "Victor Wembanyama": "https://pbs.twimg.com/media/HE4BF_XbAAAG1Rn?format=jpg&name=large", # ויקטור ומבניאמה
-    "Luka Doncic": "https://pbs.twimg.com/media/HEyyfuRXcAIfvk1?format=jpg&name=large", # לוקה דונצ'יץ'
-    "Jalen Brunson": "https://pbs.twimg.com/media/HEWQkV2b0AE5QdL?format=jpg&name=4096x4096", # ג'יילן ברונסון
-    "Kevin Durant": "https://pbs.twimg.com/media/HERYmDBbYAQn6qH?format=jpg&name=medium", # קווין דוראנט
-}
+    "Kon Knueppel": "https://pbs.twimg.com/media/HFDbM0WXcAAfizY?format=jpg&name=small", # קון קוניפל (עבר לשארלוט)
 
+    # --- אינדיאנה פייסרס (IND) ---
+    "Pascal Siakam": "https://pbs.twimg.com/media/GL7hFFiW4AAOdID?format=jpg&name=small", # פסקל סיאקם
+    "Andrew Nembhard": "https://pbs.twimg.com/media/HFAUUMhXAAACuXc?format=jpg&name=small", # אנדרו נמבהארד
+    "Duncan Robinson": "https://pbs.twimg.com/media/HEKI4zOXAAA5alk?format=jpg&name=large", # דאנקן רובינסון (עבר לאינדיאנה)
+
+    # --- קליבלנד קאבלירס (CLE) ---
+    "Donovan Mitchell": "https://i.iheart.com/v3/re/assets.getty/69d39478e34e77ebb4e689bb?ops=max(1060,0),quality(80)", # דונובן מיטשל
+    "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large", # ג'יימס הארדן
+
+    # --- יוסטון רוקטס (HOU) ---
+    "Kevin Durant": "https://pbs.twimg.com/media/HERYmDBbYAQn6qH?format=jpg&name=medium", # קווין דוראנט
+
+    # --- דאלאס מאבריקס (DAL) ---
+    "Cooper Flagg": "https://pbs.twimg.com/media/HFOAjTZX0AApO14?format=jpg&name=small", # קופר פלאג
+
+    # --- גולדן סטייט ווריורס (GSW) ---
+    "Stephen Curry": "https://pbs.twimg.com/media/HFMZOjNa0AAbr_X?format=png&name=large", # סטף קרי
+    "Draymond Green": "https://pbs.twimg.com/media/HDki7SYXoAAGSl6?format=jpg&name=large", # דריימונד גרין
+    "Brandin Podziemski": "https://pbs.twimg.com/media/HEJD73qXwAECtyg?format=jpg&name=large", # ברנדין פודז'ימסקי
+    "Kristaps Porzingis": "https://pbs.twimg.com/media/HEoKtyjasAAgQOW?format=jpg&name=large", # קריסטפס פורזינגיס
+
+    # --- לוס אנג'לס לייקרס (LAL) ---
+    "Luka Doncic": "https://pbs.twimg.com/media/HEyyfuRXcAIfvk1?format=jpg&name=large", # לוקה דונצ'יץ'
+
+    # --- ברוקלין נטס (BKN) ---
+    "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",   # בן שרף
+    "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",  # דני וולף
+
+    # --- פורטלנד טרייל בלייזרס (POR) ---
+    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg", # דני אבדיה
+    "Jrue Holiday": "https://pbs.twimg.com/media/HE9I-Z0WAAA8tte?format=jpg&name=large", # ג'רו הולידיי
+
+    # --- סן אנטוניו ספרס (SAS) ---
+    "De'Aaron Fox": "https://pbs.twimg.com/media/HFF_wLcaoAAaG3e?format=jpg&name=small", # דיארון פוקס
+    "Stephon Castle": "https://pbs.twimg.com/media/HDQdkthXAAAuQWe?format=jpg&name=4096x4096", # סטפון קאסטל
+    "Victor Wembanyama": "https://pbs.twimg.com/media/HE4BF_XbAAAG1Rn?format=jpg&name=large", # ויקטור ומבניאמה
+
+    # --- ממפיס גריזליס (MEM) ---
+    "Rayan Rupert": "https://pbs.twimg.com/media/HFK-IMba8AAOUqk?format=jpg&name=large", # ריאן רופרט
+    "Jaylen Wells": "https://pbs.twimg.com/media/HCh8V-JXoAAbdTD?format=jpg&name=large", # ג'יילן ולס
+
+    # --- אוקלהומה סיטי ת'אנדר (OKC) ---
+    "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096", # שיי גילג'ס-אלכסנדר
+    "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small", # צ'ט הולמגרן
+    "Jalen Williams": "https://pbs.twimg.com/media/HFL4YjkWYAERxSJ?format=jpg&name=large", # ג'יילן וויליאמס
+
+    # --- דטרויט פיסטונס (DET) ---
+    "Cade Cunningham": "https://pbs.twimg.com/media/HCg83iJXYAAeXNj?format=jpg&name=large", # קייד קאנינגאהם
+    "Jalen Duren": "https://pbs.twimg.com/media/HE6ujcDW8AAKQzb?format=jpg&name=medium", # ג'יילן דורן
+
+    # --- דנבר נאגטס (DEN) ---
+    "Nikola Jokic": "https://pbs.twimg.com/media/HE6I760XUAAzL3U?format=jpg&name=medium", # ניקולה יוקיץ'
+    "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large", # ג'מאל מארי
+
+    # --- לוס אנג'לס קליפרס (LAC) ---
+    "Ivica Zubac": "https://pbs.twimg.com/media/HD4r0qvbYAAN44M?format=jpg&name=4096x4096", # איביצה זובאץ
+
+    # --- אורלנדו מג'יק (ORL) ---
+    "Paolo Banchero": "https://pbs.twimg.com/media/HEYXKEtWQAAsvRJ?format=jpg&name=4096x4096", # פאולו באנקרו
+
+    # --- ניו יורק ניקס (NYK) ---
+    "Jalen Brunson": "https://pbs.twimg.com/media/HEWQkV2b0AE5QdL?format=jpg&name=4096x4096", # ג'יילן ברונסון
+}
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
