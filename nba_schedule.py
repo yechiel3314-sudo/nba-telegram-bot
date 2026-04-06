@@ -1,4 +1,3 @@
-import requests
 import time
 import pytz
 import logging
@@ -12,7 +11,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "17:29"
+SCHEDULE_TIME_STR = "18:00"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -23,11 +22,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
-
-def log(msg):
-    tz = pytz.timezone("Asia/Jerusalem")
-    now = datetime.now(tz).strftime("%H:%M:%S")
-    print(f"[{now}] {msg}")
 
 # ==============================================================================
 # --- מילון תרגום קבוצות NBA ---
@@ -88,72 +82,29 @@ def get_nba_schedule():
         logger.error(f"Schedule Fetch Error: {e}")
     return schedule
 
-def parse_espn_datetime(dt_str):
-    if not dt_str:
-        return None
-
-    try:
-        clean = dt_str.replace("Z", "+00:00")
-        return datetime.fromisoformat(clean)
-    except Exception:
-        for fmt in (
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S.%f",
-            "%Y-%m-%dT%H:%M"
-        ):
-            try:
-                return datetime.strptime(dt_str.replace("Z", ""), fmt)
-            except Exception:
-                pass
-
-    return None
-
 # ==============================================================================
 # --- בניית הודעה ---
 # ==============================================================================
 
 def build_schedule_msg(data):
-    isr_tz = pytz.timezone("Asia/Jerusalem")
+    isr_tz = pytz.timezone('Asia/Jerusalem')
     now = datetime.now(isr_tz)
     header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב NBA</b> ══ 🏀\n\n"
     body = ""
     found = False
 
-    log(f"עכשיו בישראל: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-
     for g in data:
-        try:
-            log(f"בודק משחק: {g.get('away')} נגד {g.get('home')} | זמן גולמי: {g.get('time')}")
+        # המרת זמן ה-UTC לזמן ישראל
+        utc_dt = datetime.strptime(g['time'].replace('Z', ''), "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
+        local_dt = utc_dt.astimezone(isr_tz)
 
-            game_dt = parse_espn_datetime(g.get("time"))
-            if not game_dt:
-                log("❌ parse_espn_datetime נכשל")
-                continue
+        # הצגת משחקים שעתידים להתקיים ב-24 השעות הקרובות
+        if g['id'] in ["1", "2"] and now <= local_dt <= now + timedelta(hours=24):
+            time_str = local_dt.strftime("%H:%M")
+            body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
+            found = True
 
-            if game_dt.tzinfo is None:
-                game_dt = pytz.utc.localize(game_dt)
-
-            local_dt = game_dt.astimezone(isr_tz)
-
-            log(f"זמן בישראל: {local_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-
-            if now <= local_dt <= now + timedelta(hours=24):
-                log("✅ המשחק נכנס לחלון 24 שעות ונוסף להודעה")
-                time_str = local_dt.strftime("%H:%M")
-                body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
-                found = True
-            else:
-                log("❌ המשחק נפסל בגלל חלון 24 שעות")
-
-        except Exception as e:
-            log(f"שגיאה בבניית משחק: {e}")
-
-    if found:
-        log("✅ נבנתה הודעה לשליחה")
-        return header + body
-    else:
-        log("❌ לא נבנתה הודעה בכלל")
-        return None
+    return header + body if found else None
 
 # ==============================================================================
 # --- מנגנון ריצה ---
@@ -177,37 +128,26 @@ def run_engine():
     tz = pytz.timezone("Asia/Jerusalem")
     last_s = None
 
-    # מפרקים פעם אחת את השעה כדי לעבוד עם datetime אמיתי
-    target_hh, target_mm = map(int, SCHEDULE_TIME_STR.split(":"))
-
     while True:
         try:
             now = datetime.now(tz)
+            curr = now.strftime("%H:%M")
             today = now.date()
 
-            # יוצרים זמן יעד אמיתי להיום בשעה שנקבעה
-            target_dt = tz.localize(datetime(now.year, now.month, now.day, target_hh, target_mm, 0))
-
-            # חלון של דקה אחת סביב השעה שנקבעה
-            in_send_window = target_dt <= now < (target_dt + timedelta(minutes=1))
-
-            if in_send_window and last_s != today:
+            # בדיקה אם הגיעה השעה לשלוח את הלו"ז
+            if curr >= SCHEDULE_TIME_STR and last_s != today:
                 data = get_nba_schedule()
                 msg = build_schedule_msg(data)
-
                 if msg:
                     send_to_telegram(msg)
+                    last_s = today
                     logger.info(f"Daily schedule sent for {today}")
                 else:
                     logger.info("No upcoming games found for the schedule.")
+                    # מסמנים כנשלח כדי לא לנסות בלולאה כל 30 שניות אם אין משחקים
                     last_s = today
-                    logger.info(f"Marked as processed for {today} even without games.")
-
-                last_s = today
-                time.sleep(65)  # מונע כפילויות באותה דקה
 
             time.sleep(30)
-
         except Exception as e:
             logger.error(f"Loop Error: {e}")
             time.sleep(60)
