@@ -13,8 +13,8 @@ import os
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dp9rM_1rGGlpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-SCHEDULE_TIME = "16:41"  # זמן שליחת לוח המשחקים
-NBA_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+SCHEDULE_TIME = "16:47"  # זמן שליחת לוח המשחקים
+NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 
 STATE_FILE = "nba_schedule_state.json"
 
