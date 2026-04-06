@@ -11,7 +11,7 @@ from urllib3.util.retry import Retry
 # ==========================================
 # הגדרות
 # ==========================================
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz1rM_Glpske3OxTJrE")
 CHAT_ID = os.getenv("CHAT_ID", "-1003808107418")
 STATE_FILE = "nba_israeli_state.json"
 
@@ -229,13 +229,17 @@ def get_play_status(player):
 def build_msg(player, stage_text, game_info):
     full = f"{player.get('firstName', '')} {player.get('familyName', '')}".strip()
 
-    # בדיקה ראשונית: אם לא שיחק והמנוחה/פציעה, אין הודעה
-    played, rest_reason = get_play_status(player)
-    if not played and rest_reason in ("פציעה", "מנוחה", "מחלה", "החלטת מאמן", "הרחקה"):
-        return None  # לא שולחים הודעה
+    if player.get("status") == "INACTIVE":
+        return None
 
     stats = player.get("statistics") or {}
+
+    played, rest_reason = get_play_status(player)
     mins_raw = stats.get("minutesCalculated")
+
+    # אם לא שיחק / לא שותף / במנוחה / DNP — לא שולחים הודעה בכלל
+    if not played:
+        return None
 
     name_he = PLAYER_HEBREW_NAMES.get(full, full)
     away_he = TEAM_HEBREW.get(game_info["away"], game_info["away"])
@@ -251,7 +255,6 @@ def build_msg(player, stage_text, game_info):
         "",
     ]
 
-    # אם כן שיחק, מציגים סטטיסטיקה מלאה
     def g(key):
         return stats.get(key) or 0
 
