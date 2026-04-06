@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "17:10"
+SCHEDULE_TIME_STR = "17:20"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -88,24 +88,47 @@ def get_nba_schedule():
 # ==============================================================================
 
 def build_schedule_msg(data):
-    isr_tz = pytz.timezone('Asia/Jerusalem')
+    isr_tz = pytz.timezone("Asia/Jerusalem")
     now = datetime.now(isr_tz)
     header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב NBA</b> ══ 🏀\n\n"
     body = ""
     found = False
 
+    log(f"עכשיו בישראל: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+
     for g in data:
-        # המרת זמן ה-UTC לזמן ישראל
-        utc_dt = datetime.strptime(g['time'].replace('Z', ''), "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
-        local_dt = utc_dt.astimezone(isr_tz)
+        try:
+            log(f"בודק משחק: {g.get('away')} נגד {g.get('home')} | זמן גולמי: {g.get('time')}")
 
-        # הצגת משחקים שעתידים להתקיים ב-24 השעות הקרובות
-        if g['id'] in ["1", "2"] and now <= local_dt <= now + timedelta(hours=24):
-            time_str = local_dt.strftime("%H:%M")
-            body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
-            found = True
+            game_dt = parse_espn_datetime(g.get("time"))
+            if not game_dt:
+                log("❌ parse_espn_datetime נכשל")
+                continue
 
-    return header + body if found else None
+            if game_dt.tzinfo is None:
+                game_dt = pytz.utc.localize(game_dt)
+
+            local_dt = game_dt.astimezone(isr_tz)
+
+            log(f"זמן בישראל: {local_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+
+            if now <= local_dt <= now + timedelta(hours=24):
+                log("✅ המשחק נכנס לחלון 24 שעות ונוסף להודעה")
+                time_str = local_dt.strftime("%H:%M")
+                body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
+                found = True
+            else:
+                log("❌ המשחק נפסל בגלל חלון 24 שעות")
+
+        except Exception as e:
+            log(f"שגיאה בבניית משחק: {e}")
+
+    if found:
+        log("✅ נבנתה הודעה לשליחה")
+        return header + body
+    else:
+        log("❌ לא נבנתה הודעה בכלל")
+        return None
 
 # ==============================================================================
 # --- מנגנון ריצה ---
