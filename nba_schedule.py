@@ -13,8 +13,9 @@ import os
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dp9rM_1rGGlpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-SCHEDULE_TIME = "16:53"  # זמן שליחת לוח המשחקים
+SCHEDULE_TIME = "16:56"  # זמן שליחת לוח המשחקים
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+NBA_URL = ESPN_API_URL  # נשאר על אותו מקור נתונים, רק מגדירים את השם שהיה חסר
 STATE_FILE = "nba_schedule_state.json"
 
 # ==========================================
@@ -102,16 +103,17 @@ def save_state(state):
         log(f"שגיאה בשמירת state: {e}")
 
 # ==========================================
-# שליפת משחקים (תוקן!)
+# שליפת משחקים
 # ==========================================
 
 def get_games():
     log("מבקש נתונים מה-API לצורך לוח משחקים")
     try:
-        resp = requests.get(f"{ESPN_API_URL}?cache={int(time.time())}", timeout=15)
+        resp = requests.get(f"{NBA_URL}?cache={int(time.time())}", timeout=15)
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("events", [])
+            games = data.get("events", [])
+            return games
         else:
             log(f"שגיאה בשליפה: {resp.status_code} | {resp.text}")
     except Exception as e:
@@ -119,18 +121,39 @@ def get_games():
     return []
 
 # ==========================================
-# עזר לניתוח תאריך (תוקן!)
+# עזר לניתוח תאריך ESPN
 # ==========================================
 
 def parse_espn_datetime(dt_str):
+    """
+    תומך בפורמטים נפוצים של ESPN:
+    2026-04-06T22:30Z
+    2026-04-06T22:30:00Z
+    2026-04-06T22:30:00.000Z
+    """
     if not dt_str:
         return None
+
     try:
         clean = dt_str.replace("Z", "+00:00")
-        return datetime.fromisoformat(clean)
-    except Exception as e:
-        log(f"שגיאה בפענוח זמן: {dt_str} | {e}")
+        dt = datetime.fromisoformat(clean)
+        return dt
+    except Exception:
         return None
+
+# ==========================================
+# פיצול שם קבוצה לצורך translate_team
+# ==========================================
+
+def split_team_name(full_name):
+    """
+    ESPN מחזיר displayName כמו:
+    Brooklyn Nets
+    Los Angeles Lakers
+    ולכן אנחנו משתמשים בשם המלא ב-city,
+    ונותנים name ריק כדי לשמור תאימות למבנה שלך.
+    """
+    return full_name, ""
 
 # ==========================================
 # בניית הודעת לוח משחקים
@@ -155,6 +178,8 @@ def get_schedule_msg(games):
 
             comp = competitions[0]
             competitors = comp.get("competitors", [])
+            if len(competitors) < 2:
+                continue
 
             home = next((t for t in competitors if t.get("homeAway") == "home"), None)
             away = next((t for t in competitors if t.get("homeAway") == "away"), None)
@@ -170,12 +195,14 @@ def get_schedule_msg(games):
 
             local_dt = game_dt.astimezone(tz)
 
+            # מציג רק משחקים ב-24 השעות הקרובות
             if now <= local_dt <= now + timedelta(hours=24):
                 time_str = local_dt.strftime("%H:%M")
+                away_name = away["team"]["displayName"]
+                home_name = home["team"]["displayName"]
 
                 msg += f"⏰ <b>{time_str}</b>\n"
-                msg += f"🏀 {away['team']['displayName']} 🆚 {home['team']['displayName']}\n\n"
-
+                msg += f"🏀 {translate_team(*split_team_name(away_name))} 🆚 {translate_team(*split_team_name(home_name))}\n\n"
                 found = True
 
         except Exception as e:
@@ -215,7 +242,7 @@ def send_to_telegram(text):
         return False
 
 # ==========================================
-# לולאה ראשית (כמו שלך)
+# לולאה ראשית
 # ==========================================
 
 def run():
@@ -225,32 +252,45 @@ def run():
 
     state = load_state()
     if "last_sent_date" in state:
-        last_sent_date = datetime.strptime(state["last_sent_date"], "%Y-%m-%d").date()
+        try:
+            last_sent_date = datetime.strptime(state["last_sent_date"], "%Y-%m-%d").date()
+        except Exception:
+            last_sent_date = None
+
+    target_hh, target_mm = map(int, SCHEDULE_TIME.split(":"))
 
     while True:
-        now = datetime.now(tz)
-        current_time = now.strftime("%H:%M")
-        today = now.date()
+        try:
+            now = datetime.now(tz)
+            today = now.date()
 
-        if current_time == SCHEDULE_TIME and last_sent_date != today:
-            games = get_games()
-            msg = get_schedule_msg(games)
+            target_dt = tz.localize(datetime(now.year, now.month, now.day, target_hh, target_mm, 0))
 
-            if msg:
-                send_to_telegram(msg)
+            # חלון של דקה אחת סביב השעה המתוכננת
+            in_send_window = target_dt <= now < (target_dt + timedelta(minutes=1))
+
+            if in_send_window and last_sent_date != today:
+                games = get_games()
+                msg = get_schedule_msg(games)
+
+                if msg:
+                    send_to_telegram(msg)
+                    log(f"הודעת לוח יומית הושלמה עבור {today}")
+                else:
+                    log("לא נמצאו משחקים להצגה")
+                    log(f"מסומן כמעובד עבור {today} גם בלי משחקים")
+
                 last_sent_date = today
                 state["last_sent_date"] = today.strftime("%Y-%m-%d")
                 save_state(state)
-                log(f"הודעת לוח יומית הושלמה עבור {today}")
-            else:
-                log("לא נמצאו משחקים להצגה")
-                last_sent_date = today
-                state["last_sent_date"] = today.strftime("%Y-%m-%d")
-                save_state(state)
 
-            time.sleep(65)
+                time.sleep(65)  # מונע כפילויות בתוך אותה דקה
 
-        time.sleep(30)
+            time.sleep(30)
+
+        except Exception as e:
+            log(f"שגיאה בלולאה הראשית: {e}")
+            time.sleep(60)
 
 if __name__ == "__main__":
     run()
