@@ -13,9 +13,9 @@ import os
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dp9rM_1rGGlpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-SCHEDULE_TIME = "17:00"  # זמן שליחת לוח המשחקים
+SCHEDULE_TIME_STR = "17:05"
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
-NBA_URL = ESPN_API_URL  # נשאר על אותו מקור נתונים, רק מגדירים את השם שהיה חסר
+RTL_MARK = "\u200f"
 STATE_FILE = "nba_schedule_state.json"
 
 # ==========================================
@@ -24,9 +24,10 @@ STATE_FILE = "nba_schedule_state.json"
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - [%(levelname)s] - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    format='%(asctime)s - [%(levelname)s] - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
+logger = logging.getLogger(__name__)
 
 def log(msg):
     tz = pytz.timezone("Asia/Jerusalem")
@@ -34,52 +35,36 @@ def log(msg):
     print(f"[{now}] {msg}")
 
 # ==========================================
-# תרגום קבוצות
+# מילון תרגום קבוצות NBA
 # ==========================================
 
-TEAM_TRANSLATIONS = {
-    "Atlanta Hawks": "אטלנטה הוקס",
-    "Boston Celtics": "בוסטון סלטיקס",
-    "Brooklyn Nets": "ברוקלין נטס",
-    "Charlotte Hornets": "שארלוט הורנטס",
-    "Chicago Bulls": "שיקגו בולס",
-    "Cleveland Cavaliers": "קליבלנד קאבלירס",
-    "Dallas Mavericks": "דאלאס מאבריקס",
-    "Denver Nuggets": "דנבר נאגטס",
-    "Detroit Pistons": "דטרויט פיסטונס",
-    "Golden State Warriors": "גולדן סטייט ווריורס",
-    "Houston Rockets": "יוסטון רוקטס",
-    "Indiana Pacers": "אינדיאנה פייסרס",
-    "LA Clippers": "לוס אנג'לס קליפרס",
-    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
-    "Memphis Grizzlies": "ממפיס גריזליס",
-    "Miami Heat": "מיאמי היט",
-    "Milwaukee Bucks": "מילווקי באקס",
-    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
-    "New Orleans Pelicans": "ניו אורלינס פליקנס",
-    "New York Knicks": "ניו יורק ניקס",
-    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
-    "Orlando Magic": "אורלנדו מג'יק",
-    "Philadelphia 76ers": "פילדלפיה 76רס",
-    "Phoenix Suns": "פיניקס סאנס",
-    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
-    "Sacramento Kings": "סקרמנטו קינגס",
-    "San Antonio Spurs": "סן אנטוניו ספרס",
-    "Toronto Raptors": "טורונטו ראפטורס",
-    "Utah Jazz": "יוטה ג'אז",
-    "Washington Wizards": "וושינגטון וויזארדס"
+NBA_HEBREW_MAP = {
+    "Atlanta Hawks": "אטלנטה הוקס", "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס", "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס", "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס", "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס", "Golden State Warriors": "גולדן סטייט ווריורס",
+    "Houston Rockets": "יוסטון רוקטס", "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "לוס אנג'לס קליפרס", "Los Angeles Lakers": "לוס אנג'לס לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס", "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס", "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס", "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר", "Orlando Magic": "אורלנדו מג'יק",
+    "Philadelphia 76ers": "פילדלפיה 76רס", "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס", "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס", "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג'אז", "Washington Wizards": "וושינגטון וויזארדס"
 }
 
-def translate_team(city, name, score=None):
-    full = f"{city} {name}".strip() if name else city.strip()
-    base = TEAM_TRANSLATIONS.get(full, full)
+def get_israeli_flag(name_en):
+    if any(x in name_en for x in ["Brooklyn", "Portland"]):
+        return " 🇮🇱"
+    return ""
 
-    is_special = "Portland" in full or "Brooklyn" in full
-    flag = " 🇮🇱" if is_special else ""
-
-    if score is not None:
-        return f"{base} {score}{flag}"
-    return f"{base}{flag}"
+def format_team(name_en):
+    heb = NBA_HEBREW_MAP.get(name_en, name_en)
+    flag = get_israeli_flag(name_en)
+    return f"{heb}{flag}"
 
 # ==========================================
 # שמירת מצב יומי
@@ -106,94 +91,95 @@ def save_state(state):
 # שליפת משחקים
 # ==========================================
 
-def get_games():
-    log("מבקש נתונים מה-API לצורך לוח משחקים")
+def get_nba_schedule():
+    """שליפת לו"ז מ-ESPN"""
     schedule = []
     try:
-        resp = requests.get(f"{ESPN_API_URL}?t={int(time.time())}", timeout=15)
-        if resp.status_code == 200:
-            events = resp.json().get('events', [])
-
+        r = requests.get(f"{ESPN_API_URL}?t={int(time.time())}", timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            events = data.get("events", [])
+            log(f"נמצאו {len(events)} אירועים ב-API")
             for ev in events:
-                comp = ev['competitions'][0]
-                home = next(t for t in comp['competitors'] if t['homeAway'] == 'home')
-                away = next(t for t in comp['competitors'] if t['homeAway'] == 'away')
+                competitions = ev.get("competitions", [])
+                if not competitions:
+                    continue
+
+                comp = competitions[0]
+                competitors = comp.get("competitors", [])
+                if len(competitors) < 2:
+                    continue
+
+                home = next((t for t in competitors if t.get("homeAway") == "home"), None)
+                away = next((t for t in competitors if t.get("homeAway") == "away"), None)
+                if not home or not away:
+                    continue
 
                 schedule.append({
-                    "id": ev['status']['type']['id'],
-                    "time": ev['date'],
-                    "home": home['team']['displayName'],
-                    "away": away['team']['displayName']
+                    "id": str(ev.get("status", {}).get("type", {}).get("id", "")),
+                    "time": ev.get("date", ""),
+                    "home": home["team"]["displayName"],
+                    "away": away["team"]["displayName"]
                 })
         else:
-            log(f"שגיאה בשליפה: {resp.status_code}")
+            log(f"Schedule HTTP Error: {r.status_code} | {r.text}")
     except Exception as e:
-        log(f"שגיאה קריטית בשליפה: {e}")
-
+        log(f"Schedule Fetch Error: {e}")
     return schedule
+
 # ==========================================
 # עזר לניתוח תאריך ESPN
 # ==========================================
 
 def parse_espn_datetime(dt_str):
-    """
-    תומך בפורמטים נפוצים של ESPN:
-    2026-04-06T22:30Z
-    2026-04-06T22:30:00Z
-    2026-04-06T22:30:00.000Z
-    """
     if not dt_str:
         return None
-
     try:
         clean = dt_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean)
-        return dt
+        return datetime.fromisoformat(clean)
     except Exception:
-        return None
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M"
+        ):
+            try:
+                return datetime.strptime(dt_str.replace("Z", ""), fmt)
+            except Exception:
+                pass
+    return None
 
 # ==========================================
-# פיצול שם קבוצה לצורך translate_team
+# בניית הודעה
 # ==========================================
 
-def split_team_name(full_name):
-    """
-    ESPN מחזיר displayName כמו:
-    Brooklyn Nets
-    Los Angeles Lakers
-    ולכן אנחנו משתמשים בשם המלא ב-city,
-    ונותנים name ריק כדי לשמור תאימות למבנה שלך.
-    """
-    return full_name, ""
-
-# ==========================================
-# בניית הודעת לוח משחקים
-# ==========================================
-
-def get_schedule_msg(data):
-    tz = pytz.timezone("Asia/Jerusalem")
-    now = datetime.now(tz)
-
-    msg = "🏀 <b>לוח משחקי הלילה ב NBA</b> 🏀\n\n"
+def build_schedule_msg(data):
+    isr_tz = pytz.timezone("Asia/Jerusalem")
+    now = datetime.now(isr_tz)
+    header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב NBA</b> ══ 🏀\n\n"
+    body = ""
     found = False
 
     for g in data:
         try:
-            utc_dt = datetime.strptime(g['time'].replace('Z', ''), "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
-            local_dt = utc_dt.astimezone(tz)
+            game_dt = parse_espn_datetime(g.get("time"))
+            if not game_dt:
+                continue
 
-            if g['id'] in ["1", "2"] and now <= local_dt <= now + timedelta(hours=24):
+            if game_dt.tzinfo is None:
+                game_dt = pytz.utc.localize(game_dt)
+
+            local_dt = game_dt.astimezone(isr_tz)
+
+            if now <= local_dt <= now + timedelta(hours=24):
                 time_str = local_dt.strftime("%H:%M")
-
-                msg += f"⏰ <b>{time_str}</b>\n"
-                msg += f"🏀 {translate_team(g['away'], '')} 🆚 {translate_team(g['home'], '')}\n\n"
-
+                body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
                 found = True
 
         except Exception as e:
-            log(f"שגיאה במשחק: {e}")
+            log(f"שגיאה בבניית משחק: {e}")
 
-    return msg if found else None
+    return header + body if found else None
 
 # ==========================================
 # שליחה לטלגרם
@@ -202,80 +188,68 @@ def get_schedule_msg(data):
 def send_to_telegram(text):
     if not text:
         return False
-
-    log("שולח הודעה לטלגרם")
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
     try:
-        r = requests.post(
-            url,
-            data={
-                "chat_id": CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML"
-            },
-            timeout=15
-        )
+        r = requests.post(url, json=payload, timeout=15)
         if r.status_code == 200:
-            log("נשלח בהצלחה")
+            logger.info("Schedule message sent successfully.")
             return True
         else:
-            log(f"שגיאת טלגרם: {r.text}")
+            logger.error(f"Telegram Error: {r.text}")
             return False
     except Exception as e:
-        log(f"שגיאה בשליחה: {e}")
+        logger.error(f"Send Error: {e}")
         return False
 
 # ==========================================
 # לולאה ראשית
 # ==========================================
 
-def run():
-    log("NBA SCHEDULE BOT STARTED - SCHEDULE ONLY MODE")
+def run_engine():
+    logger.info("NBA SCHEDULE BOT STARTED")
     tz = pytz.timezone("Asia/Jerusalem")
-    last_sent_date = None
+    last_s = None
 
     state = load_state()
     if "last_sent_date" in state:
         try:
-            last_sent_date = datetime.strptime(state["last_sent_date"], "%Y-%m-%d").date()
+            last_s = datetime.strptime(state["last_sent_date"], "%Y-%m-%d").date()
         except Exception:
-            last_sent_date = None
+            last_s = None
 
-    target_hh, target_mm = map(int, SCHEDULE_TIME.split(":"))
+    target_hh, target_mm = map(int, SCHEDULE_TIME_STR.split(":"))
 
     while True:
         try:
             now = datetime.now(tz)
             today = now.date()
-
             target_dt = tz.localize(datetime(now.year, now.month, now.day, target_hh, target_mm, 0))
 
             # חלון של דקה אחת סביב השעה המתוכננת
             in_send_window = target_dt <= now < (target_dt + timedelta(minutes=1))
 
-            if in_send_window and last_sent_date != today:
-                games = get_games()
-                msg = get_schedule_msg(games)
+            if in_send_window and last_s != today:
+                data = get_nba_schedule()
+                msg = build_schedule_msg(data)
 
                 if msg:
                     send_to_telegram(msg)
-                    log(f"הודעת לוח יומית הושלמה עבור {today}")
+                    logger.info(f"Daily schedule sent for {today}")
                 else:
-                    log("לא נמצאו משחקים להצגה")
-                    log(f"מסומן כמעובד עבור {today} גם בלי משחקים")
+                    logger.info("No upcoming games found for the schedule.")
 
-                last_sent_date = today
+                last_s = today
                 state["last_sent_date"] = today.strftime("%Y-%m-%d")
                 save_state(state)
 
-                time.sleep(65)  # מונע כפילויות בתוך אותה דקה
+                time.sleep(65)
 
             time.sleep(30)
 
         except Exception as e:
-            log(f"שגיאה בלולאה הראשית: {e}")
+            logger.error(f"Loop Error: {e}")
             time.sleep(60)
 
 if __name__ == "__main__":
-    run()
+    run_engine()
