@@ -228,10 +228,12 @@ BAD_TRANSLATIONS_FIXES = {
     "ישעיהו ליברס": "אייזיאה ליברס",
 }
 
-PLAYER_PHOTOS = {
+LAYER_PHOTOS = {
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
     "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
+    "Cooper Flagg": "https://cdn.nba.com/teams/uploads/sites/1610612742/2026/04/RHZ03839.jpg?im=Resize=(1920)",
+    "Donovan Mitchell": "https://cdn.nba.com/teams/uploads/sites/1610612739/2026/04/preview-TS-1.png?im=Resize=(1920)",
 }
 
 def load_cache():
