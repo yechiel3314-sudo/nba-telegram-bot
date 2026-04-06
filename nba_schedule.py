@@ -13,7 +13,7 @@ import os
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dp9rM_1rGGlpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
-SCHEDULE_TIME = "16:56"  # זמן שליחת לוח המשחקים
+SCHEDULE_TIME = "17:00"  # זמן שליחת לוח המשחקים
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 NBA_URL = ESPN_API_URL  # נשאר על אותו מקור נתונים, רק מגדירים את השם שהיה חסר
 STATE_FILE = "nba_schedule_state.json"
@@ -108,18 +108,29 @@ def save_state(state):
 
 def get_games():
     log("מבקש נתונים מה-API לצורך לוח משחקים")
+    schedule = []
     try:
-        resp = requests.get(f"{NBA_URL}?cache={int(time.time())}", timeout=15)
+        resp = requests.get(f"{ESPN_API_URL}?t={int(time.time())}", timeout=15)
         if resp.status_code == 200:
-            data = resp.json()
-            games = data.get("events", [])
-            return games
+            events = resp.json().get('events', [])
+
+            for ev in events:
+                comp = ev['competitions'][0]
+                home = next(t for t in comp['competitors'] if t['homeAway'] == 'home')
+                away = next(t for t in comp['competitors'] if t['homeAway'] == 'away')
+
+                schedule.append({
+                    "id": ev['status']['type']['id'],
+                    "time": ev['date'],
+                    "home": home['team']['displayName'],
+                    "away": away['team']['displayName']
+                })
         else:
-            log(f"שגיאה בשליפה: {resp.status_code} | {resp.text}")
+            log(f"שגיאה בשליפה: {resp.status_code}")
     except Exception as e:
         log(f"שגיאה קריטית בשליפה: {e}")
-    return []
 
+    return schedule
 # ==========================================
 # עזר לניתוח תאריך ESPN
 # ==========================================
@@ -159,54 +170,28 @@ def split_team_name(full_name):
 # בניית הודעת לוח משחקים
 # ==========================================
 
-def get_schedule_msg(games):
-    log("בונה הודעת לוח משחקים")
-    if not games:
-        return None
-
+def get_schedule_msg(data):
     tz = pytz.timezone("Asia/Jerusalem")
     now = datetime.now(tz)
 
     msg = "🏀 <b>לוח משחקי הלילה ב NBA</b> 🏀\n\n"
     found = False
 
-    for g in games:
+    for g in data:
         try:
-            competitions = g.get("competitions", [])
-            if not competitions:
-                continue
+            utc_dt = datetime.strptime(g['time'].replace('Z', ''), "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
+            local_dt = utc_dt.astimezone(tz)
 
-            comp = competitions[0]
-            competitors = comp.get("competitors", [])
-            if len(competitors) < 2:
-                continue
-
-            home = next((t for t in competitors if t.get("homeAway") == "home"), None)
-            away = next((t for t in competitors if t.get("homeAway") == "away"), None)
-            if not home or not away:
-                continue
-
-            game_dt = parse_espn_datetime(g.get("date"))
-            if not game_dt:
-                continue
-
-            if game_dt.tzinfo is None:
-                game_dt = pytz.utc.localize(game_dt)
-
-            local_dt = game_dt.astimezone(tz)
-
-            # מציג רק משחקים ב-24 השעות הקרובות
-            if now <= local_dt <= now + timedelta(hours=24):
+            if g['id'] in ["1", "2"] and now <= local_dt <= now + timedelta(hours=24):
                 time_str = local_dt.strftime("%H:%M")
-                away_name = away["team"]["displayName"]
-                home_name = home["team"]["displayName"]
 
                 msg += f"⏰ <b>{time_str}</b>\n"
-                msg += f"🏀 {translate_team(*split_team_name(away_name))} 🆚 {translate_team(*split_team_name(home_name))}\n\n"
+                msg += f"🏀 {translate_team(g['away'], '')} 🆚 {translate_team(g['home'], '')}\n\n"
+
                 found = True
 
         except Exception as e:
-            log(f"שגיאה בבניית משחק: {e}")
+            log(f"שגיאה במשחק: {e}")
 
     return msg if found else None
 
