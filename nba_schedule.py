@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "17:23"
+SCHEDULE_TIME_STR = "17:29"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -87,6 +87,26 @@ def get_nba_schedule():
     except Exception as e:
         logger.error(f"Schedule Fetch Error: {e}")
     return schedule
+
+def parse_espn_datetime(dt_str):
+    if not dt_str:
+        return None
+
+    try:
+        clean = dt_str.replace("Z", "+00:00")
+        return datetime.fromisoformat(clean)
+    except Exception:
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M"
+        ):
+            try:
+                return datetime.strptime(dt_str.replace("Z", ""), fmt)
+            except Exception:
+                pass
+
+    return None
 
 # ==============================================================================
 # --- בניית הודעה ---
