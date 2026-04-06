@@ -228,7 +228,7 @@ BAD_TRANSLATIONS_FIXES = {
     "מקסים ריינאו": "מקסים ריינו"
 }
 
-LAYER_PHOTOS = {
+PLAYER_PHOTOS = {
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
     "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
