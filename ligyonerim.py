@@ -11,7 +11,7 @@ from urllib3.util.retry import Retry
 # ==========================================
 # הגדרות
 # ==========================================
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz1rM_Glpske3OxTJrE")
 CHAT_ID = os.getenv("CHAT_ID", "-1003808107418")
 STATE_FILE = "nba_israeli_state.json"
 
@@ -179,6 +179,50 @@ def esc(text):
     return html.escape("" if text is None else str(text))
 
 
+def normalize_not_playing_reason(text):
+    t = (text or "").lower()
+
+    if "rest" in t or "load" in t or "manage" in t:
+        return "מנוחה"
+    if "coach" in t or "decision" in t:
+        return "החלטת מאמן"
+    if "injur" in t:
+        return "פציעה"
+    if "ill" in t:
+        return "מחלה"
+    if "susp" in t:
+        return "הרחקה"
+
+    return text
+
+
+def get_play_status(player):
+    """
+    מחזיר:
+    played_bool, reason_text
+    """
+    status = str(player.get("status") or "").upper()
+    played_raw = player.get("played")
+    mins_raw = (player.get("statistics") or {}).get("minutesCalculated")
+
+    not_playing_reason = str(player.get("notPlayingReason") or "").strip()
+    not_playing_desc = str(player.get("notPlayingDescription") or "").strip()
+    reason_text = normalize_not_playing_reason(not_playing_desc or not_playing_reason)
+
+    if played_raw is not None:
+        played_bool = str(played_raw).strip().lower() in ("1", "true", "yes", "y")
+        return played_bool, reason_text
+
+    # fallback אם השדה played לא קיים
+    played_bool = is_played(mins_raw)
+
+    # אם אין דקות בכלל והסטטוס לא ACTIVE, נחשיב כלא שיחק
+    if not played_bool and status != "ACTIVE":
+        return False, reason_text
+
+    return played_bool, reason_text
+
+
 # ==========================================
 # MESSAGE BUILDER
 # ==========================================
@@ -189,8 +233,9 @@ def build_msg(player, stage_text, game_info):
         return None
 
     stats = player.get("statistics") or {}
+
+    played, rest_reason = get_play_status(player)
     mins_raw = stats.get("minutesCalculated")
-    played = is_played(mins_raw)
 
     name_he = PLAYER_HEBREW_NAMES.get(full, full)
     away_he = TEAM_HEBREW.get(game_info["away"], game_info["away"])
@@ -207,7 +252,10 @@ def build_msg(player, stage_text, game_info):
     ]
 
     if not played:
-        lines.append(rtl("⏳ <b>טרם עלה לפרקט</b>"))
+        if rest_reason:
+            lines.append(rtl(f"🛋️ <b>לא שותף / מנוחה:</b> {esc(rest_reason)}"))
+        else:
+            lines.append(rtl("🛋️ <b>לא שותף / מנוחה</b>"))
     else:
         def g(key):
             return stats.get(key) or 0
@@ -300,7 +348,6 @@ def telegram_send_photo(photo_url, caption):
 
 
 def send_player_message(player_name_en, message):
-    stats = (player_name_en, PLAYER_IMAGES.get(player_name_en))
     photo = PLAYER_IMAGES.get(player_name_en)
 
     if photo and len(message) <= 1024:
