@@ -233,10 +233,16 @@ LAYER_PHOTOS = {
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
     "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
     "Cooper Flagg": "https://cdn.nba.com/teams/uploads/sites/1610612742/2026/04/RHZ03839.jpg?im=Resize=(1920)",
-    "Donovan Mitchell": "https://cdn.nba.com/teams/uploads/sites/1610612739/2026/04/preview-TS-1.png?im=Resize=(1920)",
+    "Donovan Mitchell": "https://pbs.twimg.com/media/HFLgEehXYAAPjHC?format=jpg&name=4096x4096",
     "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small",
     "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096",
     "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large",
+    "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large",
+    "LaMelo Ball": "https://pbs.twimg.com/media/HEyLKYVb0AAt_T3?format=jpg&name=small",
+    "Kon Knueppel": "https://pbs.twimg.com/media/HFDbM0WXcAAfizY?format=jpg&name=small",
+    "Miles Bridges": "https://pbs.twimg.com/media/HE8YBE_bwAAnSBM?format=jpg&name=medium",
+    "Brandon Miller": "https://pbs.twimg.com/media/HD4YQaxWYAAIrqo?format=jpg&name=medium",
+    "Coby White": "https://pbs.twimg.com/media/HE9T5e5WcAAXUbU?format=jpg&name=small",
 }
 
 def load_cache():
