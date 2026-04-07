@@ -148,10 +148,10 @@ def run_engine():
                     # מסמנים כנשלח כדי לא לנסות בלולאה כל 30 שניות אם אין משחקים
                     last_s = today
 
-            time.sleep(30)
+            time.sleep(10)
         except Exception as e:
             logger.error(f"Loop Error: {e}")
-            time.sleep(60)
+            time.sleep(20)
 
 if __name__ == "__main__":
     run_engine()
