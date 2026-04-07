@@ -27,7 +27,7 @@ PLAYER_HEBREW_NAMES = {
 PLAYER_IMAGES = {
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
-    "Deni Avdija": "https://pbs.twimg.com/media/HCCn0ZBWAAAMGuh?format=jpg&name=medium",
+    "Deni Avdija": "https://pbs.twimg.com/media/HE9V4E8bQAA_Kqo?format=jpg&name=large",
 }
 
 ISRAELI_PLAYERS = set(PLAYER_HEBREW_NAMES.keys())
