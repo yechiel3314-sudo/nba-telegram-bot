@@ -27,7 +27,7 @@ PLAYER_HEBREW_NAMES = {
 PLAYER_IMAGES = {
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
-    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
+    "Deni Avdija": "https://pbs.twimg.com/media/HCCn0ZBWAAAMGuh?format=jpg&name=medium",
 }
 
 ISRAELI_PLAYERS = set(PLAYER_HEBREW_NAMES.keys())
