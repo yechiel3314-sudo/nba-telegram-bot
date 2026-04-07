@@ -11,22 +11,28 @@ from urllib3.util.retry import Retry
 # ==========================================
 # הגדרות
 # ==========================================
-TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz1rM_Glpske3OxTJrE")
+TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
+CHAT_ID = "-1003808107418"
+STATE_FILE = "nba_israeli_final_v29.json"
+TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE")
 CHAT_ID = os.getenv("CHAT_ID", "-1003808107418")
 STATE_FILE = "nba_israeli_state.json"
 
+RTL = "\u202B"
 MESSAGE_DELAY_SECONDS = 20
 POLL_SECONDS = 20
 
 PLAYER_HEBREW_NAMES = {
     "Deni Avdija": "דני אבדיה",
     "Ben Saraf": "בן שרף",
+    "Danny Wolf": "דני וולף"
     "Danny Wolf": "דני וולף",
 }
 
 PLAYER_IMAGES = {
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
+    "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg"
     "Deni Avdija": "https://cdn.nba.com/teams/uploads/sites/1610612757/2026/02/GettyImages-2261442744.jpg",
 }
 
@@ -62,23 +68,26 @@ TEAM_HEBREW = {
     "SAS": "סן אנטוניו ספרס",
     "TOR": "טורונטו ראפטורס",
     "UTA": "יוטה ג'אז",
-    "WAS": "וושינגטון וויזארדס",
+    "WAS": "וושינגטון וויזארדס"
 }
 
 SB_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 BOX_URL = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
 
+logging.basicConfig(level=logging.INFO)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 RLM = "\u200F"  # Right-to-left mark
-RLM = "\u200F"
 
 
 # ==========================================
+# SESSION
 # SESSION / HTTP
 # ==========================================
 def build_session():
     s = requests.Session()
+    retry = Retry(total=4, backoff_factor=1,
+                  status_forcelist=[429, 500, 502, 503, 504])
     retry = Retry(
         total=4,
         backoff_factor=1,
@@ -95,6 +104,8 @@ SESSION = build_session()
 
 def get_json(url):
     try:
+        return SESSION.get(url, timeout=20).json()
+    except:
         r = SESSION.get(url, timeout=20)
         r.raise_for_status()
         return r.json()
@@ -109,6 +120,9 @@ def get_json(url):
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
+            return json.load(open(STATE_FILE, encoding="utf-8"))
+        except:
+            pass
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict) and "games" in data:
@@ -117,6 +131,9 @@ def load_state():
             logging.error(f"Failed loading state: {e}")
     return {"games": {}}
 
+def save_state(s):
+    json.dump(s, open(STATE_FILE, "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
 
 def save_state(state):
     try:
@@ -126,33 +143,11 @@ def save_state(state):
         logging.error(f"Failed saving state: {e}")
 
 
-def get_game_state(state, gid):
-    games = state.setdefault("games", {})
-    if gid not in games:
-        games[gid] = {
-            "events": [],
-            "players": {},
-        }
-    if "players" not in games[gid]:
-        games[gid]["players"] = {}
-    if "events" not in games[gid]:
-        games[gid]["events"] = []
-    return games[gid]
-
-
-def get_player_state(game_state, full_name):
-    players = game_state.setdefault("players", {})
-    if full_name not in players:
-        players[full_name] = {
-            "sent_events": [],
-            "skipped_events": []
-        }
-    return players[full_name]
-
-
 # ==========================================
+# דקות
 # FORMATTERS
 # ==========================================
+def format_minutes(raw):
 def format_minutes_seconds(raw):
     """
     Converts NBA duration strings like:
@@ -161,11 +156,17 @@ def format_minutes_seconds(raw):
     PT12M       -> 12:00
     """
     if not raw:
+        return "0:00"
+    m = re.match(r"PT(\d+)M(?:(\d+))?", raw)
         return "00:00"
 
     s = str(raw).strip()
     m = re.match(r"^PT(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$", s)
     if not m:
+        return "0:00"
+    mins = int(m.group(1))
+    secs = int(m.group(2) or 0)
+    return f"{mins}:{str(secs).zfill(2)}"
         return "00:00"
 
     mins = int(m.group(1) or 0)
@@ -204,103 +205,51 @@ def esc(text):
     return html.escape("" if text is None else str(text))
 
 
-def normalize_not_playing_reason(text):
-    t = (text or "").lower()
-
-    if "rest" in t or "load" in t or "manage" in t:
-        return "מנוחה"
-    if "coach" in t or "decision" in t:
-        return "החלטת מאמן"
-    if "injur" in t:
-        return "פציעה"
-    if "ill" in t:
-        return "מחלה"
-    if "susp" in t:
-        return "הרחקה"
-    if "dnp" in t:
-        return "לא שיחק"
-
-    return text
-
-
-def get_play_status(player):
-def is_truthy_played(raw):
-    return str(raw).strip().lower() in ("1", "true", "yes", "y")
-
-
-def classify_player_status(player):
-    """
-    מחזיר:
-    played_bool, reason_text
-    מחזיר אחד משלושת המצבים:
-    - "played"  -> יש דקות, שולחים הודעת סטטיסטיקה
-    - "pending" -> בסגל אבל טרם עלה לפרקט, שולחים הודעת המתנה
-    - "skip"    -> לא שולחים בכלל (מנוחה/פציעה/לא שותף/לא פעיל)
-    """
-    stats = player.get("statistics") or {}
-    mins_raw = stats.get("minutesCalculated")
-
-    status = str(player.get("status") or "").upper()
-    played_raw = player.get("played")
-    mins_raw = (player.get("statistics") or {}).get("minutesCalculated")
-
-    not_playing_reason = str(player.get("notPlayingReason") or "").strip()
-    not_playing_desc = str(player.get("notPlayingDescription") or "").strip()
-    reason_text = normalize_not_playing_reason(not_playing_desc or not_playing_reason)
-
-    if reason_text:
-        return "skip", reason_text
-
-    if played_raw is not None:
-        played_bool = str(played_raw).strip().lower() in ("1", "true", "yes", "y")
-        return played_bool, reason_text
-        if is_truthy_played(played_raw):
-            return "played", None
-        if status == "INACTIVE":
-            return "skip", None
-        return "pending", None
-
-    # fallback אם השדה played לא קיים
-    played_bool = is_played(mins_raw)
-    if format_minutes_seconds(mins_raw) != "00:00":
-        return "played", None
-
-    # אם אין דקות בכלל והסטטוס לא ACTIVE, נחשיב כלא שיחק
-    if not played_bool and status != "ACTIVE":
-        return False, reason_text
-    if status == "INACTIVE":
-        return "skip", None
-
-    return played_bool, reason_text
-    return "pending", None
-
-
 # ==========================================
+# בניית הודעה
 # MESSAGE BUILDER
 # ==========================================
+def build_msg(p, stage_text, game_info):
+    full = f"{p.get('firstName')} {p.get('familyName')}"
+    if p.get("status") == "INACTIVE":
 def build_msg(player, stage_text, game_info):
     full = f"{player.get('firstName', '')} {player.get('familyName', '')}".strip()
 
     if player.get("status") == "INACTIVE":
         return None
 
+    stats = p.get("statistics") or {}
+    mins = format_minutes(stats.get("minutesCalculated"))
+    name_he = PLAYER_HEBREW_NAMES.get(full, full)
     stats = player.get("statistics") or {}
-
-    played, rest_reason = get_play_status(player)
     mins_raw = stats.get("minutesCalculated")
-
-    # אם לא שיחק / לא שותף / במנוחה / DNP — לא שולחים הודעה בכלל
-    if not played:
-        return None
-    kind, reason = classify_player_status(player)
+    played = is_played(mins_raw)
 
     name_he = PLAYER_HEBREW_NAMES.get(full, full)
     away_he = TEAM_HEBREW.get(game_info["away"], game_info["away"])
     home_he = TEAM_HEBREW.get(game_info["home"], game_info["home"])
 
-    if kind == "skip":
-        return None
+    teams_line = f"🏀 <b>{away_he} 🆚 {home_he}</b> 🏀"
 
+    def g(x): return stats.get(x) or 0
+
+    return RTL + (
+        f"🇮🇱 <b>לגיונרים: {name_he}</b> 🇮🇱\n"
+        f"{teams_line}\n\n"
+        f"📊 <b>סטטיסטיקה מלאה:</b>\n"
+        f"<b>{stage_text}</b>\n\n"
+        f"🎯 <b>נקודות:</b> {g('points')}\n"
+        f"🏀 <b>מהשדה:</b> {g('fieldGoalsMade')}/{g('fieldGoalsAttempted')} | "
+        f"<b>לשלוש:</b> {g('threePointersMade')}/{g('threePointersAttempted')} | "
+        f"<b>מהעונשין:</b> {g('freeThrowsMade')}/{g('freeThrowsAttempted')}\n"
+        f"💪 <b>ריבאונדים:</b> {g('reboundsTotal')}\n"
+        f"🪄 <b>אסיסטים:</b> {g('assists')}\n"
+        f"🧤 <b>חטיפות:</b> {g('steals')}\n"
+        f"🚫 <b>חסימות:</b> {g('blocks')}\n"
+        f"⚠️ <b>איבודים:</b> {g('turnovers')}\n"
+        f"📊 <b>פלוס מינוס:</b> {g('plusMinusPoints') if g('plusMinusPoints') <= 0 else '+' + str(g('plusMinusPoints'))}\n"
+        f"🕒 <b>דקות:</b> {mins}"
+    )
     lines = [
         rtl(f"🇮🇱 <b>לגיונרים: {esc(name_he)}</b> 🇮🇱"),
         "",
@@ -311,28 +260,27 @@ def build_msg(player, stage_text, game_info):
         "",
     ]
 
-    if kind == "pending":
-        lines.append(rtl("⏳ <b>השחקן טרם עלה לפרקט</b>"))
-        return "\n".join(lines)
+    if not played:
+        lines.append(rtl("⏳ <b>טרם עלה לפרקט</b>"))
+    else:
+        def g(key):
+            return stats.get(key) or 0
 
-    def g(key):
-        return stats.get(key) or 0
-
-    lines.extend([
-        rtl(f"🎯 <b>נקודות:</b> {g('points')}"),
-        rtl(
-            f"🏀 <b>מהשדה:</b> {g('fieldGoalsMade')}/{g('fieldGoalsAttempted')} | "
-            f"<b>לשלוש:</b> {g('threePointersMade')}/{g('threePointersAttempted')} | "
-            f"<b>מהעונשין:</b> {g('freeThrowsMade')}/{g('freeThrowsAttempted')}"
-        ),
-        rtl(f"💪 <b>ריבאונדים:</b> {g('reboundsTotal')}"),
-        rtl(f"🪄 <b>אסיסטים:</b> {g('assists')}"),
-        rtl(f"🧤 <b>חטיפות:</b> {g('steals')}"),
-        rtl(f"🚫 <b>חסימות:</b> {g('blocks')}"),
-        rtl(f"⚠️ <b>איבודים:</b> {g('turnovers')}"),
-        rtl(f"📊 <b>פלוס מינוס:</b> {format_plus_minus(g('plusMinusPoints'))}"),
-        rtl(f"🕒 <b>דקות:</b> {format_minutes_seconds(mins_raw)}"),
-    ])
+        lines.extend([
+            rtl(f"🎯 <b>נקודות:</b> {g('points')}"),
+            rtl(
+                f"🏀 <b>מהשדה:</b> {g('fieldGoalsMade')}/{g('fieldGoalsAttempted')} | "
+                f"<b>לשלוש:</b> {g('threePointersMade')}/{g('threePointersAttempted')} | "
+                f"<b>מהעונשין:</b> {g('freeThrowsMade')}/{g('freeThrowsAttempted')}"
+            ),
+            rtl(f"💪 <b>ריבאונדים:</b> {g('reboundsTotal')}"),
+            rtl(f"🪄 <b>אסיסטים:</b> {g('assists')}"),
+            rtl(f"🧤 <b>חטיפות:</b> {g('steals')}"),
+            rtl(f"🚫 <b>חסימות:</b> {g('blocks')}"),
+            rtl(f"⚠️ <b>איבודים:</b> {g('turnovers')}"),
+            rtl(f"📊 <b>פלוס מינוס:</b> {format_plus_minus(g('plusMinusPoints'))}"),
+            rtl(f"🕒 <b>דקות:</b> {format_minutes_seconds(mins_raw)}"),
+        ])
 
     return "\n".join(lines)
 
@@ -365,8 +313,10 @@ def stage_from_game(g):
 
 
 # ==========================================
+# שליחה
 # SEND
 # ==========================================
+def send_photo(text, photo_url):
 def telegram_send_message(text):
     try:
         r = SESSION.post(
@@ -388,16 +338,22 @@ def telegram_send_message(text):
 
 def telegram_send_photo(photo_url, caption):
     try:
+        requests.post(
         r = SESSION.post(
             f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
             json={
                 "chat_id": CHAT_ID,
                 "photo": photo_url,
+                "caption": text,
+                "parse_mode": "HTML"
                 "caption": caption,
                 "parse_mode": "HTML",
             },
+            timeout=15
             timeout=20,
         )
+    except:
+        pass
         r.raise_for_status()
         return True
     except Exception as e:
@@ -406,18 +362,19 @@ def telegram_send_photo(photo_url, caption):
 
 
 def send_player_message(player_name_en, message):
+    stats = (player_name_en, PLAYER_IMAGES.get(player_name_en))
     photo = PLAYER_IMAGES.get(player_name_en)
 
     if photo and len(message) <= 1024:
         ok = telegram_send_photo(photo, message)
         if ok:
-        if telegram_send_photo(photo, message):
             return
 
     telegram_send_message(message)
 
 
 # ==========================================
+# ריצה
 # MAIN LOOP
 # ==========================================
 def run():
@@ -427,9 +384,12 @@ def run():
         try:
             sb = get_json(SB_URL)
             if not sb:
+                time.sleep(30)
                 time.sleep(POLL_SECONDS)
                 continue
 
+            for g in sb["scoreboard"]["games"]:
+                gid = g["gameId"]
             games = (((sb or {}).get("scoreboard") or {}).get("games") or [])
             for g in games:
                 gid = str(g.get("gameId", ""))
@@ -440,23 +400,52 @@ def run():
                     state["games"][gid] = {"events": []}
 
                 gs = state["games"][gid]
-                game_state = get_game_state(state, gid)
                 stage = stage_from_game(g)
 
+                period = g["period"]
+                txt = g["gameStatusText"].lower()
+
+                stage_text = None
+
+                if "end" in txt or "half" in txt:
+                    if period == 1:
+                        stage_text = "⏱️ סיום רבע 1 ⏱️"
+                    elif period == 2:
+                        stage_text = "⏱️ מחצית ⏱️"
+                    elif period == 3:
+                        stage_text = "⏱️ סיום רבע 3 ⏱️"
+                    elif period == 4 and g["gameStatus"] != 3:
+                        stage_text = "⏱️ סיום רבע 4 ⏱️"
+
+                if g["gameStatus"] == 3:
+                    ot = max(0, period - 4)
+                    if ot == 0:
+                        stage_text = "🏁 סיום המשחק 🏁"
+                    else:
+                        stage_text = f"🏁 סיום המשחק לאחר הארכה {ot} 🏁"
+
+                if not stage_text or stage_text in gs["events"]:
                 if not stage or stage in gs["events"]:
-                if not stage:
                     continue
 
                 box = get_json(BOX_URL.format(gid=gid))
                 if not box:
                     continue
 
+                game = box["game"]
                 game = (box or {}).get("game") or {}
                 away = ((game.get("awayTeam") or {}).get("teamTricode")) or ""
                 home = ((game.get("homeTeam") or {}).get("teamTricode")) or ""
 
+                game_info = {
+                    "away": game["awayTeam"]["teamTricode"],
+                    "home": game["homeTeam"]["teamTricode"]
+                }
                 game_info = {"away": away, "home": home}
 
+                for t in ["awayTeam", "homeTeam"]:
+                    for p in game[t]["players"]:
+                        full = f"{p['firstName']} {p['familyName']}"
                 sent_any = False
 
                 for team_key in ("awayTeam", "homeTeam"):
@@ -464,46 +453,29 @@ def run():
                     for p in players:
                         full = f"{p.get('firstName', '')} {p.get('familyName', '')}".strip()
                         if full in ISRAELI_PLAYERS:
+                            msg = build_msg(p, stage_text, game_info)
                             msg = build_msg(p, stage, game_info)
                             if msg:
+                                photo = PLAYER_IMAGES.get(full)
+                                if photo:
+                                    send_photo(msg, photo)
                                 send_player_message(full, msg)
                                 sent_any = True
                                 time.sleep(MESSAGE_DELAY_SECONDS)
 
+                gs["events"].append(stage_text)
+                save_state(state)
                 if sent_any:
                     gs["events"].append(stage)
-                        if full not in ISRAELI_PLAYERS:
-                            continue
-
-                        pstate = get_player_state(game_state, full)
-
-                        if stage in pstate["sent_events"] or stage in pstate["skipped_events"]:
-                            continue
-
-                        kind, reason = classify_player_status(p)
-
-                        if kind == "skip":
-                            pstate["skipped_events"].append(stage)
-                            save_state(state)
-                            continue
-
-                        msg = build_msg(p, stage, game_info)
-                        if msg:
-                            send_player_message(full, msg)
-                            sent_any = True
-                            pstate["sent_events"].append(stage)
-                            save_state(state)
-                            time.sleep(MESSAGE_DELAY_SECONDS)
-
-                if sent_any and stage not in game_state["events"]:
-                    game_state["events"].append(stage)
                     save_state(state)
 
         except Exception as e:
+            print("ERROR:", e)
             logging.error(f"Main loop error: {e}")
 
         time.sleep(POLL_SECONDS)
 
+        time.sleep(20)
 
 if __name__ == "__main__":
     run()
