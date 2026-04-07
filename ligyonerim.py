@@ -26,7 +26,6 @@ PLAYER_HEBREW_NAMES = {
     "Deni Avdija": "דני אבדיה",
     "Ben Saraf": "בן שרף",
     "Danny Wolf": "דני וולף"
-    "Danny Wolf": "דני וולף",
 }
 
 PLAYER_IMAGES = {
