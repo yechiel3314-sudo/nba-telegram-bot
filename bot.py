@@ -228,7 +228,7 @@ BAD_TRANSLATIONS_FIXES = {
     "מקסים ריינאו": "מקסים ריינו"
 }
 
-LAYER_PHOTOS = {
+PLAYER_PHOTOS = {
     # --- פילדלפיה 76 (PHI) ---
     "Joel Embiid": "https://pbs.twimg.com/media/Gi_Y0rXXUAAesyw?format=jpg&name=small", # ג'ואל אמביד
     "Paul George": "https://pbs.twimg.com/media/HFBkIV_bMAAtkJ4?format=jpg&name=900x900", # פול ג'ורג'
