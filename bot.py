@@ -238,6 +238,7 @@ PLAYER_PHOTOS = {
     # --- אורלנדו מג'יק (ORL) ---
     "Paolo Banchero": "https://pbs.twimg.com/media/HEYXKEtWQAAsvRJ?format=jpg&name=4096x4096", # פאולו באנקרו
     "Desmond Bane": "https://pbs.twimg.com/media/HFCk3GObUAA-ZPS?format=jpg&name=large", # דזמונד ביין (עבר לאורלנדו)
+    "Franz Wagner": "https://pbs.twimg.com/media/HEht1_ubwAAbTr7?format=jpg&name=medium
     "Anthony Black": "https://pbs.twimg.com/media/G92xPPeWYAA3zNs?format=jpg&name=large", # אנתוני בלאק
 
     # --- אטלנטה הוקס (ATL) ---
@@ -313,6 +314,7 @@ PLAYER_PHOTOS = {
     "Jalen Duren": "https://pbs.twimg.com/media/HE6ujcDW8AAKQzb?format=jpg&name=medium",
     "Daniss Jenkins": "https://pbs.twimg.com/media/HE8d7JYboAAmdjq?format=jpg&name=large",
     "Tobias Harris": "https://pbs.twimg.com/media/HFErsVXW4AEALYu?format=jpg&name=large",
+    "Duncan Robinson": "https://pbs.twimg.com/media/G_YVq3cWkAEsUnX?format=jpg&name=large",
 
     # --- אוקלהומה סיטי ת'אנדר (OKC) ---
     "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096",
@@ -338,6 +340,8 @@ PLAYER_PHOTOS = {
     # --- דנבר נאגטס (DEN) ---
     "Nikola Jokic": "https://pbs.twimg.com/media/HE6I760XUAAzL3U?format=jpg&name=medium",
     "Jamal Murray": "https://pbs.twimg.com/media/HC_bc_eXkAAEnAC?format=jpg&name=large",
+    "Aaron Gordon": "https://pbs.twimg.com/media/HFSElLqbUAEZUWW?format=jpg&name=medium",
+    "Christian Braun": "https://pbs.twimg.com/media/HFGEAHOaQAA0iB8?format=jpg&name=large",
 }
 
 def load_cache():
