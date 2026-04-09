@@ -238,7 +238,7 @@ PLAYER_PHOTOS = {
     # --- אורלנדו מג'יק (ORL) ---
     "Paolo Banchero": "https://pbs.twimg.com/media/HEYXKEtWQAAsvRJ?format=jpg&name=4096x4096", # פאולו באנקרו
     "Desmond Bane": "https://pbs.twimg.com/media/HFCk3GObUAA-ZPS?format=jpg&name=large", # דזמונד ביין (עבר לאורלנדו)
-    "Franz Wagner": "https://pbs.twimg.com/media/HEht1_ubwAAbTr7?format=jpg&name=medium
+    "Franz Wagner": "https://pbs.twimg.com/media/HEht1_ubwAAbTr7?format=jpg&name=medium",
     "Anthony Black": "https://pbs.twimg.com/media/G92xPPeWYAA3zNs?format=jpg&name=large", # אנתוני בלאק
 
     # --- אטלנטה הוקס (ATL) ---
