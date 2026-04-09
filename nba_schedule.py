@@ -33,8 +33,8 @@ NBA_HEBREW_MAP = {
     "Brooklyn Nets": "ברוקלין נטס", "Charlotte Hornets": "שארלוט הורנטס",
     "Chicago Bulls": "שיקגו בולס", "Cleveland Cavaliers": "קליבלנד קאבלירס",
     "Dallas Mavericks": "דאלאס מאבריקס", "Denver Nuggets": "דנבר נאגטס",
-    "Detroit Pistons": "דטרויט פיסטונס",
-    "Golden State Warriors": "גולדן סטייט ווריורס",
+    "Detroit Pistons": "דטרויט פיסטונס", "Golden State Warriors": "גולדן סטייט",
+    "Detroit Pistons": "דטרויט פיסטונס", "Golden State Warriors": "גולדן סטייט ווריורס",
     "Houston Rockets": "יוסטון רוקטס", "Indiana Pacers": "אינדיאנה פייסרס",
     "LA Clippers": "לוס אנג'לס קליפרס", "Los Angeles Lakers": "לוס אנג'לס לייקרס",
     "Memphis Grizzlies": "ממפיס גריזליס", "Miami Heat": "מיאמי היט",
@@ -136,7 +136,7 @@ def run_engine():
             today = now.date()
 
             # בדיקה אם הגיעה השעה לשלוח את הלו"ז
-            if curr == SCHEDULE_TIME_STR and last_s != today:
+            if curr >= SCHEDULE_TIME_STR and last_s != today:
                 data = get_nba_schedule()
                 msg = build_schedule_msg(data)
                 if msg:
@@ -145,13 +145,14 @@ def run_engine():
                     logger.info(f"Daily schedule sent for {today}")
                 else:
                     logger.info("No upcoming games found for the schedule.")
-                    time.sleep(10)
-                    continue
+                    # מסמנים כנשלח כדי לא לנסות בלולאה כל 30 שניות אם אין משחקים
+                    last_s = today
 
             time.sleep(30)
+           
         except Exception as e:
             logger.error(f"Loop Error: {e}")
-            time.sleep(20)
-
+            time.sleep(60)
+           
 if __name__ == "__main__":
     run_engine()
