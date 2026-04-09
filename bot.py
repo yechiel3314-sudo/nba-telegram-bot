@@ -322,6 +322,7 @@ PLAYER_PHOTOS = {
     # --- קליבלנד קאבלירס (CLE) ---
     "Donovan Mitchell": "https://i.iheart.com/v3/re/assets.getty/69d39478e34e77ebb4e689bb?ops=max(1060,0),quality(80)",
     "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large",
+    "Evan Mobley": "https://pbs.twimg.com/media/GlDQARJWcAAs_bu?format=jpg&name=large",
 
     # --- ברוקלין נטס (BKN) ---
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
