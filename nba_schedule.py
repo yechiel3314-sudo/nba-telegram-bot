@@ -145,9 +145,8 @@ def run_engine():
                     logger.info(f"Daily schedule sent for {today}")
                 else:
                     logger.info("No upcoming games found for the schedule.")
-                    last_s = today
-
-                time.sleep(65)
+                    time.sleep(10)
+                    continue
 
             time.sleep(30)
         except Exception as e:
