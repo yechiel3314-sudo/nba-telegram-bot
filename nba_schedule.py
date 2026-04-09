@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "18:00"
+SCHEDULE_TIME_STR = "16:09"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -136,7 +136,7 @@ def run_engine():
             today = now.date()
 
             # בדיקה אם הגיעה השעה לשלוח את הלו"ז
-            if curr >= SCHEDULE_TIME_STR and last_s != today:
+            if curr == SCHEDULE_TIME_STR and last_s != today:
                 data = get_nba_schedule()
                 msg = build_schedule_msg(data)
                 if msg:
@@ -145,10 +145,11 @@ def run_engine():
                     logger.info(f"Daily schedule sent for {today}")
                 else:
                     logger.info("No upcoming games found for the schedule.")
-                    # מסמנים כנשלח כדי לא לנסות בלולאה כל 30 שניות אם אין משחקים
                     last_s = today
 
-            time.sleep(10)
+                time.sleep(65)
+
+            time.sleep(30)
         except Exception as e:
             logger.error(f"Loop Error: {e}")
             time.sleep(20)
