@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "18:00"
+SCHEDULE_TIME_STR = "11:30"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -137,16 +137,18 @@ def run_engine():
 
             # בדיקה אם הגיעה השעה לשלוח את הלו"ז
             if curr >= SCHEDULE_TIME_STR and last_s != today:
-                data = get_nba_schedule()
-                msg = build_schedule_msg(data)
-                if msg:
-                    send_to_telegram(msg)
-                    last_s = today
-                    logger.info(f"Daily schedule sent for {today}")
-                else:
-                    logger.info("No upcoming games found for the schedule.")
-                    # מסמנים כנשלח כדי לא לנסות בלולאה כל 30 שניות אם אין משחקים
-                    last_s = today
+                try:
+                    data = get_nba_schedule()
+                    msg = build_schedule_msg(data)
+                    
+                    if msg:
+                        send_to_telegram(msg)
+                        last_s = today
+                        logger.info(f"Daily schedule sent for {today}")
+                    else:
+                        logger.info("No upcoming games found yet. Will try again next loop.")
+                    except Exception as e:
+                        logger.error(f"Schedule processing error: {e}")
 
             time.sleep(30)
            
