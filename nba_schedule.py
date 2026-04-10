@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "17:38"
+SCHEDULE_TIME_STR = "17:42"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -89,46 +89,60 @@ def get_nba_schedule():
 
 def build_schedule_msg(data):
     isr_tz = pytz.timezone("Asia/Jerusalem")
+    now = datetime.now(isr_tz)
+
+    # תמיד בונים את "הלילה הקרוב":
+    # היום ב-18:00 עד מחר ב-12:00
+    today_18 = isr_tz.localize(datetime.combine(now.date(), dt_time(18, 0)))
+    tomorrow_12 = isr_tz.localize(datetime.combine(now.date() + timedelta(days=1), dt_time(12, 0)))
+
+    window_start = today_18
+    window_end = tomorrow_12
 
     header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב NBA</b> ══ 🏀\n\n"
-    body = ""
     games = []
 
     for g in data:
         try:
-            # תמיכה גם עם שניות וגם בלי
-            time_str_raw = g["time"].replace("Z", "")
+            raw = g["time"].replace("Z", "")
+
             try:
-                utc_dt = datetime.strptime(time_str_raw, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=pytz.utc)
+                utc_dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=pytz.utc)
             except ValueError:
-                utc_dt = datetime.strptime(time_str_raw, "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
+                utc_dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
 
             local_dt = utc_dt.astimezone(isr_tz)
 
-            if not (now_local <= local_dt <= end_window):
-                continue
-                
-            games.append({
-                "local_dt": local_dt,
-                "home": g["home"],
-                "away": g["away"],
-                "id": g["id"]
-            })
+            logger.info(
+                f"CHECK game_id={g['id']} local={local_dt} "
+                f"window=({window_start} -> {window_end}) "
+                f"away={g['away']} home={g['home']}"
+            )
+
+            if window_start <= local_dt <= window_end:
+                games.append({
+                    "local_dt": local_dt,
+                    "away": g["away"],
+                    "home": g["home"],
+                })
 
         except Exception as e:
-            logger.info(f"build skip: {e} raw={g}")
+            logger.error(f"build_schedule_msg error: {e} raw={g}")
 
-    # ממיינים לפי שעה
     games.sort(key=lambda x: x["local_dt"])
 
+    if not games:
+        return None
+
+    body = ""
     for game in games:
-        time_str = game["local_dt"].strftime("%H:%M")
+        time_str = game["local_dt"].strftime("%d/%m %H:%M")
         body += (
             f"{RTL_MARK}⏰ <b>{time_str}</b>\n"
             f"{RTL_MARK}🏀 {format_team(game['away'])} 🆚 {format_team(game['home'])}\n\n"
         )
 
-    return header + body if body.strip() else None
+    return header + body
 
 # ==============================================================================
 # --- מנגנון ריצה ---
