@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "16:53"
+SCHEDULE_TIME_STR = "17:00"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -89,6 +89,10 @@ def get_nba_schedule():
 
 def build_schedule_msg(data):
     isr_tz = pytz.timezone("Asia/Jerusalem")
+
+    now_local = datetime.now(isr_tz)
+    end_window = now_local + timedelta(hours=24)
+
     header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב NBA</b> ══ 🏀\n\n"
     body = ""
     games = []
@@ -104,6 +108,9 @@ def build_schedule_msg(data):
 
             local_dt = utc_dt.astimezone(isr_tz)
 
+            if not (now_local <= local_dt <= end_window):
+                continue
+                
             games.append({
                 "local_dt": local_dt,
                 "home": g["home"],
