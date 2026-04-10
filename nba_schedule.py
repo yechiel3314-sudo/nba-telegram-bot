@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "18:00"
+SCHEDULE_TIME_STR = "12:02"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -88,24 +88,43 @@ def get_nba_schedule():
 # ==============================================================================
 
 def build_schedule_msg(data):
-    isr_tz = pytz.timezone('Asia/Jerusalem')
-    now = datetime.now(isr_tz)
+    isr_tz = pytz.timezone("Asia/Jerusalem")
     header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב NBA</b> ══ 🏀\n\n"
     body = ""
-    found = False
+    games = []
 
     for g in data:
-        # המרת זמן ה-UTC לזמן ישראל
-        utc_dt = datetime.strptime(g['time'].replace('Z', ''), "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
-        local_dt = utc_dt.astimezone(isr_tz)
+        try:
+            # תמיכה גם עם שניות וגם בלי
+            time_str_raw = g["time"].replace("Z", "")
+            try:
+                utc_dt = datetime.strptime(time_str_raw, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=pytz.utc)
+            except ValueError:
+                utc_dt = datetime.strptime(time_str_raw, "%Y-%m-%dT%H:%M").replace(tzinfo=pytz.utc)
 
-        # הצגת משחקים שעתידים להתקיים ב-24 השעות הקרובות
-        if g['id'] in ["1", "2"] and now <= local_dt <= now + timedelta(hours=24):
-            time_str = local_dt.strftime("%H:%M")
-            body += f"{RTL_MARK}⏰ <b>{time_str}</b>\n{RTL_MARK}🏀 {format_team(g['away'])} 🆚 {format_team(g['home'])}\n\n"
-            found = True
+            local_dt = utc_dt.astimezone(isr_tz)
 
-    return header + body if found else None
+            games.append({
+                "local_dt": local_dt,
+                "home": g["home"],
+                "away": g["away"],
+                "id": g["id"]
+            })
+
+        except Exception as e:
+            logger.info(f"build skip: {e} raw={g}")
+
+    # ממיינים לפי שעה
+    games.sort(key=lambda x: x["local_dt"])
+
+    for game in games:
+        time_str = game["local_dt"].strftime("%H:%M")
+        body += (
+            f"{RTL_MARK}⏰ <b>{time_str}</b>\n"
+            f"{RTL_MARK}🏀 {format_team(game['away'])} 🆚 {format_team(game['home'])}\n\n"
+        )
+
+    return header + body if body.strip() else None
 
 # ==============================================================================
 # --- מנגנון ריצה ---
