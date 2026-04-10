@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "17:53"
+SCHEDULE_TIME_STR = "17:59"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
@@ -62,25 +62,49 @@ def format_team(name_en):
     flag = get_israeli_flag(name_en)
     return f"{heb}{flag}"
 
-def get_nba_schedule():
-    """שליפת לו"ז מ-ESPN"""
-    schedule = []
+def fetch_scoreboard_for_date(date_str):
     try:
-        r = requests.get(f"{ESPN_API_URL}?t={int(time.time())}", timeout=15)
-        if r.status_code == 200:
-            events = r.json().get('events', [])
-            for ev in events:
-                comp = ev['competitions'][0]
-                home = next(t for t in comp['competitors'] if t['homeAway'] == 'home')
-                away = next(t for t in comp['competitors'] if t['homeAway'] == 'away')
-                schedule.append({
-                    "id": ev['status']['type']['id'],
-                    "time": ev['date'],
-                    "home": home['team']['displayName'],
-                    "away": away['team']['displayName']
-                })
+        url = f"{ESPN_API_URL}?dates={date_str}&limit=1000"
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+        return r.json().get("events", [])
     except Exception as e:
-        logger.error(f"Schedule Fetch Error: {e}")
+        logger.error(f"Fetch error for {date_str}: {e}")
+        return []
+
+def get_nba_schedule():
+    isr_tz = pytz.timezone("Asia/Jerusalem")
+    now = datetime.now(isr_tz)
+
+    # שליפת משחקים להיום ולמחר כדי לא לפספס את הלילה
+    d1 = now.strftime("%Y%m%d")
+    d2 = (now + timedelta(days=1)).strftime("%Y%m%d")
+
+    events = fetch_scoreboard_for_date(d1) + fetch_scoreboard_for_date(d2)
+
+    schedule = []
+    seen = set()
+
+    for ev in events:
+        try:
+            if ev["id"] in seen:
+                continue
+            seen.add(ev["id"])
+
+            comp = ev["competitions"][0]
+            home = next(t for t in comp["competitors"] if t["homeAway"] == "home")
+            away = next(t for t in comp["competitors"] if t["homeAway"] == "away")
+
+            schedule.append({
+                "id": ev["id"],
+                "time": ev["date"],
+                "home": home["team"]["displayName"],
+                "away": away["team"]["displayName"],
+            })
+
+        except Exception as e:
+            logger.error(f"Parse event error: {e}")
+
     return schedule
 
 # ==============================================================================
@@ -91,14 +115,11 @@ def build_schedule_msg(data):
     isr_tz = pytz.timezone("Asia/Jerusalem")
     now = datetime.now(isr_tz)
 
-    # תמיד בונים את "הלילה הקרוב":
-    # היום ב-18:00 עד מחר ב-12:00
-    today_18 = isr_tz.localize(datetime.combine(now.date(), dt_time(18, 0)))
-    tomorrow_12 = isr_tz.localize(datetime.combine(now.date() + timedelta(days=1), dt_time(12, 0)))
-
-    window_start = today_18
-    window_end = tomorrow_12
-
+    # הגדרת חלון הזמן: מהיום ב-18:00 עד מחר ב-12:00
+    # זה מחליף את ה-dt_time הבעייתי
+    today_18 = isr_tz.localize(datetime.combine(now.date(), time(18, 0)))
+    tomorrow_12 = isr_tz.localize(datetime.combine(now.date() + timedelta(days=1), time(12, 0)))
+    
     header = f"{RTL_MARK}🏀 ══ <b>לוח משחקי הלילה ב NBA</b> ══ 🏀\n\n"
     games = []
 
