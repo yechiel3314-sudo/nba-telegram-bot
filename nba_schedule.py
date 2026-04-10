@@ -1,8 +1,8 @@
 import requests
-import time
+import time  # השאר ככה עבור time.sleep()
 import pytz
 import logging
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta
 
 # ==============================================================================
 # --- הגדרות מערכת וקונפיגורציה (Schedule Only - Test Bot) ---
@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 
 # זמן שליחה מתוכנן (ניתן לשנות לצורך בדיקה)
-SCHEDULE_TIME_STR = "17:46"
+SCHEDULE_TIME_STR = "17:53"
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 RTL_MARK = "\u200f"
