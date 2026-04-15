@@ -11,7 +11,7 @@ import pytz
 BOT_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"
 CHAT_ID = "PUT_YOUR_CHAT_ID_HERE"
 
-SCHEDULE_TIME_STR = "20:04"  # שעת שליחה לפי שעון ישראל
+SCHEDULE_TIME_STR = "20:13"  # שעת שליחה לפי שעון ישראל
 
 ESPN_API_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 
