@@ -229,6 +229,12 @@ BAD_TRANSLATIONS_FIXES = {
 }
 
 PLAYER_PHOTOS = {
+    # --- טורונטו ראפטורס (TOR) ---
+    "Scottie Barnes": "https://pbs.twimg.com/media/GQ2kGz0W0AA6WnZ?format=jpg&name=4096x4096", # סקוטי בארנס
+    "Immanuel Quickley": "https://pbs.twimg.com/media/GRKkH09WwAAls2P?format=jpg&name=4096x4096", # עמנואל קוויקלי
+    "RJ Barrett": "https://pbs.twimg.com/media/HFxDNj5XQAA0Ssh?format=jpg&name=900x900", # אר ג'יי בארט
+    "Brandon Ingram": "https://pbs.twimg.com/media/HFgd9wZXAAA7vtH?format=png&name=900x900", # ברנדון אינגרם (עבר לטורונטו)
+    
     # --- פילדלפיה 76 (PHI) ---
     "Joel Embiid": "https://pbs.twimg.com/media/Gi_Y0rXXUAAesyw?format=jpg&name=small", # ג'ואל אמביד
     "Paul George": "https://pbs.twimg.com/media/HFBkIV_bMAAtkJ4?format=jpg&name=900x900", # פול ג'ורג'
@@ -268,11 +274,14 @@ PLAYER_PHOTOS = {
     "LeBron James": "https://pbs.twimg.com/media/HEuD_HjbMAA6i5v?format=jpg&name=large",
     "Austin Reaves": "https://pbs.twimg.com/media/HCi-STObIAALKq4?format=jpg&name=large",
     "Luke Kennard": "https://pbs.twimg.com/media/HC6_x8Oa4AA9fZg?format=jpg&name=large",
+    "Deandre Ayton": "https://pbs.twimg.com/media/HFY8UZhWkAA8HN9?format=jpg&name=large",
+    "Rui Hachimura": "https://pbs.twimg.com/media/Fz6V0kYWYAE91_S?format=jpg&name=4096x4096",
 
     # --- פיניקס סאנס (PHX) ---
     "Devin Booker": "https://pbs.twimg.com/media/HErmPOCawAA6E52?format=jpg&name=small",
     "Jalen Green": "https://pbs.twimg.com/media/HErmPOCawAA6E52?format=jpg&name=small",
     "Dillon Brooks": "https://pbs.twimg.com/media/HE7UfEXacAAgI_G?format=jpg&name=large",
+    "Grayson Allen": "https://pbs.twimg.com/media/HF00xFVasAUdizB?format=jpg&name=large",
 
     # --- בוסטון סלטיקס (BOS) ---
     "Jayson Tatum": "https://pbs.twimg.com/media/HE3UmrYbUAE2mnN?format=jpg&name=900x900",
@@ -289,7 +298,11 @@ PLAYER_PHOTOS = {
 
     # --- יוסטון רוקטס (HOU) ---
     "Alperen Sengun": "https://pbs.twimg.com/media/HDvmRFhXwAE2TZJ?format=jpg&name=large",
-    "Kevin Durant": "https://pbs.twimg.com/media/HCsjhN6XwAAJP3K?format=jpg&name=large",
+    "Kevin Durant": "https://pbs.twimg.com/media/G31F5X9WsAAELmJ?format=jpg&name=large",
+    "Amen Thompson": "https://pbs.twimg.com/media/HFXDVJSX0AAxnMC?format=png&name=900x900",
+    "Reed Sheppard": "https://pbs.twimg.com/media/HEyU4yUWMAASlUd?format=jpg&name=large",
+    "Jabari Smith Jr.": "https://pbs.twimg.com/media/HExpXj4WwAAO1S_?format=jpg&name=large",
+    "Tari Eason": "https://pbs.twimg.com/media/Fn907YkaUAEMIZv?format=jpg&name=900x900",
 
     # --- שארלוט הורנטס (CHA) ---
     "LaMelo Ball": "https://pbs.twimg.com/media/HFLzHA2WAAErS4C?format=jpg&name=small",
@@ -302,9 +315,11 @@ PLAYER_PHOTOS = {
     "De'Aaron Fox": "https://pbs.twimg.com/media/HFF_wLcaoAAaG3e?format=jpg&name=small",
     "Victor Wembanyama": "https://pbs.twimg.com/media/HE4BF_XbAAAG1Rn?format=jpg&name=large",
     "Stephon Castle": "https://pbs.twimg.com/media/HDQdkthXAAAuQWe?format=jpg&name=4096x4096",
+    "Dylan Harper": "https://pbs.twimg.com/media/HFRPUCYbcAA9Rcl?format=jpg&name=large",
+    "Devin Vassell": "https://pbs.twimg.com/media/G6vRmQFW4AAb-oU?format=jpg&name=medium",
 
     # --- גולדן סטייט ווריורס (GSW) ---
-    "Stephen Curry": "https://pbs.twimg.com/media/HFMZOjNa0AAbr_X?format=png&name=large",
+    "Stephen Curry": "https://pbs.twimg.com/media/HGAYmaLXcAAoK39?format=jpg&name=large",
     "Draymond Green": "https://pbs.twimg.com/media/HDki7SYXoAAGSl6?format=jpg&name=large",
     "Brandin Podziemski": "https://pbs.twimg.com/media/HEJD73qXwAECtyg?format=jpg&name=large",
     "Kristaps Porzingis": "https://pbs.twimg.com/media/HEoKtyjasAAgQOW?format=jpg&name=large",
@@ -320,7 +335,8 @@ PLAYER_PHOTOS = {
     "Shai Gilgeous-Alexander": "https://pbs.twimg.com/media/HEtr3e9XMAA5FTB?format=jpg&name=4096x4096",
     "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small",
     "Jalen Williams": "https://pbs.twimg.com/media/HFL4YjkWYAERxSJ?format=jpg&name=large",
-
+    "Isaiah Hartenstein": "https://pbs.twimg.com/media/G5NXZE0boAAgWuL?format=jpg&name=4096x4096",
+    
     # --- קליבלנד קאבלירס (CLE) ---
     "Donovan Mitchell": "https://i.iheart.com/v3/re/assets.getty/69d39478e34e77ebb4e689bb?ops=max(1060,0),quality(80)",
     "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large",
