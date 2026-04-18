@@ -5,6 +5,8 @@ import time
 import logging
 import html
 import requests
+import datetime
+import pytz
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -17,6 +19,11 @@ STATE_FILE = "nba_israeli_state.json"
 
 MESSAGE_DELAY_SECONDS = 20
 POLL_SECONDS = 20
+
+# מיקום הבדיקה של שבת/חג לפי ירושלים (אפשר לשנות אם תרצה)
+ISRAEL_LAT = 31.778
+ISRAEL_LON = 35.235
+ISRAEL_TZID = "Asia/Jerusalem"
 
 PLAYER_HEBREW_NAMES = {
     "Deni Avdija": "דני אבדיה",
@@ -69,7 +76,6 @@ SB_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_0
 BOX_URL = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-
 RLM = "\u200F"  # Right-to-left mark
 
 
@@ -103,18 +109,55 @@ def get_json(url):
 
 
 # ==========================================
+# שבת / חג
+# ==========================================
+def is_shabbat_or_yom_tov():
+    """
+    מחזיר True אם עכשיו יש איסור מלאכה בפועל.
+    זה מתאים לשבת וליום טוב, ולא אמור לחסום חול המועד.
+    """
+    try:
+        url = (
+            "https://www.hebcal.com/zmanim"
+            f"?cfg=json&im=1&latitude={ISRAEL_LAT}&longitude={ISRAEL_LON}&tzid={ISRAEL_TZID}"
+        )
+        data = get_json(url)
+        if not data:
+            return False
+
+        status = data.get("status") or {}
+        return bool(status.get("isAssurBemlacha"))
+    except Exception as e:
+        logging.error(f"Shabbat/Yom Tov check failed: {e}")
+        return False
+
+
+# ==========================================
 # STATE
 # ==========================================
+def normalize_state(data):
+    if not isinstance(data, dict):
+        return {"games": {}, "pending": {}}
+
+    if not isinstance(data.get("games"), dict):
+        data["games"] = {}
+
+    if not isinstance(data.get("pending"), dict):
+        data["pending"] = {}
+
+    return data
+
+
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, dict) and "games" in data:
-                    return data
+                data = normalize_state(data)
+                return data
         except Exception as e:
             logging.error(f"Failed loading state: {e}")
-    return {"games": {}}
+    return {"games": {}, "pending": {}}
 
 
 def save_state(state):
@@ -123,6 +166,63 @@ def save_state(state):
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logging.error(f"Failed saving state: {e}")
+
+
+def mark_stage_sent(state, gid, stage):
+    gs = state["games"].setdefault(gid, {"events": []})
+    if stage not in gs["events"]:
+        gs["events"].append(stage)
+
+
+def queue_pending_message(state, gid, player_name_en, stage, message):
+    if gid not in state["pending"]:
+        state["pending"][gid] = {}
+    state["pending"][gid][player_name_en] = {
+        "stage": stage,
+        "message": message,
+    }
+
+
+def flush_pending_messages(state):
+    """
+    שולח הודעות שנשמרו בזמן שבת/חג.
+    שולח רק מה שנשמר, ואז מסמן את ה-stage ככבר נשלח.
+    """
+    pending = state.get("pending") or {}
+    if not pending:
+        return
+
+    remaining = {}
+
+    for gid, players_payload in pending.items():
+        if not isinstance(players_payload, dict):
+            continue
+
+        for player_name_en, payload in players_payload.items():
+            try:
+                message = payload.get("message")
+                stage = payload.get("stage")
+
+                if not message or not stage:
+                    continue
+
+                ok = send_player_message(player_name_en, message)
+                if ok:
+                    mark_stage_sent(state, gid, stage)
+                    time.sleep(MESSAGE_DELAY_SECONDS)
+                else:
+                    if gid not in remaining:
+                        remaining[gid] = {}
+                    remaining[gid][player_name_en] = payload
+
+            except Exception as e:
+                logging.error(f"Failed flushing pending message for {player_name_en}: {e}")
+                if gid not in remaining:
+                    remaining[gid] = {}
+                remaining[gid][player_name_en] = payload
+
+    state["pending"] = remaining
+    save_state(state)
 
 
 # ==========================================
@@ -258,6 +358,10 @@ def stage_from_game(g):
     return stage_text
 
 
+def is_final_stage(stage_text):
+    return bool(stage_text) and stage_text.startswith("🏁")
+
+
 # ==========================================
 # SEND
 # ==========================================
@@ -300,15 +404,14 @@ def telegram_send_photo(photo_url, caption):
 
 
 def send_player_message(player_name_en, message):
-    stats = (player_name_en, PLAYER_IMAGES.get(player_name_en))
     photo = PLAYER_IMAGES.get(player_name_en)
 
     if photo and len(message) <= 1024:
         ok = telegram_send_photo(photo, message)
         if ok:
-            return
+            return True
 
-    telegram_send_message(message)
+    return telegram_send_message(message)
 
 
 # ==========================================
@@ -316,9 +419,19 @@ def send_player_message(player_name_en, message):
 # ==========================================
 def run():
     state = load_state()
+    logging.info("Bot started...")
 
     while True:
+        state_dirty = False
+
         try:
+            shabbat_or_yom_tov = is_shabbat_or_yom_tov()
+
+            # אם יצאנו משבת/חג ויש הודעות ממתינות – שולחים רק את הסיום שנשמר
+            if not shabbat_or_yom_tov and state.get("pending"):
+                flush_pending_messages(state)
+                state = load_state()
+
             sb = get_json(SB_URL)
             if not sb:
                 time.sleep(POLL_SECONDS)
@@ -332,6 +445,7 @@ def run():
 
                 if gid not in state["games"]:
                     state["games"][gid] = {"events": []}
+                    state_dirty = True
 
                 gs = state["games"][gid]
                 stage = stage_from_game(g)
@@ -358,13 +472,24 @@ def run():
                         if full in ISRAELI_PLAYERS:
                             msg = build_msg(p, stage, game_info)
                             if msg:
-                                send_player_message(full, msg)
-                                sent_any = True
-                                time.sleep(MESSAGE_DELAY_SECONDS)
+                                if shabbat_or_yom_tov:
+                                    # בזמן שבת/חג: רק אם זה סיום משחק שומרים להמשך
+                                    if is_final_stage(stage):
+                                        queue_pending_message(state, gid, full, stage, msg)
+                                        state_dirty = True
+                                else:
+                                    # בזמן חול: שולחים כרגיל
+                                    ok = send_player_message(full, msg)
+                                    if ok:
+                                        sent_any = True
+                                    time.sleep(MESSAGE_DELAY_SECONDS)
 
-                if sent_any:
-                    gs["events"].append(stage)
-                    save_state(state)
+                if not shabbat_or_yom_tov and sent_any:
+                    mark_stage_sent(state, gid, stage)
+                    state_dirty = True
+
+            if state_dirty:
+                save_state(state)
 
         except Exception as e:
             logging.error(f"Main loop error: {e}")
