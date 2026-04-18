@@ -1,5 +1,9 @@
-import requests
+import os
+import json
 import time
+import requests
+import pytz
+from datetime import datetime
 
 # ==============================
 # הגדרות טלגרם
@@ -20,12 +24,15 @@ def send_telegram_message(message: str):
 
         if response.status_code == 200:
             print("✅ הודעה נשלחה בהצלחה לטלגרם")
+            return True
         else:
             print(f"❌ שגיאה בשליחה לטלגרם: {response.status_code}")
             print(response.text)
+            return False
 
     except Exception as e:
         print(f"❌ שגיאה בשליחה לטלגרם: {e}")
+        return False
 
 
 # ==============================
@@ -100,10 +107,115 @@ def get_competitors(event: dict):
 
 
 # ==============================
-# זיכרון התראות
+# זיכרון התראות + שמירה
 # ==============================
+STATE_FILE = "nba_clutch_state.json"
+
 sent_clutch = {}
 sent_last45 = {}
+pending_messages = {}
+
+def load_state():
+    global sent_clutch, sent_last45, pending_messages
+
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    sent_clutch = data.get("sent_clutch", {}) or {}
+                    sent_last45 = data.get("sent_last45", {}) or {}
+                    pending_messages = data.get("pending_messages", {}) or {}
+                    return
+        except Exception as e:
+            print(f"❌ שגיאה בטעינת state: {e}")
+
+    sent_clutch = {}
+    sent_last45 = {}
+    pending_messages = {}
+
+def save_state():
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "sent_clutch": sent_clutch,
+                    "sent_last45": sent_last45,
+                    "pending_messages": pending_messages,
+                },
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
+    except Exception as e:
+        print(f"❌ שגיאה בשמירת state: {e}")
+
+
+# ==============================
+# שבת / חג
+# ==============================
+ISRAEL_LAT = 31.778
+ISRAEL_LON = 35.235
+ISRAEL_TZID = "Asia/Jerusalem"
+
+def is_shabbat_or_yom_tov():
+    """
+    Hebcal Assur Melacha API:
+    מחזיר True רק כשיש איסור מלאכה בפועל.
+    זה לא אמור לחסום חול המועד.
+    """
+    try:
+        url = (
+            "https://www.hebcal.com/zmanim"
+            f"?cfg=json&im=1&latitude={ISRAEL_LAT}&longitude={ISRAEL_LON}&tzid={ISRAEL_TZID}"
+        )
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return False
+
+        data = resp.json()
+        return bool((data.get("status") or {}).get("isAssurBemlacha"))
+    except Exception as e:
+        print(f"❌ שגיאה בבדיקת שבת/חג: {e}")
+        return False
+
+
+def queue_pending(game_id: str, alert_type: str, message: str):
+    if game_id not in pending_messages:
+        pending_messages[game_id] = {}
+    pending_messages[game_id][alert_type] = message
+    save_state()
+
+def flush_pending_if_allowed():
+    if is_shabbat_or_yom_tov():
+        return
+
+    changed = False
+
+    for game_id in list(pending_messages.keys()):
+        alerts = pending_messages.get(game_id) or {}
+        for alert_type in list(alerts.keys()):
+            msg = alerts.get(alert_type)
+            if not msg:
+                continue
+
+            ok = send_telegram_message(msg)
+            if ok:
+                if alert_type == "clutch":
+                    sent_clutch[game_id] = True
+                elif alert_type == "last45":
+                    sent_last45[game_id] = True
+
+                del pending_messages[game_id][alert_type]
+                changed = True
+                time.sleep(1)
+
+        if game_id in pending_messages and not pending_messages[game_id]:
+            del pending_messages[game_id]
+            changed = True
+
+    if changed:
+        save_state()
 
 
 # ==============================
@@ -170,6 +282,8 @@ def check_all_nba_clutch():
         resp.raise_for_status()
         data = resp.json()
 
+        blocked_now = is_shabbat_or_yom_tov()
+
         for event in data.get("events", []):
             status = event.get("status", {})
             status_type = status.get("type", {})
@@ -203,9 +317,14 @@ def check_all_nba_clutch():
             if period >= 4 and clock_seconds <= 45 and not sent_last45.get(game_id):
                 msg = build_message(event, "last45")
                 if msg:
-                    send_telegram_message(msg)
-                    sent_last45[game_id] = True
-                    time.sleep(1)
+                    if blocked_now:
+                        if not pending_messages.get(game_id, {}).get("last45"):
+                            queue_pending(game_id, "last45", msg)
+                    else:
+                        send_telegram_message(msg)
+                        sent_last45[game_id] = True
+                        save_state()
+                        time.sleep(1)
 
             # =========================
             # קלאץ' - רק אם המשחק צמוד
@@ -214,9 +333,14 @@ def check_all_nba_clutch():
             if diff <= 3 and period == 4 and clock_seconds <= 210 and not sent_clutch.get(game_id):
                 msg = build_message(event, "clutch")
                 if msg:
-                    send_telegram_message(msg)
-                    sent_clutch[game_id] = True
-                    time.sleep(1)
+                    if blocked_now:
+                        if not pending_messages.get(game_id, {}).get("clutch"):
+                            queue_pending(game_id, "clutch", msg)
+                    else:
+                        send_telegram_message(msg)
+                        sent_clutch[game_id] = True
+                        save_state()
+                        time.sleep(1)
 
     except Exception as e:
         print(f"❌ שגיאה כללית: {e}")
@@ -227,7 +351,13 @@ def check_all_nba_clutch():
 # ==============================
 if __name__ == "__main__":
     print("🚀 הבוט התחיל לעבוד...")
+    load_state()
 
     while True:
-        check_all_nba_clutch()
+        try:
+            flush_pending_if_allowed()
+            check_all_nba_clutch()
+        except Exception as e:
+            print(f"❌ שגיאה בלולאה הראשית: {e}")
+
         time.sleep(5)
