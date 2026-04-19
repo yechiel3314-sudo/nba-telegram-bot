@@ -1046,7 +1046,7 @@ def run():
         except Exception as e:
             print(f"❌ שגיאה כללית בלולאה: {e}")
 
-        time.sleep(5)
+        time.sleep(10)
 
 if __name__ == "__main__":
     run()
