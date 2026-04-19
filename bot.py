@@ -5,8 +5,6 @@ import os
 import html
 from datetime import datetime
 from deep_translator import GoogleTranslator
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 # ==========================================
 # הגדרות מערכת וטוקנים
@@ -16,59 +14,8 @@ CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_cache.json"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-ISRAEL_LAT = 31.778
-ISRAEL_LON = 35.235
-ISRAEL_TZID = "Asia/Jerusalem"
-
-CURRENT_SHABBAT_OR_YOM_TOV = False
 
 translator = GoogleTranslator(source='en', target='iw')
-
-def build_session():
-    s = requests.Session()
-    retry = Retry(
-        total=4,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-    )
-    s.mount("https://", HTTPAdapter(max_retries=retry))
-    s.mount("http://", HTTPAdapter(max_retries=retry))
-    return s
-
-
-SESSION = build_session()
-
-
-def get_json(url):
-    try:
-        r = SESSION.get(url, headers=HEADERS, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"❌ שגיאה בבקשת JSON: {url} | {e}")
-        return None
-
-
-def is_shabbat_or_yom_tov():
-    """
-    מחזיר True אם עכשיו יש איסור מלאכה בפועל.
-    מתאים לשבת וליום טוב.
-    """
-    try:
-        url = (
-            "https://www.hebcal.com/zmanim"
-            f"?cfg=json&im=1&latitude={ISRAEL_LAT}&longitude={ISRAEL_LON}&tzid={ISRAEL_TZID}"
-        )
-        data = get_json(url)
-        if not data:
-            return False
-
-        status = data.get("status") or {}
-        return bool(status.get("isAssurBemlacha"))
-    except Exception as e:
-        print(f"❌ שגיאה בבדיקת שבת/חג: {e}")
-        return False
 
 NBA_TEAMS_HEBREW = {
     "Atlanta Hawks": "אטלנטה הוקס", "Boston Celtics": "בוסטון סלטיקס",
@@ -736,12 +683,6 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
     return msg, photo_url
 
 def send_telegram(text, photo_url=None):
-    global CURRENT_SHABBAT_OR_YOM_TOV
-
-    if CURRENT_SHABBAT_OR_YOM_TOV:
-        print("⏸️ שבת/חג פעיל - ההודעה לא נשלחה")
-        return False
-
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
 
     safe_text = html.escape(text)
@@ -759,7 +700,7 @@ def send_telegram(text, photo_url=None):
 
                 if r.status_code == 200:
                     print("📸 תמונת MVP נשלחה בהצלחה")
-                    return True
+                    return
                 else:
                     print(f"⚠️ sendPhoto נכשל: {r.status_code} | {r.text}")
                     print("↪️ עובר לשליחת טקסט רגילה...")
@@ -775,14 +716,11 @@ def send_telegram(text, photo_url=None):
 
         if r.status_code != 200:
             print(f"⚠️ sendMessage נכשל: {r.status_code} | {r.text}")
-            return False
         else:
             print("📨 הודעה נשלחה בהצלחה")
-            return True
 
     except Exception as e:
         print(f"❌ שגיאה בשליחת טלגרם: {e}")
-        return False
 
 def safe_get_json(url, timeout=10):
     try:
@@ -802,8 +740,6 @@ def get_boxscore(gid):
     return data
 
 def run():
-    global CURRENT_SHABBAT_OR_YOM_TOV
-
     print("🚀 בוט NBA משודרג - גרסה מלאה- כולל הארכותי!")
 
     first_run = True
@@ -812,8 +748,6 @@ def run():
         try:
             current_time = datetime.now().strftime("%H:%M:%S")
             print(f"🔍 [{current_time}] סורק משחקים...")
-
-            CURRENT_SHABBAT_OR_YOM_TOV = is_shabbat_or_yom_tov()
 
             try:
                 resp_raw = requests.get(NBA_URL, headers=HEADERS, timeout=10)
