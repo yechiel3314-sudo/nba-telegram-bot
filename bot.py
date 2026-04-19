@@ -740,7 +740,7 @@ def send_telegram(text, photo_url=None):
 
     if CURRENT_SHABBAT_OR_YOM_TOV:
         print("⏸️ שבת/חג פעיל - ההודעה לא נשלחה")
-        return
+        return False
 
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
 
@@ -751,7 +751,7 @@ def send_telegram(text, photo_url=None):
         if photo_url:
             try:
                 print(f"📸 מנסה לשלוח תמונת MVP: {photo_url}")
-                r = SESSION.post(
+                r = requests.post(
                     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
                     data={**payload, "photo": photo_url, "caption": safe_text},
                     timeout=20
@@ -759,7 +759,7 @@ def send_telegram(text, photo_url=None):
 
                 if r.status_code == 200:
                     print("📸 תמונת MVP נשלחה בהצלחה")
-                    return
+                    return True
                 else:
                     print(f"⚠️ sendPhoto נכשל: {r.status_code} | {r.text}")
                     print("↪️ עובר לשליחת טקסט רגילה...")
@@ -767,7 +767,7 @@ def send_telegram(text, photo_url=None):
                 print(f"⚠️ שגיאה בשליחת תמונה: {e}")
                 print("↪️ עובר לשליחת טקסט רגילה...")
 
-        r = SESSION.post(
+        r = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             data={**payload, "text": safe_text},
             timeout=15
@@ -775,11 +775,14 @@ def send_telegram(text, photo_url=None):
 
         if r.status_code != 200:
             print(f"⚠️ sendMessage נכשל: {r.status_code} | {r.text}")
+            return False
         else:
             print("📨 הודעה נשלחה בהצלחה")
+            return True
 
     except Exception as e:
         print(f"❌ שגיאה בשליחת טלגרם: {e}")
+        return False
 
 def safe_get_json(url, timeout=10):
     try:
