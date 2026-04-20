@@ -1028,25 +1028,25 @@ def run():
                 # סיום משחק
                 # =======================
                 if status == 3 and game_final_key not in log:
+                
+                    # קודם חוסמים כפילות
+                    log.append(game_final_key)
+                    cache["games"][gid] = log[-50:]
+                    save_cache()
+                
+                    # עכשיו מביאים נתונים
                     b_resp = get_boxscore()
                     if not b_resp:
                         continue
-
+                
                     final_period = b_resp.get('game', {}).get('period', 4)
                     label_final = "סיום המשחק"
-
                     if final_period > 4:
                         label_final += f" (אחרי הארכה {final_period - 4})"
 
-                    if game_final_key in sent_keys:
-                        continue
-                    sent_keys.add(game_final_key)
-
-                    log.append(game_final_key)
-                    save_cache()
-
-                m, p = format_msg(b_resp['game'], label_final, is_final=True)
-                send_telegram(m, p)
+                    # ורק עכשיו שולחים
+                    m, p = format_msg(b_resp['game'], label_final, is_final=True)
+                    send_telegram(m, p)
 
                 
                 # שמירה + חיתוך log
