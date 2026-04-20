@@ -735,53 +735,44 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
 
     return msg, photo_url
 
+# משתנה גלובלי חדש שיחזיק את כל מה ששלחנו בסבב הנוכחי
+SENT_MESSAGES_TRACKER = set()
+
 def send_telegram(text, photo_url=None):
-    global CURRENT_SHABBAT_OR_YOM_TOV
+    global CURRENT_SHABBAT_OR_YOM_TOV, SENT_MESSAGES_TRACKER
 
     if CURRENT_SHABBAT_OR_YOM_TOV:
         print("⏸️ שבת/חג פעיל - ההודעה לא נשלחה")
         return False
 
-    payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
+    # בדיקה: האם ההודעה הזו בדיוק כבר נשלחה?
+    # אנחנו בודקים את הטקסט כדי למנוע כפילות של אותה הודעה
+    msg_hash = hash(text)
+    if msg_hash in SENT_MESSAGES_TRACKER:
+        print("🚫 הודעה כפולה נחסמה בשכבת השליחה")
+        return False
 
-    safe_text = html.escape(text)
-    safe_text = safe_text.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
-
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/"
     try:
         if photo_url:
-            try:
-                print(f"📸 מנסה לשלוח תמונת MVP: {photo_url}")
-                r = requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-                    data={**payload, "photo": photo_url, "caption": safe_text},
-                    timeout=20
-                )
-
-                if r.status_code == 200:
-                    print("📸 תמונת MVP נשלחה בהצלחה")
-                    return True
-                else:
-                    print(f"⚠️ sendPhoto נכשל: {r.status_code} | {r.text}")
-                    print("↪️ עובר לשליחת טקסט רגילה...")
-            except Exception as e:
-                print(f"⚠️ שגיאה בשליחת תמונה: {e}")
-                print("↪️ עובר לשליחת טקסט רגילה...")
-
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={**payload, "text": safe_text},
-            timeout=15
-        )
-
-        if r.status_code != 200:
-            print(f"⚠️ sendMessage נכשל: {r.status_code} | {r.text}")
-            return False
+            res = requests.post(url + "sendPhoto", data={
+                "chat_id": CHAT_ID,
+                "caption": text,
+                "parse_mode": "HTML"
+            }, files={"photo": requests.get(photo_url).content}, timeout=15)
         else:
-            print("📨 הודעה נשלחה בהצלחה")
+            res = requests.post(url + "sendMessage", data={
+                "chat_id": CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML"
+            }, timeout=15)
+        
+        if res.status_code == 200:
+            SENT_MESSAGES_TRACKER.add(msg_hash) # הוספה למאגר שנשלחו
             return True
-
+        return False
     except Exception as e:
-        print(f"❌ שגיאה בשליחת טלגרם: {e}")
+        print(f"❌ שגיאה בשליחה: {e}")
         return False
 
 def safe_get_json(url, timeout=10):
