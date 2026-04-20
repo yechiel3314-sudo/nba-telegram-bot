@@ -795,11 +795,9 @@ def get_boxscore(gid):
 def run():
     global CURRENT_SHABBAT_OR_YOM_TOV
 
-    print("🚀 בוט NBA משודרג - גרסה מלאה- כולל הארכותי!")
+    print("🚀 בוט NBA משודרג - גרסה מלאה- כולל הארכות!")
 
     first_run = True
-
-    sent_keys = set()
 
     while True:
         try:
@@ -913,9 +911,8 @@ def run():
 
                         label = "המשחק יצא לדרך!" if period == 1 else f"רבע {period} יצא לדרך!"
                         m, p = format_msg(b_resp['game'], label, is_start=True)
-                        send_telegram(m, p)
-
-                        log.append(s_key)
+                        if send_telegram(m, p):
+                            log.append(s_key)
 
                 # =======================
                 # מחצית
@@ -926,9 +923,8 @@ def run():
                         continue
 
                     m, p = format_msg(b_resp['game'], "סיום מחצית")
-                    send_telegram(m, p)
-
-                    log.append(txt)
+                    if send_telegram(m, p):
+                        log.append(txt)
 
                 # =======================
                 # סיום רבעים
@@ -939,9 +935,8 @@ def run():
                         continue
 
                     m, p = format_msg(b_resp['game'], f"סיום רבע {period}")
-                    send_telegram(m, p)
-
-                    log.append(txt)
+                    if send_telegram(m, p):
+                        log.append(txt)
 
                 # =======================
                 # סיום רבע 4
@@ -959,22 +954,21 @@ def run():
 
                     if home_score == away_score:
                         m, p = format_msg(b_resp['game'], "סיום רבע 4")
-                        send_telegram(m, p)
+                        if send_telegram(m, p):
+                            log.append(txt)
 
-                        log.append(txt)
-
-                        if "drama_q4" not in log:
-                            drama_txt = f"טירוף! שוויון {home_score} - {away_score} הולכים להארכה!"
-                            m, p = format_msg(
-                                b_resp['game'],
-                                "דרמה ב-NBA!",
-                                is_drama=True,
-                                drama_text=drama_txt
-                            )
-                            send_telegram(m, p)
-
-                            log.append("drama_q4")
+                            if "drama_q4" not in log:
+                                drama_txt = f"טירוף! שוויון {home_score} - {away_score} הולכים להארכה!"
+                                m_d, p_d = format_msg(
+                                    b_resp['game'],
+                                    "דרמה ב-NBA!",
+                                    is_drama=True,
+                                    drama_text=drama_txt
+                                )
+                                if send_telegram(m_d, p_d):
+                                    log.append("drama_q4")
                     else:
+                        # אם לא שוויון, רק נרשום בלוג כדי לא לשלוח שוב עד סטטוס 3
                         log.append(txt)
 
                 # =======================
@@ -998,34 +992,26 @@ def run():
                     else:
                         label_ot = "סיום הארכה" if ot_num == 1 else f"סיום הארכה {ot_num}"
                         m, p = format_msg(b_resp['game'], label_ot)
-                        send_telegram(m, p)
+                        if send_telegram(m, p):
+                            log.append(txt)
 
-                        log.append(txt)
-
-                        drama_key = f"drama_ot_{period}"
-                        if drama_key not in log:
-                            drama_txt = f"טירוף! שוויון {home_score} - {away_score} הולכים להארכה {ot_num + 1}!"
-                            m, p = format_msg(
-                                b_resp['game'],
-                                "דרמה ב-NBA!",
-                                is_drama=True,
-                                drama_text=drama_txt
-                            )
-                            send_telegram(m, p)
-
-                            log.append(drama_key)
+                            drama_key = f"drama_ot_{period}"
+                            if drama_key not in log:
+                                drama_txt = f"טירוף! שוויון {home_score} - {away_score} הולכים להארכה {ot_num + 1}!"
+                                m_d, p_d = format_msg(
+                                    b_resp['game'],
+                                    "דרמה ב-NBA!",
+                                    is_drama=True,
+                                    drama_text=drama_txt
+                                )
+                                if send_telegram(m_d, p_d):
+                                    log.append(drama_key)
 
                 # =======================
                 # סיום משחק
                 # =======================
                 if status == 3 and game_final_key not in log:
-                
-                    # קודם חוסמים כפילות
-                    log.append(game_final_key)
-                    cache["games"][gid] = log[-50:]
-                    save_cache()
-                
-                    # עכשיו מביאים נתונים
+                    # מביאים נתונים
                     b_resp = get_boxscore()
                     if not b_resp:
                         continue
@@ -1035,12 +1021,15 @@ def run():
                     if final_period > 4:
                         label_final += f" (אחרי הארכה {final_period - 4})"
 
-                    # ורק עכשיו שולחים
+                    # שולחים ובודקים הצלחה
                     m, p = format_msg(b_resp['game'], label_final, is_final=True)
-                    send_telegram(m, p)
+                    if send_telegram(m, p):
+                        # רק אם השליחה הצליחה - חוסמים כפילות ושומרים
+                        log.append(game_final_key)
+                        cache["games"][gid] = log[-50:]
+                        save_cache()
 
-                
-                # שמירה + חיתוך log
+                # שמירה סופית של ה-log למשחק הנוכחי
                 cache["games"][gid] = log[-50:]
 
             save_cache()
