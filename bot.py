@@ -287,7 +287,7 @@ PLAYER_PHOTOS = {
     "Immanuel Quickley": "https://pbs.twimg.com/media/GRKkH09WwAAls2P?format=jpg&name=4096x4096", # עמנואל קוויקלי
     "RJ Barrett": "https://pbs.twimg.com/media/HFxDNj5XQAA0Ssh?format=jpg&name=900x900", # אר ג'יי בארט
     "Brandon Ingram": "https://pbs.twimg.com/media/HFgd9wZXAAA7vtH?format=png&name=900x900", # ברנדון אינגרם (עבר לטורונטו)
-
+    
     # --- פילדלפיה 76 (PHI) ---
     "Joel Embiid": "https://pbs.twimg.com/media/Gi_Y0rXXUAAesyw?format=jpg&name=small", # ג'ואל אמביד
     "Paul George": "https://pbs.twimg.com/media/HFBkIV_bMAAtkJ4?format=jpg&name=900x900", # פול ג'ורג'
@@ -389,7 +389,7 @@ PLAYER_PHOTOS = {
     "Chet Holmgren": "https://pbs.twimg.com/media/F9hq_qmXAAAyK3F?format=jpg&name=small",
     "Jalen Williams": "https://pbs.twimg.com/media/HFL4YjkWYAERxSJ?format=jpg&name=large",
     "Isaiah Hartenstein": "https://pbs.twimg.com/media/G5NXZE0boAAgWuL?format=jpg&name=4096x4096",
-
+    
     # --- קליבלנד קאבלירס (CLE) ---
     "Donovan Mitchell": "https://i.iheart.com/v3/re/assets.getty/69d39478e34e77ebb4e689bb?ops=max(1060,0),quality(80)",
     "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large",
@@ -519,7 +519,7 @@ def get_player_photo(player):
     except Exception as e:
         print(f"❌ שגיאה בשליפת תמונת שחקן: {e}")
         return None
-
+    
 def get_stat_line(p):
     s = p.get('statistics', {})
     points = s.get('points', 0)
@@ -589,7 +589,7 @@ def mvp_sort_key(p):
 
 def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama_text=None):
     photo_url = None
-
+    
     away, home = box['awayTeam'], box['homeTeam']
 
     a_full = translate_name(f"{away['teamCity']} {away['teamName']}")
@@ -807,6 +807,8 @@ def run():
     print("🚀 בוט NBA משודרג - גרסה מלאה- כולל הארכותי!")
 
     first_run = True
+
+    sent_keys = set()
 
     while True:
         try:
@@ -1036,11 +1038,17 @@ def run():
                     if final_period > 4:
                         label_final += f" (אחרי הארכה {final_period - 4})"
 
-                    m, p = format_msg(b_resp['game'], label_final, is_final=True)
-                    send_telegram(m, p)
+                    if game_final_key in sent_keys:
+                        continue
+                    sent_keys.add(game_final_key)
 
                     log.append(game_final_key)
+                    save_cache()
 
+                m, p = format_msg(b_resp['game'], label_final, is_final=True)
+                send_telegram(m, p)
+
+                
                 # שמירה + חיתוך log
                 cache["games"][gid] = log[-50:]
 
@@ -1049,7 +1057,7 @@ def run():
         except Exception as e:
             print(f"❌ שגיאה כללית בלולאה: {e}")
 
-        time.sleep(10)
+        time.sleep(5)
 
 if __name__ == "__main__":
     run()
