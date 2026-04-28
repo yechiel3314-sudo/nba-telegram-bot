@@ -735,11 +735,19 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
 
     return msg, photo_url
 
+SENT_MESSAGES = set()
+
 def send_telegram(text, photo_url=None):
-    global CURRENT_SHABBAT_OR_YOM_TOV
+    global CURRENT_SHABBAT_OR_YOM_TOV, SENT_MESSAGES
 
     if CURRENT_SHABBAT_OR_YOM_TOV:
         print("⏸️ שבת/חג פעיל - ההודעה לא נשלחה")
+        return False
+
+    msg_id = f"{text}|{photo_url}"
+
+    if msg_id in SENT_MESSAGES:
+        print("🚫 נחסמה הודעה כפולה")
         return False
 
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
@@ -749,39 +757,27 @@ def send_telegram(text, photo_url=None):
 
     try:
         if photo_url:
-            try:
-                print(f"📸 מנסה לשלוח תמונת MVP: {photo_url}")
-                r = requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-                    data={**payload, "photo": photo_url, "caption": safe_text},
-                    timeout=20
-                )
-
-                if r.status_code == 200:
-                    print("📸 תמונת MVP נשלחה בהצלחה")
-                    return True
-                else:
-                    print(f"⚠️ sendPhoto נכשל: {r.status_code} | {r.text}")
-                    print("↪️ עובר לשליחת טקסט רגילה...")
-            except Exception as e:
-                print(f"⚠️ שגיאה בשליחת תמונה: {e}")
-                print("↪️ עובר לשליחת טקסט רגילה...")
-
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            data={**payload, "text": safe_text},
-            timeout=15
-        )
-
-        if r.status_code != 200:
-            print(f"⚠️ sendMessage נכשל: {r.status_code} | {r.text}")
-            return False
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+                data={**payload, "photo": photo_url, "caption": safe_text},
+                timeout=20
+            )
         else:
-            print("📨 הודעה נשלחה בהצלחה")
+            r = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                data={**payload, "text": safe_text},
+                timeout=15
+            )
+
+        if r.status_code == 200:
+            SENT_MESSAGES.add(msg_id)
+            print("📨 נשלח (מאושר)")
             return True
 
+        return False
+
     except Exception as e:
-        print(f"❌ שגיאה בשליחת טלגרם: {e}")
+        print(f"❌ שגיאה בשליחה: {e}")
         return False
 
 def safe_get_json(url, timeout=10):
