@@ -395,6 +395,14 @@ PLAYER_PHOTOS = {
     "James Harden": "https://pbs.twimg.com/media/HCWruXfXUAE6zo8?format=jpg&name=large",
     "Evan Mobley": "https://pbs.twimg.com/media/GlDQARJWcAAs_bu?format=jpg&name=large",
 
+    # --- מינסוטה טימברוולבס (MIN) ---
+    "Anthony Edwards": "https://pbs.twimg.com/media/GoXE3iDXwAA9Y58?format=jpg&name=large",
+    "Julius Randle": "https://pbs.twimg.com/media/GatbPLdWkAAtExz?format=jpg&name=4096x4096",
+    "Naz Reid": "https://pbs.twimg.com/media/G-pV2b5aYAArzJf?format=jpg&name=medium",
+    "Ayo Dosunmu": "https://pbs.twimg.com/media/HFPn_2KbIAANWWy?format=png&name=900x900",
+    "Jaden McDaniels": "https://pbs.twimg.com/media/HGC3fH_XAAAKR0r?format=jpg&name=medium",
+    "Rudy Gobert": "https://pbs.twimg.com/media/G44NY0fakAA33lt?format=jpg&name=large",
+
     # --- ברוקלין נטס (BKN) ---
     "Ben Saraf": "https://pbs.twimg.com/media/HET8BYNXMAAI9zl?format=jpg&name=small",
     "Danny Wolf": "https://pbs.twimg.com/media/HCXLU3mbAAAd_Ma?format=jpg&name=small",
