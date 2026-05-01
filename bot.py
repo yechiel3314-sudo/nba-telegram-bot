@@ -3,6 +3,7 @@ import time
 import json
 import os
 import html
+import hashlib
 from datetime import datetime
 from deep_translator import GoogleTranslator
 from requests.adapters import HTTPAdapter
@@ -11,6 +12,7 @@ from urllib3.util.retry import Retry
 # ==========================================
 # הגדרות מערכת וטוקנים
 # ==========================================
+SENT_EVENTS_DIR = "sent_events"
 TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
 CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
@@ -426,23 +428,71 @@ def load_cache():
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+
                 if "names" not in data:
                     data["names"] = {}
                 if "games" not in data:
                     data["games"] = {}
+                if "sent_events" not in data:
+                    data["sent_events"] = {}
+
                 return data
         except Exception as e:
             print(f"⚠️ שגיאה בטעינת cache: {e}")
-    return {"names": {}, "games": {}}
 
-cache = load_cache()
-
+    return {"names": {}, "games": {}, "sent_events": {}}
+    
 def save_cache():
     try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        tmp_file = CACHE_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(cache, f, indent=4, ensure_ascii=False)
+        os.replace(tmp_file, CACHE_FILE)
     except Exception as e:
         print(f"⚠️ שגיאה בשמירת cache: {e}")
+
+def make_event_key(game_id, event_type, period=None, away_score=None, home_score=None):
+    parts = [str(game_id), str(event_type)]
+
+    if period is not None:
+        parts.append(f"p{period}")
+
+    if away_score is not None and home_score is not None:
+        parts.append(f"{int(away_score)}-{int(home_score)}")
+
+    raw_key = "|".join(parts)
+    return raw_key
+
+
+def claim_event(event_key):
+    """
+    תופס אירוע בצורה אטומית.
+    אם כבר נתפס בעבר - מחזיר False.
+    אם זו הפעם הראשונה - יוצר קובץ ומחזיר True.
+    """
+    try:
+        os.makedirs(SENT_EVENTS_DIR, exist_ok=True)
+
+        digest = hashlib.sha256(event_key.encode("utf-8")).hexdigest()
+        marker_path = os.path.join(SENT_EVENTS_DIR, f"{digest}.done")
+
+        fd = os.open(marker_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+
+        cache["sent_events"][digest] = {
+            "event_key": event_key,
+            "created_at": datetime.now().isoformat()
+        }
+        save_cache()
+
+        return True
+
+    except FileExistsError:
+        return False
+
+    except Exception as e:
+        print(f"❌ שגיאה ב-claim_event: {e}")
+        return False
 
 def translate_name(name):
     if not name:
@@ -743,20 +793,17 @@ def format_msg(box, label, is_final=False, is_start=False, is_drama=False, drama
 
     return msg, photo_url
 
-SENT_MESSAGES = set()
-
-def send_telegram(text, photo_url=None):
-    global CURRENT_SHABBAT_OR_YOM_TOV, SENT_MESSAGES
+def send_telegram(text, photo_url=None, event_key=None):
+    global CURRENT_SHABBAT_OR_YOM_TOV
 
     if CURRENT_SHABBAT_OR_YOM_TOV:
         print("⏸️ שבת/חג פעיל - ההודעה לא נשלחה")
         return False
 
-    msg_id = f"{text}|{photo_url}"
-
-    if msg_id in SENT_MESSAGES:
-        print("🚫 נחסמה הודעה כפולה")
-        return False
+    if event_key:
+        if not claim_event(event_key):
+            print("🚫 נחסמה הודעה כפולה (event already claimed)")
+            return False
 
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
 
@@ -778,16 +825,16 @@ def send_telegram(text, photo_url=None):
             )
 
         if r.status_code == 200:
-            SENT_MESSAGES.add(msg_id)
             print("📨 נשלח (מאושר)")
             return True
 
+        print(f"❌ טלגרם החזיר סטטוס {r.status_code}: {r.text}")
         return False
 
     except Exception as e:
         print(f"❌ שגיאה בשליחה: {e}")
         return False
-
+        
 def safe_get_json(url, timeout=10):
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
@@ -916,18 +963,18 @@ def run():
                 # =======================
                 if status == 2 and period in [1, 3] and f"q{period}" in txt:
                     s_key = f"start_q{period}"
-
+                
                     if s_key not in log:
                         b_resp = get_boxscore()
                         if not b_resp:
                             continue
-
+                
                         label = "המשחק יצא לדרך!" if period == 1 else f"רבע {period} יצא לדרך!"
                         m, p = format_msg(b_resp['game'], label, is_start=True)
-                        send_telegram(m, p)
-
+                        event_key = make_event_key(gid, f"start_q{period}", period=period)
+                        send_telegram(m, p, event_key=event_key)
                         log.append(s_key)
-
+                
                 # =======================
                 # מחצית
                 # =======================
@@ -935,12 +982,12 @@ def run():
                     b_resp = get_boxscore()
                     if not b_resp:
                         continue
-
+                
                     m, p = format_msg(b_resp['game'], "סיום מחצית")
-                    send_telegram(m, p)
-
+                    event_key = make_event_key(gid, "halftime", period=period)
+                    send_telegram(m, p, event_key=event_key)
                     log.append(txt)
-
+                
                 # =======================
                 # סיום רבעים
                 # =======================
@@ -948,12 +995,13 @@ def run():
                     b_resp = get_boxscore()
                     if not b_resp:
                         continue
-
+                
                     m, p = format_msg(b_resp['game'], f"סיום רבע {period}")
-                    send_telegram(m, p)
-
+                    event_key = make_event_key(gid, "end_quarter", period=period)
+                    send_telegram(m, p, event_key=event_key)
+                
                     log.append(txt)
-
+                
                 # =======================
                 # סיום רבע 4
                 # =======================
@@ -961,33 +1009,36 @@ def run():
                     b_resp = get_boxscore()
                     if not b_resp:
                         continue
-
+                
+                    game_data = b_resp['game']
                     try:
-                        home_score = int(g.get('homeTeam', {}).get('score', 0))
-                        away_score = int(g.get('awayTeam', {}).get('score', 0))
+                        home_score = int(game_data.get('homeTeam', {}).get('score', 0))
+                        away_score = int(game_data.get('awayTeam', {}).get('score', 0))
                     except:
                         continue
-
+                
                     if home_score == away_score:
-                        m, p = format_msg(b_resp['game'], "סיום רבע 4")
-                        send_telegram(m, p)
-
+                        m, p = format_msg(game_data, "סיום רבע 4")
+                        event_key = make_event_key(gid, "end_quarter", period=4, away_score=away_score, home_score=home_score)
+                        send_telegram(m, p, event_key=event_key)
+                
                         log.append(txt)
-
+                
                         if "drama_q4" not in log:
                             drama_txt = f"טירוף! שוויון {home_score} - {away_score} הולכים להארכה!"
                             m, p = format_msg(
-                                b_resp['game'],
+                                game_data,
                                 "דרמה ב-NBA!",
                                 is_drama=True,
                                 drama_text=drama_txt
                             )
-                            send_telegram(m, p)
-
+                            event_key = make_event_key(gid, "drama_q4", period=4, away_score=away_score, home_score=home_score)
+                            send_telegram(m, p, event_key=event_key)
+                
                             log.append("drama_q4")
                     else:
                         log.append(txt)
-
+                
                 # =======================
                 # הארכות
                 # =======================
@@ -995,37 +1046,41 @@ def run():
                     b_resp = get_boxscore()
                     if not b_resp:
                         continue
-
+                
+                    game_data = b_resp['game']
                     try:
-                        home_score = int(g.get('homeTeam', {}).get('score', 0))
-                        away_score = int(g.get('awayTeam', {}).get('score', 0))
+                        home_score = int(game_data.get('homeTeam', {}).get('score', 0))
+                        away_score = int(game_data.get('awayTeam', {}).get('score', 0))
                     except:
                         continue
-
+                
                     ot_num = period - 4
-
+                
                     if home_score != away_score:
                         log.append(txt)
                     else:
                         label_ot = "סיום הארכה" if ot_num == 1 else f"סיום הארכה {ot_num}"
-                        m, p = format_msg(b_resp['game'], label_ot)
-                        send_telegram(m, p)
-
+                        m, p = format_msg(game_data, label_ot)
+                
+                        event_key = make_event_key(gid, "end_ot", period=period, away_score=away_score, home_score=home_score)
+                        send_telegram(m, p, event_key=event_key)
+                
                         log.append(txt)
-
+                
                         drama_key = f"drama_ot_{period}"
                         if drama_key not in log:
                             drama_txt = f"טירוף! שוויון {home_score} - {away_score} הולכים להארכה {ot_num + 1}!"
                             m, p = format_msg(
-                                b_resp['game'],
+                                game_data,
                                 "דרמה ב-NBA!",
                                 is_drama=True,
                                 drama_text=drama_txt
                             )
-                            send_telegram(m, p)
-
+                            event_key = make_event_key(gid, f"drama_ot_{period}", period=period, away_score=away_score, home_score=home_score)
+                            send_telegram(m, p, event_key=event_key)
+                
                             log.append(drama_key)
-
+                
                 # =======================
                 # סיום משחק
                 # =======================
@@ -1033,16 +1088,21 @@ def run():
                     b_resp = get_boxscore()
                     if not b_resp:
                         continue
-
-                    final_period = b_resp.get('game', {}).get('period', 4)
+                
+                    game_data = b_resp['game']
+                    final_period = game_data.get('period', 4)
                     label_final = "סיום המשחק"
-
+                
                     if final_period > 4:
                         label_final += f" (אחרי הארכה {final_period - 4})"
-
-                    m, p = format_msg(b_resp['game'], label_final, is_final=True)
-                    send_telegram(m, p)
-
+                
+                    away_score = int(game_data.get('awayTeam', {}).get('score', 0))
+                    home_score = int(game_data.get('homeTeam', {}).get('score', 0))
+                
+                    m, p = format_msg(game_data, label_final, is_final=True)
+                    event_key = make_event_key(gid, "final", period=final_period, away_score=away_score, home_score=home_score)
+                    send_telegram(m, p, event_key=event_key)
+                
                     log.append(game_final_key)
 
                 # שמירה + חיתוך log
