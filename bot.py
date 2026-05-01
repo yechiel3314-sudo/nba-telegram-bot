@@ -451,6 +451,8 @@ def save_cache():
     except Exception as e:
         print(f"⚠️ שגיאה בשמירת cache: {e}")
 
+cache = load_cache()
+
 def make_event_key(game_id, event_type, period=None, away_score=None, home_score=None):
     parts = [str(game_id), str(event_type)]
 
