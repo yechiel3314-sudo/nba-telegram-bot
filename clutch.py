@@ -8,7 +8,7 @@ from datetime import datetime
 # ==============================
 # הגדרות טלגרם
 # ==============================
-TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
+TELEGRAM_TOKEN = "PASTE_YOUR_TELEGRAM_TOKEN_HERE"
 CHAT_ID = "-1003808107418"
 
 def send_telegram_message(message: str):
@@ -160,9 +160,9 @@ ISRAEL_TZID = "Asia/Jerusalem"
 
 def is_shabbat_or_yom_tov():
     """
-    Hebcal Assur Melacha API:
+    בדיוק כמו במנגנון הראשון:
     מחזיר True רק כשיש איסור מלאכה בפועל.
-    זה לא אמור לחסום חול המועד.
+    אם יש שגיאה או תשובה לא תקינה -> False
     """
     try:
         url = (
@@ -255,7 +255,7 @@ def build_message(event: dict, alert_type: str):
         title = "🚨 <b>התראת קלאץ'!</b> 🚨"
         ending = "✨ <b>הכל יכול להתהפך עכשיו!</b> ✨"
     else:
-        title = "🚨 <b>התראת קלאץ! דקה אחרונה</b> 🚨"
+        title = "🚨 <b>התראת קלאץ' - דקה אחרונה!</b> 🚨"
         ending = "⏳ <b>כל מהלך עכשיו מכריע!</b> ⏳"
 
     msg = ""
@@ -311,9 +311,7 @@ def check_all_nba_clutch():
 
             diff = abs(score1 - score2)
 
-            # =========================
-            # 45 שניות אחרונות - תמיד
-            # =========================
+            # 45 שניות אחרונות
             if period >= 4 and clock_seconds <= 45 and not sent_last45.get(game_id):
                 msg = build_message(event, "last45")
                 if msg:
@@ -321,15 +319,13 @@ def check_all_nba_clutch():
                         if not pending_messages.get(game_id, {}).get("last45"):
                             queue_pending(game_id, "last45", msg)
                     else:
-                        send_telegram_message(msg)
-                        sent_last45[game_id] = True
-                        save_state()
-                        time.sleep(1)
+                        ok = send_telegram_message(msg)
+                        if ok:
+                            sent_last45[game_id] = True
+                            save_state()
+                            time.sleep(1)
 
-            # =========================
-            # קלאץ' - רק אם המשחק צמוד
-            # ורק מ-3:30 דקות לסיום
-            # =========================
+            # קלאץ'
             if diff <= 3 and period == 4 and clock_seconds <= 210 and not sent_clutch.get(game_id):
                 msg = build_message(event, "clutch")
                 if msg:
@@ -337,10 +333,11 @@ def check_all_nba_clutch():
                         if not pending_messages.get(game_id, {}).get("clutch"):
                             queue_pending(game_id, "clutch", msg)
                     else:
-                        send_telegram_message(msg)
-                        sent_clutch[game_id] = True
-                        save_state()
-                        time.sleep(1)
+                        ok = send_telegram_message(msg)
+                        if ok:
+                            sent_clutch[game_id] = True
+                            save_state()
+                            time.sleep(1)
 
     except Exception as e:
         print(f"❌ שגיאה כללית: {e}")
