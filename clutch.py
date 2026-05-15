@@ -8,7 +8,7 @@ from datetime import datetime
 # ==============================
 # הגדרות טלגרם
 # ==============================
-TELEGRAM_TOKEN = "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE"
+TELEGRAM_TOKEN = "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss"
 CHAT_ID = "-1003808107418"
 
 def send_telegram_message(message: str):
