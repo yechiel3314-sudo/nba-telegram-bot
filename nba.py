@@ -9,7 +9,7 @@ from datetime import datetime
 # הגדרות
 # ==========================================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8514837332:AAFZmYxXJS43Dpz2x-1rM_Glpske3OxTJrE")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss")
 CHAT_ID = os.getenv("CHAT_ID", "-1003808107418")
 
 # ה-API המרכזי לתוצאות חיות
