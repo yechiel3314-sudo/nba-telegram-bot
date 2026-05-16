@@ -84,6 +84,15 @@ RLM = "\u200F"  # Right-to-left mark
 # ==========================================
 def build_session():
     s = requests.Session()
+    # הדרס שמדמים דפדפן אמיתי
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://www.nba.com/",
+        "Origin": "https://www.nba.com",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive"
+    })
     retry = Retry(
         total=4,
         backoff_factor=1,
@@ -99,13 +108,28 @@ SESSION = build_session()
 
 
 def get_json(url):
+    # ניסיון ראשון: גישה ישירה עם ה-Headers המשופרים
     try:
-        r = SESSION.get(url, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        logging.error(f"GET JSON failed: {url} | {e}")
-        return None
+        r = SESSION.get(url, timeout=15)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+
+    # ניסיון שני: רק אם מדובר בכתובת של ה-NBA, ננסה לעקוף דרך פרוקסי ציבורי
+    if "nba.com" in url:
+        proxy_url = f"https://api.allorigins.win/get?url={url}"
+        try:
+            logging.info(f"🔄 הגישה הישירה נחסמה, מנסה פרוקסי עבור: {url}")
+            r = requests.get(proxy_url, timeout=20)
+            if r.status_code == 200:
+                contents = r.json().get('contents')
+                return json.loads(contents)
+        except Exception as e:
+            logging.error(f"❌ גם המעקף דרך הפרוקסי נכשל עבור {url}: {e}")
+    
+    # במידה וזה לינק של Hebcal או ששני הניסיונות נכשלו לגמרי
+    return None
 
 
 # ==========================================
