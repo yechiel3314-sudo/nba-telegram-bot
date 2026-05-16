@@ -51,15 +51,27 @@ SESSION = build_session()
 
 
 def get_json(url):
+    # מנסה רגיל עם ה-Headers המשופרים
     try:
-        r = SESSION.get(url, timeout=20)
-        r.raise_for_status()  # יזרוק שגיאה אם יש 403 או 404
-        return r.json()
+        r = SESSION.get(url, timeout=15)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+
+    # אם נחסם (403), מנסה דרך פרוקסי ציבורי חופשי שממסך את ה-IP של Railway
+    proxy_url = f"https://api.allorigins.win/get?url={url}"
+    try:
+        print(f"🔄 נחסמנו בגישה ישירה, מנסה לעקוף דרך פרוקסי עבור: {url}")
+        r = requests.get(proxy_url, timeout=20)
+        if r.status_code == 200:
+            contents = r.json().get('contents')
+            return json.loads(contents)
     except Exception as e:
-        print(f"❌ GET JSON failed: {url} -> {e}")
-        return {}  # מחזיר דיקשנרי ריק במקום None כדי למנוע את קריסת ה-.get() בהמשך הקוד
-
-
+        print(f"❌ גם המעקף נכשל: {e}")
+        
+    return {}  # מחזיר דיקשנרי ריק כדי למנוע קריסה בהמשך
+    
 def is_shabbat_or_yom_tov():
     """
     מחזיר True אם עכשיו יש איסור מלאכה בפועל.
