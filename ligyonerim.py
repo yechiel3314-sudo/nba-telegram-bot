@@ -108,15 +108,18 @@ SESSION = build_session()
 
 
 def get_json(url):
-    # ניסיון ראשון: גישה ישירה עם ה-Headers המשופרים
+    # ניסיון ראשון: גישה ישירה לכל הכתובות
     try:
         r = SESSION.get(url, timeout=15)
         if r.status_code == 200:
             return r.json()
-    except Exception:
-        pass
+    except Exception as e:
+        # אם מדובר ב-Hebcal והוא נכשל, נרצה לדעת מזה בלוג בצורה נקייה ולא לקרוס
+        if "hebcal" in url:
+            logging.error(f"Direct Hebcal fetch failed: {e}")
+            return None
 
-    # ניסיון שני: רק אם מדובר בכתובת של ה-NBA, ננסה לעקוף דרך פרוקסי ציבורי
+    # ניסיון שני: רק אם מדובר בכתובת של ה-NBA והגישה הישירה נחסמה
     if "nba.com" in url:
         proxy_url = f"https://api.allorigins.win/get?url={url}"
         try:
@@ -128,7 +131,6 @@ def get_json(url):
         except Exception as e:
             logging.error(f"❌ גם המעקף דרך הפרוקסי נכשל עבור {url}: {e}")
     
-    # במידה וזה לינק של Hebcal או ששני הניסיונות נכשלו לגמרי
     return None
 
 
