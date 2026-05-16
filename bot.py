@@ -17,7 +17,14 @@ TELEGRAM_TOKEN = "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss"
 CHAT_ID = "-1003808107418"
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_cache.json"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive"
+}
 ISRAEL_LAT = 31.778
 ISRAEL_LON = 35.235
 ISRAEL_TZID = "Asia/Jerusalem"
@@ -28,6 +35,7 @@ translator = GoogleTranslator(source='en', target='iw')
 
 def build_session():
     s = requests.Session()
+    s.headers.update(HEADERS)  # מכניס את ה-Headers המלאים לתוך הסשן
     retry = Retry(
         total=4,
         backoff_factor=1,
