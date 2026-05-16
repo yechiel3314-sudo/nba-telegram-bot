@@ -52,12 +52,12 @@ SESSION = build_session()
 
 def get_json(url):
     try:
-        r = SESSION.get(url, headers=HEADERS, timeout=20)
-        r.raise_for_status()
+        r = SESSION.get(url, timeout=20)
+        r.raise_for_status()  # יזרוק שגיאה אם יש 403 או 404
         return r.json()
     except Exception as e:
-        print(f"❌ שגיאה בבקשת JSON: {url} | {e}")
-        return None
+        print(f"❌ GET JSON failed: {url} -> {e}")
+        return {}  # מחזיר דיקשנרי ריק במקום None כדי למנוע את קריסת ה-.get() בהמשך הקוד
 
 
 def is_shabbat_or_yom_tov():
