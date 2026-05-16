@@ -135,15 +135,29 @@ def is_shabbat_or_yom_tov():
 # ==========================================
 
 def get_games():
-    log("מבקש נתונים מה-API לצורך תוצאות")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://www.nba.com/"
+    }
+    # ניסיון ישיר
     try:
-        resp = requests.get(f"{NBA_URL}?cache={int(time.time())}", timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            games = data.get("scoreboard", {}).get("games", [])
-            return games
+        response = requests.get(NBA_URL, headers=headers, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("scoreboard", {}).get("games", [])
+    except Exception:
+        pass
+
+    # מעקף חסימה
+    proxy_url = f"https://api.allorigins.win/get?url={NBA_URL}"
+    try:
+        log("ניסיון משיכה דרך פרוקסי עוקף חסימות...")
+        response = requests.get(proxy_url, timeout=20)
+        if response.status_code == 200:
+            data = json.loads(response.json().get('contents'))
+            return data.get("scoreboard", {}).get("games", [])
     except Exception as e:
-        log(f"שגיאה קריטית בשליפה: {e}")
+        log(f"שגיאה במשיכת משחקים מהפרוקסי: {e}")
     return []
 
 # ==========================================
