@@ -480,19 +480,27 @@ def run():
                     continue
 
                 box = get_json(BOX_URL.format(gid=gid))
-                if not box:
+                if not box or not isinstance(box, dict):
                     continue
-
-                game = (box or {}).get("game") or {}
-                away = ((game.get("awayTeam") or {}).get("teamTricode")) or ""
-                home = ((game.get("homeTeam") or {}).get("teamTricode")) or ""
-
+    
+                game = box.get("game")
+                if not game or not isinstance(game, dict):
+                    logging.warning(f"⚠️ Boxscore data structured unexpectedly for game {gid}")
+                    continue
+    
+                away = (game.get("awayTeam") or {}).get("teamTricode") or ""
+                home = (game.get("homeTeam") or {}).get("teamTricode") or ""
+    
                 game_info = {"away": away, "home": home}
-
+    
                 sent_any = False
-
+    
                 for team_key in ("awayTeam", "homeTeam"):
-                    players = ((game.get(team_key) or {}).get("players") or [])
+                    team_data = game.get(team_key) or {}
+                    players = team_data.get("players") or []
+                    if not isinstance(players, list):
+                        continue
+                    
                     for p in players:
                         full = f"{p.get('firstName', '')} {p.get('familyName', '')}".strip()
                         if full in ISRAELI_PLAYERS:
