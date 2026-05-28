@@ -99,7 +99,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "SimonJones_DM": "סיימון ג'ונס - אנגליה",
     "MatteMoretto": "מתאו מורטו - ספרד",
     "ffpolo": "פרננדו פולו - ברצלונה",
-    "gerardromero": "חרארד רומרו - ברצלונה",
+    "gerardromero": "ג'רארד רומרו - ברצלונה",
     "AranchaMOBILE": "ארנצ'ה רודריגז - ריאל מדריד",
     "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
     "AlfredoPedulla": "אלפרדו פדולה - איטליה",
@@ -121,6 +121,8 @@ SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = True
 MAX_IMAGES_PER_POST = 4
+MAX_VIDEO_BYTES = 50 * 1024 * 1024
+SEND_VIDEO_FILES = False
 STATE_FILE = "football_x_to_telegram_state.json"
 TRANSLATION_CACHE_FILE = "football_translation_cache.json"
 RTL_MARK = "\u200f"
@@ -518,6 +520,38 @@ def http_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> dict
             if attempt < HTTP_RETRIES:
                 time.sleep(1.5 * attempt)
     raise RuntimeError(f"POST failed after {HTTP_RETRIES} attempts: {last_error}")
+
+
+def remote_file_size(url: str, timeout: int = 12) -> int | None:
+    if not url or url.lower().split("?", 1)[0].endswith(".m3u8"):
+        return None
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0"}
+    for method in ("HEAD", "GET"):
+        request_headers = dict(headers)
+        if method == "GET":
+            request_headers["Range"] = "bytes=0-0"
+        request = urllib.request.Request(url, headers=request_headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                content_length = response.headers.get("Content-Length")
+                content_range = response.headers.get("Content-Range")
+                if content_range:
+                    match = re.search(r"/(\d+)\s*$", content_range)
+                    if match:
+                        return int(match.group(1))
+                if content_length:
+                    return int(content_length)
+        except Exception:
+            continue
+    return None
+
+
+def sendable_video_url(post: Post) -> str:
+    for url in post.video_urls:
+        size = remote_file_size(url)
+        if size is not None and size <= MAX_VIDEO_BYTES:
+            return url
+    return ""
 
 
 def strip_namespace(tag: str) -> str:
@@ -1002,7 +1036,13 @@ def is_self_quote(post: Post) -> bool:
         ACCOUNT_DISPLAY_NAMES.get(post.username, ""),
         HANDLE_REPLACEMENTS.get(post.username, ""),
     }
-    return quoted in {normalize_identity(value) for value in identities if value}
+    normalized_identities = {normalize_identity(value) for value in identities if value}
+    if post.username == "MatteMoretto":
+        normalized_identities.update(
+            normalize_identity(value)
+            for value in ("Matteo Moretto", "Matte Moretto", "מתאו מורטו", "מתאו מורטו - ספרד")
+        )
+    return quoted in normalized_identities
 
 
 def translate_quoted_text(text: str) -> str:
@@ -1065,6 +1105,7 @@ def build_message(
     translated: str,
     quoted_translated: str = "",
     quoted_author_translated: str = "",
+    include_video_link: bool = True,
 ) -> str:
     translated = tidy_translated_text(translated)
     quoted_translated = tidy_translated_text(quoted_translated)
@@ -1073,7 +1114,7 @@ def build_message(
     safe_account = html.escape(rtl(f"{display_name}:"))
     safe_body = html.escape(rtl(translated or "עדכון חדש"))
     safe_quoted_author = html.escape(rtl(quoted_author_translated))
-    safe_quoted_body = html.escape(rtl(quoted_translated))
+    safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
     safe_link = html.escape(post.link)
     safe_video_link = html.escape(post.video_urls[0] if post.video_urls else post.link)
     video_label = f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>"
@@ -1082,7 +1123,7 @@ def build_message(
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
 
-    if post.link and post.primary_has_video:
+    if include_video_link and post.link and post.primary_has_video:
         parts.extend(["", "", video_label, safe_video_link])
 
     if safe_quoted_body:
@@ -1090,7 +1131,7 @@ def build_message(
         if safe_quoted_author:
             parts.append(safe_quoted_author)
         parts.append(safe_quoted_body)
-        if post.link and post.quoted_has_video:
+        if include_video_link and post.link and post.quoted_has_video:
             parts.extend(["", video_label, safe_video_link])
 
     if post.link:
@@ -1107,8 +1148,28 @@ def send_post(post: Post) -> None:
     else:
         quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
         quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
-    message = build_message(post, translated, quoted_translated, quoted_author_translated)
+    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    message = build_message(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link=not bool(video_url),
+    )
     images = post.image_urls[:MAX_IMAGES_PER_POST]
+
+    if SEND_VIDEO_FILES and video_url and not images:
+        telegram_api(
+            "sendVideo",
+            {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "video": video_url,
+                "caption": trim_keep_ending(message, 1024),
+                "parse_mode": "HTML",
+                "supports_streaming": True,
+            },
+        )
+        return
 
     if images:
         media: list[dict[str, Any]] = []
@@ -1120,6 +1181,15 @@ def send_post(post: Post) -> None:
             media.append(item)
         try:
             telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
+            if SEND_VIDEO_FILES and video_url:
+                telegram_api(
+                    "sendVideo",
+                    {
+                        "chat_id": TELEGRAM_CHAT_ID,
+                        "video": video_url,
+                        "supports_streaming": True,
+                    },
+                )
             return
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
@@ -1133,6 +1203,16 @@ def send_post(post: Post) -> None:
             "parse_mode": "HTML",
         },
     )
+
+    if SEND_VIDEO_FILES and video_url:
+        telegram_api(
+            "sendVideo",
+            {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "video": video_url,
+                "supports_streaming": True,
+            },
+        )
 
 
 def state_path() -> Path:
