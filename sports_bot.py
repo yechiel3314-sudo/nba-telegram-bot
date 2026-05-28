@@ -1312,15 +1312,14 @@ def build_message(
     safe_quoted_author = html.escape(rtl(quoted_author_translated))
     safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
     safe_link = html.escape(post.link)
-    safe_video_link = html.escape(post.video_urls[0] if post.video_urls else post.link)
-    video_label = f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>"
+    video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
     post_link_label = f"<b>{html.escape(rtl('קישור לפוסט:'))}</b>"
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
 
     if include_video_link and post.link and post.primary_has_video:
-        parts.extend(["", "", video_label, safe_video_link])
+        parts.extend(["", "", video_label])
 
     if safe_quoted_body:
         parts.extend(["", quote_label])
@@ -1328,7 +1327,7 @@ def build_message(
             parts.append(safe_quoted_author)
         parts.append(safe_quoted_body)
         if include_video_link and post.link and post.quoted_has_video:
-            parts.extend(["", video_label, safe_video_link])
+            parts.extend(["", video_label])
 
     if post.link:
         parts.extend(["", "", post_link_label, safe_link])
@@ -1354,7 +1353,7 @@ def send_post(post: Post) -> None:
     )
     images = post.image_urls[:MAX_IMAGES_PER_POST]
 
-    if SEND_VIDEO_FILES and video_url and not images:
+    if SEND_VIDEO_FILES and video_url:
         telegram_api(
             "sendVideo",
             {
