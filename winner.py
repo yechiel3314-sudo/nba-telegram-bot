@@ -99,7 +99,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "SimonJones_DM": "סיימון ג'ונס - אנגליה",
     "MatteMoretto": "מתאו מורטו - ספרד",
     "ffpolo": "פרננדו פולו - ברצלונה",
-    "gerardromero": "ג'רארד רומרו - ברצלונה",
+    "gerardromero": "חרארד רומרו - ברצלונה",
     "AranchaMOBILE": "ארנצ'ה רודריגז - ריאל מדריד",
     "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
     "AlfredoPedulla": "אלפרדו פדולה - איטליה",
@@ -122,7 +122,7 @@ SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = True
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
-SEND_VIDEO_FILES = False
+SEND_VIDEO_FILES = True
 STATE_FILE = "football_x_to_telegram_state.json"
 TRANSLATION_CACHE_FILE = "football_translation_cache.json"
 RTL_MARK = "\u200f"
