@@ -8,13 +8,14 @@ from datetime import datetime
 from deep_translator import GoogleTranslator
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from urllib.parse import quote
 
 # ==========================================
 # הגדרות מערכת וטוקנים
 # ==========================================
 SENT_EVENTS_DIR = "sent_events"
-TELEGRAM_TOKEN = "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss"
-CHAT_ID = "-1003808107418"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", os.getenv("CHAT_ID", "")).strip()
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_cache.json"
 HEADERS = {
@@ -51,27 +52,35 @@ SESSION = build_session()
 
 
 def get_json(url):
-    # מנסה רגיל עם ה-Headers המשופרים
     try:
         r = SESSION.get(url, timeout=15)
         if r.status_code == 200:
             return r.json()
-    except Exception:
-        pass
+        print(f"?? ???? JSON ?????: {r.status_code} | {url}")
+    except requests.RequestException as e:
+        print(f"?? ????? ??? ????? JSON: {url} | {e}")
+    except ValueError as e:
+        print(f"?? ????? JSON ?? ?????: {url} | {e}")
 
-    # אם נחסם (403), מנסה דרך פרוקסי ציבורי חופשי שממסך את ה-IP של Railway
-    proxy_url = f"https://api.allorigins.win/get?url={url}"
+    proxy_url = f"https://api.allorigins.win/get?url={quote(url, safe='')}"
     try:
-        print(f"🔄 נחסמנו בגישה ישירה, מנסה לעקוף דרך פרוקסי עבור: {url}")
-        r = requests.get(proxy_url, timeout=20)
-        if r.status_code == 200:
-            contents = r.json().get('contents')
-            return json.loads(contents)
-    except Exception as e:
-        print(f"❌ גם המעקף נכשל: {e}")
-        
-    return {}  # מחזיר דיקשנרי ריק כדי למנוע קריסה בהמשך
-    
+        print(f"?? ???? ??? ?????? ?????? ????: {url}")
+        r = SESSION.get(proxy_url, timeout=20)
+        if r.status_code != 200:
+            print(f"? ??????? ????? ????? {r.status_code}")
+            return {}
+
+        contents = r.json().get("contents")
+        if not contents:
+            print("? ??????? ????? ????? ????")
+            return {}
+
+        return json.loads(contents)
+    except (requests.RequestException, ValueError, TypeError, json.JSONDecodeError) as e:
+        print(f"? ?? ????? ????: {e}")
+
+    return {}
+
 def is_shabbat_or_yom_tov():
     """
     מחזיר True אם עכשיו יש איסור מלאכה בפועל.
@@ -84,7 +93,8 @@ def is_shabbat_or_yom_tov():
         )
         data = get_json(url)
         if not data:
-            return False
+            print("?? ?? ?????? ????? ?-Hebcal; ?? ?????? ?????? ??? ?????? ?????? ???/??")
+            return True
 
         status = data.get("status") or {}
         return bool(status.get("isAssurBemlacha"))
@@ -467,9 +477,11 @@ def save_cache():
         tmp_file = CACHE_FILE + ".tmp"
         with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(cache, f, indent=4, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_file, CACHE_FILE)
-    except Exception as e:
-        print(f"⚠️ שגיאה בשמירת cache: {e}")
+    except OSError as e:
+        print(f"?? ????? ?????? cache: {e}")
 
 cache = load_cache()
 
@@ -515,6 +527,20 @@ def claim_event(event_key):
     except Exception as e:
         print(f"❌ שגיאה ב-claim_event: {e}")
         return False
+
+def release_event(event_key):
+    try:
+        digest = hashlib.sha256(event_key.encode("utf-8")).hexdigest()
+        marker_path = os.path.join(SENT_EVENTS_DIR, f"{digest}.done")
+
+        if os.path.exists(marker_path):
+            os.remove(marker_path)
+
+        cache.get("sent_events", {}).pop(digest, None)
+        save_cache()
+
+    except OSError as e:
+        print(f"?? ?? ?????? ????? ????? ???? ??? ?????: {e}")
 
 def translate_name(name):
     if not name:
@@ -819,13 +845,19 @@ def send_telegram(text, photo_url=None, event_key=None):
     global CURRENT_SHABBAT_OR_YOM_TOV
 
     if CURRENT_SHABBAT_OR_YOM_TOV:
-        print("⏸️ שבת/חג פעיל - ההודעה לא נשלחה")
+        print("?? ???/?? ???? - ?????? ?? ?????")
         return False
 
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("? ??? TELEGRAM_TOKEN ?? TELEGRAM_CHAT_ID ?????? ??????")
+        return False
+
+    claimed = False
     if event_key:
         if not claim_event(event_key):
-            print("🚫 נחסמה הודעה כפולה (event already claimed)")
+            print("?? ????? ????? ????? (event already claimed)")
             return False
+        claimed = True
 
     payload = {"chat_id": CHAT_ID, "parse_mode": "HTML"}
 
@@ -833,38 +865,56 @@ def send_telegram(text, photo_url=None, event_key=None):
     safe_text = safe_text.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
 
     try:
-        if photo_url:
-            r = requests.post(
+        if photo_url and len(safe_text) <= 1024:
+            r = SESSION.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
                 data={**payload, "photo": photo_url, "caption": safe_text},
                 timeout=20
             )
+        elif photo_url:
+            r = SESSION.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+                data={**payload, "photo": photo_url},
+                timeout=20
+            )
+            if r.status_code == 200:
+                r = SESSION.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                    data={**payload, "text": safe_text[:4096]},
+                    timeout=15
+                )
         else:
-            r = requests.post(
+            r = SESSION.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                data={**payload, "text": safe_text},
+                data={**payload, "text": safe_text[:4096]},
                 timeout=15
             )
 
         if r.status_code == 200:
-            print("📨 נשלח (מאושר)")
+            print("?? ???? (?????)")
             return True
 
-        print(f"❌ טלגרם החזיר סטטוס {r.status_code}: {r.text}")
+        print(f"? ????? ????? ????? {r.status_code}: {r.text}")
+        if claimed:
+            release_event(event_key)
         return False
 
-    except Exception as e:
-        print(f"❌ שגיאה בשליחה: {e}")
+    except requests.RequestException as e:
+        print(f"? ????? ??????: {e}")
+        if claimed:
+            release_event(event_key)
         return False
-        
+
 def safe_get_json(url, timeout=10):
     try:
-        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        r = SESSION.get(url, timeout=timeout)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
-        print(f"❌ שגיאה בבקשת JSON: {url} | {e}")
-        return None
+    except requests.RequestException as e:
+        print(f"? ????? ??? ????? JSON: {url} | {e}")
+    except ValueError as e:
+        print(f"? JSON ?? ????: {url} | {e}")
+    return None
 
 def get_boxscore(gid):
     url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
@@ -965,21 +1015,6 @@ def run():
                 log = cache["games"][gid]
                 game_final_key = "FINAL_SENT"
 
-                def get_boxscore():
-                    try:
-                        r = requests.get(
-                            f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json",
-                            headers=HEADERS,
-                            timeout=10
-                        )
-                        if r.status_code != 200:
-                            print(f"❌ שגיאת boxscore {gid}")
-                            return None
-                        return r.json()
-                    except Exception as e:
-                        print(f"❌ שגיאת boxscore: {e}")
-                        return None
-
                 # =======================
                 # פתיחת רבע
                 # =======================
@@ -987,7 +1022,7 @@ def run():
                     s_key = f"start_q{period}"
                 
                     if s_key not in log:
-                        b_resp = get_boxscore()
+                        b_resp = get_boxscore(gid)
                         if not b_resp:
                             continue
                 
@@ -1001,7 +1036,7 @@ def run():
                 # מחצית
                 # =======================
                 if status == 2 and "half" in txt and txt not in log:
-                    b_resp = get_boxscore()
+                    b_resp = get_boxscore(gid)
                     if not b_resp:
                         continue
                 
@@ -1014,7 +1049,7 @@ def run():
                 # סיום רבעים
                 # =======================
                 elif status == 2 and "end" in txt and period < 4 and txt not in log:
-                    b_resp = get_boxscore()
+                    b_resp = get_boxscore(gid)
                     if not b_resp:
                         continue
                 
@@ -1028,7 +1063,7 @@ def run():
                 # סיום רבע 4
                 # =======================
                 elif status == 2 and "end" in txt and period == 4 and txt not in log:
-                    b_resp = get_boxscore()
+                    b_resp = get_boxscore(gid)
                     if not b_resp:
                         continue
                 
@@ -1036,7 +1071,7 @@ def run():
                     try:
                         home_score = int(game_data.get('homeTeam', {}).get('score', 0))
                         away_score = int(game_data.get('awayTeam', {}).get('score', 0))
-                    except:
+                    except (TypeError, ValueError):
                         continue
                 
                     if home_score == away_score:
@@ -1065,7 +1100,7 @@ def run():
                 # הארכות
                 # =======================
                 elif status == 2 and "end" in txt and period > 4 and txt not in log:
-                    b_resp = get_boxscore()
+                    b_resp = get_boxscore(gid)
                     if not b_resp:
                         continue
                 
@@ -1073,7 +1108,7 @@ def run():
                     try:
                         home_score = int(game_data.get('homeTeam', {}).get('score', 0))
                         away_score = int(game_data.get('awayTeam', {}).get('score', 0))
-                    except:
+                    except (TypeError, ValueError):
                         continue
                 
                     ot_num = period - 4
@@ -1107,7 +1142,7 @@ def run():
                 # סיום משחק
                 # =======================
                 if status == 3 and game_final_key not in log:
-                    b_resp = get_boxscore()
+                    b_resp = get_boxscore(gid)
                     if not b_resp:
                         continue
                 
