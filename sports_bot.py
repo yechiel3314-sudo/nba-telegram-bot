@@ -231,6 +231,10 @@ def has_video_marker(raw_html: str, element: ET.Element) -> bool:
     return False
 
 
+def text_has_video_marker(text: str) -> bool:
+    return bool(re.search(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", text or ""))
+
+
 def split_primary_and_quoted_text(text: str) -> tuple[str, str, str]:
     lines = [line.strip() for line in (text or "").splitlines()]
     kept: list[str] = []
@@ -302,9 +306,13 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
         post_id = f"{username}:{guid}"
         images = extract_images(raw_text, item)
         videos = extract_videos(raw_text, item)
-        has_video = bool(videos) or has_video_marker(raw_text, item)
-        quoted_has_video = bool(quoted_text and has_video)
-        primary_has_video = bool(has_video and not quoted_has_video)
+        raw_has_video = bool(videos) or has_video_marker(raw_text, item)
+        primary_has_video = text_has_video_marker(text)
+        quoted_has_video = text_has_video_marker(quoted_text)
+        if raw_has_video and not primary_has_video and not quoted_has_video:
+            quoted_has_video = bool(quoted_text)
+            primary_has_video = not quoted_has_video
+        has_video = raw_has_video or primary_has_video or quoted_has_video
 
         if text or link:
             posts.append(
