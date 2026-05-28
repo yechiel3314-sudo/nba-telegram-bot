@@ -70,7 +70,7 @@ X_ACCOUNTS = [
 
 ACCOUNT_DISPLAY_NAMES = {
     "NBA": "NBA",
-    "ShamsCharania": "שאמש צ'ראניה",
+    "ShamsCharania": "שאמס צ'ראניה",
     "highkin": "שון הייקין - פורטלנד",
 }
 
@@ -115,8 +115,9 @@ URL_RE = re.compile(
 HANDLE_REPLACEMENTS = {
     "NBA": "NBA",
     "WNBA": "WNBA",
-    "ShamsCharania": "שאמש צ'ראניה",
-    "Shams": "שאמש",
+    "ShamsCharania": "שאמס צ'ראניה",
+    "Shams Charania": "שאמס צ'ראניה",
+    "Shams": "שאמס",
     "highkin": "שון הייקין",
     "Sean Highkin": "שון הייקין",
     "TheSteinLine": "מארק סטיין",
@@ -535,6 +536,16 @@ PLAYER_REPLACEMENTS = {
 }
 
 HEBREW_FINAL_FIXES = {
+    "שאמש": "שאמס",
+    "שאמש צ'ראניה": "שאמס צ'ראניה",
+    "שאמש צ׳ראניה": "שאמס צ׳ראניה",
+    "נהא טודיי": "NBA Today",
+    "נבא טודיי": "NBA Today",
+    "נבה טודיי": "NBA Today",
+    "נ.ב.א טודיי": "NBA Today",
+    "אנ.בי.איי טודיי": "NBA Today",
+    "אן-בי-איי טודיי": "NBA Today",
+    "אן בי איי טודיי": "NBA Today",
     "כאן אנחנו הולכים": "הנה זה קורה",
     "הנה אנחנו הולכים": "הנה זה קורה",
     "לפי הבנתי": "לפי המידע",
@@ -581,7 +592,7 @@ STAT_REPLACEMENTS = {
     "apps": "הופעות",
 }
 
-LATIN_KEEP = {"VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
+LATIN_KEEP = {"NBA", "WNBA", "NBA Today", "VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
 
 HEBREW_LETTER = {
     "a": "א", "b": "ב", "c": "ק", "d": "ד", "e": "ה", "f": "פ",
@@ -1125,6 +1136,49 @@ def translate_short_label(text: str) -> str:
     return translated
 
 
+def normalize_identity(text: str) -> str:
+    text = clean_before_translation(text)
+    text = apply_phrase_replacements(text, HANDLE_REPLACEMENTS)
+    text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
+    text = re.sub(r"שאמש", "שאמס", text)
+    text = re.sub(r"[^A-Za-z0-9א-ת]+", "", text).lower()
+    return text
+
+
+def is_self_quote(post: Post) -> bool:
+    if not post.quoted_text or not post.quoted_author:
+        return False
+    quoted = normalize_identity(post.quoted_author)
+    if not quoted:
+        return False
+    identities = {
+        post.username,
+        ACCOUNT_DISPLAY_NAMES.get(post.username, ""),
+        HANDLE_REPLACEMENTS.get(post.username, ""),
+    }
+    return quoted in {normalize_identity(value) for value in identities if value}
+
+
+def translate_quoted_text(text: str) -> str:
+    cleaned = clean_before_translation(text)
+    if not cleaned:
+        return ""
+    translated = translate_text(cleaned)
+    if not translated:
+        return cleaned
+    if latin_ratio(translated) > 0.45:
+        return cleaned
+    return translated
+
+
+def translate_quoted_author(text: str) -> str:
+    cleaned = clean_before_translation(text)
+    if not cleaned:
+        return ""
+    translated = translate_short_label(cleaned)
+    return translated or cleaned
+
+
 def tidy_translated_text(text: str) -> str:
     text = final_hebrew_polish(html.unescape(text or "").strip())
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
@@ -1172,8 +1226,9 @@ def build_message(
     safe_account = html.escape(rtl(f"{display_name}:"))
     safe_body = html.escape(rtl(translated or "עדכון חדש"))
     safe_quoted_author = html.escape(rtl(quoted_author_translated))
-    safe_quoted_body = html.escape(rtl(quoted_translated))
+    safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
     safe_link = html.escape(post.link)
+    safe_video_link = html.escape(post.video_urls[0] if post.video_urls else post.link)
     video_label = f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
     post_link_label = f"<b>{html.escape(rtl('קישור לפוסט:'))}</b>"
@@ -1181,15 +1236,15 @@ def build_message(
     parts = [f"<b>{safe_account}</b>", "", safe_body]
 
     if post.link and post.primary_has_video:
-        parts.extend(["", "", video_label, safe_link])
+        parts.extend(["", "", video_label, safe_video_link])
 
     if safe_quoted_body:
         parts.extend(["", quote_label])
         if safe_quoted_author:
             parts.append(safe_quoted_author)
-        parts.append(html.escape(rtl(f'"{quoted_translated}"')))
+        parts.append(safe_quoted_body)
         if post.link and post.quoted_has_video:
-            parts.extend(["", video_label, safe_link])
+            parts.extend(["", video_label, safe_video_link])
 
     if post.link:
         parts.extend(["", "", post_link_label, safe_link])
@@ -1199,8 +1254,12 @@ def build_message(
 
 def send_post(post: Post) -> None:
     translated = translate_text(post.text)
-    quoted_translated = translate_text(post.quoted_text) if post.quoted_text else ""
-    quoted_author_translated = translate_short_label(post.quoted_author) if post.quoted_author else ""
+    if is_self_quote(post):
+        quoted_translated = ""
+        quoted_author_translated = ""
+    else:
+        quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
+        quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
     message = build_message(post, translated, quoted_translated, quoted_author_translated)
     images = post.image_urls[:MAX_IMAGES_PER_POST]
 
@@ -1298,7 +1357,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
     print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
