@@ -43,7 +43,7 @@ MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 3
 SEND_LAST_POST_ON_FIRST_RUN = True
 MAX_IMAGES_PER_POST = 4
 STATE_FILE = "x_to_telegram_state.json"
-SEND_IMAGES_AFTER_TEXT = True
+SEND_IMAGES_AFTER_TEXT = False
 
 ACCOUNT_DISPLAY_NAMES = {
     "NBA": "NBA",
@@ -70,6 +70,9 @@ class Post:
     text: str
     link: str
     image_urls: list[str]
+    video_urls: list[str]
+    quoted_author: str
+    quoted_text: str
 
 
 def http_get(url: str, timeout: int = 25) -> bytes:
@@ -155,6 +158,11 @@ def is_image_url(url: str) -> bool:
     return lowered.endswith(IMAGE_EXTENSIONS) or "pbs.twimg.com/media" in lowered
 
 
+def is_video_url(url: str) -> bool:
+    lowered = url.lower().split("?", 1)[0]
+    return lowered.endswith(VIDEO_EXTENSIONS) or "video.twimg.com" in lowered
+
+
 def extract_images(raw_html: str, element: ET.Element) -> list[str]:
     images: list[str] = []
 
@@ -179,6 +187,66 @@ def extract_images(raw_html: str, element: ET.Element) -> list[str]:
     return unique
 
 
+def extract_videos(raw_html: str, element: ET.Element) -> list[str]:
+    videos: list[str] = []
+
+    for match in re.findall(r'https?://[^\s"\'<>]+', raw_html or "", re.I):
+        url = html.unescape(match)
+        if is_video_url(url):
+            videos.append(url)
+
+    for child in element.iter():
+        url = child.attrib.get("url") or child.attrib.get("href")
+        mime = (child.attrib.get("type") or "").lower()
+        medium = (child.attrib.get("medium") or "").lower()
+        if not url:
+            continue
+        if mime.startswith("video/") or medium == "video" or is_video_url(url):
+            videos.append(url)
+
+    unique: list[str] = []
+    for url in videos:
+        if url not in unique:
+            unique.append(url)
+    return unique
+
+
+def split_primary_and_quoted_text(text: str) -> tuple[str, str, str]:
+    lines = [line.strip() for line in (text or "").splitlines()]
+    kept: list[str] = []
+    quoted: list[str] = []
+    quoted_author = ""
+    in_quote = False
+
+    for line in lines:
+        if not line:
+            if in_quote:
+                if quoted and quoted[-1]:
+                    quoted.append("")
+            elif kept and kept[-1]:
+                kept.append("")
+            continue
+
+        # RSS mirrors sometimes append the quoted/linked post as plain text.
+        # A quoted post often starts with "Display Name (@username)".
+        if kept and re.search(r"\(@[A-Za-z0-9_]{1,20}\)", line):
+            quoted_author = re.sub(r"\s*\(@[A-Za-z0-9_]{1,20}\).*", "", line).strip()
+            in_quote = True
+            continue
+        if kept and line.lower() in {"quoted post", "quote", "retweet", "retweeted"}:
+            in_quote = True
+            continue
+
+        if in_quote:
+            quoted.append(line)
+        else:
+            kept.append(line)
+
+    primary_text = re.sub(r"\n{3,}", "\n\n", "\n".join(kept).strip()) or text
+    quoted_text = re.sub(r"\n{3,}", "\n\n", "\n".join(quoted).strip())
+    return primary_text, quoted_author, quoted_text
+
+
 def normalize_link(link: str, username: str) -> str:
     if not link:
         return f"https://x.com/{username}"
@@ -201,7 +269,7 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
         title = child_text(item, ("title",))
         description = child_text(item, ("description", "summary", "content"))
         raw_text = description or title
-        text = clean_text(raw_text)
+        text, quoted_author, quoted_text = split_primary_and_quoted_text(clean_text(raw_text))
         link = normalize_link(child_text(item, ("link",)), username)
 
         if not link:
@@ -213,9 +281,21 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
         guid = child_text(item, ("guid", "id")) or link or title
         post_id = f"{username}:{guid}"
         images = extract_images(raw_text, item)
+        videos = extract_videos(raw_text, item)
 
         if text or link:
-            posts.append(Post(post_id=post_id, username=username, text=text, link=link, image_urls=images))
+            posts.append(
+                Post(
+                    post_id=post_id,
+                    username=username,
+                    text=text,
+                    link=link,
+                    image_urls=images,
+                    video_urls=videos,
+                    quoted_author=quoted_author,
+                    quoted_text=quoted_text,
+                )
+            )
 
     return posts
 
@@ -297,27 +377,41 @@ def trim(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "..."
 
 
-def build_message(post: Post, translated: str) -> str:
+def build_message(post: Post, translated: str, quoted_translated: str = "") -> str:
     translated = tidy_translated_text(translated)
+    quoted_translated = tidy_translated_text(quoted_translated)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
     safe_account = html.escape(display_name)
     safe_body = html.escape(translated or "עדכון חדש")
+    safe_quoted_author = html.escape(post.quoted_author or "פוסט מצוטט")
+    safe_quoted_body = html.escape(quoted_translated)
     safe_link = html.escape(post.link)
 
     parts = [
-        safe_account,
+        f"<b>{safe_account}:</b>",
         "",
         safe_body,
     ]
+    if safe_quoted_body:
+        parts.extend(
+            [
+                "",
+                "<b>פוסט מצוטט:</b>",
+                safe_quoted_author,
+                safe_quoted_body,
+            ]
+        )
     if post.link:
-        parts.extend(["", "לצפייה בפוסט המלא:", safe_link])
+        link_label = "לוידיאו:" if post.video_urls else "לצפייה בפוסט המלא:"
+        parts.extend(["", f"<b>{link_label}</b>", safe_link])
     return "\n".join(parts)
 
 
 def send_post(post: Post) -> None:
     logging.info("Preparing post from @%s: %s", post.username, post.link)
     translated = translate_text(post.text)
-    message = build_message(post, translated)
+    quoted_translated = translate_text(post.quoted_text) if post.quoted_text else ""
+    message = build_message(post, translated, quoted_translated)
 
     images = post.image_urls[:MAX_IMAGES_PER_POST]
     if images and SEND_IMAGES_AFTER_TEXT:
@@ -345,6 +439,7 @@ def send_post(post: Post) -> None:
             item: dict[str, Any] = {"type": "photo", "media": image_url}
             if index == 0:
                 item["caption"] = trim(message, 1024)
+                item["parse_mode"] = "HTML"
             media.append(item)
         try:
             telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
