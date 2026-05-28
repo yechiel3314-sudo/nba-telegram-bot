@@ -547,11 +547,60 @@ def remote_file_size(url: str, timeout: int = 12) -> int | None:
 
 
 def sendable_video_url(post: Post) -> str:
-    for url in post.video_urls:
+    candidates = list(dict.fromkeys(post.video_urls + fetch_external_video_urls(post)))
+    for url in candidates:
         size = remote_file_size(url)
         if size is not None and size <= MAX_VIDEO_BYTES:
             return url
     return ""
+
+
+def tweet_parts_from_link(link: str) -> tuple[str, str] | None:
+    try:
+        parsed = urllib.parse.urlparse(link)
+    except Exception:
+        return None
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) >= 3 and parts[-2].lower() == "status" and parts[-1].isdigit():
+        return parts[-3], parts[-1]
+    return None
+
+
+def collect_video_urls(value: Any) -> list[str]:
+    urls: list[str] = []
+    if isinstance(value, dict):
+        for item in value.values():
+            urls.extend(collect_video_urls(item))
+    elif isinstance(value, list):
+        for item in value:
+            urls.extend(collect_video_urls(item))
+    elif isinstance(value, str):
+        clean_url = html.unescape(value)
+        if is_video_url(clean_url):
+            urls.append(clean_url)
+    return urls
+
+
+def fetch_external_video_urls(post: Post) -> list[str]:
+    if not post.has_video or not post.link:
+        return []
+    tweet_parts = tweet_parts_from_link(post.link)
+    if not tweet_parts:
+        return []
+    username, tweet_id = tweet_parts
+    api_urls = [
+        f"https://api.fxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}",
+        f"https://api.vxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}",
+    ]
+    for api_url in api_urls:
+        try:
+            data = json.loads(http_get(api_url, timeout=8).decode("utf-8"))
+            urls = collect_video_urls(data)
+            if urls:
+                return list(dict.fromkeys(urls))
+        except Exception:
+            continue
+    return []
 
 
 def strip_namespace(tag: str) -> str:
