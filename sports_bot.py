@@ -15,6 +15,7 @@ import html
 import json
 import logging
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -49,7 +50,7 @@ SEND_IMAGES_AFTER_TEXT = False
 ACCOUNT_DISPLAY_NAMES = {
     "NBA": "NBA",
     "ShamsCharania": "שאמס צ׳רניה",
-    "highkin": "שון הייקין פורטלנד",
+    "highkin": "שון הייקין - פורטלנד",
 }
 
 RTL_MARK = "\u200f"
@@ -580,20 +581,24 @@ def run_once(state: dict[str, list[str]]) -> int:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stdout,
+    )
     validate_settings()
-    logging.info("Bot started. Accounts: %s", ", ".join(f"@{account}" for account in X_ACCOUNTS))
-    logging.info("Checking every %s seconds", CHECK_EVERY_SECONDS)
+    print(f"Bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
+    print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
 
     while True:
         try:
-            logging.info("Starting new check cycle")
             state = load_state()
             sent = run_once(state)
             save_state(state)
-            logging.info("Finished check. Sent %s new posts.", sent)
+            if sent:
+                print(f"Sent {sent} new post(s).", flush=True)
         except Exception as exc:
-            logging.exception("Unexpected cycle error; bot will keep running: %s", exc)
+            logging.error("Unexpected error. Bot will keep running: %s", exc)
         time.sleep(CHECK_EVERY_SECONDS)
 
 
