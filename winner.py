@@ -1286,18 +1286,6 @@ def main() -> None:
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
-    if SEND_STARTUP_STATUS_MESSAGE:
-        try:
-            telegram_api(
-                "sendMessage",
-                {
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "text": "בוט הכדורגל הופעל. עכשיו בודק פוסטים אחרונים...",
-                    "disable_web_page_preview": True,
-                },
-            )
-        except Exception as exc:
-            logging.error("Startup Telegram test message failed: %s", exc)
     startup_cycle = True
     while True:
         cycle_started = time.time()
