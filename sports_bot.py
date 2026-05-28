@@ -270,8 +270,6 @@ def build_message(post: Post, translated: str) -> str:
     parts = [f"@{post.username}"]
     if translated:
         parts.append(translated)
-    if post.text and post.text.strip() != translated.strip():
-        parts.append(f"Original:\n{post.text.strip()}")
     if post.link:
         parts.append(post.link)
     return "\n\n".join(parts)
