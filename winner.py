@@ -57,6 +57,7 @@ X_ACCOUNTS = [
     "cfbayern",
     "FabriceHawkins",
     "Tanziloic",
+    "MonfortCarlos",
 ]
 
 ACCOUNT_DISPLAY_NAMES = {
@@ -81,6 +82,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "cfbayern": "כריסטיאן פאלק - גרמניה",
     "FabriceHawkins": "פבריס הוקינס - צרפת",
     "Tanziloic": "לואיק טנזי - צרפת",
+    "MonfortCarlos": "קרלוס מונפור - ברצלונה",
 }
 
 TARGET_LANGUAGE = "he"
