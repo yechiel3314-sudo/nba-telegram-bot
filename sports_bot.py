@@ -38,6 +38,7 @@ X_ACCOUNTS = [
 ]
 
 TARGET_LANGUAGE = "he"
+TRANSLATION_MODE = "sports_polished_free"
 CHECK_EVERY_SECONDS = 60
 HTTP_RETRIES = 3
 RETRY_SLEEP_SECONDS = 4
@@ -54,6 +55,151 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 RTL_MARK = "\u200f"
+
+TRANSLATION_REPLACEMENTS = {
+    "דראפט ה-NBA": "דראפט ה-NBA",
+    "סוכן חופשי": "שחקן חופשי",
+    "סוכנות חופשית": "שוק השחקנים החופשיים",
+    "פוסט-סיזן": "פלייאוף",
+    "לאחר העונה": "פלייאוף",
+    "מחוץ לעונה": "הפגרה",
+    "בחירת דראפט": "בחירת דראפט",
+    "בחירה בסיבוב הראשון": "בחירת סיבוב ראשון",
+    "בחירה בסיבוב השני": "בחירת סיבוב שני",
+    "קו אחורי": "קו גארדים",
+    "מגרש ביתי": "בית",
+    "ניצחון שלישי ברציפות": "ניצחון שלישי ברציפות",
+    "הטרייד": "הטרייד",
+    "חוזה מקסימום": "חוזה מקסימום",
+    "מקורות אומרים": "לפי מקורות",
+    "דיווח": "דיווח",
+    "טוויט": "פוסט",
+    "ציוץ": "פוסט",
+    "נמסר": "דווח",
+    "על פי מקורות": "לפי מקורות",
+    "בלייזרים": "בלייזרס",
+    "פורטלנד טרייל בלייזרים": "פורטלנד טרייל בלייזרס",
+    "טרייל בלייזרים": "טרייל בלייזרס",
+    "לייקרס": "לייקרס",
+    "סלטיקס": "סלטיקס",
+    "נאגטס": "נאגטס",
+    "טימברוולבס": "טימברוולבס",
+    "ווריורס": "ווריורס",
+    "ת'אנדר": "ת'אנדר",
+    "מאבריקס": "מאבריקס",
+    "קליפרס": "קליפרס",
+    "סאנס": "סאנס",
+    "באקס": "באקס",
+    "ניקס": "ניקס",
+    "נטס": "נטס",
+    "היט": "היט",
+    "פייסרס": "פייסרס",
+    "קאבס": "קאבס",
+    "קינגס": "קינגס",
+    "פליקנס": "פליקנס",
+    "גריזליס": "גריזליס",
+    "הוקס": "הוקס",
+    "ראפטורס": "ראפטורס",
+    "רוקטס": "רוקטס",
+    "ספרס": "ספרס",
+    "שאמס חרניה": "שאמס צ׳רניה",
+    "שמס חרניה": "שאמס צ׳רניה",
+    "שאמס צ'רניה": "שאמס צ׳רניה",
+    "שון הייקין": "שון הייקין",
+    "השמש": "סאנס",
+}
+
+SPORTS_PHRASES = {
+    "has agreed to": "סיכם על",
+    "have agreed to": "סיכמו על",
+    "is signing": "יחתום",
+    "are signing": "יחתמו",
+    "is expected to": "צפוי",
+    "are expected to": "צפויים",
+    "league sources tell": "לפי מקורות בליגה",
+    "sources tell": "לפי מקורות",
+    "per sources": "לפי מקורות",
+    "sources said": "לפי מקורות",
+    "free agent": "השחקן החופשי",
+    "free agency": "שוק השחקנים החופשיים",
+    "trade deadline": "דדליין הטריידים",
+    "first-round pick": "בחירת סיבוב ראשון",
+    "second-round pick": "בחירת סיבוב שני",
+    "two-way contract": "חוזה דו-כיווני",
+    "training camp": "מחנה האימונים",
+    "regular season": "העונה הסדירה",
+    "postseason": "הפלייאוף",
+    "playoffs": "הפלייאוף",
+    "finals": "הגמר",
+    "game winner": "סל ניצחון",
+    "career-high": "שיא קריירה",
+    "season-high": "שיא עונתי",
+    "home court": "הבית",
+    "on the season": "העונה",
+    "behind big performances from": "בזכות הופעות גדולות של",
+    "went off": "התפוצץ",
+    "3rd straight W": "ניצחון שלישי ברציפות",
+    "third straight W": "ניצחון שלישי ברציפות",
+    "agrees to": "מסכים ל",
+    "lands with": "חותם אצל",
+    "returns to": "חוזר ל",
+    "plans to sign": "צפוי לחתום",
+    "will sign": "יחתום",
+    "will return": "יחזור",
+    "has been traded": "עבר בטרייד",
+    "is being traded": "עובר בטרייד",
+    "has requested a trade": "ביקש טרייד",
+    "extension": "הארכת חוזה",
+    "max contract": "חוזה מקסימום",
+    "rookie scale extension": "הארכת חוזה רוקי",
+    "waived": "שוחרר",
+    "buyout": "בייאאוט",
+    "injury report": "דוח פציעות",
+    "breaking": "דיווח דרמטי",
+    "questionable": "בספק",
+    "probable": "ככל הנראה ישחק",
+    "out": "בחוץ",
+    "available": "זמין למשחק",
+    "ruled out": "לא ישחק",
+    "questionable to return": "בספק לחזור",
+    "doubtful": "בספק גדול",
+    "day-to-day": "יום-יומי",
+    "minutes restriction": "הגבלת דקות",
+    "starting lineup": "החמישייה הפותחת",
+    "depth chart": "רוטציה",
+    "front office": "הנהלת הקבוצה",
+    "head coach": "המאמן הראשי",
+    "assistant coach": "עוזר המאמן",
+    "general manager": "הג'נרל מנג'ר",
+    "president of basketball operations": "נשיא פעולות הכדורסל",
+    "basketball operations": "פעולות הכדורסל",
+    "salary cap": "תקרת השכר",
+    "luxury tax": "מס המותרות",
+    "tax apron": "אפרון המס",
+    "second apron": "האפרון השני",
+    "player option": "אופציית שחקן",
+    "team option": "אופציית קבוצה",
+    "non-guaranteed": "לא מובטח",
+    "guaranteed": "מובטח",
+    "hard cap": "תקרה קשיחה",
+    "sign-and-trade": "חתימה והעברה",
+    "two-way": "דו-כיווני",
+    "double-double": "דאבל-דאבל",
+    "triple-double": "טריפל-דאבל",
+    "clutch": "קלאץ׳",
+    "buzzer-beater": "סל עם הבאזר",
+    "shot clock": "שעון הזריקות",
+    "overtime": "הארכה",
+    "OT": "הארכה",
+    "MVP": "MVP",
+    "points": "נקודות",
+    "rebounds": "ריבאונדים",
+    "assists": "אסיסטים",
+    "steals": "חטיפות",
+    "blocks": "חסימות",
+    "mins": "דקות",
+    "minutes": "דקות",
+}
 
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
@@ -350,10 +496,172 @@ def fetch_posts(username: str) -> list[Post]:
     return []
 
 
-def translate_text(text: str) -> str:
-    if not text:
-        return ""
-    logging.info("Translating post text")
+def polish_translation(text: str) -> str:
+    text = text or ""
+    for source, target in TRANSLATION_REPLACEMENTS.items():
+        text = text.replace(source, target)
+
+    text = text.replace("N.B.A", "NBA").replace("W.N.B.A", "WNBA")
+    text = text.replace("אי.אס.פי.אן", "ESPN").replace("E.S.P.N", "ESPN")
+    extra_replacements = {
+        "Pistons": "פיסטונס",
+        "Bulls": "בולס",
+        "Hornets": "הורנטס",
+        "Magic": "מג'יק",
+        "Wizards": "וויזארדס",
+        "Jazz": "ג'אז",
+    }
+    for source, target in extra_replacements.items():
+        text = text.replace(source, target)
+    text = text.replace("שאמס צ'רניה", "שאמס צ׳רניה")
+    text = text.replace("שאמס חרניה", "שאמס צ׳רניה")
+    text = text.replace("שמס חרניה", "שאמס צ׳רניה")
+    text = text.replace("טוויט", "פוסט")
+    text = text.replace("ציוץ", "פוסט")
+    text = text.replace("על פי מקורות", "לפי מקורות")
+    text = text.replace("מדווח ESPN", "מדווח ב-ESPN")
+    text = text.replace("ESPN מדווח", "מדווח ב-ESPN")
+    text = text.replace("NBA Insider", "כתב ה-NBA")
+    text = text.replace("NBA insider", "כתב ה-NBA")
+    text = text.replace("W ", "ניצחון ")
+    text = re.sub(r"\b(\d+)\s*-\s*(\d+)\b", r"\1-\2", text)
+    text = re.sub(r"(\d+)-(\d+)\s+בעונה", r"\1-\2 העונה", text)
+    text = text.replace("העונה בעונה", "העונה")
+    text = text.replace(" מאחורי ", " בזכות ")
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"\bNBA\b", "NBA", text)
+    text = re.sub(r"\bWNBA\b", "WNBA", text)
+    text = re.sub(r"\bESPN\b", "ESPN", text)
+    text = re.sub(r"\bMVP\b", "MVP", text)
+    text = text.replace("נקודותים", "נקודות")
+    text = text.replace("ריבאונדיםים", "ריבאונדים")
+    text = text.replace("אסיסטיםים", "אסיסטים")
+    text = text.replace("חטיפותים", "חטיפות")
+    text = text.replace("חסימותים", "חסימות")
+    text = text.replace("דקותים", "דקות")
+    text = text.replace("נקודות נקודות", "נקודות")
+    text = text.replace("ריבאונדים ריבאונדים", "ריבאונדים")
+    text = text.replace("אסיסטים אסיסטים", "אסיסטים")
+    text = text.replace("חטיפות חטיפות", "חטיפות")
+    text = text.replace("חסימות חסימות", "חסימות")
+    text = text.replace("דקות דקות", "דקות")
+    text = re.sub(r"\s*-\s*ESPN", " - ESPN", text)
+    text = re.sub(r"\s*-\s*MVP", " - MVP", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = text.replace("\n ", "\n").replace(" \n", "\n")
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"([א-ת])\s+-\s+([א-ת])", r"\1-\2", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def translate_sports_phrase(text: str) -> str:
+    working = text
+    working = normalize_stat_abbreviations(working)
+    for source, target in sorted(SPORTS_PHRASES.items(), key=lambda item: len(item[0]), reverse=True):
+        pattern = r"\b" + re.escape(source) + r"\b" if source.isalnum() else re.escape(source)
+        working = re.sub(pattern, target, working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)[ -]point game\b", r"משחק של \1 נקודות", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)[ -]game winning streak\b", r"רצף של \1 ניצחונות", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)[ -]rebound game\b", r"משחק של \1 ריבאונדים", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)[ -]assist game\b", r"משחק של \1 אסיסטים", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)\s*points\b", r"\1 נקודות", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)\s*rebounds\b", r"\1 ריבאונדים", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)\s*assists\b", r"\1 אסיסטים", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)\s*steals\b", r"\1 חטיפות", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)\s*blocks\b", r"\1 חסימות", working, flags=re.IGNORECASE)
+    working = re.sub(r"\b(\d+)\s*minutes\b", r"\1 דקות", working, flags=re.IGNORECASE)
+    return working
+
+
+def normalize_stat_abbreviations(text: str) -> str:
+    stats = {
+        "PTS": "נקודות",
+        "REB": "ריבאונדים",
+        "AST": "אסיסטים",
+        "STL": "חטיפות",
+        "BLK": "חסימות",
+        "MIN": "דקות",
+    }
+    for abbr, hebrew in stats.items():
+        text = re.sub(rf"\b(\d+)\s*{abbr}\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
+        text = re.sub(rf"\b{abbr}\s*(\d+)\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
+    for abbr, hebrew in stats.items():
+        text = re.sub(rf"\b{abbr}\b", hebrew, text, flags=re.IGNORECASE)
+    return text
+
+
+def rewrite_hebrew_sports_style(text: str) -> str:
+    text = text or ""
+
+    replacements = [
+        (r"מאחורי הופעות גדולות של", "בזכות הופעות גדולות של"),
+        (r"עובר ל־?(\d+)-(\d+)", r"עולה ל-\1-\2"),
+        (r"עברה ל־?(\d+)-(\d+)", r"עולה ל-\1-\2"),
+        (r"עבר ל־?(\d+)-(\d+)", r"עולה ל-\1-\2"),
+        (r"על העונה", "העונה"),
+        (r"בבית המשפט הביתי", "בבית"),
+        (r"במגרש הביתי", "בבית"),
+        (r"מגרש ביתי", "בית"),
+        (r"מגרש הבית", "הבית"),
+        (r"מאחורי", "בזכות"),
+        (r"בחירה מספר", "בחירה מס׳"),
+        (r"הסיבוב הראשון", "סיבוב ראשון"),
+        (r"הסיבוב השני", "סיבוב שני"),
+        (r"סוכן חופשי", "שחקן חופשי"),
+        (r"סוכנות חופשית", "שוק השחקנים החופשיים"),
+        (r"לאחר העונה", "פלייאוף"),
+        (r"פוסט עונה", "פלייאוף"),
+        (r"משחק המנצח", "סל הניצחון"),
+        (r"המשחק המנצח", "סל הניצחון"),
+        (r"הליגה אומרת", "לפי הליגה"),
+        (r"מקורות ליגה אומרים", "לפי מקורות בליגה"),
+        (r"מקורות אומרים", "לפי מקורות"),
+        (r"הוא אמור", "הוא צפוי"),
+        (r"אמור ל", "צפוי ל"),
+        (r"היא אמורה", "היא צפויה"),
+        (r"הם אמורים", "הם צפויים"),
+        (r"20-כדור", "20 נקודות"),
+        (r"20 בול", "20 נקודות"),
+        (r"3 ברציפות", "ניצחון שלישי ברציפות"),
+        (r"W 3 ברציפות", "ניצחון שלישי ברציפות"),
+        (r"W שלישי ברציפות", "ניצחון שלישי ברציפות"),
+        (r"קו הגארדים", "קו גארדים"),
+        (r"יהיה בחוץ", "לא ישחק"),
+        (r"נשלל", "לא ישחק"),
+        (r"זמין", "זמין למשחק"),
+        (r"חוזר אל", "חוזר ל"),
+        (r"נחת עם", "חתם אצל"),
+        (r"הרחבה", "הארכת חוזה"),
+        (r"הרחבת חוזה", "הארכת חוזה"),
+        (r"ויתרו עליו", "שוחרר"),
+        (r"שובר:", "דיווח דרמטי:"),
+        (r"יום ליום", "יום-יומי"),
+        (r"יום-יום", "יום-יומי"),
+        (r"הרכב הפותח", "החמישייה הפותחת"),
+        (r"מאמן ראשי", "המאמן הראשי"),
+        (r"תקרת משכורת", "תקרת השכר"),
+        (r"מס יוקרה", "מס המותרות"),
+        (r"אפשרות שחקן", "אופציית שחקן"),
+        (r"אפשרות קבוצה", "אופציית קבוצה"),
+        (r"מקצף זמזם", "סל עם הבאזר"),
+        (r"בזמזם", "עם הבאזר"),
+        (r"שעון יריות", "שעון הזריקות"),
+        (r"שעות נוספות", "הארכה"),
+    ]
+    for source, target in replacements:
+        text = re.sub(source, target, text)
+
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"([א-ת])\s+!", r"\1!", text)
+    text = re.sub(r"(?<=[.!?])\s+(?=[א-תA-Z0-9])", "\n\n", text)
+    text = re.sub(r"\b(\d+)\s*-\s*(\d+)\b", r"\1-\2", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def translate_chunk(text: str) -> str:
+    text = translate_sports_phrase(text)
     query = urllib.parse.urlencode(
         {
             "client": "gtx",
@@ -364,9 +672,27 @@ def translate_text(text: str) -> str:
         }
     )
     url = f"https://translate.googleapis.com/translate_a/single?{query}"
+    data = json.loads(http_get(url, timeout=20).decode("utf-8"))
+    return "".join(part[0] for part in data[0] if part and part[0]).strip()
+
+
+def translate_text(text: str) -> str:
+    if not text:
+        return ""
+    logging.info("Translating post text")
     try:
-        data = json.loads(http_get(url, timeout=20).decode("utf-8"))
-        translated = "".join(part[0] for part in data[0] if part and part[0]).strip()
+        chunks = [chunk.strip() for chunk in re.split(r"\n{2,}", text) if chunk.strip()]
+        if not chunks:
+            return ""
+        if len(chunks) > 6:
+            chunks = ["\n\n".join(chunks)]
+        translated_chunks = []
+        for chunk in chunks:
+            translated_chunks.append(translate_chunk(chunk))
+            time.sleep(0.2)
+        translated = "\n\n".join(translated_chunks)
+        translated = polish_translation(translated)
+        translated = rewrite_hebrew_sports_style(translated)
         logging.info("Translation finished")
         return translated
     except Exception as exc:
@@ -376,10 +702,19 @@ def translate_text(text: str) -> str:
 
 def clean_before_translation(text: str) -> str:
     text = re.sub(r"https?://\S+", "", text or "")
+    text = text.replace("&amp;", "&")
     text = re.sub(r"(?<!\w)#[A-Za-z0-9_]+", "", text)
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
     text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"(?m)^\s*[-–—]\s*$", "", text)
+    text = text.replace("NBA", " NBA ")
+    text = text.replace("WNBA", " WNBA ")
+    text = text.replace("ESPN", " ESPN ")
+    text = text.replace("MVP", " MVP ")
+    text = normalize_stat_abbreviations(text)
+    text = re.sub(r"\bPTS\b", "נקודות", text)
+    text = re.sub(r"\bREB\b", "ריבאונדים", text)
+    text = re.sub(r"\bAST\b", "אסיסטים", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
