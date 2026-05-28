@@ -219,7 +219,7 @@ def extract_videos(raw_html: str, element: ET.Element) -> list[str]:
 
 def has_video_marker(raw_html: str, element: ET.Element) -> bool:
     lowered = (raw_html or "").lower()
-    if any(marker in lowered for marker in ("video", "watch", "play", "thumbnail")):
+    if "video.twimg.com" in lowered or "media:player" in lowered:
         return True
     for child in element.iter():
         mime = (child.attrib.get("type") or "").lower()
@@ -364,6 +364,7 @@ def clean_before_translation(text: str) -> str:
     text = re.sub(r"https?://\S+", "", text or "")
     text = re.sub(r"(?<!\w)#[A-Za-z0-9_]+", "", text)
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
+    text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"(?m)^\s*[-–—]\s*$", "", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -383,6 +384,8 @@ def tidy_translated_text(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)
 
     text = re.sub(r"(?<=[.!?])\s+(?=[א-תA-Z0-9])", "\n\n", text)
+    text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
+    text = re.sub(r"(?im)(?:\n|^)\s*(וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -392,8 +395,7 @@ def rtl(text: str) -> str:
 
 
 def has_video_hint(post: Post, translated: str) -> bool:
-    combined = f"{post.text}\n{translated}".lower()
-    return bool(post.has_video or post.video_urls or "video" in combined or "וידאו" in combined or "סרטון" in combined)
+    return bool(post.has_video or post.video_urls)
 
 
 def telegram_api(method: str, payload: dict[str, Any]) -> None:
@@ -409,6 +411,17 @@ def trim(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "..."
+
+
+def trim_keep_ending(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    parts = text.rsplit("\n\n", 1)
+    if len(parts) == 2 and len(parts[1]) < limit - 80:
+        ending = parts[1]
+        prefix_limit = limit - len(ending) - 6
+        return text[:prefix_limit].rstrip() + "...\n\n" + ending
+    return trim(text, limit)
 
 
 def build_message(post: Post, translated: str, quoted_translated: str = "") -> str:
@@ -436,7 +449,7 @@ def build_message(post: Post, translated: str, quoted_translated: str = "") -> s
             ]
         )
     if post.link:
-        link_label = "קישור לוידיאו:" if has_video_hint(post, translated) else "לצפייה בפוסט המלא:"
+        link_label = "וידיאו מצורף:" if has_video_hint(post, translated) else "קישור לפוסט:"
         parts.extend(["", "", f"<b>{html.escape(rtl(link_label))}</b>", safe_link])
     return "\n".join(parts)
 
@@ -472,7 +485,7 @@ def send_post(post: Post) -> None:
         for index, image_url in enumerate(images):
             item: dict[str, Any] = {"type": "photo", "media": image_url}
             if index == 0:
-                item["caption"] = trim(message, 1024)
+                item["caption"] = trim_keep_ending(message, 1024)
                 item["parse_mode"] = "HTML"
             media.append(item)
         try:
