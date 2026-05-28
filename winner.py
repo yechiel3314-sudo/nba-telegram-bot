@@ -112,6 +112,11 @@ HTTP_RETRIES = 3
 RETRY_SLEEP_SECONDS = 4
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 3
 SEND_LAST_POST_ON_FIRST_RUN = True
+# This forces a visible startup test every time the script starts.
+# It sends the latest post from each account even if a state file already exists.
+SEND_LAST_POST_ON_EVERY_START = True
+# Sends a simple Telegram message immediately on startup so you know the bot can reach Telegram.
+SEND_STARTUP_STATUS_MESSAGE = True
 MAX_IMAGES_PER_POST = 4
 STATE_FILE = "football_x_to_telegram_state.json"
 SEND_IMAGES_AFTER_TEXT = False
@@ -889,8 +894,12 @@ def send_post(post: Post) -> None:
     )
 
 
+def state_path() -> Path:
+    return Path(__file__).resolve().parent / STATE_FILE
+
+
 def load_state() -> dict[str, list[str]]:
-    path = Path(STATE_FILE)
+    path = state_path()
     if not path.exists():
         logging.info("No state file yet. This looks like the first run.")
         return {}
@@ -904,7 +913,7 @@ def load_state() -> dict[str, list[str]]:
 
 
 def save_state(state: dict[str, list[str]]) -> None:
-    path = Path(STATE_FILE)
+    path = state_path()
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(path)
@@ -920,7 +929,7 @@ def validate_settings() -> None:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
 
-def run_once(state: dict[str, list[str]]) -> int:
+def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     first_run = not any(state.values())
     sent = 0
 
@@ -933,6 +942,21 @@ def run_once(state: dict[str, list[str]]) -> int:
             continue
 
         new_posts = [post for post in posts if post.post_id not in seen]
+
+        if startup_cycle and SEND_LAST_POST_ON_EVERY_START:
+            latest_post = posts[0]
+            logging.warning("Startup mode: sending latest post for @%s", username)
+            try:
+                send_post(latest_post)
+                seen.add(latest_post.post_id)
+                sent += 1
+                logging.warning("Startup latest post sent for @%s", username)
+            except Exception as exc:
+                logging.error("Failed sending startup latest post for @%s: %s", username, exc)
+            for post in posts:
+                seen.add(post.post_id)
+            state[username] = list(seen)[-300:]
+            continue
 
         if first_run and SEND_LAST_POST_ON_FIRST_RUN:
             latest_post = posts[0]
@@ -976,7 +1000,7 @@ def run_once(state: dict[str, list[str]]) -> int:
 
 def main() -> None:
     logging.basicConfig(
-        level=logging.WARNING,
+        level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         stream=sys.stdout,
     )
@@ -984,10 +1008,26 @@ def main() -> None:
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
 
+    if SEND_STARTUP_STATUS_MESSAGE:
+        try:
+            telegram_api(
+                "sendMessage",
+                {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": "✅ בוט הכדורגל הופעל. עכשיו בודק פוסטים אחרונים...",
+                    "disable_web_page_preview": True,
+                },
+            )
+            print("Startup Telegram test message sent.", flush=True)
+        except Exception as exc:
+            logging.error("Startup Telegram test message failed: %s", exc)
+
+    startup_cycle = True
     while True:
         try:
             state = load_state()
-            sent = run_once(state)
+            sent = run_once(state, startup_cycle=startup_cycle)
+            startup_cycle = False
             save_state(state)
             if sent:
                 print(f"Sent {sent} new post(s).", flush=True)
