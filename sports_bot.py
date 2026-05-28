@@ -36,13 +36,14 @@ X_ACCOUNTS = [
 ]
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 300
+CHECK_EVERY_SECONDS = 60
 HTTP_RETRIES = 3
 RETRY_SLEEP_SECONDS = 4
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 3
 SEND_LAST_POST_ON_FIRST_RUN = True
 MAX_IMAGES_PER_POST = 4
 STATE_FILE = "x_to_telegram_state.json"
+SEND_IMAGES_AFTER_TEXT = True
 
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
@@ -132,10 +133,13 @@ def child_text(element: ET.Element, names: tuple[str, ...]) -> str:
 
 def clean_text(value: str) -> str:
     value = re.sub(r"<br\s*/?>", "\n", value or "", flags=re.IGNORECASE)
+    value = re.sub(r"</p\s*>", "\n\n", value, flags=re.IGNORECASE)
+    value = re.sub(r"</div\s*>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"<[^>]+>", " ", value)
     value = html.unescape(value)
     value = re.sub(r"[ \t]+", " ", value)
-    value = re.sub(r"\n\s+", "\n", value)
+    value = re.sub(r" *\n+ *", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
 
 
@@ -251,6 +255,20 @@ def translate_text(text: str) -> str:
         return text
 
 
+def tidy_translated_text(text: str) -> str:
+    text = html.unescape(text or "").strip()
+    text = re.sub(r"\s+\n", "\n", text)
+    text = re.sub(r"\n\s+", "\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+
+    text = re.sub(r"\s+(https?://\S+)", r"\n\1", text)
+    text = re.sub(r"\s+(#\w+)", r"\n\1", text)
+    text = re.sub(r"\s+(@\w+)", r"\n\1", text)
+    text = re.sub(r"(?<=[.!?])\s+(?=[א-תA-Z0-9])", "\n\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def telegram_api(method: str, payload: dict[str, Any]) -> None:
     logging.info("Calling Telegram API method %s", method)
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
@@ -267,12 +285,24 @@ def trim(text: str, limit: int) -> str:
 
 
 def build_message(post: Post, translated: str) -> str:
-    parts = [f"@{post.username}"]
-    if translated:
-        parts.append(translated)
+    translated = tidy_translated_text(translated)
+    title = translated.splitlines()[0].strip() if translated else "עדכון חדש"
+    title = trim(title, 90)
+    safe_account = html.escape(post.username)
+    safe_title = html.escape(title)
+    safe_body = html.escape(translated)
+    safe_link = html.escape(post.link)
+
+    parts = [
+        f"🏀 @{safe_account}",
+        "",
+        f"<b>{safe_title}</b>",
+    ]
+    if translated and translated != title:
+        parts.extend(["", safe_body])
     if post.link:
-        parts.append(post.link)
-    return "\n\n".join(parts)
+        parts.extend(["", "לצפייה בפוסט:", safe_link])
+    return "\n".join(parts)
 
 
 def send_post(post: Post) -> None:
@@ -281,6 +311,24 @@ def send_post(post: Post) -> None:
     message = build_message(post, translated)
 
     images = post.image_urls[:MAX_IMAGES_PER_POST]
+    if images and SEND_IMAGES_AFTER_TEXT:
+        logging.info("Sending text first, then %s image(s). Videos are ignored.", len(images))
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": trim(message, 4096),
+                "disable_web_page_preview": True,
+                "parse_mode": "HTML",
+            },
+        )
+        media = [{"type": "photo", "media": image_url} for image_url in images]
+        try:
+            telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
+        except Exception as exc:
+            logging.warning("Text was sent, but images failed: %s", exc)
+        return
+
     if images:
         logging.info("Post has %s image(s). Sending images, videos are ignored.", len(images))
         media = []
@@ -302,7 +350,8 @@ def send_post(post: Post) -> None:
         {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": trim(message, 4096),
-            "disable_web_page_preview": False,
+            "disable_web_page_preview": True,
+            "parse_mode": "HTML",
         },
     )
 
