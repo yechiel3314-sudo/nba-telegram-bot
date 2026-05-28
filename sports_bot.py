@@ -35,6 +35,9 @@ X_ACCOUNTS = [
     "NBA",
     "ShamsCharania",
     "highkin",
+    "NBACentral",
+    "UnderdogNBA",
+    "LegionHoops",
 ]
 
 TARGET_LANGUAGE = "he"
@@ -43,7 +46,7 @@ CHECK_EVERY_SECONDS = 60
 HTTP_RETRIES = 3
 RETRY_SLEEP_SECONDS = 4
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 3
-SEND_LAST_POST_ON_FIRST_RUN = True
+SEND_LAST_POST_ON_FIRST_RUN = False
 MAX_IMAGES_PER_POST = 4
 STATE_FILE = "x_to_telegram_state.json"
 SEND_IMAGES_AFTER_TEXT = False
@@ -52,6 +55,9 @@ ACCOUNT_DISPLAY_NAMES = {
     "NBA": "NBA",
     "ShamsCharania": "שאמס צ׳רניה",
     "highkin": "שון הייקין - פורטלנד",
+    "NBACentral": "NBA סנטרל",
+    "UnderdogNBA": "אנדרדוג NBA",
+    "LegionHoops": "לג׳יון הופס",
 }
 
 RTL_MARK = "\u200f"
