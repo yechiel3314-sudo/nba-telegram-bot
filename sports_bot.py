@@ -38,6 +38,7 @@ X_ACCOUNTS = [
     "NBACentral",
     "UnderdogNBA",
     "LegionHoops",
+    "TheDunkCentral",
 ]
 
 TARGET_LANGUAGE = "he"
@@ -58,6 +59,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "NBACentral": "NBA סנטרל",
     "UnderdogNBA": "אנדרדוג NBA",
     "LegionHoops": "לג׳יון הופס",
+    "TheDunkCentral": "דאנק סנטרל - NBA",
 }
 
 RTL_MARK = "\u200f"
