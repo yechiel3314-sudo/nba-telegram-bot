@@ -1187,7 +1187,7 @@ def build_message(
         parts.extend(["", quote_label])
         if safe_quoted_author:
             parts.append(safe_quoted_author)
-        parts.append(safe_quoted_body)
+        parts.append(html.escape(rtl(f'"{quoted_translated}"')))
         if post.link and post.quoted_has_video:
             parts.extend(["", video_label, safe_link])
 
