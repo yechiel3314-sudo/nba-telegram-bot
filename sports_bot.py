@@ -28,9 +28,6 @@ from typing import Any
 # ====== EDIT THESE SETTINGS ======
 
 TELEGRAM_BOT_TOKEN = "8795392686:AAFElKo3sML_dqA9YaVz2iArTUoYGcGgBuI"
-
-# Put your Telegram group chat ID here when you have it.
-# Group IDs usually look like -1001234567890 or another negative number.
 TELEGRAM_CHAT_ID = "-1003918247986"
 
 X_ACCOUNTS = [
