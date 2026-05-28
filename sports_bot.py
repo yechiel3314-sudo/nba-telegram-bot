@@ -50,6 +50,8 @@ ACCOUNT_DISPLAY_NAMES = {
     "ShamsCharania": "שאמס צ׳רניה",
 }
 
+RTL_MARK = "\u200f"
+
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
     "https://rsshub.rssforever.com/twitter/user/{username}",
@@ -342,6 +344,8 @@ def translate_text(text: str) -> str:
 
 def remove_inline_links(text: str) -> str:
     text = re.sub(r"https?://\S+", "", text or "")
+    text = re.sub(r"(?<!\w)[@#][A-Za-z0-9_]+", "", text)
+    text = re.sub(r"(?m)^\s*[-–—]\s*$", "", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -355,11 +359,18 @@ def tidy_translated_text(text: str) -> str:
     text = re.sub(r"\n\s+", "\n", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
 
-    text = re.sub(r"\s+(#\w+)", r"\n\1", text)
-    text = re.sub(r"\s+(@\w+)", r"\n\1", text)
     text = re.sub(r"(?<=[.!?])\s+(?=[א-תA-Z0-9])", "\n\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def rtl(text: str) -> str:
+    return "\n".join(f"{RTL_MARK}{line}" if line.strip() else line for line in text.splitlines())
+
+
+def has_video_hint(post: Post, translated: str) -> bool:
+    combined = f"{post.text}\n{translated}".lower()
+    return bool(post.video_urls or "video" in combined or "וידאו" in combined or "סרטון" in combined)
 
 
 def telegram_api(method: str, payload: dict[str, Any]) -> None:
@@ -381,14 +392,14 @@ def build_message(post: Post, translated: str, quoted_translated: str = "") -> s
     translated = tidy_translated_text(translated)
     quoted_translated = tidy_translated_text(quoted_translated)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
-    safe_account = html.escape(display_name)
-    safe_body = html.escape(translated or "עדכון חדש")
-    safe_quoted_author = html.escape(post.quoted_author or "פוסט מצוטט")
-    safe_quoted_body = html.escape(quoted_translated)
+    safe_account = html.escape(rtl(f"{display_name}:"))
+    safe_body = html.escape(rtl(translated or "עדכון חדש"))
+    safe_quoted_author = html.escape(rtl(post.quoted_author or "פוסט מצוטט"))
+    safe_quoted_body = html.escape(rtl(quoted_translated))
     safe_link = html.escape(post.link)
 
     parts = [
-        f"<b>{safe_account}:</b>",
+        f"<b>{safe_account}</b>",
         "",
         safe_body,
     ]
@@ -396,14 +407,14 @@ def build_message(post: Post, translated: str, quoted_translated: str = "") -> s
         parts.extend(
             [
                 "",
-                "<b>פוסט מצוטט:</b>",
+                f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>",
                 safe_quoted_author,
                 safe_quoted_body,
             ]
         )
     if post.link:
-        link_label = "לוידיאו:" if post.video_urls else "לצפייה בפוסט המלא:"
-        parts.extend(["", f"<b>{link_label}</b>", safe_link])
+        link_label = "קישור לווידיאו:" if has_video_hint(post, translated) else "לצפייה בפוסט המלא:"
+        parts.extend(["", f"<b>{html.escape(rtl(link_label))}</b>", safe_link])
     return "\n".join(parts)
 
 
