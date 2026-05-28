@@ -526,6 +526,7 @@ def polish_translation(text: str) -> str:
     text = text.replace("NBA insider", "כתב ה-NBA")
     text = text.replace("W ", "ניצחון ")
     text = re.sub(r"\b(\d+)\s*-\s*(\d+)\b", r"\1-\2", text)
+    text = re.sub(r"([A-Za-z][A-Za-z .'-]+):\s*(\d+)\s+נקודות", r"\2 נקודות של \1", text)
     text = re.sub(r"(\d+)-(\d+)\s+בעונה", r"\1-\2 העונה", text)
     text = text.replace("העונה בעונה", "העונה")
     text = text.replace(" מאחורי ", " בזכות ")
@@ -671,9 +672,13 @@ def fix_english_leftovers(text: str) -> str:
         "3rd straight W": "ניצחון שלישי ברציפות",
         "We LOVE to see it": "כיף לראות את זה",
         "for you and your teammate": "לך ולחברה שלך לקבוצה",
+        "20-ball": "20 נקודות",
+        "ball-20": "20 נקודות",
         "on home court": "בבית",
         "went off": "התפוצצו",
         "in their third straight": "בניצחון השלישי ברציפות שלהן",
+        "for the minnesotalynx": "של מינסוטה לינקס",
+        "minnesotalynx": "מינסוטה לינקס",
         "reports": "מדווח",
         "sources": "מקורות",
     }
@@ -702,16 +707,7 @@ def translate_text(text: str) -> str:
         return ""
     logging.info("Translating post text")
     try:
-        chunks = [chunk.strip() for chunk in re.split(r"\n{2,}", text) if chunk.strip()]
-        if not chunks:
-            return ""
-        if len(chunks) > 6:
-            chunks = ["\n\n".join(chunks)]
-        translated_chunks = []
-        for chunk in chunks:
-            translated_chunks.append(translate_chunk(chunk))
-            time.sleep(0.2)
-        translated = "\n\n".join(translated_chunks)
+        translated = translate_chunk(text)
         translated = polish_translation(translated)
         translated = rewrite_hebrew_sports_style(translated)
         logging.info("Translation finished")
@@ -732,10 +728,6 @@ def clean_before_translation(text: str) -> str:
     text = text.replace("WNBA", " WNBA ")
     text = text.replace("ESPN", " ESPN ")
     text = text.replace("MVP", " MVP ")
-    text = normalize_stat_abbreviations(text)
-    text = re.sub(r"\bPTS\b", "נקודות", text)
-    text = re.sub(r"\bREB\b", "ריבאונדים", text)
-    text = re.sub(r"\bAST\b", "אסיסטים", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
