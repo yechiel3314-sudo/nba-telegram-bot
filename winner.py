@@ -113,12 +113,12 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 30
-HTTP_RETRIES = 1
-REQUEST_TIMEOUT_SECONDS = 4
+CHECK_EVERY_SECONDS = 20
+HTTP_RETRIES = 3
+REQUEST_TIMEOUT_SECONDS = 10
 MAX_PARALLEL_ACCOUNT_CHECKS = 28
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 4
-MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 8
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = True
@@ -480,12 +480,14 @@ def http_get(url: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> bytes:
         },
     )
     last_error: Exception | None = None
-    for _ in range(HTTP_RETRIES):
+    for attempt in range(1, HTTP_RETRIES + 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except Exception as exc:
             last_error = exc
+            if attempt < HTTP_RETRIES:
+                time.sleep(0.5)
     raise RuntimeError(f"GET failed: {url}. Last error: {last_error}")
 
 
@@ -497,12 +499,28 @@ def http_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> dict
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+    last_error: Exception | None = None
+    for attempt in range(1, HTTP_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                error_data = json.loads(raw)
+                retry_after = int(error_data.get("parameters", {}).get("retry_after", 0))
+            except Exception:
+                retry_after = 0
+            last_error = RuntimeError(f"HTTP {exc.code}: {raw}")
+            if exc.code == 429 and retry_after:
+                time.sleep(retry_after + 1)
+            elif attempt < HTTP_RETRIES:
+                time.sleep(1.5 * attempt)
+        except Exception as exc:
+            last_error = exc
+            if attempt < HTTP_RETRIES:
+                time.sleep(1.5 * attempt)
+    raise RuntimeError(f"POST failed after {HTTP_RETRIES} attempts: {last_error}")
 
 
 def strip_namespace(tag: str) -> str:
@@ -829,7 +847,7 @@ def gemini_translate(text: str) -> str:
             f"{urllib.parse.quote(GEMINI_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
         )
         try:
-            data = http_post_json(url, payload, timeout=18)
+            data = http_post_json(url, payload, timeout=45)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
             if translated:
@@ -950,6 +968,25 @@ def translate_text(text: str) -> str:
     return fallback
 
 
+def translate_short_label(text: str) -> str:
+    text = clean_before_translation(text)
+    if not text:
+        return ""
+    text = apply_phrase_replacements(text, HANDLE_REPLACEMENTS)
+    text = apply_phrase_replacements(text, TEAM_REPLACEMENTS)
+    text = apply_phrase_replacements(text, PLAYER_REPLACEMENTS)
+    if latin_ratio(text) <= 0.15:
+        return final_hebrew_polish(text)
+    try:
+        translated = gemini_translate(text) if GEMINI_API_KEYS else google_translate(text)
+        translated = final_hebrew_polish(translated)
+    except Exception:
+        translated = final_hebrew_polish(text)
+    if latin_ratio(translated) > 0.20:
+        return ""
+    return translated
+
+
 def tidy_translated_text(text: str) -> str:
     text = final_hebrew_polish(html.unescape(text or "").strip())
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
@@ -984,14 +1021,19 @@ def trim_keep_ending(text: str, limit: int) -> str:
     return trim(text, limit)
 
 
-def build_message(post: Post, translated: str, quoted_translated: str = "") -> str:
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+) -> str:
     translated = tidy_translated_text(translated)
     quoted_translated = tidy_translated_text(quoted_translated)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
 
     safe_account = html.escape(rtl(f"{display_name}:"))
     safe_body = html.escape(rtl(translated or "עדכון חדש"))
-    safe_quoted_author = html.escape(rtl(final_hebrew_polish(post.quoted_author or "פוסט מצוטט")))
+    safe_quoted_author = html.escape(rtl(quoted_author_translated))
     safe_quoted_body = html.escape(rtl(quoted_translated))
     safe_link = html.escape(post.link)
     video_label = f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>"
@@ -1004,7 +1046,10 @@ def build_message(post: Post, translated: str, quoted_translated: str = "") -> s
         parts.extend(["", "", video_label, safe_link])
 
     if safe_quoted_body:
-        parts.extend(["", quote_label, safe_quoted_author, safe_quoted_body])
+        parts.extend(["", quote_label])
+        if safe_quoted_author:
+            parts.append(safe_quoted_author)
+        parts.append(safe_quoted_body)
         if post.link and post.quoted_has_video:
             parts.extend(["", video_label, safe_link])
 
@@ -1017,7 +1062,8 @@ def build_message(post: Post, translated: str, quoted_translated: str = "") -> s
 def send_post(post: Post) -> None:
     translated = translate_text(post.text)
     quoted_translated = translate_text(post.quoted_text) if post.quoted_text else ""
-    message = build_message(post, translated, quoted_translated)
+    quoted_author_translated = translate_short_label(post.quoted_author) if post.quoted_author else ""
+    message = build_message(post, translated, quoted_translated, quoted_author_translated)
     images = post.image_urls[:MAX_IMAGES_PER_POST]
 
     if images:
@@ -1108,8 +1154,6 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             except Exception as exc:
                 logging.error("Failed sending %s: %s", post.link, exc)
 
-        for post in posts:
-            seen.add(post.post_id)
         state[username] = list(seen)[-500:]
 
     return sent
