@@ -79,7 +79,6 @@ X_ACCOUNTS = [
     "AranchaMOBILE",
     "JLSanchez78",
     "AlfredoPedulla",
-    "86_longo",
     "Plettigoal",
     "cfbayern",
     "FabriceHawkins",
@@ -104,7 +103,6 @@ ACCOUNT_DISPLAY_NAMES = {
     "AranchaMOBILE": "ארנצ'ה רודריגז - ריאל מדריד",
     "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
     "AlfredoPedulla": "אלפרדו פדולה - איטליה",
-    "86_longo": "דניאלה לונגו - מילאן",
     "Plettigoal": "פלוריאן פלטנברג - גרמניה",
     "cfbayern": "כריסטיאן פאלק - גרמניה",
     "FabriceHawkins": "פבריס הוקינס - צרפת",
@@ -167,7 +165,6 @@ HANDLE_REPLACEMENTS = {
     "AranchaMOBILE": "ארנצ'ה רודריגז",
     "JLSanchez78": "חוסה לואיס סאנצ'ס",
     "AlfredoPedulla": "אלפרדו פדולה",
-    "86_longo": "דניאלה לונגו",
     "Plettigoal": "פלוריאן פלטנברג",
     "cfbayern": "כריסטיאן פאלק",
     "FabriceHawkins": "פבריס הוקינס",
@@ -987,6 +984,48 @@ def translate_short_label(text: str) -> str:
     return translated
 
 
+def normalize_identity(text: str) -> str:
+    text = clean_before_translation(text)
+    text = apply_phrase_replacements(text, HANDLE_REPLACEMENTS)
+    text = re.sub(r"[^A-Za-z0-9א-ת]+", "", text).lower()
+    return text
+
+
+def is_self_quote(post: Post) -> bool:
+    if not post.quoted_text or not post.quoted_author:
+        return False
+    quoted = normalize_identity(post.quoted_author)
+    if not quoted:
+        return False
+    identities = {
+        post.username,
+        ACCOUNT_DISPLAY_NAMES.get(post.username, ""),
+        HANDLE_REPLACEMENTS.get(post.username, ""),
+    }
+    return quoted in {normalize_identity(value) for value in identities if value}
+
+
+def translate_quoted_text(text: str) -> str:
+    cleaned = clean_before_translation(text)
+    if not cleaned:
+        return ""
+    translated = translate_text(cleaned)
+    if not translated:
+        return cleaned
+    # If translation clearly failed, keep the original quote in English/its source language.
+    if latin_ratio(translated) > 0.45:
+        return cleaned
+    return translated
+
+
+def translate_quoted_author(text: str) -> str:
+    cleaned = clean_before_translation(text)
+    if not cleaned:
+        return ""
+    translated = translate_short_label(cleaned)
+    return translated or cleaned
+
+
 def tidy_translated_text(text: str) -> str:
     text = final_hebrew_polish(html.unescape(text or "").strip())
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
@@ -1061,8 +1100,12 @@ def build_message(
 
 def send_post(post: Post) -> None:
     translated = translate_text(post.text)
-    quoted_translated = translate_text(post.quoted_text) if post.quoted_text else ""
-    quoted_author_translated = translate_short_label(post.quoted_author) if post.quoted_author else ""
+    if is_self_quote(post):
+        quoted_translated = ""
+        quoted_author_translated = ""
+    else:
+        quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
+        quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
     message = build_message(post, translated, quoted_translated, quoted_author_translated)
     images = post.image_urls[:MAX_IMAGES_PER_POST]
 
