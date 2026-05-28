@@ -80,7 +80,7 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 20
+CHECK_EVERY_SECONDS = 45
 HTTP_RETRIES = 2
 RETRY_SLEEP_SECONDS = 1
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 6
@@ -587,7 +587,7 @@ def http_get(url: str, timeout: int = 25) -> bytes:
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0 football-x-to-telegram/1.0",
+            ""User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",",
             "Accept": "application/rss+xml, application/xml, text/xml, */*",
         },
     )
