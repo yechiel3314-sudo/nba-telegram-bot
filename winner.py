@@ -120,6 +120,74 @@ ARTICLE_DOMAINS_TO_REMOVE = (
     "footmercato.net",
 )
 
+# Handles / @mentions often arrive as one glued token, so translate them
+# before removing the @ sign and before sending the text to machine translation.
+HANDLE_REPLACEMENTS = {
+    "@SkySports": "סקיי ספורטס",
+    "SkySports": "סקיי ספורטס",
+    "@SkySportsNews": "סקיי ספורטס ניוז",
+    "SkySportsNews": "סקיי ספורטס ניוז",
+    "@TheAthletic": "דה אתלטיק",
+    "TheAthletic": "דה אתלטיק",
+    "@TheAthleticFC": "דה אתלטיק",
+    "TheAthleticFC": "דה אתלטיק",
+    "@BBCSport": "בי־בי־סי ספורט",
+    "BBCSport": "בי־בי־סי ספורט",
+    "@BBCMOTD": "מאץ׳ אוף דה דיי",
+    "BBCMOTD": "מאץ׳ אוף דה דיי",
+    "@ESPNFC": "ESPN FC",
+    "ESPNFC": "ESPN FC",
+    "@guardian_sport": "הגרדיאן ספורט",
+    "guardian_sport": "הגרדיאן ספורט",
+    "@TeleFootball": "טלגרף פוטבול",
+    "TeleFootball": "טלגרף פוטבול",
+    "@MailSport": "דיילי מייל ספורט",
+    "MailSport": "דיילי מייל ספורט",
+    "@FabrizioRomano": "פבריציו רומאנו",
+    "FabrizioRomano": "פבריציו רומאנו",
+    "@David_Ornstein": "דיוויד אורנשטיין",
+    "David_Ornstein": "דיוויד אורנשטיין",
+    "@DiMarzio": "ג׳אנלוקה די מארציו",
+    "DiMarzio": "ג׳אנלוקה די מארציו",
+    "@JacobsBen": "בן ג׳ייקובס",
+    "JacobsBen": "בן ג׳ייקובס",
+    "@lauriewhitwell": "לורי וויטוול",
+    "lauriewhitwell": "לורי וויטוול",
+    "@SamLee": "סם לי",
+    "SamLee": "סם לי",
+    "@_pauljoyce": "פול ג׳ויס",
+    "_pauljoyce": "פול ג׳ויס",
+    "@Matt_Law_DT": "מאט לאו",
+    "Matt_Law_DT": "מאט לאו",
+    "@MatteMoretto": "מתאו מורטו",
+    "MatteMoretto": "מתאו מורטו",
+    "@ffpolo": "פרננדו פולו",
+    "ffpolo": "פרננדו פולו",
+    "@gerardromero": "חרארד רומרו",
+    "gerardromero": "חרארד רומרו",
+    "@AranchaMOBILE": "ארנצ׳ה רודריגז",
+    "AranchaMOBILE": "ארנצ׳ה רודריגז",
+    "@JLSanchez78": "חוסה לואיס סאנצ׳ז",
+    "JLSanchez78": "חוסה לואיס סאנצ׳ז",
+    "@AlfredoPedulla": "אלפרדו פדולה",
+    "AlfredoPedulla": "אלפרדו פדולה",
+    "@86_longo": "דניאלה לונגו",
+    "86_longo": "דניאלה לונגו",
+    "@Plettigoal": "פלוריאן פלטנברג",
+    "Plettigoal": "פלוריאן פלטנברג",
+    "@cfbayern": "כריסטיאן פאלק",
+    "cfbayern": "כריסטיאן פאלק",
+    "@FabriceHawkins": "פבריס הוקינס",
+    "FabriceHawkins": "פבריס הוקינס",
+    "@Tanziloic": "לואיק טנזי",
+    "Tanziloic": "לואיק טנזי",
+}
+
+BARE_EXTERNAL_DOMAIN_RE = re.compile(
+    r"(?<!@)\b(?:[A-Za-z0-9-]+\.)+(?:com|co\.uk|net|org|io|app|fr|it|es|de|co|uk|news|sport|football)(?:/\S*)?",
+    re.IGNORECASE,
+)
+
 
 FOOTBALL_TERMS = {
     "here we go": "הנה זה קורה",
@@ -683,24 +751,40 @@ def normalize_stats(text: str) -> str:
 
 
 def remove_article_links(text: str) -> str:
-    def replace_url(match: re.Match[str]) -> str:
-        url = match.group(0)
-        parsed = urllib.parse.urlparse(url)
-        host = parsed.netloc.lower().replace("www.", "")
-        if any(domain in host for domain in ARTICLE_DOMAINS_TO_REMOVE):
-            return ""
-        return url
+    """Backward-compatible wrapper: remove all external links from post text.
 
-    text = re.sub(r"https?://\S+", replace_url, text or "")
-    text = re.sub(r"\b(?:nytimes|theathletic|telegraph|skysports|bbc|espn)\.com/\S+", "", text, flags=re.I)
+    The post URL and video URL are still added separately by build_message().
+    This function only cleans links that appeared inside the post body.
+    """
+    return remove_external_links(text)
+
+
+def remove_external_links(text: str) -> str:
+    text = text or ""
+    # Full URLs, including X short links such as t.co and article links.
+    text = re.sub(r"https?://\S+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"www\.\S+", "", text, flags=re.IGNORECASE)
+    # Bare domains that sometimes remain after RSS/HTML cleanup, e.g. skysports.com/...
+    text = BARE_EXTERNAL_DOMAIN_RE.sub("", text)
+    return text
+
+
+def apply_handle_replacements(text: str) -> str:
+    for source, target in sorted(HANDLE_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
+        if source.startswith("@"):
+            pattern = r"(?<![A-Za-z0-9_])" + re.escape(source) + r"(?![A-Za-z0-9_])"
+        else:
+            pattern = r"(?<![@A-Za-z0-9_])" + re.escape(source) + r"(?![A-Za-z0-9_])"
+        text = re.sub(pattern, target, text, flags=re.IGNORECASE)
     return text
 
 
 def clean_before_translation(text: str) -> str:
     text = html.unescape(text or "")
-    text = remove_article_links(text)
-    text = re.sub(r"https?://\S+", "", text)
+    text = apply_handle_replacements(text)
+    text = remove_external_links(text)
     text = re.sub(r"(?<!\w)#([A-Za-z0-9_]+)", r"\1", text)
+    # Unknown @mentions: keep the handle text, but remove @ so Telegram won't create a clickable mention.
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
     text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
     text = text.replace("&amp;", "&")
@@ -809,7 +893,8 @@ def transliterate_latin_names(text: str) -> str:
 
 def final_hebrew_polish(text: str) -> str:
     text = html.unescape(text or "")
-    text = remove_article_links(text)
+    text = apply_handle_replacements(text)
+    text = remove_external_links(text)
     text = apply_team_replacements(text)
     text = apply_player_replacements(text)
     text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
