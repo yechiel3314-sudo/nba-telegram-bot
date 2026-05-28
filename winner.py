@@ -80,11 +80,11 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 60
-HTTP_RETRIES = 3
-RETRY_SLEEP_SECONDS = 4
-MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 3
-SEND_LAST_POST_ON_FIRST_RUN = True
+CHECK_EVERY_SECONDS = 20
+HTTP_RETRIES = 2
+RETRY_SLEEP_SECONDS = 1
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 6
+SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = True
 MAX_IMAGES_PER_POST = 4
@@ -181,6 +181,38 @@ HANDLE_REPLACEMENTS = {
     "FabriceHawkins": "פבריס הוקינס",
     "@Tanziloic": "לואיק טנזי",
     "Tanziloic": "לואיק טנזי",
+    "@SkySport": "סקיי ספורט",
+    "SkySport": "סקיי ספורט",
+    "@SkySportDE": "סקיי ספורט גרמניה",
+    "SkySportDE": "סקיי ספורט גרמניה",
+    "@skysportde": "סקיי ספורט גרמניה",
+    "skysportde": "סקיי ספורט גרמניה",
+    "@kerry_hau": "קרי האו",
+    "kerry_hau": "קרי האו",
+    "@PipersierraR": "פיפה סיירה",
+    "PipersierraR": "פיפה סיירה",
+    "@CLMerlo": "ססאר לואיס מרלו",
+    "CLMerlo": "ססאר לואיס מרלו",
+    "@mundodeportivo": "מונדו דפורטיבו",
+    "mundodeportivo": "מונדו דפורטיבו",
+    "@JijantesFC": "ג׳יגאנטס",
+    "JijantesFC": "ג׳יגאנטס",
+    "@RMCsport": "RMC ספורט",
+    "RMCsport": "RMC ספורט",
+    "@lequipe": "לאקיפ",
+    "lequipe": "לאקיפ",
+    "@ActuFoot_": "אקטו פוט",
+    "ActuFoot_": "אקטו פוט",
+    "@MadridXtra": "מדריד אקסטרה",
+    "MadridXtra": "מדריד אקסטרה",
+    "@ManagingBarca": "מנג׳ינג בארסה",
+    "ManagingBarca": "מנג׳ינג בארסה",
+    "@Barca_Buzz": "בארסה באז",
+    "Barca_Buzz": "בארסה באז",
+    "@iMiaSanMia": "מיה סן מיה",
+    "iMiaSanMia": "מיה סן מיה",
+    "@FabrizioRomanoFC": "פבריציו רומאנו",
+    "FabrizioRomanoFC": "פבריציו רומאנו",
 }
 
 BARE_EXTERNAL_DOMAIN_RE = re.compile(
@@ -343,9 +375,37 @@ TEAM_REPLACEMENTS = {
     "AFC": "ארסנל",
     "THFC": "טוטנהאם",
     "FCB": "ברצלונה",
+    "Atleti": "אתלטיקו מדריד",
+    "Atlético": "אתלטיקו מדריד",
+    "Atletico Nacional": "אתלטיקו נסיונל",
+    "Atlético Nacional": "אתלטיקו נסיונל",
+    "Kaiserslautern": "קייזרסלאוטרן",
+    "Bochum": "בוכום",
+    "OM": "מארסיי",
+    "Olympique de Marseille": "מארסיי",
+    "Barça": "בארסה",
+    "Barca": "בארסה",
 }
 
 PLAYER_REPLACEMENTS = {
+    "Julian Alvarez": "ג׳וליאן אלווארז",
+    "Julián Álvarez": "ג׳וליאן אלווארז",
+    "Gabriel Jesus": "גבריאל ז׳סוס",
+    "Samuel Martinez": "סמואל מרטינס",
+    "Samuel Martínez": "סמואל מרטינס",
+    "Massimiliano Allegri": "מסימיליאנו אלגרי",
+    "Antonio Conte": "אנטוניו קונטה",
+    "Mauricio Pochettino": "מאוריסיו פוצ׳טינו",
+    "Oliver Glasner": "אוליבר גלסנר",
+    "Andoni Iraola": "אנדוני איראולה",
+    "Bruno Genesio": "ברונו ז׳נסיו",
+    "Luis Enrique": "לואיס אנריקה",
+    "Gregory Lorenzi": "גרגורי לורנצי",
+    "Grégory Lorenzi": "גרגורי לורנצי",
+    "Pep Guardiola": "פפ גווארדיולה",
+    "Rayan": "ראיין",
+    "Adam Dugdale": "אדם דוגדייל",
+    "Will Salthouse": "וויל סולטהאוס",
     "Marcus Rashford": "מרקוס ראשפורד",
     "Anthony Gordon": "אנתוני גורדון",
     "Florian Wirtz": "פלוריאן וירץ",
@@ -411,6 +471,39 @@ HEBREW_FINAL_FIXES = {
     " for ": " עבור ",
     " in ": " ב",
     " on ": " על ",
+    "ת׳האת׳להטיקפק": "דה אתלטיק",
+    "ת'האת'להטיקפק": "דה אתלטיק",
+    "סקיספורטדה": "סקיי ספורט גרמניה",
+    "סקיספורט": "סקיי ספורט",
+    "רמקספורט": "RMC ספורט",
+    "רמק ספורט": "RMC ספורט",
+    "פקבארקהלונא": "ברצלונה",
+    "פקבייהרנ": "באיירן",
+    "פק ו": "פ.ס.ז׳ ו",
+    "פאריס פק": "פ.ס.ז׳",
+    "נופק": "ניוקאסל",
+    "ססקנאפולי": "נאפולי",
+    "אללהגרי": "אלגרי",
+    "מאססימיליאנו": "מסימיליאנו",
+    "סקיספורטדה": "סקיי ספורט גרמניה",
+    "ופל בוצ׳ומ": "בוכום",
+    "האנדופארסהנאל": "הנד אוף ארסנל",
+    "ברהאקינג": "דיווח דרמטי",
+    "קהנטרהגואלס": "סנטר גולס",
+    "ג׳יג׳אנטהספק": "ג׳יגאנטס",
+    "אתלטיקונאקיונאל": "אתלטיקו נסיונל",
+    "אטלéטיקונאקיונאל": "אתלטיקו נסיונל",
+    "ת׳ה 29 y/o חלוץ will be זמין למשחק on a העברה חופשית": "החלוץ בן ה-29 יהיה זמין בהעברה חופשית",
+    "not leading": "לא מובילה",
+    "race to sign": "במרוץ להחתמת",
+    "will be": "יהיה",
+    "y/o": "בן",
+    "sempre più su": "מתקרבת יותר ויותר ל",
+    "per il post": "כמחליף של",
+    "ha incontrato anche": "נפגשה גם עם",
+    "del בארçא": "של בארסה",
+    "con el agente de": "עם הסוכן של",
+    "Noticia MD": "ידיעה של מונדו דפורטיבו",
 }
 
 STAT_REPLACEMENTS = {
@@ -442,6 +535,7 @@ LATIN_KEEP = {
     "UEL",
     "PL",
     "MLS",
+    "RMC",
 }
 
 HEBREW_LETTER = {
@@ -781,8 +875,9 @@ def apply_handle_replacements(text: str) -> str:
 
 def clean_before_translation(text: str) -> str:
     text = html.unescape(text or "")
-    text = apply_handle_replacements(text)
+    # Remove URLs/domains first so bare domains like lequipe.fr do not become לאקיפ.fr.
     text = remove_external_links(text)
+    text = apply_handle_replacements(text)
     text = re.sub(r"(?<!\w)#([A-Za-z0-9_]+)", r"\1", text)
     # Unknown @mentions: keep the handle text, but remove @ so Telegram won't create a clickable mention.
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
@@ -836,7 +931,7 @@ def translate_in_sentences(text: str) -> str:
             continue
         try:
             translated.append(google_translate(piece))
-            time.sleep(0.2)
+            time.sleep(0.05)
         except Exception:
             translated.append(piece)
     return "\n\n".join(translated).strip()
@@ -893,8 +988,9 @@ def transliterate_latin_names(text: str) -> str:
 
 def final_hebrew_polish(text: str) -> str:
     text = html.unescape(text or "")
-    text = apply_handle_replacements(text)
+    # Remove URLs/domains first so bare domains like lequipe.fr do not become לאקיפ.fr.
     text = remove_external_links(text)
+    text = apply_handle_replacements(text)
     text = apply_team_replacements(text)
     text = apply_player_replacements(text)
     text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
@@ -1119,7 +1215,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                 send_post(post)
                 seen.add(post.post_id)
                 sent += 1
-                time.sleep(1)
+                time.sleep(0.2)
             except Exception as exc:
                 logging.error("Failed sending %s: %s", post.link, exc)
         state[username] = list(seen)[-300:]
