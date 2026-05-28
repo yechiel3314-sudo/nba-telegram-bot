@@ -498,6 +498,7 @@ def fetch_posts(username: str) -> list[Post]:
 
 def polish_translation(text: str) -> str:
     text = text or ""
+    text = normalize_stat_abbreviations(text)
     for source, target in TRANSLATION_REPLACEMENTS.items():
         text = text.replace(source, target)
 
@@ -593,6 +594,7 @@ def normalize_stat_abbreviations(text: str) -> str:
 
 def rewrite_hebrew_sports_style(text: str) -> str:
     text = text or ""
+    text = fix_english_leftovers(text)
 
     replacements = [
         (r"מאחורי הופעות גדולות של", "בזכות הופעות גדולות של"),
@@ -660,8 +662,27 @@ def rewrite_hebrew_sports_style(text: str) -> str:
     return text.strip()
 
 
+def fix_english_leftovers(text: str) -> str:
+    text = text or ""
+    english_fixes = {
+        "Minnesota moves to": "מינסוטה עולה ל",
+        "behind big performances from": "בזכות הופעות גדולות של",
+        "third straight dub": "ניצחון שלישי ברציפות",
+        "3rd straight W": "ניצחון שלישי ברציפות",
+        "We LOVE to see it": "כיף לראות את זה",
+        "for you and your teammate": "לך ולחברה שלך לקבוצה",
+        "on home court": "בבית",
+        "went off": "התפוצצו",
+        "in their third straight": "בניצחון השלישי ברציפות שלהן",
+        "reports": "מדווח",
+        "sources": "מקורות",
+    }
+    for source, target in sorted(english_fixes.items(), key=lambda item: len(item[0]), reverse=True):
+        text = re.sub(re.escape(source), target, text, flags=re.IGNORECASE)
+    return text
+
+
 def translate_chunk(text: str) -> str:
-    text = translate_sports_phrase(text)
     query = urllib.parse.urlencode(
         {
             "client": "gtx",
