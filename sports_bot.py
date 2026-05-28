@@ -201,6 +201,90 @@ SPORTS_PHRASES = {
     "minutes": "דקות",
 }
 
+TEAM_REPLACEMENTS = {
+    "Atlanta Hawks": "אטלנטה הוקס",
+    "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס",
+    "BrooklynNets": "ברוקלין נטס",
+    "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס",
+    "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס",
+    "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס",
+    "Golden State Warriors": "גולדן סטייט ווריורס",
+    "GoldenStateWarriors": "גולדן סטייט ווריורס",
+    "Houston Rockets": "יוסטון רוקטס",
+    "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "לוס אנג׳לס קליפרס",
+    "Los Angeles Clippers": "לוס אנג׳לס קליפרס",
+    "Los Angeles Lakers": "לוס אנג׳לס לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס",
+    "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס",
+    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס",
+    "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת׳אנדר",
+    "Orlando Magic": "אורלנדו מג׳יק",
+    "Philadelphia 76ers": "פילדלפיה 76׳רס",
+    "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
+    "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס",
+    "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג׳אז",
+    "Washington Wizards": "וושינגטון וויזארדס",
+    "Warriors": "ווריורס",
+    "Nets": "נטס",
+    "Hawks": "הוקס",
+    "Celtics": "סלטיקס",
+    "Hornets": "הורנטס",
+    "Bulls": "בולס",
+    "Cavaliers": "קאבלירס",
+    "Cavs": "קאבס",
+    "Mavericks": "מאבריקס",
+    "Mavs": "מאבריקס",
+    "Nuggets": "נאגטס",
+    "Pistons": "פיסטונס",
+    "Rockets": "רוקטס",
+    "Pacers": "פייסרס",
+    "Clippers": "קליפרס",
+    "Lakers": "לייקרס",
+    "Grizzlies": "גריזליס",
+    "Heat": "היט",
+    "Bucks": "באקס",
+    "Timberwolves": "טימברוולבס",
+    "Pelicans": "פליקנס",
+    "Knicks": "ניקס",
+    "Thunder": "ת׳אנדר",
+    "Magic": "מג׳יק",
+    "76ers": "76׳רס",
+    "Sixers": "סיקסרס",
+    "Suns": "סאנס",
+    "Blazers": "בלייזרס",
+    "Trail Blazers": "טרייל בלייזרס",
+    "Kings": "קינגס",
+    "Spurs": "ספרס",
+    "Raptors": "ראפטורס",
+    "Jazz": "ג׳אז",
+    "Wizards": "וויזארדס",
+    "לוחמים": "ווריורס",
+    "הלוחמים": "הווריורס",
+    "רשתות": "נטס",
+    "הרשתות": "הנטס",
+    "שמשות": "סאנס",
+    "השמשות": "הסאנס",
+    "קסם": "מג׳יק",
+    "הקסם": "המג׳יק",
+    "חלוצים": "בלייזרס",
+    "שבילים": "בלייזרס",
+    "קוצצים": "קליפרס",
+    "הקוצצים": "הקליפרס",
+    "אשף": "וויזארדס",
+    "אשפים": "וויזארדס",
+}
+
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
     "https://rsshub.rssforever.com/twitter/user/{username}",
@@ -499,6 +583,7 @@ def fetch_posts(username: str) -> list[Post]:
 def polish_translation(text: str) -> str:
     text = text or ""
     text = normalize_stat_abbreviations(text)
+    text = apply_team_replacements(text)
     for source, target in TRANSLATION_REPLACEMENTS.items():
         text = text.replace(source, target)
 
@@ -557,6 +642,12 @@ def polish_translation(text: str) -> str:
     return text.strip()
 
 
+def apply_team_replacements(text: str) -> str:
+    for source, target in sorted(TEAM_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
+        text = re.sub(re.escape(source), target, text, flags=re.IGNORECASE)
+    return text
+
+
 def translate_sports_phrase(text: str) -> str:
     working = text
     working = normalize_stat_abbreviations(working)
@@ -596,6 +687,7 @@ def normalize_stat_abbreviations(text: str) -> str:
 def rewrite_hebrew_sports_style(text: str) -> str:
     text = text or ""
     text = fix_english_leftovers(text)
+    text = apply_team_replacements(text)
 
     replacements = [
         (r"מאחורי הופעות גדולות של", "בזכות הופעות גדולות של"),
