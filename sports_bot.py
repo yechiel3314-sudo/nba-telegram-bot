@@ -77,6 +77,8 @@ class Post:
     image_urls: list[str]
     video_urls: list[str]
     has_video: bool
+    primary_has_video: bool
+    quoted_has_video: bool
     quoted_author: str
     quoted_text: str
 
@@ -301,6 +303,8 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
         images = extract_images(raw_text, item)
         videos = extract_videos(raw_text, item)
         has_video = bool(videos) or has_video_marker(raw_text, item)
+        quoted_has_video = bool(quoted_text and has_video)
+        primary_has_video = bool(has_video and not quoted_has_video)
 
         if text or link:
             posts.append(
@@ -312,6 +316,8 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
                     image_urls=images,
                     video_urls=videos,
                     has_video=has_video,
+                    primary_has_video=primary_has_video,
+                    quoted_has_video=quoted_has_video,
                     quoted_author=quoted_author,
                     quoted_text=quoted_text,
                 )
@@ -433,12 +439,18 @@ def build_message(post: Post, translated: str, quoted_translated: str = "") -> s
     safe_quoted_author = html.escape(rtl(post.quoted_author or "פוסט מצוטט"))
     safe_quoted_body = html.escape(rtl(quoted_translated))
     safe_link = html.escape(post.link)
+    video_label = f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>"
+    post_link_label = f"<b>{html.escape(rtl('קישור לפוסט:'))}</b>"
 
     parts = [
         f"<b>{safe_account}</b>",
         "",
         safe_body,
     ]
+
+    if post.link and post.primary_has_video:
+        parts.extend(["", "", video_label, safe_link])
+
     if safe_quoted_body:
         parts.extend(
             [
@@ -448,9 +460,11 @@ def build_message(post: Post, translated: str, quoted_translated: str = "") -> s
                 safe_quoted_body,
             ]
         )
+        if post.link and post.quoted_has_video:
+            parts.extend(["", video_label, safe_link])
+
     if post.link:
-        link_label = "וידיאו מצורף:" if has_video_hint(post, translated) else "קישור לפוסט:"
-        parts.extend(["", "", f"<b>{html.escape(rtl(link_label))}</b>", safe_link])
+        parts.extend(["", "", post_link_label, safe_link])
     return "\n".join(parts)
 
 
