@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,6 @@ X_ACCOUNTS = [
     "AranchaMOBILE",
     "JLSanchez78",
     "AlfredoPedulla",
-    "86_longo",
     "Plettigoal",
     "cfbayern",
     "FabriceHawkins",
@@ -81,8 +81,12 @@ ACCOUNT_DISPLAY_NAMES = {
 
 TARGET_LANGUAGE = "he"
 CHECK_EVERY_SECONDS = 45
-HTTP_RETRIES = 2
-RETRY_SLEEP_SECONDS = 1
+# Keep one full scan cycle within about 45 seconds: accounts are fetched in parallel,
+# and each feed request fails fast instead of waiting a long time on blocked RSS mirrors.
+HTTP_RETRIES = 1
+RETRY_SLEEP_SECONDS = 0.5
+FEED_REQUEST_TIMEOUT_SECONDS = 8
+MAX_PARALLEL_ACCOUNT_CHECKS = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 6
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
@@ -583,7 +587,7 @@ class Post:
     quoted_text: str
 
 
-def http_get(url: str, timeout: int = 25) -> bytes:
+def http_get(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
     request = urllib.request.Request(
         url,
         headers={
@@ -854,13 +858,23 @@ def remove_article_links(text: str) -> str:
 
 
 def remove_external_links(text: str) -> str:
+    """Remove links that appeared inside the post body.
+
+    build_message() still adds the real X post link separately at the end,
+    and video links are still added only when the code detects a video.
+    """
     text = text or ""
     # Full URLs, including X short links such as t.co and article links.
-    text = re.sub(r"https?://\S+", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"www\.\S+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"https?://[^\s<>()]+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"www\.[^\s<>()]+", "", text, flags=re.IGNORECASE)
     # Bare domains that sometimes remain after RSS/HTML cleanup, e.g. skysports.com/...
     text = BARE_EXTERNAL_DOMAIN_RE.sub("", text)
-    return text
+    # Some mirrors leave shortened/link-only tokens without scheme.
+    text = re.sub(r"(?<!@)\b(?:t\.co|x\.com|twitter\.com)/\S+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?m)^\s*(?:🔗|link|לינק|קישור)\s*:?.*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def apply_handle_replacements(text: str) -> str:
@@ -1171,12 +1185,34 @@ def validate_settings() -> None:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
 
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    try:
+        return username, fetch_posts(username)
+    except Exception as exc:
+        logging.error("Unexpected fetch failure for @%s: %s", username, exc)
+        return username, []
+
+
+def fetch_all_accounts() -> dict[str, list[Post]]:
+    """Fetch all accounts in parallel so a full scan is not one-by-one."""
+    results: dict[str, list[Post]] = {username: [] for username in X_ACCOUNTS}
+    workers = min(MAX_PARALLEL_ACCOUNT_CHECKS, max(1, len(X_ACCOUNTS)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(fetch_posts_safely, username): username for username in X_ACCOUNTS}
+        for future in as_completed(future_map):
+            username, posts = future.result()
+            results[username] = posts
+    return results
+
+
 def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     first_run = not any(state.values())
     sent = 0
+    all_posts = fetch_all_accounts()
+
     for username in X_ACCOUNTS:
         seen = set(state.get(username, []))
-        posts = fetch_posts(username)
+        posts = all_posts.get(username, [])
         if not posts:
             continue
         new_posts = [post for post in posts if post.post_id not in seen]
@@ -1221,7 +1257,6 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
         state[username] = list(seen)[-300:]
     return sent
 
-
 def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
@@ -1241,6 +1276,7 @@ def main() -> None:
             logging.error("Startup Telegram test message failed: %s", exc)
     startup_cycle = True
     while True:
+        cycle_started = time.time()
         try:
             state = load_state()
             sent = run_once(state, startup_cycle=startup_cycle)
@@ -1250,7 +1286,12 @@ def main() -> None:
                 print(f"Sent {sent} new post(s).", flush=True)
         except Exception as exc:
             logging.error("Unexpected error. Bot will keep running: %s", exc)
-        time.sleep(CHECK_EVERY_SECONDS)
+
+        elapsed = time.time() - cycle_started
+        # Start the next cycle every 45 seconds from the previous cycle start.
+        # If a cycle takes longer because many new posts are being translated/sent,
+        # start the next one immediately instead of adding another 45-second wait.
+        time.sleep(max(0, CHECK_EVERY_SECONDS - elapsed))
 
 
 if __name__ == "__main__":
