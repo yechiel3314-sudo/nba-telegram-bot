@@ -14,7 +14,6 @@ from __future__ import annotations
 import html
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -56,132 +55,6 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 RTL_MARK = "\u200f"
-
-
-TRANSLATION_PROVIDERS = ["google", "mymemory"]
-
-NBA_TERMS = {
-    "league sources tell": "לפי מקורות בליגה",
-    "sources tell": "לפי מקורות",
-    "per sources": "לפי מקורות",
-    "sources said": "לפי מקורות",
-    "has agreed to": "סיכם על",
-    "have agreed to": "סיכמו על",
-    "agrees to": "מסכם על",
-    "plans to sign": "צפוי לחתום",
-    "is expected to": "צפוי",
-    "are expected to": "צפויים",
-    "will sign": "יחתום",
-    "is signing": "יחתום",
-    "are signing": "יחתמו",
-    "has been traded": "עבר בטרייד",
-    "is being traded": "עובר בטרייד",
-    "has requested a trade": "ביקש טרייד",
-    "trade deadline": "דדליין הטריידים",
-    "free agent": "שחקן חופשי",
-    "free agency": "שוק השחקנים החופשיים",
-    "first-round pick": "בחירת סיבוב ראשון",
-    "second-round pick": "בחירת סיבוב שני",
-    "two-way contract": "חוזה דו-כיווני",
-    "training camp": "מחנה האימונים",
-    "regular season": "העונה הסדירה",
-    "postseason": "פלייאוף",
-    "playoffs": "פלייאוף",
-    "finals": "גמר",
-    "game winner": "סל ניצחון",
-    "buzzer-beater": "סל ניצחון על הבאזר",
-    "buzzer beater": "סל ניצחון על הבאזר",
-    "career-high": "שיא קריירה",
-    "season-high": "שיא עונתי",
-    "home court": "ביתיות",
-    "on home court": "בבית",
-    "behind big performances from": "בזכות הופעות גדולות של",
-    "went off": "התפוצץ",
-    "goes off": "מתפוצץ",
-    "3rd straight W": "ניצחון שלישי ברציפות",
-    "third straight W": "ניצחון שלישי ברציפות",
-    "third straight win": "ניצחון שלישי ברציפות",
-    "lands with": "חותם אצל",
-    "returns to": "חוזר ל",
-    "extension": "הארכת חוזה",
-    "max contract": "חוזה מקסימום",
-    "rookie scale extension": "הארכת חוזה רוקי",
-    "waived": "שוחרר",
-    "buyout": "בייאאוט",
-    "injury report": "דוח פציעות",
-    "breaking": "דיווח דרמטי",
-    "questionable": "בספק",
-    "probable": "ככל הנראה ישחק",
-    "ruled out": "לא ישחק",
-    "available": "זמין למשחק",
-    "doubtful": "בספק גדול",
-    "day-to-day": "יום-יומי",
-    "minutes restriction": "הגבלת דקות",
-    "starting lineup": "החמישייה הפותחת",
-    "depth chart": "רוטציה",
-    "front office": "הנהלת הקבוצה",
-    "head coach": "מאמן ראשי",
-    "assistant coach": "עוזר מאמן",
-    "general manager": "ג׳נרל מנג׳ר",
-    "president of basketball operations": "נשיא פעולות הכדורסל",
-    "basketball operations": "פעולות הכדורסל",
-    "salary cap": "תקרת השכר",
-    "luxury tax": "מס המותרות",
-    "tax apron": "אפרון המס",
-    "second apron": "האפרון השני",
-    "player option": "אופציית שחקן",
-    "team option": "אופציית קבוצה",
-    "non-guaranteed": "לא מובטח",
-    "guaranteed": "מובטח",
-    "hard cap": "תקרה קשיחה",
-    "sign-and-trade": "סיין אנד טרייד",
-    "two-way": "דו-כיווני",
-    "double-double": "דאבל-דאבל",
-    "triple-double": "טריפל-דאבל",
-    "clutch": "קלאץ׳",
-    "shot clock": "שעון הזריקות",
-    "overtime": "הארכה",
-    "OT": "הארכה",
-    "MVP": "MVP",
-}
-
-HEBREW_FINAL_FIXES = {
-    "על פי מקורות": "לפי מקורות",
-    "מקורות אומרים": "לפי מקורות",
-    "מקורות בליגה אומרים": "לפי מקורות בליגה",
-    "לפי מקורות בליגה אומרים": "לפי מקורות בליגה",
-    "סוכן חופשי": "שחקן חופשי",
-    "סוכנות חופשית": "שוק השחקנים החופשיים",
-    "לאחר העונה": "פלייאוף",
-    "פוסט-סיזן": "פלייאוף",
-    "העונה הרגילה": "העונה הסדירה",
-    "מחוץ לעונה": "הפגרה",
-    "מגרש ביתי": "ביתיות",
-    "במגרש הביתי": "בבית",
-    "בבית המשפט הביתי": "בבית",
-    "בחירה בסיבוב הראשון": "בחירת סיבוב ראשון",
-    "בחירה בסיבוב השני": "בחירת סיבוב שני",
-    "קו אחורי": "קו גארדים",
-    "טוויט": "פוסט",
-    "ציוץ": "פוסט",
-    "נמסר": "דווח",
-    "בלייזרים": "בלייזרס",
-    "טרייל בלייזרים": "טרייל בלייזרס",
-    "שאמס חרניה": "שאמס צ׳רניה",
-    "שמס חרניה": "שאמס צ׳רניה",
-    "שאמס צ'רניה": "שאמס צ׳רניה",
-    "השמש": "הסאנס",
-    "הלוחמים": "הווריורס",
-    "לוחמים": "ווריורס",
-    "רשתות": "נטס",
-    "הקסם": "המג׳יק",
-    "קסם": "מג׳יק",
-    "חלוצים": "בלייזרס",
-    "קוצצים": "קליפרס",
-    "אשפים": "וויזארדס",
-}
-
-AMBIGUOUS_SINGLE_WORD_TEAMS = {"Magic", "Heat", "Suns", "Jazz", "Nets", "Kings"}
 
 TRANSLATION_REPLACEMENTS = {
     "דראפט ה-NBA": "דראפט ה-NBA",
@@ -770,19 +643,10 @@ def polish_translation(text: str) -> str:
 
 
 def apply_team_replacements(text: str) -> str:
-    """Replace NBA team names carefully without changing ordinary English words."""
-    if not text:
-        return ""
     for source, target in sorted(TEAM_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
-        if source in AMBIGUOUS_SINGLE_WORD_TEAMS:
-            pattern = rf"(?<![A-Za-z]){re.escape(source)}(?![A-Za-z])"
-            text = re.sub(pattern, target, text)
-        elif re.fullmatch(r"[A-Za-z0-9' .-]+", source):
-            pattern = rf"(?<![A-Za-z]){re.escape(source)}(?![A-Za-z])"
-            text = re.sub(pattern, target, text, flags=re.IGNORECASE)
-        else:
-            text = text.replace(source, target)
+        text = re.sub(re.escape(source), target, text, flags=re.IGNORECASE)
     return text
+
 
 def translate_sports_phrase(text: str) -> str:
     working = text
@@ -915,7 +779,7 @@ def fix_english_leftovers(text: str) -> str:
     return text
 
 
-def google_translate(text: str) -> str:
+def translate_chunk(text: str) -> str:
     query = urllib.parse.urlencode(
         {
             "client": "gtx",
@@ -927,124 +791,40 @@ def google_translate(text: str) -> str:
     )
     url = f"https://translate.googleapis.com/translate_a/single?{query}"
     data = json.loads(http_get(url, timeout=20).decode("utf-8"))
-    translated = "".join(part[0] for part in data[0] if part and part[0]).strip()
-    if not translated:
-        raise RuntimeError("Google Translate returned an empty result")
-    return translated
+    return "".join(part[0] for part in data[0] if part and part[0]).strip()
 
-
-def mymemory_translate(text: str) -> str:
-    query = urllib.parse.urlencode(
-        {
-            "q": text,
-            "langpair": f"en|{TARGET_LANGUAGE}",
-        }
-    )
-    url = f"https://api.mymemory.translated.net/get?{query}"
-    data = json.loads(http_get(url, timeout=20).decode("utf-8"))
-    translated = data.get("responseData", {}).get("translatedText", "")
-    translated = html.unescape(translated or "").strip()
-    if not translated:
-        raise RuntimeError("MyMemory returned an empty result")
-    return translated
-
-
-def looks_hebrew(text: str) -> bool:
-    return bool(re.search(r"[א-ת]", text or ""))
-
-
-def normalize_nba_terms_before_translation(text: str) -> str:
-    if not text:
-        return ""
-    working = normalize_stat_abbreviations(text)
-    for source, target in sorted(NBA_TERMS.items(), key=lambda item: len(item[0]), reverse=True):
-        pattern = rf"(?<![A-Za-z]){re.escape(source)}(?![A-Za-z])"
-        working = re.sub(pattern, target, working, flags=re.IGNORECASE)
-    return working
-
-
-def final_hebrew_polish(text: str) -> str:
-    text = html.unescape(text or "")
-    text = normalize_stat_abbreviations(text)
-    text = apply_team_replacements(text)
-    for old, new in HEBREW_FINAL_FIXES.items():
-        text = text.replace(old, new)
-    text = text.replace("N.B.A", "NBA").replace("W.N.B.A", "WNBA")
-    text = text.replace("אי.אס.פי.אן", "ESPN").replace("E.S.P.N", "ESPN")
-    text = text.replace("שאמס צ'רניה", "שאמס צ׳רניה")
-    text = re.sub(r"\b(\d+)\s*points\b", r"\1 נקודות", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b(\d+)\s*rebounds\b", r"\1 ריבאונדים", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b(\d+)\s*assists\b", r"\1 אסיסטים", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b(\d+)\s*steals\b", r"\1 חטיפות", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b(\d+)\s*blocks\b", r"\1 חסימות", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b(\d+)\s*minutes\b", r"\1 דקות", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b(\d+)\s*-\s*(\d+)\b", r"\1-\2", text)
-    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    text = re.sub(r" *\n+ *", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def translation_is_bad(original: str, translated: str) -> bool:
-    original_clean = re.sub(r"\s+", " ", original or "").strip().lower()
-    translated_clean = re.sub(r"\s+", " ", translated or "").strip().lower()
-    if not translated_clean:
-        return True
-    if translated_clean == original_clean and re.search(r"[A-Za-z]", original_clean):
-        return True
-    return False
-
-
-def translate_chunk(text: str) -> str:
-    return google_translate(text)
 
 def translate_text(text: str) -> str:
     if not text:
         return ""
+    logging.info("Translating post text")
+    try:
+        translated = translate_chunk(text)
+        translated = polish_translation(translated)
+        translated = rewrite_hebrew_sports_style(translated)
+        logging.info("Translation finished")
+        return translated
+    except Exception as exc:
+        logging.warning("Translation failed, sending original text: %s", exc)
+        return text
 
-    cleaned = clean_before_translation(text)
-    if not cleaned:
-        return ""
-
-    if looks_hebrew(cleaned) and not re.search(r"[A-Za-z]{3,}", cleaned):
-        return final_hebrew_polish(cleaned)
-
-    prepared = normalize_nba_terms_before_translation(cleaned)
-    last_error: Exception | None = None
-
-    for provider in TRANSLATION_PROVIDERS:
-        try:
-            logging.info("Translating with %s", provider)
-            if provider == "google":
-                translated = google_translate(prepared)
-            elif provider == "mymemory":
-                translated = mymemory_translate(prepared)
-            else:
-                continue
-
-            if translation_is_bad(prepared, translated):
-                raise RuntimeError(f"{provider} returned untranslated or empty text")
-
-            return final_hebrew_polish(translated)
-        except Exception as exc:
-            last_error = exc
-            logging.warning("Translation provider failed (%s): %s", provider, exc)
-
-    logging.error("All translation providers failed. Sending cleaned fallback: %s", last_error)
-    return final_hebrew_polish(prepared)
 
 def clean_before_translation(text: str) -> str:
-    text = html.unescape(text or "")
-    text = re.sub(r"https?://\S+", "", text)
-    text = re.sub(r"(?<!\w)#([A-Za-z0-9_]+)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text or "")
+    text = text.replace("&amp;", "&")
+    text = re.sub(r"(?<!\w)#[A-Za-z0-9_]+", "", text)
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
     text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
-    text = text.replace("&amp;", "&")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r" *\n+ *", "\n", text)
+    text = re.sub(r"(?m)^\s*[-–—]\s*$", "", text)
+    text = text.replace("NBA", " NBA ")
+    text = text.replace("WNBA", " WNBA ")
+    text = text.replace("ESPN", " ESPN ")
+    text = text.replace("MVP", " MVP ")
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
 
 def remove_inline_links(text: str) -> str:
     return clean_before_translation(text)
