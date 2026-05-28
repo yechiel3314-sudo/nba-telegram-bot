@@ -41,10 +41,12 @@ X_ACCOUNTS = [
     "David_Ornstein",
     "DiMarzio",
     "JacobsBen",
+    "NicoSchira",
     "lauriewhitwell",
     "SamLee",
     "_pauljoyce",
     "Matt_Law_DT",
+    "SimonJones_DM",
     "MatteMoretto",
     "ffpolo",
     "gerardromero",
@@ -62,10 +64,12 @@ ACCOUNT_DISPLAY_NAMES = {
     "David_Ornstein": "דיוויד אורנשטיין - כללי",
     "DiMarzio": "ג׳אנלוקה די מארציו - כללי",
     "JacobsBen": "בן ג׳ייקובס - כללי",
+    "NicoSchira": "ניקולה סקירה - כללי",
     "lauriewhitwell": "לורי וויטוול - מנצ׳סטר יונייטד",
     "SamLee": "סם לי - מנצ׳סטר סיטי",
     "_pauljoyce": "פול ג׳ויס - ליברפול",
     "Matt_Law_DT": "מאט לאו - צ׳לסי",
+    "SimonJones_DM": "סיימון ג׳ונס - אנגליה",
     "MatteMoretto": "מתאו מורטו - ספרד",
     "ffpolo": "פרננדו פולו - ברצלונה",
     "gerardromero": "חרארד רומרו - ברצלונה",
@@ -85,8 +89,8 @@ CHECK_EVERY_SECONDS = 45
 # and each feed request fails fast instead of waiting a long time on blocked RSS mirrors.
 HTTP_RETRIES = 1
 RETRY_SLEEP_SECONDS = 0.5
-FEED_REQUEST_TIMEOUT_SECONDS = 8
-MAX_PARALLEL_ACCOUNT_CHECKS = 8
+FEED_REQUEST_TIMEOUT_SECONDS = 5
+MAX_PARALLEL_ACCOUNT_CHECKS = 24
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 6
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
@@ -155,6 +159,8 @@ HANDLE_REPLACEMENTS = {
     "DiMarzio": "ג׳אנלוקה די מארציו",
     "@JacobsBen": "בן ג׳ייקובס",
     "JacobsBen": "בן ג׳ייקובס",
+    "@NicoSchira": "ניקולה סקירה",
+    "NicoSchira": "ניקולה סקירה",
     "@lauriewhitwell": "לורי וויטוול",
     "lauriewhitwell": "לורי וויטוול",
     "@SamLee": "סם לי",
@@ -163,6 +169,8 @@ HANDLE_REPLACEMENTS = {
     "_pauljoyce": "פול ג׳ויס",
     "@Matt_Law_DT": "מאט לאו",
     "Matt_Law_DT": "מאט לאו",
+    "@SimonJones_DM": "סיימון ג׳ונס",
+    "SimonJones_DM": "סיימון ג׳ונס",
     "@MatteMoretto": "מתאו מורטו",
     "MatteMoretto": "מתאו מורטו",
     "@ffpolo": "פרננדו פולו",
@@ -392,6 +400,9 @@ TEAM_REPLACEMENTS = {
 }
 
 PLAYER_REPLACEMENTS = {
+    "Nicolò Schira": "ניקולה סקירה",
+    "Nicolo Schira": "ניקולה סקירה",
+    "Simon Jones": "סיימון ג׳ונס",
     "Julian Alvarez": "ג׳וליאן אלווארז",
     "Julián Álvarez": "ג׳וליאן אלווארז",
     "Gabriel Jesus": "גבריאל ז׳סוס",
@@ -887,12 +898,22 @@ def apply_handle_replacements(text: str) -> str:
     return text
 
 
+def convert_hashtags_to_text(text: str) -> str:
+    """Turn hashtags into regular words instead of deleting them.
+
+    Examples: #Chelsea -> Chelsea, #ריאל_מדריד -> ריאל מדריד.
+    """
+    text = text or ""
+    text = re.sub(r"(?<!\w)#([\w]+)", lambda m: m.group(1).replace("_", " "), text, flags=re.UNICODE)
+    return text
+
+
 def clean_before_translation(text: str) -> str:
     text = html.unescape(text or "")
     # Remove URLs/domains first so bare domains like lequipe.fr do not become לאקיפ.fr.
     text = remove_external_links(text)
     text = apply_handle_replacements(text)
-    text = re.sub(r"(?<!\w)#([A-Za-z0-9_]+)", r"\1", text)
+    text = convert_hashtags_to_text(text)
     # Unknown @mentions: keep the handle text, but remove @ so Telegram won't create a clickable mention.
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
     text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
@@ -1005,6 +1026,7 @@ def final_hebrew_polish(text: str) -> str:
     # Remove URLs/domains first so bare domains like lequipe.fr do not become לאקיפ.fr.
     text = remove_external_links(text)
     text = apply_handle_replacements(text)
+    text = convert_hashtags_to_text(text)
     text = apply_team_replacements(text)
     text = apply_player_replacements(text)
     text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
