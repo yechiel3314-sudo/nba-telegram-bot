@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Single-file X/Twitter to Telegram football news forwarder.
+Single-file X/Twitter to Telegram NBA news forwarder.
 
 Run:
-  python3 football_x_to_telegram.py
+  python3 x_to_telegram_single.py
 
 What this version does:
 - Scans all accounts in parallel every 30 seconds.
@@ -45,9 +45,9 @@ from typing import Any
 
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
-    "8480434397:AAF8ay6JxuYsf7ytVOLG73bVJiJQHq8CMx4",
+    "8795392686:AAFElKo3sML_dqA9YaVz2iArTUoYGcGgBuI",
 )
-TELEGRAM_CHAT_ID = "-1003869452843"
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1003918247986")
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -63,51 +63,15 @@ GEMINI_API_KEYS = [
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 X_ACCOUNTS = [
-    "FabrizioRomano",
-    "David_Ornstein",
-    "DiMarzio",
-    "JacobsBen",
-    "NicoSchira",
-    "lauriewhitwell",
-    "SamLee",
-    "_pauljoyce",
-    "Matt_Law_DT",
-    "SimonJones_DM",
-    "MatteMoretto",
-    "ffpolo",
-    "gerardromero",
-    "AranchaMOBILE",
-    "JLSanchez78",
-    "AlfredoPedulla",
-    "Plettigoal",
-    "cfbayern",
-    "FabriceHawkins",
-    "Tanziloic",
-    "MonfortCarlos",
+    "NBA",
+    "ShamsCharania",
+    "highkin",
 ]
 
 ACCOUNT_DISPLAY_NAMES = {
-    "FabrizioRomano": "פבריציו רומאנו - כללי",
-    "David_Ornstein": "דיוויד אורנשטיין - כללי",
-    "DiMarzio": "ג'אנלוקה די מארציו - כללי",
-    "JacobsBen": "בן ג'ייקובס - כללי",
-    "NicoSchira": "ניקולה סקירה - כללי",
-    "lauriewhitwell": "לורי וויטוול - מנצ'סטר יונייטד",
-    "SamLee": "סם לי - מנצ'סטר סיטי",
-    "_pauljoyce": "פול ג'ויס - ליברפול",
-    "Matt_Law_DT": "מאט לאו - צ'לסי",
-    "SimonJones_DM": "סיימון ג'ונס - אנגליה",
-    "MatteMoretto": "מתאו מורטו - ספרד",
-    "ffpolo": "פרננדו פולו - ברצלונה",
-    "gerardromero": "חרארד רומרו - ברצלונה",
-    "AranchaMOBILE": "ארנצ'ה רודריגז - ריאל מדריד",
-    "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
-    "AlfredoPedulla": "אלפרדו פדולה - איטליה",
-    "Plettigoal": "פלוריאן פלטנברג - גרמניה",
-    "cfbayern": "כריסטיאן פאלק - גרמניה",
-    "FabriceHawkins": "פבריס הוקינס - צרפת",
-    "Tanziloic": "לואיק טנזי - צרפת",
-    "MonfortCarlos": "קרלוס מונפור - ברצלונה",
+    "NBA": "NBA",
+    "ShamsCharania": "שאמס צ'ראניה",
+    "highkin": "שון הייקין - פורטלנד",
 }
 
 TARGET_LANGUAGE = "he"
@@ -121,8 +85,8 @@ SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = True
 MAX_IMAGES_PER_POST = 4
-STATE_FILE = "football_x_to_telegram_state.json"
-TRANSLATION_CACHE_FILE = "football_translation_cache.json"
+STATE_FILE = "nba_x_to_telegram_state.json"
+TRANSLATION_CACHE_FILE = "nba_translation_cache.json"
 RTL_MARK = "\u200f"
 
 FEED_TEMPLATES = [
@@ -149,6 +113,21 @@ URL_RE = re.compile(
 # ====== TRANSLATION DICTIONARIES ======
 
 HANDLE_REPLACEMENTS = {
+    "NBA": "NBA",
+    "WNBA": "WNBA",
+    "ShamsCharania": "שאמס צ'ראניה",
+    "Shams Charania": "שאמס צ'ראניה",
+    "Shams": "שאמס",
+    "highkin": "שון הייקין",
+    "Sean Highkin": "שון הייקין",
+    "TheSteinLine": "מארק סטיין",
+    "wojespn": "אדריאן ווג'נרובסקי",
+    "espn_macmahon": "טים מקמהון",
+    "BobbyMarks42": "בובי מרקס",
+    "ChrisBHaynes": "כריס היינס",
+    "espn": "ESPN",
+    "ESPNNBA": "ESPN NBA",
+    "espn_macmahon": "טים מקמהון",
     "FabrizioRomano": "פבריציו רומאנו",
     "David_Ornstein": "דיוויד אורנשטיין",
     "DiMarzio": "ג'אנלוקה די מארציו",
@@ -165,6 +144,7 @@ HANDLE_REPLACEMENTS = {
     "AranchaMOBILE": "ארנצ'ה רודריגז",
     "JLSanchez78": "חוסה לואיס סאנצ'ס",
     "AlfredoPedulla": "אלפרדו פדולה",
+    "86_longo": "דניאלה לונגו",
     "Plettigoal": "פלוריאן פלטנברג",
     "cfbayern": "כריסטיאן פאלק",
     "FabriceHawkins": "פבריס הוקינס",
@@ -196,6 +176,84 @@ HANDLE_REPLACEMENTS = {
 }
 
 FOOTBALL_TERMS = {
+    "league sources tell": "לפי מקורות בליגה",
+    "sources tell": "לפי מקורות",
+    "sources say": "לפי מקורות",
+    "per sources": "לפי מקורות",
+    "breaking": "דיווח דרמטי",
+    "free agent": "שחקן חופשי",
+    "free agency": "שוק השחקנים החופשיים",
+    "trade deadline": "דדליין הטריידים",
+    "trade": "טרייד",
+    "traded": "עבר בטרייד",
+    "has been traded": "עבר בטרייד",
+    "is being traded": "עובר בטרייד",
+    "has requested a trade": "ביקש טרייד",
+    "sign-and-trade": "חתימה והעברה",
+    "first-round pick": "בחירת סיבוב ראשון",
+    "second-round pick": "בחירת סיבוב שני",
+    "draft pick": "בחירת דראפט",
+    "NBA Draft": "דראפט ה-NBA",
+    "two-way contract": "חוזה דו-כיווני",
+    "two-way": "דו-כיווני",
+    "training camp": "מחנה האימונים",
+    "regular season": "העונה הסדירה",
+    "postseason": "הפלייאוף",
+    "playoffs": "הפלייאוף",
+    "Finals": "הגמר",
+    "conference finals": "גמר האזור",
+    "game winner": "סל ניצחון",
+    "career-high": "שיא קריירה",
+    "season-high": "שיא עונתי",
+    "home court": "הבית",
+    "on the season": "העונה",
+    "behind big performances from": "בזכות הופעות גדולות של",
+    "went off": "התפוצץ",
+    "extension": "הארכת חוזה",
+    "max contract": "חוזה מקסימום",
+    "rookie scale extension": "הארכת חוזה רוקי",
+    "waived": "שוחרר",
+    "buyout": "בייאאוט",
+    "injury report": "דוח פציעות",
+    "questionable": "בספק",
+    "probable": "ככל הנראה ישחק",
+    "ruled out": "לא ישחק",
+    "questionable to return": "בספק לחזור",
+    "doubtful": "בספק גדול",
+    "day-to-day": "יום-יומי",
+    "minutes restriction": "הגבלת דקות",
+    "starting lineup": "החמישייה הפותחת",
+    "depth chart": "רוטציה",
+    "front office": "הנהלת הקבוצה",
+    "head coach": "המאמן הראשי",
+    "assistant coach": "עוזר המאמן",
+    "general manager": "הג'נרל מנג'ר",
+    "president of basketball operations": "נשיא פעולות הכדורסל",
+    "basketball operations": "פעולות הכדורסל",
+    "salary cap": "תקרת השכר",
+    "luxury tax": "מס המותרות",
+    "tax apron": "אפרון המס",
+    "second apron": "האפרון השני",
+    "player option": "אופציית שחקן",
+    "team option": "אופציית קבוצה",
+    "non-guaranteed": "לא מובטח",
+    "guaranteed": "מובטח",
+    "hard cap": "תקרה קשיחה",
+    "double-double": "דאבל-דאבל",
+    "triple-double": "טריפל-דאבל",
+    "clutch": "קלאץ'",
+    "buzzer-beater": "סל עם הבאזר",
+    "shot clock": "שעון הזריקות",
+    "overtime": "הארכה",
+    "OT": "הארכה",
+    "MVP": "MVP",
+    "points": "נקודות",
+    "rebounds": "ריבאונדים",
+    "assists": "אסיסטים",
+    "steals": "חטיפות",
+    "blocks": "חסימות",
+    "mins": "דקות",
+    "minutes": "דקות",
     "here we go": "הנה זה קורה",
     "breaking": "דיווח דרמטי",
     "exclusive": "בלעדי",
@@ -279,6 +337,89 @@ FOOTBALL_TERMS = {
 }
 
 TEAM_REPLACEMENTS = {
+    "Atlanta Hawks": "אטלנטה הוקס",
+    "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס",
+    "BrooklynNets": "ברוקלין נטס",
+    "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס",
+    "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס",
+    "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס",
+    "Golden State Warriors": "גולדן סטייט ווריורס",
+    "GoldenStateWarriors": "גולדן סטייט ווריורס",
+    "Houston Rockets": "יוסטון רוקטס",
+    "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "לוס אנג'לס קליפרס",
+    "Los Angeles Clippers": "לוס אנג'לס קליפרס",
+    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס",
+    "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס",
+    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס",
+    "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
+    "Orlando Magic": "אורלנדו מג'יק",
+    "Philadelphia 76ers": "פילדלפיה 76'רס",
+    "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
+    "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס",
+    "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג'אז",
+    "Washington Wizards": "וושינגטון וויזארדס",
+    "Warriors": "ווריורס",
+    "Nets": "נטס",
+    "Hawks": "הוקס",
+    "Celtics": "סלטיקס",
+    "Hornets": "הורנטס",
+    "Bulls": "בולס",
+    "Cavaliers": "קאבלירס",
+    "Cavs": "קאבס",
+    "Mavericks": "מאבריקס",
+    "Mavs": "מאבריקס",
+    "Nuggets": "נאגטס",
+    "Pistons": "פיסטונס",
+    "Rockets": "רוקטס",
+    "Pacers": "פייסרס",
+    "Clippers": "קליפרס",
+    "Lakers": "לייקרס",
+    "Grizzlies": "גריזליס",
+    "Heat": "היט",
+    "Bucks": "באקס",
+    "Timberwolves": "טימברוולבס",
+    "Lynx": "לינקס",
+    "minnesotalynx": "מינסוטה לינקס",
+    "Pelicans": "פליקנס",
+    "Knicks": "ניקס",
+    "Thunder": "ת'אנדר",
+    "Magic": "מג'יק",
+    "76ers": "76'רס",
+    "Sixers": "סיקסרס",
+    "Suns": "סאנס",
+    "Blazers": "בלייזרס",
+    "Trail Blazers": "טרייל בלייזרס",
+    "Kings": "קינגס",
+    "Spurs": "ספרס",
+    "Raptors": "ראפטורס",
+    "Jazz": "ג'אז",
+    "Wizards": "וויזארדס",
+    "הלוחמים": "הווריורס",
+    "לוחמים": "ווריורס",
+    "הרשתות": "הנטס",
+    "רשתות": "נטס",
+    "השמשות": "הסאנס",
+    "שמשות": "סאנס",
+    "קסם": "מג'יק",
+    "הקסם": "המג'יק",
+    "חלוצים": "בלייזרס",
+    "שבילים": "בלייזרס",
+    "קוצצים": "קליפרס",
+    "הקוצצים": "הקליפרס",
+    "אשפים": "וויזארדס",
+    "אשף": "וויזארדס",
     "Manchester United": "מנצ'סטר יונייטד",
     "Man United": "מנצ'סטר יונייטד",
     "Man Utd": "מנצ'סטר יונייטד",
@@ -395,6 +536,16 @@ PLAYER_REPLACEMENTS = {
 }
 
 HEBREW_FINAL_FIXES = {
+    "שאמש": "שאמס",
+    "שאמש צ'ראניה": "שאמס צ'ראניה",
+    "שאמש צ׳ראניה": "שאמס צ׳ראניה",
+    "נהא טודיי": "NBA Today",
+    "נבא טודיי": "NBA Today",
+    "נבה טודיי": "NBA Today",
+    "נ.ב.א טודיי": "NBA Today",
+    "אנ.בי.איי טודיי": "NBA Today",
+    "אן-בי-איי טודיי": "NBA Today",
+    "אן בי איי טודיי": "NBA Today",
     "כאן אנחנו הולכים": "הנה זה קורה",
     "הנה אנחנו הולכים": "הנה זה קורה",
     "לפי הבנתי": "לפי המידע",
@@ -441,7 +592,7 @@ STAT_REPLACEMENTS = {
     "apps": "הופעות",
 }
 
-LATIN_KEEP = {"VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
+LATIN_KEEP = {"NBA", "WNBA", "NBA Today", "VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
 
 HEBREW_LETTER = {
     "a": "א", "b": "ב", "c": "ק", "d": "ד", "e": "ה", "f": "פ",
@@ -824,12 +975,13 @@ def gemini_translate(text: str) -> str:
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
     prompt = (
-        "Translate this football news post into natural, clear Hebrew.\n"
+        "Translate this NBA / basketball news post into natural, clear Hebrew.\n"
         "Rules:\n"
         "- Return only the Hebrew translation.\n"
         "- Translate every word, including names and @handles, into Hebrew spelling when possible.\n"
         "- Do not include any URLs or website domains.\n"
         "- Keep numbers, transfer fees, emojis and line breaks when useful.\n"
+        "- Use common Hebrew basketball terms: טרייד, בחירת דראפט, שחקן חופשי, פלייאוף, ריבאונדים, אסיסטים.\n"
         "- Do not explain anything.\n\n"
         f"POST:\n{text}"
     )
@@ -987,6 +1139,8 @@ def translate_short_label(text: str) -> str:
 def normalize_identity(text: str) -> str:
     text = clean_before_translation(text)
     text = apply_phrase_replacements(text, HANDLE_REPLACEMENTS)
+    text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
+    text = re.sub(r"שאמש", "שאמס", text)
     text = re.sub(r"[^A-Za-z0-9א-ת]+", "", text).lower()
     return text
 
@@ -1012,7 +1166,6 @@ def translate_quoted_text(text: str) -> str:
     translated = translate_text(cleaned)
     if not translated:
         return cleaned
-    # If translation clearly failed, keep the original quote in English/its source language.
     if latin_ratio(translated) > 0.45:
         return cleaned
     return translated
@@ -1073,7 +1226,7 @@ def build_message(
     safe_account = html.escape(rtl(f"{display_name}:"))
     safe_body = html.escape(rtl(translated or "עדכון חדש"))
     safe_quoted_author = html.escape(rtl(quoted_author_translated))
-    safe_quoted_body = html.escape(rtl(quoted_translated))
+    safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
     safe_link = html.escape(post.link)
     video_label = f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
@@ -1088,7 +1241,7 @@ def build_message(
         parts.extend(["", quote_label])
         if safe_quoted_author:
             parts.append(safe_quoted_author)
-        parts.append(html.escape(rtl(f'"{quoted_translated}"')))
+        parts.append(safe_quoted_body)
         if post.link and post.quoted_has_video:
             parts.extend(["", video_label, safe_link])
 
@@ -1203,9 +1356,9 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
-    print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
+    print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
 
@@ -1215,7 +1368,7 @@ def main() -> None:
                 "sendMessage",
                 {
                     "chat_id": TELEGRAM_CHAT_ID,
-                    "text": "בוט הכדורגל הופעל. בודק עדכונים...",
+                    "text": "בוט ה-NBA הופעל. בודק עדכונים...",
                     "disable_web_page_preview": True,
                 },
             )
