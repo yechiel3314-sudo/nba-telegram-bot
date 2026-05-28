@@ -45,6 +45,11 @@ MAX_IMAGES_PER_POST = 4
 STATE_FILE = "x_to_telegram_state.json"
 SEND_IMAGES_AFTER_TEXT = True
 
+ACCOUNT_DISPLAY_NAMES = {
+    "NBA": "NBA",
+    "ShamsCharania": "שאמס צ׳רניה",
+}
+
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
     "https://rsshub.rssforever.com/twitter/user/{username}",
@@ -255,13 +260,21 @@ def translate_text(text: str) -> str:
         return text
 
 
+def remove_inline_links(text: str) -> str:
+    text = re.sub(r"https?://\S+", "", text or "")
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def tidy_translated_text(text: str) -> str:
     text = html.unescape(text or "").strip()
+    text = remove_inline_links(text)
     text = re.sub(r"\s+\n", "\n", text)
     text = re.sub(r"\n\s+", "\n", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
 
-    text = re.sub(r"\s+(https?://\S+)", r"\n\1", text)
     text = re.sub(r"\s+(#\w+)", r"\n\1", text)
     text = re.sub(r"\s+(@\w+)", r"\n\1", text)
     text = re.sub(r"(?<=[.!?])\s+(?=[א-תA-Z0-9])", "\n\n", text)
@@ -286,22 +299,18 @@ def trim(text: str, limit: int) -> str:
 
 def build_message(post: Post, translated: str) -> str:
     translated = tidy_translated_text(translated)
-    title = translated.splitlines()[0].strip() if translated else "עדכון חדש"
-    title = trim(title, 90)
-    safe_account = html.escape(post.username)
-    safe_title = html.escape(title)
-    safe_body = html.escape(translated)
+    display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
+    safe_account = html.escape(display_name)
+    safe_body = html.escape(translated or "עדכון חדש")
     safe_link = html.escape(post.link)
 
     parts = [
-        f"🏀 @{safe_account}",
+        safe_account,
         "",
-        f"<b>{safe_title}</b>",
+        safe_body,
     ]
-    if translated and translated != title:
-        parts.extend(["", safe_body])
     if post.link:
-        parts.extend(["", "לצפייה בפוסט:", safe_link])
+        parts.extend(["", "לצפייה בפוסט המלא:", safe_link])
     return "\n".join(parts)
 
 
