@@ -33,6 +33,7 @@ TELEGRAM_CHAT_ID = "-1003918247986"
 X_ACCOUNTS = [
     "NBA",
     "ShamsCharania",
+    "highkin",
 ]
 
 TARGET_LANGUAGE = "he"
@@ -48,6 +49,7 @@ SEND_IMAGES_AFTER_TEXT = False
 ACCOUNT_DISPLAY_NAMES = {
     "NBA": "NBA",
     "ShamsCharania": "שאמס צ׳רניה",
+    "highkin": "שון הייקין פורטלנד",
 }
 
 RTL_MARK = "\u200f"
@@ -73,6 +75,7 @@ class Post:
     link: str
     image_urls: list[str]
     video_urls: list[str]
+    has_video: bool
     quoted_author: str
     quoted_text: str
 
@@ -213,6 +216,18 @@ def extract_videos(raw_html: str, element: ET.Element) -> list[str]:
     return unique
 
 
+def has_video_marker(raw_html: str, element: ET.Element) -> bool:
+    lowered = (raw_html or "").lower()
+    if any(marker in lowered for marker in ("video", "watch", "play", "thumbnail")):
+        return True
+    for child in element.iter():
+        mime = (child.attrib.get("type") or "").lower()
+        medium = (child.attrib.get("medium") or "").lower()
+        if mime.startswith("video/") or medium == "video":
+            return True
+    return False
+
+
 def split_primary_and_quoted_text(text: str) -> tuple[str, str, str]:
     lines = [line.strip() for line in (text or "").splitlines()]
     kept: list[str] = []
@@ -284,6 +299,7 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
         post_id = f"{username}:{guid}"
         images = extract_images(raw_text, item)
         videos = extract_videos(raw_text, item)
+        has_video = bool(videos) or has_video_marker(raw_text, item)
 
         if text or link:
             posts.append(
@@ -294,6 +310,7 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
                     link=link,
                     image_urls=images,
                     video_urls=videos,
+                    has_video=has_video,
                     quoted_author=quoted_author,
                     quoted_text=quoted_text,
                 )
@@ -342,14 +359,19 @@ def translate_text(text: str) -> str:
         return text
 
 
-def remove_inline_links(text: str) -> str:
+def clean_before_translation(text: str) -> str:
     text = re.sub(r"https?://\S+", "", text or "")
-    text = re.sub(r"(?<!\w)[@#][A-Za-z0-9_]+", "", text)
+    text = re.sub(r"(?<!\w)#[A-Za-z0-9_]+", "", text)
+    text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
     text = re.sub(r"(?m)^\s*[-–—]\s*$", "", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def remove_inline_links(text: str) -> str:
+    return clean_before_translation(text)
 
 
 def tidy_translated_text(text: str) -> str:
@@ -370,7 +392,7 @@ def rtl(text: str) -> str:
 
 def has_video_hint(post: Post, translated: str) -> bool:
     combined = f"{post.text}\n{translated}".lower()
-    return bool(post.video_urls or "video" in combined or "וידאו" in combined or "סרטון" in combined)
+    return bool(post.has_video or post.video_urls or "video" in combined or "וידאו" in combined or "סרטון" in combined)
 
 
 def telegram_api(method: str, payload: dict[str, Any]) -> None:
@@ -413,15 +435,15 @@ def build_message(post: Post, translated: str, quoted_translated: str = "") -> s
             ]
         )
     if post.link:
-        link_label = "קישור לווידיאו:" if has_video_hint(post, translated) else "לצפייה בפוסט המלא:"
-        parts.extend(["", f"<b>{html.escape(rtl(link_label))}</b>", safe_link])
+        link_label = "קישור לוידיאו:" if has_video_hint(post, translated) else "לצפייה בפוסט המלא:"
+        parts.extend(["", "", f"<b>{html.escape(rtl(link_label))}</b>", safe_link])
     return "\n".join(parts)
 
 
 def send_post(post: Post) -> None:
     logging.info("Preparing post from @%s: %s", post.username, post.link)
-    translated = translate_text(post.text)
-    quoted_translated = translate_text(post.quoted_text) if post.quoted_text else ""
+    translated = translate_text(clean_before_translation(post.text))
+    quoted_translated = translate_text(clean_before_translation(post.quoted_text)) if post.quoted_text else ""
     message = build_message(post, translated, quoted_translated)
 
     images = post.image_urls[:MAX_IMAGES_PER_POST]
