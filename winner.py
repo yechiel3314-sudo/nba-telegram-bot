@@ -394,6 +394,7 @@ PLAYER_REPLACEMENTS = {
     "Antonio Conte": "אנטוניו קונטה",
     "Mauricio Pochettino": "מאוריסיו פוצ'טינו",
     "Pep Guardiola": "פפ גווארדיולה",
+    "Julian Alvarez": "חוליאן אלברס",
 }
 
 HEBREW_FINAL_FIXES = {
@@ -1211,6 +1212,7 @@ def send_post(post: Post) -> None:
     else:
         quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
         quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
+
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
     message = build_message(
         post,
@@ -1219,7 +1221,33 @@ def send_post(post: Post) -> None:
         quoted_author_translated,
         include_video_link=not bool(video_url),
     )
-    images = post.image_urls[:MAX_IMAGES_PER_POST]
+
+    # If the post has video, do not send the preview image separately.
+    images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
+
+    if video_url:
+        try:
+            telegram_api(
+                "sendVideo",
+                {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "video": video_url,
+                    "caption": trim_keep_ending(message, 1024),
+                    "parse_mode": "HTML",
+                    "supports_streaming": True,
+                },
+            )
+            return
+        except Exception as exc:
+            logging.warning("Could not send video with caption, falling back to text only: %s", exc)
+            message = build_message(
+                post,
+                translated,
+                quoted_translated,
+                quoted_author_translated,
+                include_video_link=True,
+            )
+            images = []
 
     if images:
         media: list[dict[str, Any]] = []
@@ -1231,11 +1259,9 @@ def send_post(post: Post) -> None:
             media.append(item)
         try:
             telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
+            return
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
-        else:
-            send_video_after_message(video_url)
-            return
 
     telegram_api(
         "sendMessage",
@@ -1246,7 +1272,6 @@ def send_post(post: Post) -> None:
             "parse_mode": "HTML",
         },
     )
-    send_video_after_message(video_url)
 
 
 def send_video_after_message(video_url: str) -> None:
