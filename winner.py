@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Single-file X/Twitter to Telegram NBA news forwarder.
+Single-file X/Twitter to Telegram football news forwarder.
 
 Run:
-  python3 x_to_telegram_single.py
+  python3 football_x_to_telegram.py
 
 What this version does:
 - Scans all accounts in parallel every 30 seconds.
@@ -46,9 +46,9 @@ from typing import Any
 
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
-    "8795392686:AAFElKo3sML_dqA9YaVz2iArTUoYGcGgBuI",
+    "8480434397:AAF8ay6JxuYsf7ytVOLG73bVJiJQHq8CMx4",
 )
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1003918247986")
+TELEGRAM_CHAT_ID = "-1003869452843"
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -64,15 +64,51 @@ GEMINI_API_KEYS = [
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 X_ACCOUNTS = [
-    "NBA",
-    "ShamsCharania",
-    "highkin",
+    "FabrizioRomano",
+    "David_Ornstein",
+    "DiMarzio",
+    "JacobsBen",
+    "NicoSchira",
+    "lauriewhitwell",
+    "SamLee",
+    "_pauljoyce",
+    "Matt_Law_DT",
+    "SimonJones_DM",
+    "MatteMoretto",
+    "ffpolo",
+    "gerardromero",
+    "AranchaMOBILE",
+    "JLSanchez78",
+    "AlfredoPedulla",
+    "Plettigoal",
+    "cfbayern",
+    "FabriceHawkins",
+    "Tanziloic",
+    "MonfortCarlos",
 ]
 
 ACCOUNT_DISPLAY_NAMES = {
-    "NBA": "NBA",
-    "ShamsCharania": "שאמס צ'ראניה",
-    "highkin": "שון הייקין - פורטלנד",
+    "FabrizioRomano": "פבריציו רומאנו - כללי",
+    "David_Ornstein": "דיוויד אורנשטיין - כללי",
+    "DiMarzio": "ג'אנלוקה די מארציו - כללי",
+    "JacobsBen": "בן ג'ייקובס - כללי",
+    "NicoSchira": "ניקולה סקירה - כללי",
+    "lauriewhitwell": "לורי וויטוול - מנצ'סטר יונייטד",
+    "SamLee": "סם לי - מנצ'סטר סיטי",
+    "_pauljoyce": "פול ג'ויס - ליברפול",
+    "Matt_Law_DT": "מאט לאו - צ'לסי",
+    "SimonJones_DM": "סיימון ג'ונס - אנגליה",
+    "MatteMoretto": "מתאו מורטו - ספרד",
+    "ffpolo": "פרננדו פולו - ברצלונה",
+    "gerardromero": "ג'ראד רומרו - ברצלונה",
+    "AranchaMOBILE": "ארנצ'ה רודריגז - ריאל מדריד",
+    "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
+    "AlfredoPedulla": "אלפרדו פדולה - איטליה",
+    "Plettigoal": "פלוריאן פלטנברג - גרמניה",
+    "cfbayern": "כריסטיאן פאלק - גרמניה",
+    "FabriceHawkins": "פבריס הוקינס - צרפת",
+    "Tanziloic": "לואיק טנזי - צרפת",
+    "MonfortCarlos": "קרלוס מונפור - ברצלונה",
 }
 
 TARGET_LANGUAGE = "he"
@@ -90,8 +126,8 @@ SEND_STARTUP_STATUS_MESSAGE = False
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
-STATE_FILE = "nba_x_to_telegram_state.json"
-TRANSLATION_CACHE_FILE = "nba_translation_cache.json"
+STATE_FILE = "football_x_to_telegram_state.json"
+TRANSLATION_CACHE_FILE = "football_translation_cache.json"
 RTL_MARK = "\u200f"
 
 FEED_TEMPLATES = [
@@ -118,21 +154,6 @@ URL_RE = re.compile(
 # ====== TRANSLATION DICTIONARIES ======
 
 HANDLE_REPLACEMENTS = {
-    "NBA": "NBA",
-    "WNBA": "WNBA",
-    "ShamsCharania": "שאמס צ'ראניה",
-    "Shams Charania": "שאמס צ'ראניה",
-    "Shams": "שאמס",
-    "highkin": "שון הייקין",
-    "Sean Highkin": "שון הייקין",
-    "TheSteinLine": "מארק סטיין",
-    "wojespn": "אדריאן ווג'נרובסקי",
-    "espn_macmahon": "טים מקמהון",
-    "BobbyMarks42": "בובי מרקס",
-    "ChrisBHaynes": "כריס היינס",
-    "espn": "ESPN",
-    "ESPNNBA": "ESPN NBA",
-    "espn_macmahon": "טים מקמהון",
     "FabrizioRomano": "פבריציו רומאנו",
     "David_Ornstein": "דיוויד אורנשטיין",
     "DiMarzio": "ג'אנלוקה די מארציו",
@@ -149,7 +170,6 @@ HANDLE_REPLACEMENTS = {
     "AranchaMOBILE": "ארנצ'ה רודריגז",
     "JLSanchez78": "חוסה לואיס סאנצ'ס",
     "AlfredoPedulla": "אלפרדו פדולה",
-    "86_longo": "דניאלה לונגו",
     "Plettigoal": "פלוריאן פלטנברג",
     "cfbayern": "כריסטיאן פאלק",
     "FabriceHawkins": "פבריס הוקינס",
@@ -181,90 +201,30 @@ HANDLE_REPLACEMENTS = {
 }
 
 SELF_QUOTE_ALIASES = {
-    "NBA": ["NBA", "NBA Today", "אן בי איי"],
-    "ShamsCharania": ["Shams Charania", "Shams", "שאמס צ'ראניה", "שאמס צראניה", "שאמש צ'ראניה"],
-    "highkin": ["Sean Highkin", "Highkin", "שון הייקין", "שון הייקין - פורטלנד"],
+    "FabrizioRomano": ["Fabrizio Romano", "פבריציו רומאנו"],
+    "David_Ornstein": ["David Ornstein", "דיוויד אורנשטיין"],
+    "DiMarzio": ["Gianluca Di Marzio", "Gianluca DiMarzio", "ג'אנלוקה די מארציו", "גיאנלוקה די מארציו"],
+    "JacobsBen": ["Ben Jacobs", "בן ג'ייקובס", "בן גייקובס", "בן יעקבס"],
+    "NicoSchira": ["Nicolò Schira", "Nicolo Schira", "Nico Schira", "ניקולה סקירה", "ניקולו סקירה", "ניקולה שירה", "ניקולו שירה", "ניקולה סקירה - כללי"],
+    "lauriewhitwell": ["Laurie Whitwell", "לורי וויטוול"],
+    "SamLee": ["Sam Lee", "סם לי"],
+    "_pauljoyce": ["Paul Joyce", "פול ג'ויס"],
+    "Matt_Law_DT": ["Matt Law", "מאט לאו"],
+    "SimonJones_DM": ["Simon Jones", "סיימון ג'ונס"],
+    "MatteMoretto": ["Matteo Moretto", "Matte Moretto", "מתאו מורטו", "מתאו מורטו - ספרד"],
+    "ffpolo": ["Fernando Polo", "פרננדו פולו"],
+    "gerardromero": ["Gerard Romero", "ג'ראד רומרו", "חרארד רומרו", "ז'ראר רומרו"],
+    "AranchaMOBILE": ["Arancha Rodríguez", "Arancha Rodriguez", "ארנצ'ה רודריגז"],
+    "JLSanchez78": ["José Luis Sánchez", "Jose Luis Sanchez", "חוסה לואיס סאנצ'ס"],
+    "AlfredoPedulla": ["Alfredo Pedullà", "Alfredo Pedulla", "אלפרדו פדולה", "אלפרהדו פדולה"],
+    "Plettigoal": ["Florian Plettenberg", "Florian Pletti", "פלוריאן פלטנברג", "פלוריאן פחלטנברג"],
+    "cfbayern": ["Christian Falk", "כריסטיאן פאלק"],
+    "FabriceHawkins": ["Fabrice Hawkins", "פבריס הוקינס"],
+    "Tanziloic": ["Loïc Tanzi", "Loic Tanzi", "לואיק טנזי"],
+    "MonfortCarlos": ["Carlos Monfort", "קרלוס מונפור"],
 }
 
 FOOTBALL_TERMS = {
-    "league sources tell": "לפי מקורות בליגה",
-    "sources tell": "לפי מקורות",
-    "sources say": "לפי מקורות",
-    "per sources": "לפי מקורות",
-    "breaking": "דיווח דרמטי",
-    "free agent": "שחקן חופשי",
-    "free agency": "שוק השחקנים החופשיים",
-    "trade deadline": "דדליין הטריידים",
-    "trade": "טרייד",
-    "traded": "עבר בטרייד",
-    "has been traded": "עבר בטרייד",
-    "is being traded": "עובר בטרייד",
-    "has requested a trade": "ביקש טרייד",
-    "sign-and-trade": "חתימה והעברה",
-    "first-round pick": "בחירת סיבוב ראשון",
-    "second-round pick": "בחירת סיבוב שני",
-    "draft pick": "בחירת דראפט",
-    "NBA Draft": "דראפט ה-NBA",
-    "two-way contract": "חוזה דו-כיווני",
-    "two-way": "דו-כיווני",
-    "training camp": "מחנה האימונים",
-    "regular season": "העונה הסדירה",
-    "postseason": "הפלייאוף",
-    "playoffs": "הפלייאוף",
-    "Finals": "הגמר",
-    "conference finals": "גמר האזור",
-    "game winner": "סל ניצחון",
-    "career-high": "שיא קריירה",
-    "season-high": "שיא עונתי",
-    "home court": "הבית",
-    "on the season": "העונה",
-    "behind big performances from": "בזכות הופעות גדולות של",
-    "went off": "התפוצץ",
-    "extension": "הארכת חוזה",
-    "max contract": "חוזה מקסימום",
-    "rookie scale extension": "הארכת חוזה רוקי",
-    "waived": "שוחרר",
-    "buyout": "בייאאוט",
-    "injury report": "דוח פציעות",
-    "questionable": "בספק",
-    "probable": "ככל הנראה ישחק",
-    "ruled out": "לא ישחק",
-    "questionable to return": "בספק לחזור",
-    "doubtful": "בספק גדול",
-    "day-to-day": "יום-יומי",
-    "minutes restriction": "הגבלת דקות",
-    "starting lineup": "החמישייה הפותחת",
-    "depth chart": "רוטציה",
-    "front office": "הנהלת הקבוצה",
-    "head coach": "המאמן הראשי",
-    "assistant coach": "עוזר המאמן",
-    "general manager": "הג'נרל מנג'ר",
-    "president of basketball operations": "נשיא פעולות הכדורסל",
-    "basketball operations": "פעולות הכדורסל",
-    "salary cap": "תקרת השכר",
-    "luxury tax": "מס המותרות",
-    "tax apron": "אפרון המס",
-    "second apron": "האפרון השני",
-    "player option": "אופציית שחקן",
-    "team option": "אופציית קבוצה",
-    "non-guaranteed": "לא מובטח",
-    "guaranteed": "מובטח",
-    "hard cap": "תקרה קשיחה",
-    "double-double": "דאבל-דאבל",
-    "triple-double": "טריפל-דאבל",
-    "clutch": "קלאץ'",
-    "buzzer-beater": "סל עם הבאזר",
-    "shot clock": "שעון הזריקות",
-    "overtime": "הארכה",
-    "OT": "הארכה",
-    "MVP": "MVP",
-    "points": "נקודות",
-    "rebounds": "ריבאונדים",
-    "assists": "אסיסטים",
-    "steals": "חטיפות",
-    "blocks": "חסימות",
-    "mins": "דקות",
-    "minutes": "דקות",
     "here we go": "הנה זה קורה",
     "breaking": "דיווח דרמטי",
     "exclusive": "בלעדי",
@@ -348,89 +308,6 @@ FOOTBALL_TERMS = {
 }
 
 TEAM_REPLACEMENTS = {
-    "Atlanta Hawks": "אטלנטה הוקס",
-    "Boston Celtics": "בוסטון סלטיקס",
-    "Brooklyn Nets": "ברוקלין נטס",
-    "BrooklynNets": "ברוקלין נטס",
-    "Charlotte Hornets": "שארלוט הורנטס",
-    "Chicago Bulls": "שיקגו בולס",
-    "Cleveland Cavaliers": "קליבלנד קאבלירס",
-    "Dallas Mavericks": "דאלאס מאבריקס",
-    "Denver Nuggets": "דנבר נאגטס",
-    "Detroit Pistons": "דטרויט פיסטונס",
-    "Golden State Warriors": "גולדן סטייט ווריורס",
-    "GoldenStateWarriors": "גולדן סטייט ווריורס",
-    "Houston Rockets": "יוסטון רוקטס",
-    "Indiana Pacers": "אינדיאנה פייסרס",
-    "LA Clippers": "לוס אנג'לס קליפרס",
-    "Los Angeles Clippers": "לוס אנג'לס קליפרס",
-    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
-    "Memphis Grizzlies": "ממפיס גריזליס",
-    "Miami Heat": "מיאמי היט",
-    "Milwaukee Bucks": "מילווקי באקס",
-    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
-    "New Orleans Pelicans": "ניו אורלינס פליקנס",
-    "New York Knicks": "ניו יורק ניקס",
-    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
-    "Orlando Magic": "אורלנדו מג'יק",
-    "Philadelphia 76ers": "פילדלפיה 76'רס",
-    "Phoenix Suns": "פיניקס סאנס",
-    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
-    "Sacramento Kings": "סקרמנטו קינגס",
-    "San Antonio Spurs": "סן אנטוניו ספרס",
-    "Toronto Raptors": "טורונטו ראפטורס",
-    "Utah Jazz": "יוטה ג'אז",
-    "Washington Wizards": "וושינגטון וויזארדס",
-    "Warriors": "ווריורס",
-    "Nets": "נטס",
-    "Hawks": "הוקס",
-    "Celtics": "סלטיקס",
-    "Hornets": "הורנטס",
-    "Bulls": "בולס",
-    "Cavaliers": "קאבלירס",
-    "Cavs": "קאבס",
-    "Mavericks": "מאבריקס",
-    "Mavs": "מאבריקס",
-    "Nuggets": "נאגטס",
-    "Pistons": "פיסטונס",
-    "Rockets": "רוקטס",
-    "Pacers": "פייסרס",
-    "Clippers": "קליפרס",
-    "Lakers": "לייקרס",
-    "Grizzlies": "גריזליס",
-    "Heat": "היט",
-    "Bucks": "באקס",
-    "Timberwolves": "טימברוולבס",
-    "Lynx": "לינקס",
-    "minnesotalynx": "מינסוטה לינקס",
-    "Pelicans": "פליקנס",
-    "Knicks": "ניקס",
-    "Thunder": "ת'אנדר",
-    "Magic": "מג'יק",
-    "76ers": "76'רס",
-    "Sixers": "סיקסרס",
-    "Suns": "סאנס",
-    "Blazers": "בלייזרס",
-    "Trail Blazers": "טרייל בלייזרס",
-    "Kings": "קינגס",
-    "Spurs": "ספרס",
-    "Raptors": "ראפטורס",
-    "Jazz": "ג'אז",
-    "Wizards": "וויזארדס",
-    "הלוחמים": "הווריורס",
-    "לוחמים": "ווריורס",
-    "הרשתות": "הנטס",
-    "רשתות": "נטס",
-    "השמשות": "הסאנס",
-    "שמשות": "סאנס",
-    "קסם": "מג'יק",
-    "הקסם": "המג'יק",
-    "חלוצים": "בלייזרס",
-    "שבילים": "בלייזרס",
-    "קוצצים": "קליפרס",
-    "הקוצצים": "הקליפרס",
-    "אשפים": "וויזארדס",
-    "אשף": "וויזארדס",
     "Manchester United": "מנצ'סטר יונייטד",
     "Man United": "מנצ'סטר יונייטד",
     "Man Utd": "מנצ'סטר יונייטד",
@@ -552,16 +429,6 @@ HEBREW_FINAL_FIXES = {
     "ניקולו סקירה": "ניקולה סקירה",
     "חרארד רומרו": "ג'ראד רומרו",
     "ז'ראר רומרו": "ג'ראד רומרו",
-    "שאמש": "שאמס",
-    "שאמש צ'ראניה": "שאמס צ'ראניה",
-    "שאמש צ׳ראניה": "שאמס צ׳ראניה",
-    "נהא טודיי": "NBA Today",
-    "נבא טודיי": "NBA Today",
-    "נבה טודיי": "NBA Today",
-    "נ.ב.א טודיי": "NBA Today",
-    "אנ.בי.איי טודיי": "NBA Today",
-    "אן-בי-איי טודיי": "NBA Today",
-    "אן בי איי טודיי": "NBA Today",
     "כאן אנחנו הולכים": "הנה זה קורה",
     "הנה אנחנו הולכים": "הנה זה קורה",
     "לפי הבנתי": "לפי המידע",
@@ -608,7 +475,7 @@ STAT_REPLACEMENTS = {
     "apps": "הופעות",
 }
 
-LATIN_KEEP = {"NBA", "WNBA", "NBA Today", "VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
+LATIN_KEEP = {"VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
 
 HEBREW_LETTER = {
     "a": "א", "b": "ב", "c": "ק", "d": "ד", "e": "ה", "f": "פ",
@@ -1139,13 +1006,12 @@ def gemini_translate(text: str) -> str:
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
     prompt = (
-        "Translate this NBA / basketball news post into natural, clear Hebrew.\n"
+        "Translate this football news post into natural, clear Hebrew.\n"
         "Rules:\n"
         "- Return only the Hebrew translation.\n"
         "- Translate every word, including names and @handles, into Hebrew spelling when possible.\n"
         "- Do not include any URLs or website domains.\n"
         "- Keep numbers, transfer fees, emojis and line breaks when useful.\n"
-        "- Use common Hebrew basketball terms: טרייד, בחירת דראפט, שחקן חופשי, פלייאוף, ריבאונדים, אסיסטים.\n"
         "- Do not explain anything.\n\n"
         f"POST:\n{text}"
     )
@@ -1306,7 +1172,6 @@ def normalize_identity(text: str) -> str:
     text = clean_before_translation(text)
     text = apply_phrase_replacements(text, HANDLE_REPLACEMENTS)
     text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
-    text = re.sub(r"שאמש", "שאמס", text)
     text = re.sub(r"[^A-Za-z0-9א-ת]+", "", text).lower()
     return text
 
@@ -1344,6 +1209,7 @@ def translate_quoted_text(text: str) -> str:
     translated = translate_text(cleaned)
     if not translated:
         return cleaned
+    # If translation clearly failed, keep the original quote in English/its source language.
     if latin_ratio(translated) > 0.45:
         return cleaned
     return translated
@@ -1589,15 +1455,19 @@ def validate_settings() -> None:
 def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     first_run = not any(state.values())
     sent = 0
+    logging.info("Scan step: starting full scan for %s account(s)", len(X_ACCOUNTS))
     all_posts = fetch_all_accounts()
+    logging.info("Scan step: finished fetching all accounts")
 
     for username in X_ACCOUNTS:
         seen = set(state.get(username, []))
         posts = all_posts.get(username, [])
+        logging.info("Scan step: @%s returned %s post(s)", username, len(posts))
         if not posts:
             continue
 
         new_posts = [post for post in posts if post.post_id not in seen]
+        logging.info("Scan step: @%s has %s new post(s)", username, len(new_posts))
         if startup_cycle and SEND_LAST_POST_ON_EVERY_START:
             new_posts = posts[:1]
         elif first_run and SEND_LAST_POST_ON_FIRST_RUN:
@@ -1613,6 +1483,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                 send_post(post)
                 seen.add(post.post_id)
                 sent += 1
+                logging.info("Scan step: sent %s", post.link)
                 time.sleep(0.15)
             except Exception as exc:
                 logging.error("Failed sending %s: %s", post.link, exc)
@@ -1625,7 +1496,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
-    print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
+    print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
 
@@ -1635,7 +1506,7 @@ def main() -> None:
                 "sendMessage",
                 {
                     "chat_id": TELEGRAM_CHAT_ID,
-                    "text": "בוט ה-NBA הופעל. בודק עדכונים...",
+                    "text": "בוט הכדורגל הופעל. בודק עדכונים...",
                     "disable_web_page_preview": True,
                 },
             )
