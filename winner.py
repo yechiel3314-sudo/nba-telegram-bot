@@ -89,6 +89,7 @@ X_ACCOUNTS = [
     "Tanziloic",
     "MonfortCarlos",
     "Barca_Buzz",
+    "MadridXtra",
     "iMiaSanMia",
     "Santi_J_FM",
     "AndyMitten",
@@ -106,6 +107,7 @@ PRIORITY_X_ACCOUNTS = {
     "AranchaMOBILE",
     "JLSanchez78",
     "Barca_Buzz",
+    "MadridXtra",
     "iMiaSanMia",
     "Santi_J_FM",
     "AndyMitten",
@@ -134,6 +136,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "Tanziloic": "לואיק טנזי - צרפת",
     "MonfortCarlos": "קרלוס מונפור - ברצלונה",
     "Barca_Buzz": "בארסה באז - ברצלונה",
+    "MadridXtra": "מדריד אקסטרה - ריאל מדריד",
     "iMiaSanMia": "מיה סן מיה - באיירן",
     "Santi_J_FM": "סנטי אאונה - פריז סן ז'רמן",
     "AndyMitten": "אנדי מיטן - מנצ'סטר יונייטד",
@@ -284,6 +287,12 @@ HANDLE_REPLACEMENTS = {
     "AndyMitten": "אנדי מיטן",
 }
 
+HANDLE_REPLACEMENTS.update(
+    {
+        "MadridXtra": "מדריד אקסטרה",
+    }
+)
+
 SELF_QUOTE_ALIASES = {
     "FabrizioRomano": ["Fabrizio Romano", "פבריציו רומאנו"],
     "David_Ornstein": ["David Ornstein", "דיוויד אורנשטיין"],
@@ -311,6 +320,12 @@ SELF_QUOTE_ALIASES = {
     "Santi_J_FM": ["Santi Aouna", "סנטי אאונה"],
     "AndyMitten": ["Andy Mitten", "אנדי מיטן"],
 }
+
+SELF_QUOTE_ALIASES.update(
+    {
+        "MadridXtra": ["Madrid Xtra", "MadridXtra", "מדריד אקסטרה"],
+    }
+)
 
 FOOTBALL_TERMS = {
     "here we go": "הנה זה קורה",
@@ -993,7 +1008,6 @@ def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
     started = time.perf_counter()
     try:
         posts = fetch_posts(username)
-        logging.info("Timing: fetched @%s in %.2fs", username, time.perf_counter() - started)
         return username, posts
     except Exception as exc:
         logging.warning("Fetch failed for @%s: %s", username, exc)
@@ -1512,7 +1526,6 @@ def translate_text(text: str) -> str:
     prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
     key = translation_cache_key(prepared)
     if key in TRANSLATION_CACHE:
-        logging.info("Timing: translation cache hit in %.2fs", time.perf_counter() - started)
         return TRANSLATION_CACHE[key]
 
     providers = []
@@ -1529,14 +1542,12 @@ def translate_text(text: str) -> str:
                 polished = final_hebrew_polish(translated)
                 if polished and (provider is gemini_translate or latin_ratio(polished) <= 0.30):
                     TRANSLATION_CACHE[key] = polished
-                    logging.info("Timing: translation finished with %s in %.2fs", provider.__name__, time.perf_counter() - started)
                     return polished
             except Exception as exc:
                 logging.warning("Translation failed with %s: %s", provider.__name__, exc)
 
     fallback = final_hebrew_polish(prepared)
     TRANSLATION_CACHE[key] = fallback
-    logging.info("Timing: translation fallback in %.2fs", time.perf_counter() - started)
     return fallback
 
 
@@ -1742,7 +1753,6 @@ def send_post(post: Post) -> None:
                 },
             )
             logging.info("Post step: video with caption sent")
-            logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
             return
         except Exception as exc:
             logging.warning("Video send failed, falling back to text/link: %s", exc)
@@ -1770,7 +1780,6 @@ def send_post(post: Post) -> None:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
             logging.info("Post step: image message sent")
-            logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
             return
 
     logging.info("Post step: sending text message")
@@ -1784,7 +1793,6 @@ def send_post(post: Post) -> None:
         },
     )
     logging.info("Post step: text message sent")
-    logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
 
 
 def send_video_after_message(video_url: str) -> None:
