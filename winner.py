@@ -133,7 +133,7 @@ SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
 SHABBAT_CACHE_FILE = "football_shabbat_times_cache.json"
-MAX_PARALLEL_POST_SENDS = 4
+MAX_PARALLEL_POST_SENDS = 8
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
@@ -1090,6 +1090,20 @@ def remove_external_links(text: str) -> str:
     return text.strip()
 
 
+def remove_credit_handles(text: str) -> str:
+    text = text or ""
+    text = re.sub(
+        r"(?<!\w)@[A-Za-z0-9_]*(?:FC|CF|TV|News|Sport|Sports|Calcio|Official|Media)[A-Za-z0-9_]*\b",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(?<!\w)@[A-Za-z0-9_]*[_\d][A-Za-z0-9_]*\b", "", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
 def apply_handle_replacements(text: str) -> str:
     for source, target in sorted(HANDLE_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
         pattern = r"(?<![@A-Za-z0-9_])@?" + re.escape(source.lstrip("@")) + r"(?![A-Za-z0-9_])"
@@ -1136,13 +1150,17 @@ def remove_junk_tail_lines(text: str) -> str:
 def remove_untranslated_tail_tokens(text: str) -> str:
     cleaned_lines: list[str] = []
     for line in (text or "").splitlines():
+        line = re.sub(r"(?iu)[\wא-ת]*_[A-Za-z0-9_]*\d+[A-Za-z0-9_]*", "", line)
+        line = re.sub(r"(?iu)[\wא-ת]*(?:FC|CF|TV|News|Sport|Sports|Calcio|Official|Media)_[A-Za-z0-9_]*", "", line)
         line = re.sub(
             r"(?i)\b[A-Za-z][A-Za-z0-9_]{3,40}\.(?:com|net|org|io|app|tv|news|sport|football)(?:-\d+)?\b",
             "",
             line,
         )
         line = re.sub(r"\s+[A-Za-z][A-Za-z0-9_]{3,40}(?=[\s).,;:!?\"'׳״]*$)", "", line)
+        line = re.sub(r"[-–—]\s*([,.!?;:])", r"\1", line)
         line = re.sub(r"\s+([).,;:!?])", r"\1", line)
+        line = re.sub(r"^[\s,.;:!?-]+", "", line)
         cleaned_lines.append(line.strip())
     return "\n".join(cleaned_lines).strip()
 
@@ -1151,6 +1169,7 @@ def clean_before_translation(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
     text = apply_handle_replacements(text)
+    text = remove_credit_handles(text)
     text = convert_hashtags_to_text(text)
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
     text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
@@ -1287,6 +1306,7 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
     text = apply_handle_replacements(text)
+    text = remove_credit_handles(text)
     text = convert_hashtags_to_text(text)
     for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, FOOTBALL_TERMS, HEBREW_FINAL_FIXES):
         text = apply_phrase_replacements(text, replacements)
@@ -1661,43 +1681,9 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     first_run = not any(state.values())
     sent = 0
     logging.info("Scan step: starting full scan for %s account(s)", len(X_ACCOUNTS))
-    all_posts = fetch_all_accounts()
-    logging.info("Scan step: finished fetching all accounts")
-    posts_to_send: list[tuple[str, Post]] = []
-
-    for username in X_ACCOUNTS:
-        seen = set(state.get(username, []))
-        posts = all_posts.get(username, [])
-        logging.info("Scan step: @%s returned %s post(s)", username, len(posts))
-        if not posts:
-            continue
-
-        new_posts = [post for post in posts if post.post_id not in seen]
-        logging.info("Scan step: @%s has %s new post(s)", username, len(new_posts))
-        if startup_cycle and SEND_LAST_POST_ON_EVERY_START:
-            new_posts = posts[:1]
-        elif first_run and SEND_LAST_POST_ON_FIRST_RUN:
-            new_posts = posts[:1]
-        elif first_run:
-            for post in posts:
-                seen.add(post.post_id)
-            state[username] = list(seen)[-500:]
-            continue
-
-        for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
-            if is_podcast_or_longform_post(post):
-                seen.add(post.post_id)
-                logging.info("Scan step: filtered podcast/longform post %s", post.link)
-                continue
-            posts_to_send.append((username, post))
-
-        state[username] = list(seen)[-500:]
-
-    if not posts_to_send:
-        return sent
-
-    logging.info("Send step: sending %s post(s) with up to %s worker(s)", len(posts_to_send), MAX_PARALLEL_POST_SENDS)
-    workers = min(MAX_PARALLEL_POST_SENDS, len(posts_to_send))
+    fetch_workers = min(MAX_PARALLEL_ACCOUNT_CHECKS, max(1, len(X_ACCOUNTS)))
+    send_executor = ThreadPoolExecutor(max_workers=MAX_PARALLEL_POST_SENDS)
+    send_futures = []
 
     def send_task(item: tuple[str, Post]) -> tuple[str, str, str, bool]:
         username, post = item
@@ -1708,9 +1694,40 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             logging.error("Failed sending %s: %s", post.link, exc)
             return username, post.post_id, post.link, False
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(send_task, item) for item in posts_to_send]
-        for future in as_completed(futures):
+    try:
+        with ThreadPoolExecutor(max_workers=fetch_workers) as fetch_executor:
+            future_map = {fetch_executor.submit(fetch_posts_safely, username): username for username in X_ACCOUNTS}
+            for future in as_completed(future_map):
+                username, posts = future.result()
+                seen = set(state.get(username, []))
+                logging.info("Scan step: @%s returned %s post(s)", username, len(posts))
+                if not posts:
+                    continue
+
+                new_posts = [post for post in posts if post.post_id not in seen]
+                logging.info("Scan step: @%s has %s new post(s)", username, len(new_posts))
+                if startup_cycle and SEND_LAST_POST_ON_EVERY_START:
+                    new_posts = posts[:1]
+                elif first_run and SEND_LAST_POST_ON_FIRST_RUN:
+                    new_posts = posts[:1]
+                elif first_run:
+                    for post in posts:
+                        seen.add(post.post_id)
+                    state[username] = list(seen)[-500:]
+                    continue
+
+                for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
+                    if is_podcast_or_longform_post(post):
+                        seen.add(post.post_id)
+                        logging.info("Scan step: filtered podcast/longform post %s", post.link)
+                        continue
+                    send_futures.append(send_executor.submit(send_task, (username, post)))
+                    logging.info("Send step: queued %s", post.link)
+
+                state[username] = list(seen)[-500:]
+
+        logging.info("Scan step: finished fetching all accounts")
+        for future in as_completed(send_futures):
             username, post_id, link, ok = future.result()
             if not ok:
                 continue
@@ -1719,6 +1736,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             state[username] = list(seen)[-500:]
             sent += 1
             logging.info("Scan step: sent %s", link)
+    finally:
+        send_executor.shutdown(wait=True, cancel_futures=False)
 
     return sent
 
