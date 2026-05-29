@@ -36,10 +36,12 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 # ====== SETTINGS ======
@@ -123,6 +125,15 @@ MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
+SHABBAT_MODE_ENABLED = True
+SHABBAT_TIMEZONE = "Asia/Jerusalem"
+SHABBAT_HEBCAL_GEOID = "281184"  # Jerusalem
+SHABBAT_HAVDALAH_MINUTES = 50
+SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
+SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
+SHABBAT_SLEEP_SECONDS = 300
+SHABBAT_CACHE_FILE = "football_shabbat_times_cache.json"
+MAX_PARALLEL_POST_SENDS = 4
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
@@ -148,6 +159,45 @@ BARE_EXTERNAL_DOMAIN_RE = re.compile(
 URL_RE = re.compile(
     r"https?://[^\s<>()\"']+|www\.[^\s<>()\"']+|(?<!@)\b(?:t\.co|x\.com|twitter\.com)/\S+",
     re.IGNORECASE,
+)
+
+PODCAST_BLOCK_PATTERNS = (
+    r"\bpodcast\b",
+    r"\bfull\s+episode\b",
+    r"\bfull\s+show\b",
+    r"\blisten\s+(?:now|to|here)\b",
+    r"\bwatch\s+(?:now|the\s+full|here)\b",
+    r"\bnew\s+episode\b",
+    r"\bepisode\s+\d+\b",
+    r"האזינו",
+    r"להאזנה",
+    r"פודקאסט",
+    r"הפודקאסט",
+    r"צפו\s+בפודקאסט",
+    r"צפו\s+בפרק",
+    r"פרק\s+מלא",
+    r"הפרק\s+המלא",
+    r"לצפייה\s+בפרק",
+    r"לצפייה\s+בפודקאסט",
+    r"פרק\s+חדש",
+)
+
+PODCAST_DOMAINS = (
+    "spotify.com",
+    "open.spotify.com",
+    "podcasts.apple.com",
+    "apple.co",
+    "podcasts.google.com",
+    "anchor.fm",
+    "podbean.com",
+    "buzzsprout.com",
+    "megaphone.fm",
+    "omny.fm",
+    "simplecast.com",
+    "acast.com",
+    "audioboom.com",
+    "iheart.com",
+    "soundcloud.com",
 )
 
 
@@ -414,8 +464,8 @@ PLAYER_REPLACEMENTS = {
     "Rafael Leao": "רפאל לאאו",
     "Rafael Leão": "רפאל לאאו",
     "Xavi Simons": "צ'אבי סימונס",
-    "Julian Alvarez": "ג'וליאן אלווארז",
-    "Julián Álvarez": "ג'וליאן אלווארז",
+    "Julian Alvarez": "חוליאן אלבארס",
+    "Julián Álvarez": "חוליאן אלבארס",
     "Gabriel Jesus": "גבריאל ז'סוס",
     "Massimiliano Allegri": "מסימיליאנו אלגרי",
     "Antonio Conte": "אנטוניו קונטה",
@@ -427,6 +477,11 @@ HEBREW_FINAL_FIXES = {
     "ניקולה שירה": "ניקולה סקירה",
     "ניקולו שירה": "ניקולה סקירה",
     "ניקולו סקירה": "ניקולה סקירה",
+    "ניקולבה סקירה": "ניקולה סקירה",
+    "ג'וליאן אלווארז": "חוליאן אלבארס",
+    "ג׳וליאן אלווארז": "חוליאן אלבארס",
+    "ג'וליאן אלוורז": "חוליאן אלבארס",
+    "ג׳וליאן אלוורז": "חוליאן אלבארס",
     "חרארד רומרו": "ג'ראד רומרו",
     "ז'ראר רומרו": "ג'ראד רומרו",
     "כאן אנחנו הולכים": "הנה זה קורה",
@@ -878,6 +933,141 @@ def fetch_all_accounts() -> dict[str, list[Post]]:
     return results
 
 
+def shabbat_cache_path() -> Path:
+    return Path(__file__).resolve().parent / SHABBAT_CACHE_FILE
+
+
+def parse_hebcal_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo(SHABBAT_TIMEZONE))
+    except Exception:
+        return None
+
+
+def fallback_shabbat_now(now: datetime) -> bool:
+    # Conservative offline fallback: Friday afternoon through Saturday night.
+    return (now.weekday() == 4 and now.hour >= 16) or (now.weekday() == 5 and now.hour < 21)
+
+
+def load_shabbat_windows_from_cache(now: datetime) -> list[tuple[datetime, datetime]]:
+    path = shabbat_cache_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        fetched_at = parse_hebcal_datetime(str(data.get("fetched_at", "")))
+        if not fetched_at or (now - fetched_at).total_seconds() > SHABBAT_HEBCAL_CACHE_SECONDS:
+            return []
+        windows: list[tuple[datetime, datetime]] = []
+        for item in data.get("windows", []):
+            start = parse_hebcal_datetime(str(item.get("start", "")))
+            end = parse_hebcal_datetime(str(item.get("end", "")))
+            if start and end:
+                windows.append((start, end))
+        return windows
+    except Exception:
+        return []
+
+
+def save_shabbat_windows_to_cache(windows: list[tuple[datetime, datetime]], now: datetime) -> None:
+    try:
+        payload = {
+            "fetched_at": now.isoformat(),
+            "windows": [{"start": start.isoformat(), "end": end.isoformat()} for start, end in windows],
+        }
+        path = shabbat_cache_path()
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(path)
+    except Exception as exc:
+        logging.warning("Shabbat mode: could not save Hebcal cache: %s", exc)
+
+
+def fetch_shabbat_windows(now: datetime) -> list[tuple[datetime, datetime]]:
+    start = (now.date() - timedelta(days=2)).isoformat()
+    end = (now.date() + timedelta(days=9)).isoformat()
+    url = (
+        "https://www.hebcal.com/hebcal?"
+        f"cfg=json&v=1&geonameid={urllib.parse.quote(SHABBAT_HEBCAL_GEOID)}"
+        f"&maj=on&min=off&mod=off&nx=off&ss=on&mf=on&c=on&m={SHABBAT_HAVDALAH_MINUTES}"
+        f"&start={urllib.parse.quote(start)}&end={urllib.parse.quote(end)}"
+    )
+    data = json.loads(http_get_once(url, timeout=SHABBAT_HEBCAL_TIMEOUT_SECONDS).decode("utf-8"))
+    candles: list[datetime] = []
+    havdalahs: list[datetime] = []
+    for item in data.get("items", []):
+        category = item.get("category")
+        when = parse_hebcal_datetime(str(item.get("date", "")))
+        if not when:
+            continue
+        if category == "candles":
+            candles.append(when)
+        elif category == "havdalah":
+            havdalahs.append(when)
+
+    windows: list[tuple[datetime, datetime]] = []
+    for candle_time in sorted(candles):
+        ending = next((havdalah for havdalah in sorted(havdalahs) if havdalah > candle_time), None)
+        if ending:
+            windows.append((candle_time, ending))
+    return windows
+
+
+def is_shabbat_now() -> bool:
+    if not SHABBAT_MODE_ENABLED:
+        return False
+    now = datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    windows = load_shabbat_windows_from_cache(now)
+    if not windows:
+        try:
+            windows = fetch_shabbat_windows(now)
+            save_shabbat_windows_to_cache(windows, now)
+            logging.info("Shabbat mode: Hebcal times refreshed")
+        except Exception as exc:
+            logging.warning("Shabbat mode: Hebcal unavailable, using fallback times: %s", exc)
+            return fallback_shabbat_now(now)
+    return any(start <= now <= end for start, end in windows)
+
+
+def mark_existing_posts_seen(state: dict[str, list[str]]) -> None:
+    logging.info("Shabbat mode: marking existing posts as seen without sending")
+    all_posts = fetch_all_accounts()
+    for username in X_ACCOUNTS:
+        seen = set(state.get(username, []))
+        for post in all_posts.get(username, []):
+            seen.add(post.post_id)
+        state[username] = list(seen)[-500:]
+
+
+def has_linkish_text(text: str) -> bool:
+    return bool(URL_RE.search(text or "") or BARE_EXTERNAL_DOMAIN_RE.search(text or ""))
+
+
+def is_podcast_or_longform_post(post: Post) -> bool:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    lowered = raw_text.lower()
+    has_podcast_phrase = any(re.search(pattern, raw_text, re.IGNORECASE) for pattern in PODCAST_BLOCK_PATTERNS)
+    has_podcast_domain = any(domain in lowered for domain in PODCAST_DOMAINS)
+    has_youtube = "youtube.com" in lowered or "youtu.be" in lowered
+    has_longform_youtube_hint = has_youtube and any(
+        hint in lowered
+        for hint in (
+            "podcast",
+            "full episode",
+            "full show",
+            "watch the full",
+            "listen",
+            "פודקאסט",
+            "האזינו",
+            "פרק מלא",
+            "הפרק המלא",
+        )
+    )
+    return (has_linkish_text(raw_text) and has_podcast_phrase) or has_podcast_domain or has_longform_youtube_hint
+
+
 def apply_phrase_replacements(text: str, replacements: dict[str, str]) -> str:
     for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         if re.fullmatch(r"[A-Za-z0-9 ._'’:-]+", source):
@@ -941,6 +1131,20 @@ def remove_junk_tail_lines(text: str) -> str:
             continue
         break
     return "\n".join(lines).strip()
+
+
+def remove_untranslated_tail_tokens(text: str) -> str:
+    cleaned_lines: list[str] = []
+    for line in (text or "").splitlines():
+        line = re.sub(
+            r"(?i)\b[A-Za-z][A-Za-z0-9_]{3,40}\.(?:com|net|org|io|app|tv|news|sport|football)(?:-\d+)?\b",
+            "",
+            line,
+        )
+        line = re.sub(r"\s+[A-Za-z][A-Za-z0-9_]{3,40}(?=[\s).,;:!?\"'׳״]*$)", "", line)
+        line = re.sub(r"\s+([).,;:!?])", r"\1", line)
+        cleaned_lines.append(line.strip())
+    return "\n".join(cleaned_lines).strip()
 
 
 def clean_before_translation(text: str) -> str:
@@ -1097,6 +1301,7 @@ def final_hebrew_polish(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n+ *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = remove_untranslated_tail_tokens(text)
     text = remove_junk_tail_lines(text)
     return text.strip()
 
@@ -1458,6 +1663,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     logging.info("Scan step: starting full scan for %s account(s)", len(X_ACCOUNTS))
     all_posts = fetch_all_accounts()
     logging.info("Scan step: finished fetching all accounts")
+    posts_to_send: list[tuple[str, Post]] = []
 
     for username in X_ACCOUNTS:
         seen = set(state.get(username, []))
@@ -1479,16 +1685,40 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             continue
 
         for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
-            try:
-                send_post(post)
+            if is_podcast_or_longform_post(post):
                 seen.add(post.post_id)
-                sent += 1
-                logging.info("Scan step: sent %s", post.link)
-                time.sleep(0.15)
-            except Exception as exc:
-                logging.error("Failed sending %s: %s", post.link, exc)
+                logging.info("Scan step: filtered podcast/longform post %s", post.link)
+                continue
+            posts_to_send.append((username, post))
 
         state[username] = list(seen)[-500:]
+
+    if not posts_to_send:
+        return sent
+
+    logging.info("Send step: sending %s post(s) with up to %s worker(s)", len(posts_to_send), MAX_PARALLEL_POST_SENDS)
+    workers = min(MAX_PARALLEL_POST_SENDS, len(posts_to_send))
+
+    def send_task(item: tuple[str, Post]) -> tuple[str, str, str, bool]:
+        username, post = item
+        try:
+            send_post(post)
+            return username, post.post_id, post.link, True
+        except Exception as exc:
+            logging.error("Failed sending %s: %s", post.link, exc)
+            return username, post.post_id, post.link, False
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(send_task, item) for item in posts_to_send]
+        for future in as_completed(futures):
+            username, post_id, link, ok = future.result()
+            if not ok:
+                continue
+            seen = set(state.get(username, []))
+            seen.add(post_id)
+            state[username] = list(seen)[-500:]
+            sent += 1
+            logging.info("Scan step: sent %s", link)
 
     return sent
 
@@ -1514,10 +1744,28 @@ def main() -> None:
             logging.error("Startup Telegram test message failed: %s", exc)
 
     startup_cycle = True
+    skipped_for_shabbat = False
     while True:
         cycle_started = time.time()
         try:
+            if is_shabbat_now():
+                if not skipped_for_shabbat:
+                    logging.info("Shabbat mode: active. Bot will not scan, send, or save state.")
+                skipped_for_shabbat = True
+                time.sleep(SHABBAT_SLEEP_SECONDS)
+                continue
+
             state = load_state()
+            if skipped_for_shabbat:
+                mark_existing_posts_seen(state)
+                save_state(state)
+                save_translation_cache(TRANSLATION_CACHE)
+                skipped_for_shabbat = False
+                startup_cycle = False
+                logging.info("Shabbat mode: ended. Existing Shabbat posts were marked as seen without sending.")
+                time.sleep(CHECK_EVERY_SECONDS)
+                continue
+
             sent = run_once(state, startup_cycle=startup_cycle)
             startup_cycle = False
             save_state(state)
