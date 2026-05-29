@@ -15,17 +15,17 @@ from urllib3.util.retry import Retry
 
 
 # ==============================
-# Proxy bypass
+# Proxy bypass / YouTube attempts
 # ==============================
-# Forces direct connections even when Windows, Python, or the hosting panel
-# has HTTP_PROXY / HTTPS_PROXY / ALL_PROXY configured.
 FORCE_DIRECT_CONNECTION = True
 YOUTUBE_PROXY = os.getenv("YOUTUBE_PROXY", "").strip()
+
 YOUTUBE_GEO_BYPASS_COUNTRIES = [
     country.strip()
     for country in os.getenv("YOUTUBE_GEO_BYPASS_COUNTRIES", "IL,US").split(",")
     if country.strip()
 ]
+
 YOUTUBE_PLAYER_CLIENTS = [
     ["android"],
     ["ios"],
@@ -34,20 +34,16 @@ YOUTUBE_PLAYER_CLIENTS = [
     ["tv_embedded"],
 ]
 
+MAX_YOUTUBE_DOWNLOAD_ATTEMPTS = 3
+
 
 def disable_proxy_environment():
     if not FORCE_DIRECT_CONNECTION:
         return
 
     for key in (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "no_proxy",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
     ):
         os.environ.pop(key, None)
 
@@ -62,8 +58,14 @@ TELEGRAM_TOKEN = os.getenv(
     "TELEGRAM_TOKEN",
     "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss",
 ).strip()
+
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1003808107418").strip()
-SEND_LINK_WHEN_DOWNLOAD_BLOCKED = os.getenv("SEND_LINK_WHEN_DOWNLOAD_BLOCKED", "false").lower() == "true"
+
+# False = if video download is blocked, send nothing.
+SEND_LINK_WHEN_DOWNLOAD_BLOCKED = os.getenv(
+    "SEND_LINK_WHEN_DOWNLOAD_BLOCKED",
+    "false",
+).lower() == "true"
 
 
 # ==============================
@@ -75,7 +77,6 @@ TIMEZONE = ZoneInfo("Asia/Jerusalem")
 SEND_AT = datetime_time(hour=9, minute=15)
 CHECK_EVERY_SECONDS = 30
 
-# שימי True רק לבדיקה ראשונה, ואז להחזיר ל-False
 SEND_LATEST_ON_START_FOR_TEST = False
 
 DOWNLOAD_DIR = Path("downloaded_videos")
@@ -171,7 +172,7 @@ def save_state():
 # ==============================
 def send_telegram_video(video_path, title):
     if not TELEGRAM_TOKEN:
-        print("Missing TELEGRAM_TOKEN environment variable")
+        print("Missing TELEGRAM_TOKEN")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo"
@@ -204,7 +205,7 @@ def send_telegram_video(video_path, title):
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN:
-        print("Missing TELEGRAM_TOKEN environment variable")
+        print("Missing TELEGRAM_TOKEN")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -416,9 +417,18 @@ def download_youtube_video(video):
 
     output_template = str(DOWNLOAD_DIR / f"{video['id']}.%(ext)s")
     had_permanent_error = False
+    attempts = 0
 
     for geo_country in YOUTUBE_GEO_BYPASS_COUNTRIES:
         for player_clients in YOUTUBE_PLAYER_CLIENTS:
+            if attempts >= MAX_YOUTUBE_DOWNLOAD_ATTEMPTS:
+                print(f"Stopped after {MAX_YOUTUBE_DOWNLOAD_ATTEMPTS} download attempts")
+                if had_permanent_error:
+                    return "SKIP_PERMANENT_YOUTUBE_ERROR"
+                return None
+
+            attempts += 1
+
             ydl_opts = build_youtube_download_options(
                 output_template,
                 geo_country,
