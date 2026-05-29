@@ -510,8 +510,15 @@ def claim_event(event_key):
         digest = hashlib.sha256(event_key.encode("utf-8")).hexdigest()
         marker_path = os.path.join(SENT_EVENTS_DIR, f"{digest}.done")
 
+        # בדיקה גם מול ה-cache, כדי למנוע כפילויות גם אם קובץ הסימון לא קיים
+        if digest in cache.get("sent_events", {}):
+            return False
+
         fd = os.open(marker_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.close(fd)
+        try:
+            os.write(fd, event_key.encode("utf-8"))
+        finally:
+            os.close(fd)
 
         cache["sent_events"][digest] = {
             "event_key": event_key,
@@ -527,7 +534,7 @@ def claim_event(event_key):
     except Exception as e:
         print(f"❌ שגיאה ב-claim_event: {e}")
         return False
-
+        
 def release_event(event_key):
     try:
         digest = hashlib.sha256(event_key.encode("utf-8")).hexdigest()
@@ -845,17 +852,17 @@ def send_telegram(text, photo_url=None, event_key=None):
     global CURRENT_SHABBAT_OR_YOM_TOV
 
     if CURRENT_SHABBAT_OR_YOM_TOV:
-        print("?? ???/?? ???? - ?????? ?? ?????")
+        print("שבת/חג עכשיו - ההודעה לא נשלחת")
         return False
 
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("? ??? TELEGRAM_TOKEN ?? TELEGRAM_CHAT_ID ?????? ??????")
+        print("חסר TELEGRAM_TOKEN או CHAT_ID")
         return False
 
     claimed = False
     if event_key:
         if not claim_event(event_key):
-            print("?? ????? ????? ????? (event already claimed)")
+            print("האירוע כבר נשלח בעבר (event already claimed)")
             return False
         claimed = True
 
@@ -871,18 +878,21 @@ def send_telegram(text, photo_url=None, event_key=None):
                 data={**payload, "photo": photo_url, "caption": safe_text},
                 timeout=20
             )
+
         elif photo_url:
             r = SESSION.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
                 data={**payload, "photo": photo_url},
                 timeout=20
             )
+
             if r.status_code == 200:
                 r = SESSION.post(
                     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                     data={**payload, "text": safe_text[:4096]},
                     timeout=15
                 )
+
         else:
             r = SESSION.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -891,18 +901,22 @@ def send_telegram(text, photo_url=None, event_key=None):
             )
 
         if r.status_code == 200:
-            print("?? ???? (?????)")
+            print("✅ הודעה נשלחה")
             return True
 
-        print(f"? ????? ????? ????? {r.status_code}: {r.text}")
-        if claimed:
-            release_event(event_key)
+        print(f"❌ שגיאת Telegram {r.status_code}: {r.text}")
+
+        # חשוב:
+        # לא משחררים event_key אוטומטית.
+        # אחרת אם Telegram שלח בפועל אבל החזיר timeout/שגיאה זמנית,
+        # הסריקה הבאה תשלח את אותה הודעה שוב.
         return False
 
     except requests.RequestException as e:
-        print(f"? ????? ??????: {e}")
-        if claimed:
-            release_event(event_key)
+        print(f"❌ שגיאת רשת בשליחת Telegram: {e}")
+
+        # גם כאן לא עושים release_event.
+        # Timeout יכול לקרות אחרי שההודעה כבר נשלחה בפועל.
         return False
 
 def safe_get_json(url, timeout=10):
