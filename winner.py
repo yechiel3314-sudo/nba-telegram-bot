@@ -64,6 +64,7 @@ GEMINI_API_KEYS = [
     if key.strip()
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 
 X_ACCOUNTS = [
     "FabrizioRomano",
@@ -87,7 +88,29 @@ X_ACCOUNTS = [
     "FabriceHawkins",
     "Tanziloic",
     "MonfortCarlos",
+    "MadridXtra",
+    "ManagingBarca",
+    "Barca_Buzz",
+    "JijantesFC",
+    "iMiaSanMia",
 ]
+
+PRIORITY_X_ACCOUNTS = {
+    "FabrizioRomano",
+    "David_Ornstein",
+    "DiMarzio",
+    "JacobsBen",
+    "NicoSchira",
+    "MatteMoretto",
+    "ffpolo",
+    "gerardromero",
+    "AranchaMOBILE",
+    "JLSanchez78",
+    "MadridXtra",
+    "ManagingBarca",
+    "Barca_Buzz",
+    "JijantesFC",
+}
 
 ACCOUNT_DISPLAY_NAMES = {
     "FabrizioRomano": "פבריציו רומאנו - כללי",
@@ -111,6 +134,11 @@ ACCOUNT_DISPLAY_NAMES = {
     "FabriceHawkins": "פבריס הוקינס - צרפת",
     "Tanziloic": "לואיק טנזי - צרפת",
     "MonfortCarlos": "קרלוס מונפור - ברצלונה",
+    "MadridXtra": "מדריד אקסטרה - ריאל מדריד",
+    "ManagingBarca": "מנג'ינג בארסה - ברצלונה",
+    "Barca_Buzz": "בארסה באז - ברצלונה",
+    "JijantesFC": "ג'יגאנטס - ברצלונה",
+    "iMiaSanMia": "מיה סן מיה - באיירן",
 }
 
 TARGET_LANGUAGE = "he"
@@ -119,8 +147,8 @@ HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 4
 FEED_COLLECTION_TIMEOUT_SECONDS = 5
-MAX_PARALLEL_ACCOUNT_CHECKS = 28
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 4
+MAX_PARALLEL_ACCOUNT_CHECKS = 40
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
@@ -146,6 +174,9 @@ FEED_TEMPLATES = [
     "https://rsshub.rssforever.com/twitter/user/{username}",
     "https://nitter.net/{username}/rss",
     "https://nitter.poast.org/{username}/rss",
+    "https://nitter.privacydev.net/{username}/rss",
+    "https://nitter.tiekoetter.com/{username}/rss",
+    "https://nitter.oksocial.net/{username}/rss",
 ]
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
@@ -915,18 +946,27 @@ def fetch_posts(username: str) -> list[Post]:
 
 
 def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    started = time.perf_counter()
     try:
-        return username, fetch_posts(username)
+        posts = fetch_posts(username)
+        logging.info("Timing: fetched @%s in %.2fs", username, time.perf_counter() - started)
+        return username, posts
     except Exception as exc:
         logging.warning("Fetch failed for @%s: %s", username, exc)
         return username, []
+
+
+def ordered_accounts() -> list[str]:
+    priority = [username for username in X_ACCOUNTS if username in PRIORITY_X_ACCOUNTS]
+    regular = [username for username in X_ACCOUNTS if username not in PRIORITY_X_ACCOUNTS]
+    return priority + regular
 
 
 def fetch_all_accounts() -> dict[str, list[Post]]:
     results: dict[str, list[Post]] = {username: [] for username in X_ACCOUNTS}
     workers = min(MAX_PARALLEL_ACCOUNT_CHECKS, max(1, len(X_ACCOUNTS)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {executor.submit(fetch_posts_safely, username): username for username in X_ACCOUNTS}
+        future_map = {executor.submit(fetch_posts_safely, username): username for username in ordered_accounts()}
         for future in as_completed(future_map):
             username, posts = future.result()
             results[username] = posts
@@ -1034,7 +1074,7 @@ def is_shabbat_now() -> bool:
 def mark_existing_posts_seen(state: dict[str, list[str]]) -> None:
     logging.info("Shabbat mode: marking existing posts as seen without sending")
     all_posts = fetch_all_accounts()
-    for username in X_ACCOUNTS:
+    for username in ordered_accounts():
         seen = set(state.get(username, []))
         for post in all_posts.get(username, []):
             seen.add(post.post_id)
@@ -1241,7 +1281,7 @@ def load_translation_cache() -> dict[str, str]:
 
 def save_translation_cache(cache: dict[str, str]) -> None:
     try:
-        trimmed = dict(list(cache.items())[-2000:])
+        trimmed = dict(list(cache.items())[-10000:])
         path = cache_path()
         temp_path = path.with_suffix(path.suffix + ".tmp")
         temp_path.write_text(json.dumps(trimmed, ensure_ascii=False), encoding="utf-8")
@@ -1254,7 +1294,7 @@ TRANSLATION_CACHE = load_translation_cache()
 
 
 def translation_cache_key(text: str) -> str:
-    model = GEMINI_MODEL if GEMINI_API_KEYS else "free"
+    model = GEMINI_FAST_MODEL if GEMINI_API_KEYS else "free"
     return hashlib.sha256(f"{model}\n{text}".encode("utf-8")).hexdigest()
 
 
@@ -1291,10 +1331,10 @@ def gemini_translate(text: str) -> str:
     for key in GEMINI_API_KEYS:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{urllib.parse.quote(GEMINI_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
+            f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
         )
         try:
-            data = http_post_json(url, payload, timeout=45)
+            data = http_post_json(url, payload, timeout=25)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
             if translated:
@@ -1386,6 +1426,7 @@ def translate_in_sentences(text: str) -> str:
 
 
 def translate_text(text: str) -> str:
+    started = time.perf_counter()
     cleaned = clean_before_translation(text)
     if not cleaned:
         return ""
@@ -1394,6 +1435,7 @@ def translate_text(text: str) -> str:
     prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
     key = translation_cache_key(prepared)
     if key in TRANSLATION_CACHE:
+        logging.info("Timing: translation cache hit in %.2fs", time.perf_counter() - started)
         return TRANSLATION_CACHE[key]
 
     providers = []
@@ -1410,12 +1452,14 @@ def translate_text(text: str) -> str:
                 polished = final_hebrew_polish(translated)
                 if polished and (provider is gemini_translate or latin_ratio(polished) <= 0.30):
                     TRANSLATION_CACHE[key] = polished
+                    logging.info("Timing: translation finished with %s in %.2fs", provider.__name__, time.perf_counter() - started)
                     return polished
             except Exception as exc:
                 logging.warning("Translation failed with %s: %s", provider.__name__, exc)
 
     fallback = final_hebrew_polish(prepared)
     TRANSLATION_CACHE[key] = fallback
+    logging.info("Timing: translation fallback in %.2fs", time.perf_counter() - started)
     return fallback
 
 
@@ -1577,6 +1621,7 @@ def build_message(
 
 
 def send_post(post: Post) -> None:
+    started = time.perf_counter()
     logging.info("Post step: preparing @%s %s", post.username, post.link)
     translated = translate_text(post.text)
     logging.info("Post step: main text translated")
@@ -1620,6 +1665,7 @@ def send_post(post: Post) -> None:
                 },
             )
             logging.info("Post step: video with caption sent")
+            logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
             return
         except Exception as exc:
             logging.warning("Video send failed, falling back to text/link: %s", exc)
@@ -1647,6 +1693,7 @@ def send_post(post: Post) -> None:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
             logging.info("Post step: image message sent")
+            logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
             return
 
     logging.info("Post step: sending text message")
@@ -1660,6 +1707,7 @@ def send_post(post: Post) -> None:
         },
     )
     logging.info("Post step: text message sent")
+    logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
 
 
 def send_video_after_message(video_url: str) -> None:
@@ -1723,6 +1771,7 @@ def validate_settings() -> None:
 
 
 def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
+    cycle_started = time.perf_counter()
     first_run = not any(state.values())
     sent = 0
     logging.info("Scan step: starting full scan for %s account(s)", len(X_ACCOUNTS))
@@ -1741,7 +1790,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
 
     try:
         with ThreadPoolExecutor(max_workers=fetch_workers) as fetch_executor:
-            future_map = {fetch_executor.submit(fetch_posts_safely, username): username for username in X_ACCOUNTS}
+            future_map = {fetch_executor.submit(fetch_posts_safely, username): username for username in ordered_accounts()}
             for future in as_completed(future_map):
                 username, posts = future.result()
                 seen = set(state.get(username, []))
@@ -1788,6 +1837,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     finally:
         send_executor.shutdown(wait=True, cancel_futures=False)
 
+    logging.info("Timing: cycle finished in %.2fs, sent %s post(s)", time.perf_counter() - cycle_started, sent)
     return sent
 
 
