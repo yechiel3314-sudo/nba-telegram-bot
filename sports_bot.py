@@ -1289,9 +1289,11 @@ def rtl(text: str) -> str:
 
 
 def telegram_api(method: str, payload: dict[str, Any]) -> None:
+    logging.info("Telegram step: calling %s", method)
     response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload)
     if not response.get("ok"):
         raise RuntimeError(f"Telegram error: {response}")
+    logging.info("Telegram step: %s succeeded", method)
 
 
 def trim(text: str, limit: int) -> str:
@@ -1351,14 +1353,23 @@ def build_message(
 
 
 def send_post(post: Post) -> None:
+    logging.info("Post step: preparing @%s %s", post.username, post.link)
     translated = translate_text(post.text)
+    logging.info("Post step: main text translated")
     if is_self_quote(post):
+        logging.info("Post step: self-quote detected, skipping quoted post")
         quoted_translated = ""
         quoted_author_translated = ""
     else:
         quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
         quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
+        if post.quoted_text:
+            logging.info("Post step: quoted post translated")
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    if video_url:
+        logging.info("Post step: sendable video found under %s MB", MAX_VIDEO_BYTES // 1024 // 1024)
+    elif post.has_video:
+        logging.info("Post step: video exists, but no sendable direct video URL was found")
     message = build_message(
         post,
         translated,
@@ -1366,9 +1377,36 @@ def send_post(post: Post) -> None:
         quoted_author_translated,
         include_video_link=not bool(video_url),
     )
-    images = post.image_urls[:MAX_IMAGES_PER_POST]
+    images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
+
+    if video_url:
+        try:
+            logging.info("Post step: sending video with caption")
+            telegram_api(
+                "sendVideo",
+                {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "video": video_url,
+                    "caption": trim_keep_ending(message, 1024),
+                    "parse_mode": "HTML",
+                    "supports_streaming": True,
+                },
+            )
+            logging.info("Post step: video with caption sent")
+            return
+        except Exception as exc:
+            logging.warning("Video send failed, falling back to text/link: %s", exc)
+            message = build_message(
+                post,
+                translated,
+                quoted_translated,
+                quoted_author_translated,
+                include_video_link=True,
+            )
+            images = []
 
     if images:
+        logging.info("Post step: sending %s image(s) with caption", len(images))
         media: list[dict[str, Any]] = []
         for index, image_url in enumerate(images):
             item: dict[str, Any] = {"type": "photo", "media": image_url}
@@ -1381,9 +1419,10 @@ def send_post(post: Post) -> None:
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
-            send_video_after_message(video_url)
+            logging.info("Post step: image message sent")
             return
 
+    logging.info("Post step: sending text message")
     telegram_api(
         "sendMessage",
         {
@@ -1393,7 +1432,7 @@ def send_post(post: Post) -> None:
             "parse_mode": "HTML",
         },
     )
-    send_video_after_message(video_url)
+    logging.info("Post step: text message sent")
 
 
 def send_video_after_message(video_url: str) -> None:
@@ -1493,7 +1532,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
     print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
