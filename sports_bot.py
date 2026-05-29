@@ -1353,23 +1353,15 @@ def build_message(
 
 
 def send_post(post: Post) -> None:
-    logging.info("Post step: preparing @%s %s", post.username, post.link)
     translated = translate_text(post.text)
-    logging.info("Post step: main text translated")
     if is_self_quote(post):
-        logging.info("Post step: self-quote detected, skipping quoted post")
         quoted_translated = ""
         quoted_author_translated = ""
     else:
         quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
         quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
-        if post.quoted_text:
-            logging.info("Post step: quoted post translated")
+
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
-    if video_url:
-        logging.info("Post step: sendable video found under %s MB", MAX_VIDEO_BYTES // 1024 // 1024)
-    elif post.has_video:
-        logging.info("Post step: video exists, but no sendable direct video URL was found")
     message = build_message(
         post,
         translated,
@@ -1377,11 +1369,12 @@ def send_post(post: Post) -> None:
         quoted_author_translated,
         include_video_link=not bool(video_url),
     )
+
+    # If the post has video, do not send the preview image separately.
     images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
 
     if video_url:
         try:
-            logging.info("Post step: sending video with caption")
             telegram_api(
                 "sendVideo",
                 {
@@ -1392,10 +1385,9 @@ def send_post(post: Post) -> None:
                     "supports_streaming": True,
                 },
             )
-            logging.info("Post step: video with caption sent")
             return
         except Exception as exc:
-            logging.warning("Video send failed, falling back to text/link: %s", exc)
+            logging.warning("Could not send video with caption, falling back to text only: %s", exc)
             message = build_message(
                 post,
                 translated,
@@ -1406,7 +1398,6 @@ def send_post(post: Post) -> None:
             images = []
 
     if images:
-        logging.info("Post step: sending %s image(s) with caption", len(images))
         media: list[dict[str, Any]] = []
         for index, image_url in enumerate(images):
             item: dict[str, Any] = {"type": "photo", "media": image_url}
@@ -1416,13 +1407,10 @@ def send_post(post: Post) -> None:
             media.append(item)
         try:
             telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
+            return
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
-        else:
-            logging.info("Post step: image message sent")
-            return
 
-    logging.info("Post step: sending text message")
     telegram_api(
         "sendMessage",
         {
@@ -1432,8 +1420,6 @@ def send_post(post: Post) -> None:
             "parse_mode": "HTML",
         },
     )
-    logging.info("Post step: text message sent")
-
 
 def send_video_after_message(video_url: str) -> None:
     if not (SEND_VIDEO_FILES and video_url):
