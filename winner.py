@@ -114,11 +114,11 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 10
+CHECK_EVERY_SECONDS = 8
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = 5
-FEED_COLLECTION_TIMEOUT_SECONDS = 7
+FEED_REQUEST_TIMEOUT_SECONDS = 4
+FEED_COLLECTION_TIMEOUT_SECONDS = 5
 MAX_PARALLEL_ACCOUNT_CHECKS = 28
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 4
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
@@ -133,7 +133,7 @@ SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
 SHABBAT_CACHE_FILE = "football_shabbat_times_cache.json"
-MAX_PARALLEL_POST_SENDS = 8
+MAX_PARALLEL_POST_SENDS = 12
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
@@ -1068,6 +1068,51 @@ def is_podcast_or_longform_post(post: Post) -> bool:
     return (has_linkish_text(raw_text) and has_podcast_phrase) or has_podcast_domain or has_longform_youtube_hint
 
 
+def is_link_only_or_details_post(post: Post) -> bool:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    if not has_linkish_text(raw_text) and not post.link:
+        return False
+    text = remove_external_links(raw_text)
+    text = remove_weird_symbols(text)
+    text = apply_handle_replacements(text)
+    text = remove_credit_handles(text)
+    text = convert_hashtags_to_text(text)
+    text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", "", text)
+    text = re.sub(r"(?im)^\s*(?:video|watch video|וידאו|וידיאו)\s*$", "", text)
+    text = re.sub(r"[👇⬇️🔽➡️🔗📌:;.,!?\-–—_()\[\]{}\"'׳״\s]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    generic_phrases = {
+        "details",
+        "the details",
+        "more details",
+        "full details",
+        "all details",
+        "read more",
+        "full story",
+        "here",
+        "link",
+        "פרטים",
+        "הפרטים",
+        "כל הפרטים",
+        "לפרטים",
+        "פרטים נוספים",
+        "הפרטים המלאים",
+        "הכתבה",
+        "הכתבה המלאה",
+        "לכתבה",
+        "קישור",
+        "בקישור",
+        "כאן",
+    }
+    if not text:
+        return True
+    if text in generic_phrases:
+        return True
+    if len(text) <= 28 and any(phrase in text for phrase in generic_phrases):
+        return True
+    return False
+
+
 def apply_phrase_replacements(text: str, replacements: dict[str, str]) -> str:
     for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         if re.fullmatch(r"[A-Za-z0-9 ._'’:-]+", source):
@@ -1717,6 +1762,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     continue
 
                 for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
+                    if is_link_only_or_details_post(post):
+                        seen.add(post.post_id)
+                        logging.info("Scan step: filtered link-only/details post %s", post.link)
+                        continue
                     if is_podcast_or_longform_post(post):
                         seen.add(post.post_id)
                         logging.info("Scan step: filtered podcast/longform post %s", post.link)
