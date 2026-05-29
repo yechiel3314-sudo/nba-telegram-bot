@@ -20,6 +20,8 @@ from urllib3.util.retry import Retry
 # Forces direct connections even when Windows, Python, or the hosting panel
 # has HTTP_PROXY / HTTPS_PROXY / ALL_PROXY configured.
 FORCE_DIRECT_CONNECTION = True
+YOUTUBE_PROXY = os.getenv("YOUTUBE_PROXY", "").strip()
+YOUTUBE_GEO_BYPASS_COUNTRY = os.getenv("YOUTUBE_GEO_BYPASS_COUNTRY", "US").strip()
 
 
 def disable_proxy_environment():
@@ -45,8 +47,9 @@ disable_proxy_environment()
 # ==============================
 # Telegram
 # ==============================
-TELEGRAM_TOKEN = "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss"
-CHAT_ID = "-1003808107418"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1003808107418").strip()
+SEND_LINK_WHEN_DOWNLOAD_BLOCKED = os.getenv("SEND_LINK_WHEN_DOWNLOAD_BLOCKED", "true").lower() == "true"
 
 
 # ==============================
@@ -182,6 +185,36 @@ def send_telegram_video(video_path, title):
 
     except Exception as e:
         print(f"Telegram send video error: {e}")
+        return False
+
+
+def send_telegram_message(text):
+    if not TELEGRAM_TOKEN:
+        print("Missing TELEGRAM_TOKEN environment variable")
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    try:
+        response = SESSION.post(
+            url,
+            data={
+                "chat_id": CHAT_ID,
+                "text": text[:4096],
+                "disable_web_page_preview": "false",
+            },
+            timeout=60,
+        )
+
+        if response.status_code == 200:
+            print("Message sent to Telegram")
+            return True
+
+        print(f"Telegram message error {response.status_code}: {response.text}")
+        return False
+
+    except Exception as e:
+        print(f"Telegram send message error: {e}")
         return False
 
 
@@ -323,6 +356,18 @@ def is_short_video(video_id):
     return any(signal in page for signal in short_signals)
 
 
+def is_permanent_youtube_error(error):
+    text = str(error).lower()
+    permanent_signals = [
+        "not made this video available in your country",
+        "video unavailable",
+        "private video",
+        "this video has been removed",
+        "this video is no longer available",
+    ]
+    return any(signal in text for signal in permanent_signals)
+
+
 def download_youtube_video(video):
     DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -338,9 +383,13 @@ def download_youtube_video(video):
         "fragment_retries": 3,
         "socket_timeout": 30,
         "http_headers": HEADERS,
+        "geo_bypass": True,
+        "geo_bypass_country": YOUTUBE_GEO_BYPASS_COUNTRY,
     }
 
-    if FORCE_DIRECT_CONNECTION:
+    if YOUTUBE_PROXY:
+        ydl_opts["proxy"] = YOUTUBE_PROXY
+    elif FORCE_DIRECT_CONNECTION:
         ydl_opts["proxy"] = ""
 
     try:
@@ -357,6 +406,8 @@ def download_youtube_video(video):
 
     except Exception as e:
         print(f"Download error: {e}")
+        if is_permanent_youtube_error(e):
+            return "SKIP_PERMANENT_YOUTUBE_ERROR"
         return None
 
 
@@ -445,6 +496,18 @@ def run_daily_send(channel_id):
 
         video_path = download_youtube_video(video)
 
+        if video_path == "SKIP_PERMANENT_YOUTUBE_ERROR":
+            print("Skipping video because YouTube says it is unavailable from this server/location")
+            if SEND_LINK_WHEN_DOWNLOAD_BLOCKED:
+                ok = send_telegram_message(f"{video['title']}\n{video['url']}")
+                if ok:
+                    mark_video_sent(video["id"])
+                else:
+                    all_sent = False
+            else:
+                mark_video_sent(video["id"])
+            continue
+
         if not video_path or not os.path.exists(video_path):
             print("Video download failed")
             all_sent = False
@@ -488,6 +551,16 @@ def send_latest_video_for_test(channel_id):
         print(f"Downloading latest video: {video['title']}")
 
         video_path = download_youtube_video(video)
+
+        if video_path == "SKIP_PERMANENT_YOUTUBE_ERROR":
+            print("Latest video is unavailable from this server/location")
+            if SEND_LINK_WHEN_DOWNLOAD_BLOCKED:
+                ok = send_telegram_message(f"{video['title']}\n{video['url']}")
+                if ok:
+                    mark_video_sent(video["id"])
+            else:
+                mark_video_sent(video["id"])
+            return
 
         if not video_path or not os.path.exists(video_path):
             print("Video download failed")
