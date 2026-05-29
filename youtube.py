@@ -21,7 +21,18 @@ from urllib3.util.retry import Retry
 # has HTTP_PROXY / HTTPS_PROXY / ALL_PROXY configured.
 FORCE_DIRECT_CONNECTION = True
 YOUTUBE_PROXY = os.getenv("YOUTUBE_PROXY", "").strip()
-YOUTUBE_GEO_BYPASS_COUNTRY = os.getenv("YOUTUBE_GEO_BYPASS_COUNTRY", "US").strip()
+YOUTUBE_GEO_BYPASS_COUNTRIES = [
+    country.strip()
+    for country in os.getenv("YOUTUBE_GEO_BYPASS_COUNTRIES", "IL,US").split(",")
+    if country.strip()
+]
+YOUTUBE_PLAYER_CLIENTS = [
+    ["android"],
+    ["ios"],
+    ["web"],
+    ["mweb"],
+    ["tv_embedded"],
+]
 
 
 def disable_proxy_environment():
@@ -368,11 +379,7 @@ def is_permanent_youtube_error(error):
     return any(signal in text for signal in permanent_signals)
 
 
-def download_youtube_video(video):
-    DOWNLOAD_DIR.mkdir(exist_ok=True)
-
-    output_template = str(DOWNLOAD_DIR / f"{video['id']}.%(ext)s")
-
+def build_youtube_download_options(output_template, geo_country, player_clients):
     ydl_opts = {
         "outtmpl": output_template,
         "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best[ext=mp4]/best",
@@ -384,7 +391,13 @@ def download_youtube_video(video):
         "socket_timeout": 30,
         "http_headers": HEADERS,
         "geo_bypass": True,
-        "geo_bypass_country": YOUTUBE_GEO_BYPASS_COUNTRY,
+        "geo_bypass_country": geo_country,
+        "extractor_args": {
+            "youtube": {
+                "player_client": player_clients,
+                "skip": ["dash", "hls"],
+            }
+        },
     }
 
     if YOUTUBE_PROXY:
@@ -392,23 +405,50 @@ def download_youtube_video(video):
     elif FORCE_DIRECT_CONNECTION:
         ydl_opts["proxy"] = ""
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video["url"], download=True)
-            downloaded_path = ydl.prepare_filename(info)
+    return ydl_opts
 
-            if not downloaded_path.endswith(".mp4"):
-                mp4_path = os.path.splitext(downloaded_path)[0] + ".mp4"
-                if os.path.exists(mp4_path):
-                    downloaded_path = mp4_path
 
-            return downloaded_path
+def download_youtube_video(video):
+    DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-    except Exception as e:
-        print(f"Download error: {e}")
-        if is_permanent_youtube_error(e):
-            return "SKIP_PERMANENT_YOUTUBE_ERROR"
-        return None
+    output_template = str(DOWNLOAD_DIR / f"{video['id']}.%(ext)s")
+    had_permanent_error = False
+
+    for geo_country in YOUTUBE_GEO_BYPASS_COUNTRIES:
+        for player_clients in YOUTUBE_PLAYER_CLIENTS:
+            ydl_opts = build_youtube_download_options(
+                output_template,
+                geo_country,
+                player_clients,
+            )
+
+            print(
+                "Trying YouTube download "
+                f"geo={geo_country}, client={','.join(player_clients)}"
+            )
+
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(video["url"], download=True)
+                    downloaded_path = ydl.prepare_filename(info)
+
+                    if not downloaded_path.endswith(".mp4"):
+                        mp4_path = os.path.splitext(downloaded_path)[0] + ".mp4"
+                        if os.path.exists(mp4_path):
+                            downloaded_path = mp4_path
+
+                    return downloaded_path
+
+            except Exception as e:
+                print(f"Download attempt error: {e}")
+                if is_permanent_youtube_error(e):
+                    had_permanent_error = True
+                continue
+
+    if had_permanent_error:
+        return "SKIP_PERMANENT_YOUTUBE_ERROR"
+
+    return None
 
 
 # ==============================
