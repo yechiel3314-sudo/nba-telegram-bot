@@ -1118,7 +1118,6 @@ def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
     started = time.perf_counter()
     try:
         posts = fetch_posts(username)
-        logging.info("Timing: fetched @%s in %.2fs", username, time.perf_counter() - started)
         return username, posts
     except Exception as exc:
         logging.warning("Fetch failed for @%s: %s", username, exc)
@@ -1640,7 +1639,6 @@ def translate_text(text: str) -> str:
     prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
     key = translation_cache_key(prepared)
     if key in TRANSLATION_CACHE:
-        logging.info("Timing: translation cache hit in %.2fs", time.perf_counter() - started)
         return TRANSLATION_CACHE[key]
 
     providers = []
@@ -1657,14 +1655,12 @@ def translate_text(text: str) -> str:
                 polished = final_hebrew_polish(translated)
                 if polished and (provider is gemini_translate or latin_ratio(polished) <= 0.30):
                     TRANSLATION_CACHE[key] = polished
-                    logging.info("Timing: translation finished with %s in %.2fs", provider.__name__, time.perf_counter() - started)
                     return polished
             except Exception as exc:
                 logging.warning("Translation failed with %s: %s", provider.__name__, exc)
 
     fallback = final_hebrew_polish(prepared)
     TRANSLATION_CACHE[key] = fallback
-    logging.info("Timing: translation fallback in %.2fs", time.perf_counter() - started)
     return fallback
 
 
@@ -1869,7 +1865,6 @@ def send_post(post: Post) -> None:
                     "supports_streaming": True,
                 },
             )
-            logging.info("Post step: video with caption sent")
             logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
             return
         except Exception as exc:
@@ -1897,7 +1892,6 @@ def send_post(post: Post) -> None:
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
-            logging.info("Post step: image message sent")
             logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
             return
 
@@ -1911,7 +1905,6 @@ def send_post(post: Post) -> None:
             "parse_mode": "HTML",
         },
     )
-    logging.info("Post step: text message sent")
     logging.info("Timing: post sent in %.2fs", time.perf_counter() - started)
 
 
