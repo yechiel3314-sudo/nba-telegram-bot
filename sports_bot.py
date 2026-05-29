@@ -34,8 +34,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -75,15 +76,17 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 20
+CHECK_EVERY_SECONDS = 10
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
+FEED_REQUEST_TIMEOUT_SECONDS = 5
+FEED_COLLECTION_TIMEOUT_SECONDS = 7
 MAX_PARALLEL_ACCOUNT_CHECKS = 28
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 4
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
-SEND_STARTUP_STATUS_MESSAGE = True
+SEND_STARTUP_STATUS_MESSAGE = False
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
@@ -142,7 +145,7 @@ HANDLE_REPLACEMENTS = {
     "SimonJones_DM": "סיימון ג'ונס",
     "MatteMoretto": "מתאו מורטו",
     "ffpolo": "פרננדו פולו",
-    "gerardromero": "חרארד רומרו",
+    "gerardromero": "ג'ראד רומרו",
     "AranchaMOBILE": "ארנצ'ה רודריגז",
     "JLSanchez78": "חוסה לואיס סאנצ'ס",
     "AlfredoPedulla": "אלפרדו פדולה",
@@ -175,6 +178,12 @@ HANDLE_REPLACEMENTS = {
     "ManagingBarca": "מנג'ינג בארסה",
     "Barca_Buzz": "בארסה באז",
     "iMiaSanMia": "מיה סן מיה",
+}
+
+SELF_QUOTE_ALIASES = {
+    "NBA": ["NBA", "NBA Today", "אן בי איי"],
+    "ShamsCharania": ["Shams Charania", "Shams", "שאמס צ'ראניה", "שאמס צראניה", "שאמש צ'ראניה"],
+    "highkin": ["Sean Highkin", "Highkin", "שון הייקין", "שון הייקין - פורטלנד"],
 }
 
 FOOTBALL_TERMS = {
@@ -538,6 +547,11 @@ PLAYER_REPLACEMENTS = {
 }
 
 HEBREW_FINAL_FIXES = {
+    "ניקולה שירה": "ניקולה סקירה",
+    "ניקולו שירה": "ניקולה סקירה",
+    "ניקולו סקירה": "ניקולה סקירה",
+    "חרארד רומרו": "ג'ראד רומרו",
+    "ז'ראר רומרו": "ג'ראד רומרו",
     "שאמש": "שאמס",
     "שאמש צ'ראניה": "שאמס צ'ראניה",
     "שאמש צ׳ראניה": "שאמס צ׳ראניה",
@@ -647,6 +661,18 @@ def http_get_once(url: str, timeout: int = 4) -> bytes:
         headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
             "Accept": "application/json, text/plain, */*",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
+def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
         },
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -941,19 +967,26 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
 
 def fetch_feed(username: str, template: str) -> list[Post]:
     url = template.format(username=urllib.parse.quote(username))
-    return parse_posts(username, http_get(url))
+    return parse_posts(username, http_get_feed(url))
 
 
 def fetch_posts(username: str) -> list[Post]:
     all_posts: dict[str, Post] = {}
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) as executor:
-        futures = [executor.submit(fetch_feed, username, template) for template in FEED_TEMPLATES]
-        for future in as_completed(futures):
+    executor = ThreadPoolExecutor(max_workers=MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)
+    futures = [executor.submit(fetch_feed, username, template) for template in FEED_TEMPLATES]
+    try:
+        for future in as_completed(futures, timeout=FEED_COLLECTION_TIMEOUT_SECONDS):
             try:
                 for post in future.result():
                     all_posts.setdefault(post.post_id, post)
             except Exception:
                 continue
+    except FuturesTimeoutError:
+        logging.info("Fetch step: @%s skipped slow feed mirror(s) this cycle", username)
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
     posts = list(all_posts.values())
     posts.sort(key=lambda post: post.published_ts, reverse=True)
     return posts
@@ -1011,8 +1044,41 @@ def convert_hashtags_to_text(text: str) -> str:
     return re.sub(r"(?<!\w)#([\w]+)", lambda m: m.group(1).replace("_", " "), text or "", flags=re.UNICODE)
 
 
+def remove_weird_symbols(text: str) -> str:
+    text = html.unescape(text or "")
+    text = text.replace("\ufffd", "")
+    text = re.sub(r"(?<![A-Za-zÀ-ÿ])(æ|Æ|œ|Œ|ð|Ð|þ|Þ)(?![A-Za-zÀ-ÿ])", "", text)
+    text = re.sub(r"\s*\|\s*", " ", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n+ *", "\n", text)
+    return text.strip()
+
+
+def remove_junk_tail_lines(text: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines()]
+    while lines:
+        line = lines[-1].strip()
+        compact = re.sub(r"\s+", "", line)
+        has_hebrew = bool(re.search(r"[א-ת]", line))
+        latin = len(re.findall(r"[A-Za-z]", line))
+        is_separator = bool(re.fullmatch(r"[-–—_=~`'\"׳״.,:;•…\s]+", line))
+        is_handle_like = bool(re.fullmatch(r"@?[A-Za-z0-9_]{3,40}", line)) and ("_" in line or any(ch.isdigit() for ch in line))
+        is_source_like = (not has_hebrew and latin >= 3 and len(line) <= 35 and ("_" in line or "@" in line))
+        is_sky_tag = bool(re.search(r"(?i)\bsky[_\s-]?[A-Za-z0-9_]*\d+\b", line))
+        is_hebrew_sky_tag = bool(re.search(r"סקיי.*\d{2,}", line))
+        if not line or is_separator or is_handle_like or is_source_like or is_sky_tag or is_hebrew_sky_tag:
+            lines.pop()
+            continue
+        if compact in {"_", "__", "-", "—", "–", "\"_", "_\"", "״_"}:
+            lines.pop()
+            continue
+        break
+    return "\n".join(lines).strip()
+
+
 def clean_before_translation(text: str) -> str:
     text = remove_external_links(text)
+    text = remove_weird_symbols(text)
     text = apply_handle_replacements(text)
     text = convert_hashtags_to_text(text)
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
@@ -1149,6 +1215,7 @@ def transliterate_latin_names(text: str) -> str:
 
 def final_hebrew_polish(text: str) -> str:
     text = remove_external_links(text)
+    text = remove_weird_symbols(text)
     text = apply_handle_replacements(text)
     text = convert_hashtags_to_text(text)
     for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, FOOTBALL_TERMS, HEBREW_FINAL_FIXES):
@@ -1164,6 +1231,7 @@ def final_hebrew_polish(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n+ *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = remove_junk_tail_lines(text)
     return text.strip()
 
 
@@ -1243,18 +1311,30 @@ def normalize_identity(text: str) -> str:
     return text
 
 
+def identities_for_account(username: str) -> set[str]:
+    values = {
+        username,
+        ACCOUNT_DISPLAY_NAMES.get(username, ""),
+        HANDLE_REPLACEMENTS.get(username, ""),
+    }
+    values.update(SELF_QUOTE_ALIASES.get(username, []))
+    return {normalize_identity(value) for value in values if value}
+
+
 def is_self_quote(post: Post) -> bool:
     if not post.quoted_text or not post.quoted_author:
         return False
     quoted = normalize_identity(post.quoted_author)
     if not quoted:
         return False
-    identities = {
-        post.username,
-        ACCOUNT_DISPLAY_NAMES.get(post.username, ""),
-        HANDLE_REPLACEMENTS.get(post.username, ""),
-    }
-    return quoted in {normalize_identity(value) for value in identities if value}
+    for identity in identities_for_account(post.username):
+        if not identity:
+            continue
+        if quoted == identity or quoted in identity or identity in quoted:
+            return True
+        if SequenceMatcher(None, quoted, identity).ratio() >= 0.78:
+            return True
+    return False
 
 
 def translate_quoted_text(text: str) -> str:
@@ -1281,7 +1361,14 @@ def tidy_translated_text(text: str) -> str:
     text = final_hebrew_polish(html.unescape(text or "").strip())
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = remove_junk_tail_lines(text)
     return text.strip()
+
+
+def has_meaningful_text(text: str) -> bool:
+    cleaned = tidy_translated_text(text)
+    cleaned = re.sub(r"[\s\"'׳״.,:;!?()\[\]{}\-–—_]+", "", cleaned)
+    return bool(cleaned and cleaned not in {"עדכוןחדש", "newupdate", "update"})
 
 
 def rtl(text: str) -> str:
@@ -1339,8 +1426,9 @@ def build_message(
         parts.extend(["", "", video_label])
 
     if safe_quoted_body:
-        parts.extend(["", quote_label])
+        parts.append("")
         if safe_quoted_author:
+            parts.append(quote_label)
             parts.append(safe_quoted_author)
         parts.append(safe_quoted_body)
         if include_video_link and post.link and post.quoted_has_video:
@@ -1353,15 +1441,26 @@ def build_message(
 
 
 def send_post(post: Post) -> None:
+    logging.info("Post step: preparing @%s %s", post.username, post.link)
     translated = translate_text(post.text)
+    logging.info("Post step: main text translated")
     if is_self_quote(post):
+        logging.info("Post step: self-quote detected, skipping quoted post")
         quoted_translated = ""
         quoted_author_translated = ""
     else:
         quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
         quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
-
+        if post.quoted_text:
+            logging.info("Post step: quoted post translated")
+    if not has_meaningful_text(translated) and not has_meaningful_text(quoted_translated):
+        logging.info("Post step: skipped because translated text is empty")
+        return
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    if video_url:
+        logging.info("Post step: sendable video found under %s MB", MAX_VIDEO_BYTES // 1024 // 1024)
+    elif post.has_video:
+        logging.info("Post step: video exists, but no sendable direct video URL was found")
     message = build_message(
         post,
         translated,
@@ -1369,12 +1468,11 @@ def send_post(post: Post) -> None:
         quoted_author_translated,
         include_video_link=not bool(video_url),
     )
-
-    # If the post has video, do not send the preview image separately.
     images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
 
     if video_url:
         try:
+            logging.info("Post step: sending video with caption")
             telegram_api(
                 "sendVideo",
                 {
@@ -1385,9 +1483,10 @@ def send_post(post: Post) -> None:
                     "supports_streaming": True,
                 },
             )
+            logging.info("Post step: video with caption sent")
             return
         except Exception as exc:
-            logging.warning("Could not send video with caption, falling back to text only: %s", exc)
+            logging.warning("Video send failed, falling back to text/link: %s", exc)
             message = build_message(
                 post,
                 translated,
@@ -1398,6 +1497,7 @@ def send_post(post: Post) -> None:
             images = []
 
     if images:
+        logging.info("Post step: sending %s image(s) with caption", len(images))
         media: list[dict[str, Any]] = []
         for index, image_url in enumerate(images):
             item: dict[str, Any] = {"type": "photo", "media": image_url}
@@ -1407,10 +1507,13 @@ def send_post(post: Post) -> None:
             media.append(item)
         try:
             telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
-            return
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
+        else:
+            logging.info("Post step: image message sent")
+            return
 
+    logging.info("Post step: sending text message")
     telegram_api(
         "sendMessage",
         {
@@ -1420,6 +1523,8 @@ def send_post(post: Post) -> None:
             "parse_mode": "HTML",
         },
     )
+    logging.info("Post step: text message sent")
+
 
 def send_video_after_message(video_url: str) -> None:
     if not (SEND_VIDEO_FILES and video_url):
