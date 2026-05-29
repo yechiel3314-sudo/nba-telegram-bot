@@ -20,9 +20,8 @@ except ImportError:
 # ==============================
 # Telegram
 # ==============================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "PUT_YOUR_TOKEN_HERE").strip()
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1003808107418").strip()
-
+TELEGRAM_TOKEN = "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss"
+CHAT_ID = "-1003808107418"
 
 # ==============================
 # YouTube settings
