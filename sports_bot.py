@@ -432,7 +432,7 @@ TEAM_REPLACEMENTS = {
     "Arsenal": "ארסנל",
     "Tottenham Hotspur": "טוטנהאם",
     "Tottenham": "טוטנהאם",
-    "Spurs": "טוטנהאם",
+    "Spurs": "ספרס",
     "Newcastle United": "ניוקאסל",
     "Newcastle": "ניוקאסל",
     "Aston Villa": "אסטון וילה",
@@ -579,7 +579,6 @@ HEBREW_FINAL_FIXES = {
     "טוויט": "פוסט",
     "ציוץ": "פוסט",
     "ציוצים": "פוסטים",
-    "טוטנהאם": "ספרס",
 }
 
 STAT_REPLACEMENTS = {
@@ -642,6 +641,18 @@ def http_get(url: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> bytes:
     raise RuntimeError(f"GET failed: {url}. Last error: {last_error}")
 
 
+def http_get_once(url: str, timeout: int = 4) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/json, text/plain, */*",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
 def http_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
@@ -674,7 +685,7 @@ def http_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> dict
     raise RuntimeError(f"POST failed after {HTTP_RETRIES} attempts: {last_error}")
 
 
-def remote_file_size(url: str, timeout: int = 12) -> int | None:
+def remote_file_size(url: str, timeout: int = 4) -> int | None:
     if not url or url.lower().split("?", 1)[0].endswith(".m3u8"):
         return None
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0"}
@@ -699,8 +710,11 @@ def remote_file_size(url: str, timeout: int = 12) -> int | None:
 
 
 def sendable_video_url(post: Post) -> str:
-    candidates = list(dict.fromkeys(post.video_urls + fetch_external_video_urls(post)))
-    for url in candidates:
+    for url in list(dict.fromkeys(post.video_urls)):
+        size = remote_file_size(url)
+        if size is not None and size <= MAX_VIDEO_BYTES:
+            return url
+    for url in fetch_external_video_urls(post):
         size = remote_file_size(url)
         if size is not None and size <= MAX_VIDEO_BYTES:
             return url
@@ -746,7 +760,7 @@ def fetch_external_video_urls(post: Post) -> list[str]:
     ]
     for api_url in api_urls:
         try:
-            data = json.loads(http_get(api_url, timeout=8).decode("utf-8"))
+            data = json.loads(http_get_once(api_url, timeout=4).decode("utf-8"))
             urls = collect_video_urls(data)
             if urls:
                 return list(dict.fromkeys(urls))
@@ -1354,19 +1368,6 @@ def send_post(post: Post) -> None:
     )
     images = post.image_urls[:MAX_IMAGES_PER_POST]
 
-    if SEND_VIDEO_FILES and video_url:
-        telegram_api(
-            "sendVideo",
-            {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "video": video_url,
-                "caption": trim_keep_ending(message, 1024),
-                "parse_mode": "HTML",
-                "supports_streaming": True,
-            },
-        )
-        return
-
     if images:
         media: list[dict[str, Any]] = []
         for index, image_url in enumerate(images):
@@ -1377,18 +1378,11 @@ def send_post(post: Post) -> None:
             media.append(item)
         try:
             telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
-            if SEND_VIDEO_FILES and video_url:
-                telegram_api(
-                    "sendVideo",
-                    {
-                        "chat_id": TELEGRAM_CHAT_ID,
-                        "video": video_url,
-                        "supports_streaming": True,
-                    },
-                )
-            return
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
+        else:
+            send_video_after_message(video_url)
+            return
 
     telegram_api(
         "sendMessage",
@@ -1399,8 +1393,13 @@ def send_post(post: Post) -> None:
             "parse_mode": "HTML",
         },
     )
+    send_video_after_message(video_url)
 
-    if SEND_VIDEO_FILES and video_url:
+
+def send_video_after_message(video_url: str) -> None:
+    if not (SEND_VIDEO_FILES and video_url):
+        return
+    try:
         telegram_api(
             "sendVideo",
             {
@@ -1409,6 +1408,20 @@ def send_post(post: Post) -> None:
                 "supports_streaming": True,
             },
         )
+    except Exception as exc:
+        logging.warning("Post text was sent, but Telegram could not attach video: %s", exc)
+        try:
+            telegram_api(
+                "sendMessage",
+                {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>\n{html.escape(video_url)}",
+                    "disable_web_page_preview": False,
+                    "parse_mode": "HTML",
+                },
+            )
+        except Exception as link_exc:
+            logging.warning("Video fallback link also failed: %s", link_exc)
 
 
 def state_path() -> Path:
