@@ -122,7 +122,7 @@ SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = True
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
-SEND_VIDEO_FILES = True
+SEND_VIDEO_FILES = False
 STATE_FILE = "football_x_to_telegram_state.json"
 TRANSLATION_CACHE_FILE = "football_translation_cache.json"
 RTL_MARK = "\u200f"
@@ -1384,4 +1384,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-ד
