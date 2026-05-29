@@ -5,12 +5,41 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, time as datetime_time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
+import yt_dlp
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import yt_dlp
+
+
+# ==============================
+# Proxy bypass
+# ==============================
+# Forces direct connections even when Windows, Python, or the hosting panel
+# has HTTP_PROXY / HTTPS_PROXY / ALL_PROXY configured.
+FORCE_DIRECT_CONNECTION = True
+
+
+def disable_proxy_environment():
+    if not FORCE_DIRECT_CONNECTION:
+        return
+
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        os.environ.pop(key, None)
+
+
+disable_proxy_environment()
 
 
 # ==============================
@@ -24,18 +53,22 @@ CHAT_ID = "-1003808107418"
 # YouTube settings
 # ==============================
 YOUTUBE_HANDLE = "@motionstation4342"
-STATE_FILE = "youtube_video_bot_state.json"
+STATE_FILE = Path("youtube_video_bot_state.json")
 TIMEZONE = ZoneInfo("Asia/Jerusalem")
 SEND_AT = datetime_time(hour=9, minute=15)
 CHECK_EVERY_SECONDS = 30
 
-# שימי True רק לבדיקה ראשונה
+# שימי True רק לבדיקה ראשונה, ואז להחזיר ל-False
 SEND_LATEST_ON_START_FOR_TEST = False
 
-DOWNLOAD_DIR = "downloaded_videos"
+DOWNLOAD_DIR = Path("downloaded_videos")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0 Safari/537.36"
+    )
 }
 
 sent_video_ids = set()
@@ -46,11 +79,18 @@ def build_session():
     session = requests.Session()
     session.headers.update(HEADERS)
 
+    if FORCE_DIRECT_CONNECTION:
+        session.trust_env = False
+        session.proxies = {}
+
     retry = Retry(
         total=3,
+        connect=3,
+        read=3,
         backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET", "POST"],
+        raise_on_status=False,
     )
 
     adapter = HTTPAdapter(max_retries=retry)
@@ -68,13 +108,13 @@ SESSION = build_session()
 def load_state():
     global sent_video_ids, completed_run_keys
 
-    if not os.path.exists(STATE_FILE):
+    if not STATE_FILE.exists():
         sent_video_ids = set()
         completed_run_keys = set()
         return
 
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
+        with STATE_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
 
         sent_video_ids = set(data.get("sent_video_ids", []))
@@ -88,9 +128,9 @@ def load_state():
 
 def save_state():
     try:
-        tmp_file = STATE_FILE + ".tmp"
+        tmp_file = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
 
-        with open(tmp_file, "w", encoding="utf-8") as f:
+        with tmp_file.open("w", encoding="utf-8") as f:
             json.dump(
                 {
                     "sent_video_ids": sorted(sent_video_ids),
@@ -113,26 +153,25 @@ def save_state():
 # Telegram
 # ==============================
 def send_telegram_video(video_path, title):
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "PUT_YOUR_TOKEN_HERE":
-        print("Missing TELEGRAM_TOKEN")
+    if not TELEGRAM_TOKEN:
+        print("Missing TELEGRAM_TOKEN environment variable")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo"
 
     try:
         with open(video_path, "rb") as video_file:
-            files = {
-                "video": video_file
-            }
-
-            data = {
-                "chat_id": CHAT_ID,
-                "caption": html.escape(title)[:1024],
-                "parse_mode": "HTML",
-                "supports_streaming": "true",
-            }
-
-            response = SESSION.post(url, data=data, files=files, timeout=300)
+            response = SESSION.post(
+                url,
+                data={
+                    "chat_id": CHAT_ID,
+                    "caption": html.escape(title)[:1024],
+                    "parse_mode": "HTML",
+                    "supports_streaming": "true",
+                },
+                files={"video": video_file},
+                timeout=300,
+            )
 
         if response.status_code == 200:
             print("Video sent to Telegram")
@@ -285,17 +324,24 @@ def is_short_video(video_id):
 
 
 def download_youtube_video(video):
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-    output_template = os.path.join(DOWNLOAD_DIR, f"{video['id']}.%(ext)s")
+    output_template = str(DOWNLOAD_DIR / f"{video['id']}.%(ext)s")
 
     ydl_opts = {
         "outtmpl": output_template,
-        "format": "best[ext=mp4]/best",
+        "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": False,
+        "retries": 3,
+        "fragment_retries": 3,
+        "socket_timeout": 30,
+        "http_headers": HEADERS,
     }
+
+    if FORCE_DIRECT_CONNECTION:
+        ydl_opts["proxy"] = ""
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -360,6 +406,7 @@ def find_new_daily_videos(channel_id):
         if is_short_video(video["id"]):
             print(f"Skipping short: {video['title']}")
             sent_video_ids.add(video["id"])
+            save_state()
             continue
 
         selected.append(video)
@@ -391,6 +438,8 @@ def run_daily_send(channel_id):
         mark_daily_run_completed()
         return True
 
+    all_sent = True
+
     for video in videos:
         print(f"Downloading: {video['title']}")
 
@@ -398,20 +447,27 @@ def run_daily_send(channel_id):
 
         if not video_path or not os.path.exists(video_path):
             print("Video download failed")
+            all_sent = False
             continue
 
         ok = send_telegram_video(video_path, video["title"])
 
         if ok:
             mark_video_sent(video["id"])
+        else:
+            all_sent = False
 
         try:
             os.remove(video_path)
         except Exception as e:
             print(f"Could not delete video file: {e}")
 
-    mark_daily_run_completed()
-    return True
+    if all_sent:
+        mark_daily_run_completed()
+    else:
+        print("Some videos failed. The bot will retry on the next check.")
+
+    return all_sent
 
 
 def send_latest_video_for_test(channel_id):
