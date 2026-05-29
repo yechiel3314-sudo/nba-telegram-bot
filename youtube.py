@@ -10,11 +10,7 @@ from zoneinfo import ZoneInfo
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-try:
-    from deep_translator import GoogleTranslator
-except ImportError:
-    GoogleTranslator = None
+import yt_dlp
 
 
 # ==============================
@@ -23,30 +19,27 @@ except ImportError:
 TELEGRAM_TOKEN = "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss"
 CHAT_ID = "-1003808107418"
 
+
 # ==============================
 # YouTube settings
 # ==============================
 YOUTUBE_HANDLE = "@motionstation4342"
-STATE_FILE = "youtube_daily_recaps_with_shabbat_state.json"
+STATE_FILE = "youtube_video_bot_state.json"
 TIMEZONE = ZoneInfo("Asia/Jerusalem")
 SEND_AT = datetime_time(hour=9, minute=15)
 CHECK_EVERY_SECONDS = 30
 
-# Keep True only for testing. It sends the latest regular video when the bot starts.
-SEND_LATEST_ON_START_FOR_TEST = True
+# שימי True רק לבדיקה ראשונה
+SEND_LATEST_ON_START_FOR_TEST = False
+
+DOWNLOAD_DIR = "downloaded_videos"
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "User-Agent": "Mozilla/5.0"
 }
 
 sent_video_ids = set()
 completed_run_keys = set()
-title_cache = {}
 
 
 def build_session():
@@ -73,12 +66,11 @@ SESSION = build_session()
 # State
 # ==============================
 def load_state():
-    global sent_video_ids, completed_run_keys, title_cache
+    global sent_video_ids, completed_run_keys
 
     if not os.path.exists(STATE_FILE):
         sent_video_ids = set()
         completed_run_keys = set()
-        title_cache = {}
         return
 
     try:
@@ -87,12 +79,11 @@ def load_state():
 
         sent_video_ids = set(data.get("sent_video_ids", []))
         completed_run_keys = set(data.get("completed_run_keys", []))
-        title_cache = data.get("title_cache", {}) or {}
-    except (OSError, ValueError, TypeError) as e:
+
+    except Exception as e:
         print(f"State load error: {e}")
         sent_video_ids = set()
         completed_run_keys = set()
-        title_cache = {}
 
 
 def save_state():
@@ -104,7 +95,6 @@ def save_state():
                 {
                     "sent_video_ids": sorted(sent_video_ids),
                     "completed_run_keys": sorted(completed_run_keys),
-                    "title_cache": title_cache,
                 },
                 f,
                 ensure_ascii=False,
@@ -114,41 +104,45 @@ def save_state():
             os.fsync(f.fileno())
 
         os.replace(tmp_file, STATE_FILE)
-    except OSError as e:
+
+    except Exception as e:
         print(f"State save error: {e}")
 
 
 # ==============================
 # Telegram
 # ==============================
-def send_telegram_message(message):
+def send_telegram_video(video_path, title):
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "PUT_YOUR_TOKEN_HERE":
         print("Missing TELEGRAM_TOKEN")
         return False
 
-    if not CHAT_ID:
-        print("Missing TELEGRAM_CHAT_ID")
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message[:4096],
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False,
-    }
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo"
 
     try:
-        response = SESSION.post(url, json=payload, timeout=20)
+        with open(video_path, "rb") as video_file:
+            files = {
+                "video": video_file
+            }
+
+            data = {
+                "chat_id": CHAT_ID,
+                "caption": html.escape(title)[:1024],
+                "parse_mode": "HTML",
+                "supports_streaming": "true",
+            }
+
+            response = SESSION.post(url, data=data, files=files, timeout=300)
 
         if response.status_code == 200:
-            print("Sent to Telegram")
+            print("Video sent to Telegram")
             return True
 
         print(f"Telegram error {response.status_code}: {response.text}")
         return False
-    except requests.RequestException as e:
-        print(f"Telegram request error: {e}")
+
+    except Exception as e:
+        print(f"Telegram send video error: {e}")
         return False
 
 
@@ -175,36 +169,10 @@ def is_shabbat_or_yom_tov():
 
         data = response.json()
         return bool((data.get("status") or {}).get("isAssurBemlacha"))
-    except (requests.RequestException, ValueError, TypeError) as e:
+
+    except Exception as e:
         print(f"Hebcal check error: {e}")
         return True
-
-
-# ==============================
-# Translation
-# ==============================
-def translate_title(title):
-    if not title:
-        return ""
-
-    if title in title_cache:
-        return title_cache[title]
-
-    if GoogleTranslator is None:
-        title_cache[title] = title
-        save_state()
-        return title
-
-    try:
-        translated = GoogleTranslator(source="auto", target="iw").translate(title)
-        translated = translated or title
-    except Exception as e:
-        print(f"Title translation error: {e}")
-        translated = title
-
-    title_cache[title] = translated
-    save_state()
-    return translated
 
 
 # ==============================
@@ -231,7 +199,8 @@ def get_channel_id_from_handle(handle):
 
         print("Could not find channel id")
         return None
-    except requests.RequestException as e:
+
+    except Exception as e:
         print(f"YouTube channel request error: {e}")
         return None
 
@@ -254,11 +223,9 @@ def get_channel_videos(channel_id):
         response = SESSION.get(rss_url, timeout=20)
         response.raise_for_status()
         root = ET.fromstring(response.text)
-    except requests.RequestException as e:
-        print(f"YouTube RSS request error: {e}")
-        return []
-    except ET.ParseError as e:
-        print(f"YouTube RSS parse error: {e}")
+
+    except Exception as e:
+        print(f"YouTube RSS error: {e}")
         return []
 
     ns = {
@@ -267,6 +234,7 @@ def get_channel_videos(channel_id):
     }
 
     videos = []
+
     for entry in root.findall("atom:entry", ns):
         video_id_el = entry.find("yt:videoId", ns)
         title_el = entry.find("atom:title", ns)
@@ -301,7 +269,8 @@ def is_short_video(video_id):
         response = SESSION.get(watch_url, timeout=20)
         response.raise_for_status()
         page = response.text
-    except requests.RequestException as e:
+
+    except Exception as e:
         print(f"Could not inspect video {video_id}: {e}")
         return False
 
@@ -313,6 +282,36 @@ def is_short_video(video_id):
     ]
 
     return any(signal in page for signal in short_signals)
+
+
+def download_youtube_video(video):
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+    output_template = os.path.join(DOWNLOAD_DIR, f"{video['id']}.%(ext)s")
+
+    ydl_opts = {
+        "outtmpl": output_template,
+        "format": "best[ext=mp4]/best",
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": False,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video["url"], download=True)
+            downloaded_path = ydl.prepare_filename(info)
+
+            if not downloaded_path.endswith(".mp4"):
+                mp4_path = os.path.splitext(downloaded_path)[0] + ".mp4"
+                if os.path.exists(mp4_path):
+                    downloaded_path = mp4_path
+
+            return downloaded_path
+
+    except Exception as e:
+        print(f"Download error: {e}")
+        return None
 
 
 # ==============================
@@ -346,34 +345,6 @@ def should_run_now():
     return get_run_key(now) not in completed_run_keys
 
 
-def build_daily_message(videos, start, end):
-    if len(videos) == 1:
-        header = "🏀 <b>תקציר NBA חדש עלה!</b>"
-    else:
-        header = f"🏀 <b>{len(videos)} תקצירי NBA חדשים עלו!</b>"
-
-    lines = [
-        header,
-        "",
-        f"חלון בדיקה: {start.strftime('%d/%m/%Y %H:%M')} עד {end.strftime('%d/%m/%Y %H:%M')}",
-        "",
-    ]
-
-    for index, video in enumerate(videos, start=1):
-        original_title = video["title"]
-        translated_title = translate_title(original_title)
-        published = video["published"].strftime("%d/%m/%Y %H:%M")
-
-        lines.append(f"{index}. <b>{html.escape(translated_title)}</b>")
-        if translated_title != original_title:
-            lines.append(f"מקור: {html.escape(original_title)}")
-        lines.append(f"עלה: {published}")
-        lines.append(f"▶️ {html.escape(video['url'])}")
-        lines.append("")
-
-    return "\n".join(lines).strip()
-
-
 def find_new_daily_videos(channel_id):
     start, end = get_current_window()
     videos = get_channel_videos(channel_id)
@@ -394,38 +365,53 @@ def find_new_daily_videos(channel_id):
         selected.append(video)
 
     selected.sort(key=lambda item: item["published"])
-    return selected, start, end
+    return selected
 
 
-def mark_daily_run_completed(videos):
-    for video in videos:
-        sent_video_ids.add(video["id"])
+def mark_video_sent(video_id):
+    sent_video_ids.add(video_id)
+    save_state()
 
+
+def mark_daily_run_completed():
     completed_run_keys.add(get_run_key())
     save_state()
 
 
 def run_daily_send(channel_id):
-    videos, start, end = find_new_daily_videos(channel_id)
-
     if is_shabbat_or_yom_tov():
-        print("Shabbat/Yom Tov active. Daily send skipped and marked completed.")
-        mark_daily_run_completed(videos)
+        print("Shabbat/Yom Tov active. Daily send skipped.")
+        mark_daily_run_completed()
         return True
+
+    videos = find_new_daily_videos(channel_id)
 
     if not videos:
         print("No new non-short videos for this daily window")
-        completed_run_keys.add(get_run_key())
-        save_state()
+        mark_daily_run_completed()
         return True
 
-    message = build_daily_message(videos, start, end)
-    ok = send_telegram_message(message)
+    for video in videos:
+        print(f"Downloading: {video['title']}")
 
-    if ok:
-        mark_daily_run_completed(videos)
+        video_path = download_youtube_video(video)
 
-    return ok
+        if not video_path or not os.path.exists(video_path):
+            print("Video download failed")
+            continue
+
+        ok = send_telegram_video(video_path, video["title"])
+
+        if ok:
+            mark_video_sent(video["id"])
+
+        try:
+            os.remove(video_path)
+        except Exception as e:
+            print(f"Could not delete video file: {e}")
+
+    mark_daily_run_completed()
+    return True
 
 
 def send_latest_video_for_test(channel_id):
@@ -436,43 +422,45 @@ def send_latest_video_for_test(channel_id):
     videos = get_channel_videos(channel_id)
 
     if not videos:
-        print("No videos found for startup test")
+        print("No videos found")
         return
 
     for video in videos:
         if is_short_video(video["id"]):
             continue
 
-        translated_title = translate_title(video["title"])
-        message = (
-            "🧪 <b>בדיקת בוט יוטיוב</b>\n\n"
-            "זה הסרטון האחרון שאינו Short שמצאתי בערוץ:\n\n"
-            f"🎬 <b>{html.escape(translated_title)}</b>\n"
-        )
+        print(f"Downloading latest video: {video['title']}")
 
-        if translated_title != video["title"]:
-            message += f"מקור: {html.escape(video['title'])}\n"
+        video_path = download_youtube_video(video)
 
-        message += (
-            f"עלה: {video['published'].strftime('%d/%m/%Y %H:%M')}\n\n"
-            f"▶️ {html.escape(video['url'])}"
-        )
+        if not video_path or not os.path.exists(video_path):
+            print("Video download failed")
+            return
 
-        if send_telegram_message(message):
-            print("Startup test video sent")
+        ok = send_telegram_video(video_path, video["title"])
+
+        if ok:
+            mark_video_sent(video["id"])
+
+        try:
+            os.remove(video_path)
+        except Exception as e:
+            print(f"Could not delete video file: {e}")
+
         return
 
-    print("Only Shorts were found for startup test")
+    print("Only Shorts were found")
 
 
 # ==============================
 # Main
 # ==============================
 if __name__ == "__main__":
-    print("YouTube daily recaps bot with Shabbat guard started")
+    print("YouTube video bot started")
     load_state()
 
     channel_id = get_channel_id_from_handle(YOUTUBE_HANDLE)
+
     if not channel_id:
         raise SystemExit("Could not resolve YouTube channel id")
 
@@ -487,6 +475,7 @@ if __name__ == "__main__":
                 run_daily_send(channel_id)
 
             time.sleep(CHECK_EVERY_SECONDS)
+
         except Exception as e:
             print(f"Main loop error: {e}")
             time.sleep(CHECK_EVERY_SECONDS)
