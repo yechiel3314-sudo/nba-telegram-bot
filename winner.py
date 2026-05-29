@@ -88,11 +88,10 @@ X_ACCOUNTS = [
     "FabriceHawkins",
     "Tanziloic",
     "MonfortCarlos",
-    "MadridXtra",
-    "ManagingBarca",
     "Barca_Buzz",
-    "JijantesFC",
     "iMiaSanMia",
+    "Santi_J_FM",
+    "AndyMitten",
 ]
 
 PRIORITY_X_ACCOUNTS = {
@@ -106,10 +105,10 @@ PRIORITY_X_ACCOUNTS = {
     "gerardromero",
     "AranchaMOBILE",
     "JLSanchez78",
-    "MadridXtra",
-    "ManagingBarca",
     "Barca_Buzz",
-    "JijantesFC",
+    "iMiaSanMia",
+    "Santi_J_FM",
+    "AndyMitten",
 }
 
 ACCOUNT_DISPLAY_NAMES = {
@@ -134,11 +133,10 @@ ACCOUNT_DISPLAY_NAMES = {
     "FabriceHawkins": "פבריס הוקינס - צרפת",
     "Tanziloic": "לואיק טנזי - צרפת",
     "MonfortCarlos": "קרלוס מונפור - ברצלונה",
-    "MadridXtra": "מדריד אקסטרה - ריאל מדריד",
-    "ManagingBarca": "מנג'ינג בארסה - ברצלונה",
     "Barca_Buzz": "בארסה באז - ברצלונה",
-    "JijantesFC": "ג'יגאנטס - ברצלונה",
     "iMiaSanMia": "מיה סן מיה - באיירן",
+    "Santi_J_FM": "סנטי אאונה - פריז סן ז'רמן",
+    "AndyMitten": "אנדי מיטן - מנצ'סטר יונייטד",
 }
 
 TARGET_LANGUAGE = "he"
@@ -150,6 +148,12 @@ FEED_COLLECTION_TIMEOUT_SECONDS = 5
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
+NIGHT_MODE_ENABLED = True
+NIGHT_START_HOUR = 0
+NIGHT_END_HOUR = 7
+NIGHT_CHECK_EVERY_SECONDS = 30
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 16
+NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
@@ -271,14 +275,13 @@ HANDLE_REPLACEMENTS = {
     "PipersierraR": "פיפה סיירה",
     "CLMerlo": "ססאר לואיס מרלו",
     "mundodeportivo": "מונדו דפורטיבו",
-    "JijantesFC": "ג'יגאנטס",
     "RMCsport": "RMC ספורט",
     "lequipe": "לאקיפ",
     "ActuFoot_": "אקטו פוט",
-    "MadridXtra": "מדריד אקסטרה",
-    "ManagingBarca": "מנג'ינג בארסה",
     "Barca_Buzz": "בארסה באז",
     "iMiaSanMia": "מיה סן מיה",
+    "Santi_J_FM": "סנטי אאונה",
+    "AndyMitten": "אנדי מיטן",
 }
 
 SELF_QUOTE_ALIASES = {
@@ -303,6 +306,10 @@ SELF_QUOTE_ALIASES = {
     "FabriceHawkins": ["Fabrice Hawkins", "פבריס הוקינס"],
     "Tanziloic": ["Loïc Tanzi", "Loic Tanzi", "לואיק טנזי"],
     "MonfortCarlos": ["Carlos Monfort", "קרלוס מונפור"],
+    "Barca_Buzz": ["Barca Buzz", "Barça Buzz", "בארסה באז"],
+    "iMiaSanMia": ["Mia San Mia", "מיה סן מיה"],
+    "Santi_J_FM": ["Santi Aouna", "סנטי אאונה"],
+    "AndyMitten": ["Andy Mitten", "אנדי מיטן"],
 }
 
 FOOTBALL_TERMS = {
@@ -495,8 +502,13 @@ PLAYER_REPLACEMENTS = {
     "Rafael Leao": "רפאל לאאו",
     "Rafael Leão": "רפאל לאאו",
     "Xavi Simons": "צ'אבי סימונס",
+    "Bernardo Silva": "ברנרדו סילבה",
     "Julian Alvarez": "חוליאן אלבארס",
     "Julián Álvarez": "חוליאן אלבארס",
+    "Ousmane Dembele": "אוסמן דמבלה",
+    "Ousmane Dembélé": "אוסמן דמבלה",
+    "Jose Mourinho": "ז'וזה מוריניו",
+    "José Mourinho": "ז'וזה מוריניו",
     "Gabriel Jesus": "גבריאל ז'סוס",
     "Massimiliano Allegri": "מסימיליאנו אלגרי",
     "Antonio Conte": "אנטוניו קונטה",
@@ -513,6 +525,24 @@ HEBREW_FINAL_FIXES = {
     "ג׳וליאן אלווארז": "חוליאן אלבארס",
     "ג'וליאן אלוורז": "חוליאן אלבארס",
     "ג׳וליאן אלוורז": "חוליאן אלבארס",
+    "אוסמאנה דהמבéלé": "אוסמן דמבלה",
+    "אוסמאנה דהמבלה": "אוסמן דמבלה",
+    "אוסמן דמבל": "אוסמן דמבלה",
+    "אוסמן דמבלהה": "אוסמן דמבלה",
+    "דהמבéלé": "דמבלה",
+    "דהמבלה": "דמבלה",
+    "דהמבלהה": "דמבלה",
+    "זוזה מורינייו": "ז'וזה מוריניו",
+    "זוזה מוריניו": "ז'וזה מוריניו",
+    "ז׳וזה מורינייו": "ז'וזה מוריניו",
+    "ז׳וזה מוריניו": "ז'וזה מוריניו",
+    "ז'וזה מורינייו": "ז'וזה מוריניו",
+    "ז'וזה מאוריניו": "ז'וזה מוריניו",
+    "ז׳וזה מאוריניו": "ז'וזה מוריניו",
+    "מאוריניו": "מוריניו",
+    "חוזה מוריניו": "ז'וזה מוריניו",
+    "ברנארדו סילבה": "ברנרדו סילבה",
+    "ברנרדו סילבא": "ברנרדו סילבה",
     "חרארד רומרו": "ג'ראד רומרו",
     "ז'ראר רומרו": "ג'ראד רומרו",
     "כאן אנחנו הולכים": "הנה זה קורה",
@@ -546,7 +576,21 @@ HEBREW_FINAL_FIXES = {
     "טוויט": "פוסט",
     "ציוץ": "פוסט",
     "ציוצים": "פוסטים",
+    " and ": " ו",
 }
+
+HEBREW_FINAL_FIXES.update(
+    {
+        "\u05d6\u05d5\u05d6\u05d4 \u05de\u05d5\u05e8\u05d9\u05e0\u05d9\u05d9\u05d5": "\u05d6'\u05d5\u05d6\u05d4 \u05de\u05d5\u05e8\u05d9\u05e0\u05d9\u05d5",
+        "\u05d6\u05d5\u05d6\u05d4 \u05de\u05d5\u05e8\u05d9\u05e0\u05d9\u05d5": "\u05d6'\u05d5\u05d6\u05d4 \u05de\u05d5\u05e8\u05d9\u05e0\u05d9\u05d5",
+        "\u05d6'\u05d5\u05d6\u05d4 \u05de\u05d0\u05d5\u05e8\u05d9\u05e0\u05d9\u05d5": "\u05d6'\u05d5\u05d6\u05d4 \u05de\u05d5\u05e8\u05d9\u05e0\u05d9\u05d5",
+        "\u05d6\u05f3\u05d5\u05d6\u05d4 \u05de\u05d5\u05e8\u05d9\u05e0\u05d9\u05d9\u05d5": "\u05d6'\u05d5\u05d6\u05d4 \u05de\u05d5\u05e8\u05d9\u05e0\u05d9\u05d5",
+        "\u05de\u05d0\u05d5\u05e8\u05d9\u05e0\u05d9\u05d5": "\u05de\u05d5\u05e8\u05d9\u05e0\u05d9\u05d5",
+        "\u05d1\u05e8\u05e0\u05d0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d0": "\u05d1\u05e8\u05e0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d4",
+        "\u05d1\u05e8\u05e0\u05d0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d4": "\u05d1\u05e8\u05e0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d4",
+        "\u05d1\u05e8\u05e0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d0": "\u05d1\u05e8\u05e0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d4",
+    }
+)
 
 STAT_REPLACEMENTS = {
     "goals": "שערים",
@@ -962,9 +1006,30 @@ def ordered_accounts() -> list[str]:
     return priority + regular
 
 
+def is_night_mode_now() -> bool:
+    if not NIGHT_MODE_ENABLED:
+        return False
+    hour = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).hour
+    if NIGHT_START_HOUR <= NIGHT_END_HOUR:
+        return NIGHT_START_HOUR <= hour < NIGHT_END_HOUR
+    return hour >= NIGHT_START_HOUR or hour < NIGHT_END_HOUR
+
+
+def current_check_every_seconds() -> int:
+    return NIGHT_CHECK_EVERY_SECONDS if is_night_mode_now() else CHECK_EVERY_SECONDS
+
+
+def current_max_parallel_account_checks() -> int:
+    return NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS if is_night_mode_now() else MAX_PARALLEL_ACCOUNT_CHECKS
+
+
+def current_max_parallel_post_sends() -> int:
+    return NIGHT_MAX_PARALLEL_POST_SENDS if is_night_mode_now() else MAX_PARALLEL_POST_SENDS
+
+
 def fetch_all_accounts() -> dict[str, list[Post]]:
     results: dict[str, list[Post]] = {username: [] for username in X_ACCOUNTS}
-    workers = min(MAX_PARALLEL_ACCOUNT_CHECKS, max(1, len(X_ACCOUNTS)))
+    workers = min(current_max_parallel_account_checks(), max(1, len(X_ACCOUNTS)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_map = {executor.submit(fetch_posts_safely, username): username for username in ordered_accounts()}
         for future in as_completed(future_map):
@@ -1235,6 +1300,18 @@ def remove_junk_tail_lines(text: str) -> str:
 def remove_untranslated_tail_tokens(text: str) -> str:
     cleaned_lines: list[str] = []
     for line in (text or "").splitlines():
+        line = re.sub(
+            r"(?iu)\s*(?:ב-|ב)?(?:NBC|נבק|אן\.?בי\.?סי)\s*(?:&|ו|and)\s*(?:Peacock|פהאקוק|פיקוק)\s*([.!?])?\s*$",
+            lambda match: match.group(1) or "",
+            line,
+        )
+        line = re.sub(
+            r"(?iu)\s*(?:on|ב-?|דרך)?\s*(?:NBC|נבק|Peacock|פהאקוק|פיקוק)\s*([.!?])?\s*$",
+            lambda match: match.group(1) or "",
+            line,
+        )
+        line = re.sub(r"(?i)\s*\[[A-Za-z0-9_. -]{3,40}\]\s*:?\s*\(\s*\)\s*$", "", line)
+        line = re.sub(r"(?i)\s*\[[A-Za-z0-9_. -]{3,40}\]\s*$", "", line)
         line = re.sub(r"(?iu)[\wא-ת]*_[A-Za-z0-9_]*\d+[A-Za-z0-9_]*", "", line)
         line = re.sub(r"(?iu)[\wא-ת]*(?:FC|CF|TV|News|Sport|Sports|Calcio|Official|Media)_[A-Za-z0-9_]*", "", line)
         line = re.sub(
@@ -1775,8 +1852,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     first_run = not any(state.values())
     sent = 0
     logging.info("Scan step: starting full scan for %s account(s)", len(X_ACCOUNTS))
-    fetch_workers = min(MAX_PARALLEL_ACCOUNT_CHECKS, max(1, len(X_ACCOUNTS)))
-    send_executor = ThreadPoolExecutor(max_workers=MAX_PARALLEL_POST_SENDS)
+    fetch_workers = min(current_max_parallel_account_checks(), max(1, len(X_ACCOUNTS)))
+    send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
 
     def send_task(item: tuple[str, Post]) -> tuple[str, str, str, bool]:
@@ -1845,7 +1922,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
-    print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
+    print(f"Checking every {CHECK_EVERY_SECONDS} seconds, night mode every {NIGHT_CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
 
     if SEND_STARTUP_STATUS_MESSAGE:
@@ -1881,7 +1958,7 @@ def main() -> None:
                 skipped_for_shabbat = False
                 startup_cycle = False
                 logging.info("Shabbat mode: ended. Existing Shabbat posts were marked as seen without sending.")
-                time.sleep(CHECK_EVERY_SECONDS)
+                time.sleep(current_check_every_seconds())
                 continue
 
             sent = run_once(state, startup_cycle=startup_cycle)
@@ -1893,7 +1970,7 @@ def main() -> None:
         except Exception as exc:
             logging.error("Unexpected error. Bot will keep running: %s", exc)
         elapsed = time.time() - cycle_started
-        time.sleep(max(0, CHECK_EVERY_SECONDS - elapsed))
+        time.sleep(max(0, current_check_every_seconds() - elapsed))
 
 
 if __name__ == "__main__":
