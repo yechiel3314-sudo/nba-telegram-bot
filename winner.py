@@ -1910,11 +1910,12 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             seen.add(post_id)
             state[username] = list(seen)[-500:]
             sent += 1
-            logging.info("Scan step: sent %s", link)
+            logging.info("Sent post from @%s: %s", username, link)
     finally:
         send_executor.shutdown(wait=True, cancel_futures=False)
 
-    logging.info("Timing: cycle finished in %.2fs, sent %s post(s)", time.perf_counter() - cycle_started, sent)
+    if sent:
+        logging.info("Cycle sent %s post(s) in %.2fs", sent, time.perf_counter() - cycle_started)
     return sent
 
 
