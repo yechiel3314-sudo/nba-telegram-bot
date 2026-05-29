@@ -49,7 +49,7 @@ disable_proxy_environment()
 # ==============================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1003808107418").strip()
-SEND_LINK_WHEN_DOWNLOAD_BLOCKED = os.getenv("SEND_LINK_WHEN_DOWNLOAD_BLOCKED", "true").lower() == "true"
+SEND_LINK_WHEN_DOWNLOAD_BLOCKED = os.getenv("SEND_LINK_WHEN_DOWNLOAD_BLOCKED", "false").lower() == "true"
 
 
 # ==============================
