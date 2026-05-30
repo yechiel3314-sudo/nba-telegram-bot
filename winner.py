@@ -148,11 +148,12 @@ HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
 FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
-MIN_FEED_POSTS_FOR_EARLY_RETURN = 12
+MIN_FEED_POSTS_FOR_EARLY_RETURN = 20
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
-NIGHT_MODE_ENABLED = True
+SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
+NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
 NIGHT_CHECK_EVERY_SECONDS = 20
@@ -646,6 +647,7 @@ class Post:
     quoted_author: str
     quoted_text: str
     published_ts: float
+    dedupe_ids: list[str]
 
 
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> bytes:
@@ -925,6 +927,14 @@ def normalize_link(link: str, username: str) -> str:
     return link
 
 
+def canonical_post_id(username: str, guid: str, link: str, title: str) -> str:
+    for value in (link, guid, title):
+        match = re.search(r"/(?:status|statuses)/(\d+)", value or "", flags=re.IGNORECASE)
+        if match:
+            return f"{username}:status:{match.group(1)}"
+    return f"{username}:{guid or link or title}"
+
+
 def parse_timestamp(item: ET.Element) -> float:
     value = child_text(item, ("pubDate", "published", "updated", "dc:date"))
     if not value:
@@ -951,6 +961,8 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
                     link = normalize_link(child.attrib["href"], username)
                     break
         guid = child_text(item, ("guid", "id")) or link or title
+        post_id = canonical_post_id(username, guid, link, title)
+        dedupe_ids = list(dict.fromkeys([post_id, f"{username}:{guid}", f"{username}:{link}"]))
         images = extract_images(raw_text, item)
         videos = extract_videos(raw_text, item)
         raw_has_video = bool(videos) or has_video_marker(raw_text, item)
@@ -961,7 +973,7 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
             primary_has_video = not quoted_has_video
         posts.append(
             Post(
-                post_id=f"{username}:{guid}",
+                post_id=post_id,
                 username=username,
                 text=text,
                 link=link,
@@ -973,6 +985,7 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
                 quoted_author=quoted_author,
                 quoted_text=quoted_text,
                 published_ts=parse_timestamp(item),
+                dedupe_ids=dedupe_ids,
             )
         )
     return posts
@@ -1159,7 +1172,7 @@ def mark_existing_posts_seen(state: dict[str, list[str]]) -> None:
     for username in ordered_accounts():
         seen = set(state.get(username, []))
         for post in all_posts.get(username, []):
-            seen.add(post.post_id)
+            seen.update(post.dedupe_ids)
         state[username] = list(seen)[-500:]
 
 
@@ -1259,6 +1272,9 @@ def remove_external_links(text: str) -> str:
 
 def remove_credit_handles(text: str) -> str:
     text = text or ""
+    text = re.sub(r"(?im)^\s*(?:presented|sponsored|brought to you)\s+by\s+.+$", "", text)
+    text = re.sub(r"(?iu)\s+(?:presented|sponsored|brought to you)\s+by\s+[A-Za-z0-9 ._-]+[.!?]?\s*$", "", text)
+    text = re.sub(r"(?iu)\s+(?:מוצג על ידי|בחסות|פרזנטד ביי)\s+[A-Za-zא-ת0-9 ._-]+[.!?]?\s*$", "", text)
     text = re.sub(
         r"(?<!\w)@[A-Za-z0-9_]*(?:FC|CF|TV|News|Sport|Sports|Calcio|Official|Media)[A-Za-z0-9_]*\b",
         "",
@@ -1358,6 +1374,17 @@ def clean_before_translation(text: str) -> str:
     return text.strip()
 
 
+def clean_for_ai_translation(text: str) -> str:
+    text = remove_external_links(text)
+    text = remove_weird_symbols(text)
+    text = convert_hashtags_to_text(text)
+    text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
+    text = text.replace("&amp;", "&")
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def cache_path() -> Path:
     return Path(__file__).resolve().parent / TRANSLATION_CACHE_FILE
 
@@ -1408,19 +1435,25 @@ def gemini_translate(text: str) -> str:
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
     prompt = (
-        "Rewrite this football news post as a clean Hebrew Telegram update.\n"
-        "Use the full context and meaning. Do not translate word by word.\n"
+        "You are a senior Hebrew sports-news editor.\n"
+        "Rewrite this X/Twitter football post as a polished Hebrew Telegram news update.\n"
+        "Use the full context and meaning. Do not translate word by word and do not preserve awkward original order.\n"
         "Rules:\n"
-        "- Return only the final Hebrew post text.\n"
+        "- Return only the final Hebrew post text, ready to publish.\n"
+        "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
         "- Remove all URLs, website domains and link text.\n"
         "- For @handles: if it is a real player, club, journalist or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
         "- For hashtags: turn meaningful football hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
         "- Before returning, verify every player, coach and club name against football context. Fix malformed transliterations and accents. Do not invent names.\n"
         "- If a name is uncertain, keep the clean original name instead of producing broken Hebrew.\n"
+        "- Convert important club/player @handles into natural Hebrew names. Remove handles only when they are just credits or promotion.\n"
+        "- Remove sponsor lines such as 'presented by', 'sponsored by', broadcasts, TV/network credits and app promotions.\n"
+        "- If the post is mostly a video caption, write one clean Hebrew sentence that explains the actual clip.\n"
         "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
-        "- Do not leave random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
+        "- Never leave raw @handles, random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
+        "- If the post contains only a vague teaser/link/promo and no real news, return an empty string.\n"
         "- Do not explain anything.\n\n"
         f"POST:\n{text}"
     )
@@ -1528,36 +1561,47 @@ def translate_in_sentences(text: str) -> str:
 
 def translate_text(text: str) -> str:
     started = time.perf_counter()
+    ai_text = clean_for_ai_translation(text)
     cleaned = clean_before_translation(text)
-    if not cleaned:
+    if not ai_text and not cleaned:
         return ""
     prepared = apply_phrase_replacements(cleaned, FOOTBALL_TERMS)
     prepared = apply_phrase_replacements(prepared, TEAM_REPLACEMENTS)
     prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
-    key = translation_cache_key(prepared)
-    if key in TRANSLATION_CACHE:
-        return TRANSLATION_CACHE[key]
+    gemini_key = translation_cache_key(ai_text or prepared)
+    fallback_key = hashlib.sha256(f"fallback\n{prepared}".encode("utf-8")).hexdigest()
+    if GEMINI_API_KEYS and gemini_key in TRANSLATION_CACHE:
+        return TRANSLATION_CACHE[gemini_key]
+    if not GEMINI_API_KEYS and fallback_key in TRANSLATION_CACHE:
+        return TRANSLATION_CACHE[fallback_key]
 
-    providers = []
-    if GEMINI_API_KEYS:
-        providers.append(gemini_translate)
-    providers.extend([google_translate, mymemory_translate])
+    if GEMINI_API_KEYS and ai_text:
+        try:
+            polished = final_hebrew_polish(gemini_translate(ai_text))
+            if polished:
+                TRANSLATION_CACHE[gemini_key] = polished
+                return polished
+        except Exception:
+            pass
+
+    if fallback_key in TRANSLATION_CACHE:
+        return TRANSLATION_CACHE[fallback_key]
 
     for source_text in (prepared, cleaned):
-        for provider in providers:
+        for provider in (google_translate, mymemory_translate):
             try:
                 translated = provider(source_text)
-                if provider is not gemini_translate and latin_ratio(translated) > 0.45:
+                if latin_ratio(translated) > 0.45:
                     translated = translate_in_sentences(source_text)
                 polished = final_hebrew_polish(translated)
-                if polished and (provider is gemini_translate or latin_ratio(polished) <= 0.30):
-                    TRANSLATION_CACHE[key] = polished
+                if polished and latin_ratio(polished) <= 0.30:
+                    TRANSLATION_CACHE[fallback_key] = polished
                     return polished
-            except Exception as exc:
-                logging.warning("Translation failed with %s: %s", provider.__name__, exc)
+            except Exception:
+                continue
 
     fallback = final_hebrew_polish(prepared)
-    TRANSLATION_CACHE[key] = fallback
+    TRANSLATION_CACHE[fallback_key] = fallback
     return fallback
 
 
@@ -1882,16 +1926,16 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
 
-    def send_task(item: tuple[str, Post, float]) -> tuple[str, str, str, bool, dict[str, Any]]:
+    def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
         try:
             result = send_post(post)
             result["found_seconds"] = found_seconds
             result["post_age_seconds"] = max(0.0, time.time() - post.published_ts) if post.published_ts else 0.0
-            return username, post.post_id, post.link, True, result
+            return username, post.dedupe_ids, post.link, True, result
         except Exception as exc:
             logging.error("Failed sending %s: %s", post.link, exc)
-            return username, post.post_id, post.link, False, {}
+            return username, post.dedupe_ids, post.link, False, {}
 
     try:
         with ThreadPoolExecutor(max_workers=fetch_workers) as fetch_executor:
@@ -1902,41 +1946,46 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                 if not posts:
                     continue
 
-                new_posts = [post for post in posts if post.post_id not in seen]
+                if not first_run and username not in state and not SEND_BACKLOG_FOR_NEW_ACCOUNTS:
+                    for post in posts:
+                        seen.update(post.dedupe_ids)
+                    state[username] = list(seen)[-500:]
+                    continue
+
+                new_posts = [post for post in posts if not any(post_id in seen for post_id in post.dedupe_ids)]
                 if startup_cycle and SEND_LAST_POST_ON_EVERY_START:
                     new_posts = posts[:1]
                 elif first_run and SEND_LAST_POST_ON_FIRST_RUN:
                     new_posts = posts[:1]
                 elif first_run:
                     for post in posts:
-                        seen.add(post.post_id)
+                        seen.update(post.dedupe_ids)
                     state[username] = list(seen)[-500:]
                     continue
 
                 for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
                     if is_link_only_or_details_post(post):
-                        seen.add(post.post_id)
+                        seen.update(post.dedupe_ids)
                         continue
                     if is_podcast_or_longform_post(post):
-                        seen.add(post.post_id)
+                        seen.update(post.dedupe_ids)
                         continue
                     send_futures.append(send_executor.submit(send_task, (username, post, time.perf_counter() - cycle_started)))
 
                 state[username] = list(seen)[-500:]
 
         for future in as_completed(send_futures):
-            username, post_id, link, ok, result = future.result()
+            username, post_ids, link, ok, result = future.result()
             if not ok:
                 continue
             seen = set(state.get(username, []))
-            seen.add(post_id)
+            seen.update(post_ids)
             state[username] = list(seen)[-500:]
             if result.get("sent"):
                 sent += 1
+                logging.info("✅ נשלח פוסט מ-@%s", username)
                 logging.info(
-                    "נשלח פוסט מ-@%s | סוג: %s | גיל פוסט: %.0f שניות | מציאה: %.2f שניות | בינה: %.2f שניות | חיפוש וידיאו: %.2f שניות | הכנה: %.2f שניות | שליחה: %.2f שניות | סה״כ: %.2f שניות | %s",
-                    username,
-                    result.get("mode", "לא ידוע"),
+                    "זמנים: גיל %.0fs | מציאה %.2fs | בינה %.2fs | וידיאו %.2fs | הכנה %.2fs | שליחה %.2fs | סה״כ %.2fs",
                     result.get("post_age_seconds", 0.0),
                     result.get("found_seconds", 0.0),
                     result.get("translation_seconds", 0.0),
@@ -1944,7 +1993,6 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     result.get("prepare_seconds", 0.0),
                     result.get("send_seconds", 0.0),
                     result.get("total_seconds", 0.0),
-                    link,
                 )
     finally:
         send_executor.shutdown(wait=True, cancel_futures=False)
@@ -1956,7 +2004,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
-    print(f"Checking every {CHECK_EVERY_SECONDS} seconds, night mode every {NIGHT_CHECK_EVERY_SECONDS} seconds.", flush=True)
+    print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
 
     if SEND_STARTUP_STATUS_MESSAGE:
