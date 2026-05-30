@@ -1412,11 +1412,52 @@ def save_translation_cache(cache: dict[str, str]) -> None:
 
 
 TRANSLATION_CACHE = load_translation_cache()
+GEMINI_FAILURE_LOGGED = False
 
 
 def translation_cache_key(text: str) -> str:
     model = GEMINI_FAST_MODEL if GEMINI_API_KEYS else "free"
     return hashlib.sha256(f"{model}\n{text}".encode("utf-8")).hexdigest()
+
+
+def gemini_error_summary(error: Exception | None) -> str:
+    text = str(error or "")
+    lowered = text.lower()
+    if "quota" in lowered or "429" in lowered or "resource_exhausted" in lowered:
+        return "מכסת ג'מיני נגמרה או שיש הגבלת קצב זמנית"
+    if "403" in lowered or "api key" in lowered or "permission" in lowered:
+        return "בעיה בהרשאת מפתח Gemini"
+    if "timeout" in lowered or "timed out" in lowered:
+        return "זמן התגובה של ג'מיני נגמר"
+    return "שגיאת ג'מיני זמנית"
+
+
+def log_gemini_unavailable(error: Exception | None) -> None:
+    global GEMINI_FAILURE_LOGGED
+    if GEMINI_FAILURE_LOGGED:
+        return
+    GEMINI_FAILURE_LOGGED = True
+    logging.warning("⚠️ ג'מיני לא זמין כרגע, הבוט עובר זמנית לתרגום גיבוי. סיבה: %s", gemini_error_summary(error))
+
+
+def mark_gemini_available() -> None:
+    global GEMINI_FAILURE_LOGGED
+    if GEMINI_FAILURE_LOGGED:
+        logging.info("✅ ג'מיני חזר לעבוד")
+    GEMINI_FAILURE_LOGGED = False
+
+
+def relevant_name_glossary(text: str) -> str:
+    lowered = (text or "").lower()
+    lines: list[str] = []
+    for replacements in (HANDLE_REPLACEMENTS, TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS):
+        for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+            clean_source = source.lstrip("@")
+            if clean_source.lower() in lowered or target in text:
+                lines.append(f"- {source} = {target}")
+            if len(lines) >= 35:
+                return "\n".join(dict.fromkeys(lines))
+    return "\n".join(dict.fromkeys(lines))
 
 
 def google_translate(text: str) -> str:
@@ -1434,6 +1475,8 @@ def mymemory_translate(text: str) -> str:
 def gemini_translate(text: str) -> str:
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
+    glossary = relevant_name_glossary(text)
+    glossary_block = f"\nKnown names glossary. Use these exact Hebrew names when relevant:\n{glossary}\n" if glossary else ""
     prompt = (
         "You are a senior Hebrew sports-news editor.\n"
         "Rewrite this X/Twitter football post as a polished Hebrew Telegram news update.\n"
@@ -1454,7 +1497,8 @@ def gemini_translate(text: str) -> str:
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
         "- Never leave raw @handles, random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
         "- If the post contains only a vague teaser/link/promo and no real news, return an empty string.\n"
-        "- Do not explain anything.\n\n"
+        "- Do not explain anything.\n"
+        f"{glossary_block}\n"
         f"POST:\n{text}"
     )
     payload = {
@@ -1472,10 +1516,12 @@ def gemini_translate(text: str) -> str:
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
             if translated:
+                mark_gemini_available()
                 return translated
         except Exception as exc:
             last_error = exc
             continue
+    log_gemini_unavailable(last_error)
     raise RuntimeError(f"Gemini translation failed: {last_error}")
 
 
