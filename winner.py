@@ -994,7 +994,7 @@ def fetch_posts(username: str) -> list[Post]:
             except Exception:
                 continue
     except FuturesTimeoutError:
-        logging.info("Fetch step: @%s skipped slow feed mirror(s) this cycle", username)
+        pass
     finally:
         for future in futures:
             future.cancel()
@@ -1143,7 +1143,7 @@ def is_shabbat_now() -> bool:
         try:
             windows = fetch_shabbat_windows(now)
             save_shabbat_windows_to_cache(windows, now)
-            logging.info("Shabbat mode: Hebcal times refreshed")
+            logging.info("מצב שבת: זמני שבת עודכנו")
         except Exception as exc:
             logging.warning("Shabbat mode: Hebcal unavailable, using fallback times: %s", exc)
             return fallback_shabbat_now(now)
@@ -1151,7 +1151,7 @@ def is_shabbat_now() -> bool:
 
 
 def mark_existing_posts_seen(state: dict[str, list[str]]) -> None:
-    logging.info("Shabbat mode: marking existing posts as seen without sending")
+    logging.info("מצב שבת: מסמן פוסטים קיימים כנצפו בלי לשלוח")
     all_posts = fetch_all_accounts()
     for username in ordered_accounts():
         seen = set(state.get(username, []))
@@ -1649,11 +1649,9 @@ def rtl(text: str) -> str:
 
 
 def telegram_api(method: str, payload: dict[str, Any]) -> None:
-    logging.info("Telegram step: calling %s", method)
     response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload)
     if not response.get("ok"):
         raise RuntimeError(f"Telegram error: {response}")
-    logging.info("Telegram step: %s succeeded", method)
 
 
 def trim(text: str, limit: int) -> str:
@@ -1713,28 +1711,28 @@ def build_message(
     return "\n".join(parts)
 
 
-def send_post(post: Post) -> None:
+def send_post(post: Post) -> dict[str, Any]:
     started = time.perf_counter()
-    logging.info("Post step: preparing @%s %s", post.username, post.link)
+    timings: dict[str, Any] = {"sent": False, "mode": "skipped"}
+    translation_started = time.perf_counter()
     translated = translate_text(post.text)
-    logging.info("Post step: main text translated")
     if is_self_quote(post):
-        logging.info("Post step: self-quote detected, skipping quoted post")
         quoted_translated = ""
         quoted_author_translated = ""
     else:
         quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
         quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
-        if post.quoted_text:
-            logging.info("Post step: quoted post translated")
+    timings["translation_seconds"] = time.perf_counter() - translation_started
+
     if not has_meaningful_text(translated) and not has_meaningful_text(quoted_translated):
-        logging.info("Post step: skipped because translated text is empty")
-        return
+        timings["total_seconds"] = time.perf_counter() - started
+        return timings
+
+    video_started = time.perf_counter()
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
-    if video_url:
-        logging.info("Post step: sendable video found under %s MB", MAX_VIDEO_BYTES // 1024 // 1024)
-    elif post.has_video:
-        logging.info("Post step: video exists, but no sendable direct video URL was found")
+    timings["video_lookup_seconds"] = time.perf_counter() - video_started
+
+    prepare_started = time.perf_counter()
     message = build_message(
         post,
         translated,
@@ -1743,10 +1741,11 @@ def send_post(post: Post) -> None:
         include_video_link=not bool(video_url),
     )
     images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
+    timings["prepare_seconds"] = time.perf_counter() - prepare_started
 
     if video_url:
         try:
-            logging.info("Post step: sending video with caption")
+            send_started = time.perf_counter()
             telegram_api(
                 "sendVideo",
                 {
@@ -1757,8 +1756,11 @@ def send_post(post: Post) -> None:
                     "supports_streaming": True,
                 },
             )
-            logging.info("Post step: video with caption sent")
-            return
+            timings["send_seconds"] = time.perf_counter() - send_started
+            timings["total_seconds"] = time.perf_counter() - started
+            timings["sent"] = True
+            timings["mode"] = "וידיאו"
+            return timings
         except Exception as exc:
             logging.warning("Video send failed, falling back to text/link: %s", exc)
             message = build_message(
@@ -1771,7 +1773,6 @@ def send_post(post: Post) -> None:
             images = []
 
     if images:
-        logging.info("Post step: sending %s image(s) with caption", len(images))
         media: list[dict[str, Any]] = []
         for index, image_url in enumerate(images):
             item: dict[str, Any] = {"type": "photo", "media": image_url}
@@ -1780,14 +1781,18 @@ def send_post(post: Post) -> None:
                 item["parse_mode"] = "HTML"
             media.append(item)
         try:
+            send_started = time.perf_counter()
             telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
-            logging.info("Post step: image message sent")
-            return
+            timings["send_seconds"] = time.perf_counter() - send_started
+            timings["total_seconds"] = time.perf_counter() - started
+            timings["sent"] = True
+            timings["mode"] = f"{len(images)} תמונה/ות"
+            return timings
 
-    logging.info("Post step: sending text message")
+    send_started = time.perf_counter()
     telegram_api(
         "sendMessage",
         {
@@ -1797,7 +1802,11 @@ def send_post(post: Post) -> None:
             "parse_mode": "HTML",
         },
     )
-    logging.info("Post step: text message sent")
+    timings["send_seconds"] = time.perf_counter() - send_started
+    timings["total_seconds"] = time.perf_counter() - started
+    timings["sent"] = True
+    timings["mode"] = "טקסט"
+    return timings
 
 
 def send_video_after_message(video_url: str) -> None:
@@ -1864,19 +1873,19 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     cycle_started = time.perf_counter()
     first_run = not any(state.values())
     sent = 0
-    logging.info("Scan step: starting full scan for %s account(s)", len(X_ACCOUNTS))
     fetch_workers = min(current_max_parallel_account_checks(), max(1, len(X_ACCOUNTS)))
     send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
 
-    def send_task(item: tuple[str, Post]) -> tuple[str, str, str, bool]:
-        username, post = item
+    def send_task(item: tuple[str, Post, float]) -> tuple[str, str, str, bool, dict[str, Any]]:
+        username, post, found_seconds = item
         try:
-            send_post(post)
-            return username, post.post_id, post.link, True
+            result = send_post(post)
+            result["found_seconds"] = found_seconds
+            return username, post.post_id, post.link, True, result
         except Exception as exc:
             logging.error("Failed sending %s: %s", post.link, exc)
-            return username, post.post_id, post.link, False
+            return username, post.post_id, post.link, False, {}
 
     try:
         with ThreadPoolExecutor(max_workers=fetch_workers) as fetch_executor:
@@ -1884,12 +1893,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             for future in as_completed(future_map):
                 username, posts = future.result()
                 seen = set(state.get(username, []))
-                logging.info("Scan step: @%s returned %s post(s)", username, len(posts))
                 if not posts:
                     continue
 
                 new_posts = [post for post in posts if post.post_id not in seen]
-                logging.info("Scan step: @%s has %s new post(s)", username, len(new_posts))
                 if startup_cycle and SEND_LAST_POST_ON_EVERY_START:
                     new_posts = posts[:1]
                 elif first_run and SEND_LAST_POST_ON_FIRST_RUN:
@@ -1903,32 +1910,38 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                 for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
                     if is_link_only_or_details_post(post):
                         seen.add(post.post_id)
-                        logging.info("Scan step: filtered link-only/details post %s", post.link)
                         continue
                     if is_podcast_or_longform_post(post):
                         seen.add(post.post_id)
-                        logging.info("Scan step: filtered podcast/longform post %s", post.link)
                         continue
-                    send_futures.append(send_executor.submit(send_task, (username, post)))
-                    logging.info("Send step: queued %s", post.link)
+                    send_futures.append(send_executor.submit(send_task, (username, post, time.perf_counter() - cycle_started)))
 
                 state[username] = list(seen)[-500:]
 
-        logging.info("Scan step: finished fetching all accounts")
         for future in as_completed(send_futures):
-            username, post_id, link, ok = future.result()
+            username, post_id, link, ok, result = future.result()
             if not ok:
                 continue
             seen = set(state.get(username, []))
             seen.add(post_id)
             state[username] = list(seen)[-500:]
-            sent += 1
-            logging.info("Sent post from @%s: %s", username, link)
+            if result.get("sent"):
+                sent += 1
+                logging.info(
+                    "נשלח פוסט מ-@%s | סוג: %s | מציאה: %.2f שניות | בינה: %.2f שניות | חיפוש וידיאו: %.2f שניות | הכנה: %.2f שניות | שליחה: %.2f שניות | סה״כ: %.2f שניות | %s",
+                    username,
+                    result.get("mode", "לא ידוע"),
+                    result.get("found_seconds", 0.0),
+                    result.get("translation_seconds", 0.0),
+                    result.get("video_lookup_seconds", 0.0),
+                    result.get("prepare_seconds", 0.0),
+                    result.get("send_seconds", 0.0),
+                    result.get("total_seconds", 0.0),
+                    link,
+                )
     finally:
         send_executor.shutdown(wait=True, cancel_futures=False)
 
-    if sent:
-        logging.info("Cycle sent %s post(s) in %.2fs", sent, time.perf_counter() - cycle_started)
     return sent
 
 
@@ -1959,7 +1972,7 @@ def main() -> None:
         try:
             if is_shabbat_now():
                 if not skipped_for_shabbat:
-                    logging.info("Shabbat mode: active. Bot will not scan, send, or save state.")
+                    logging.info("מצב שבת פעיל: הבוט לא סורק, לא שולח ולא שומר מצב")
                 skipped_for_shabbat = True
                 time.sleep(SHABBAT_SLEEP_SECONDS)
                 continue
@@ -1971,7 +1984,7 @@ def main() -> None:
                 save_translation_cache(TRANSLATION_CACHE)
                 skipped_for_shabbat = False
                 startup_cycle = False
-                logging.info("Shabbat mode: ended. Existing Shabbat posts were marked as seen without sending.")
+                logging.info("מצב שבת הסתיים: פוסטים משבת סומנו כנצפו בלי שליחה")
                 time.sleep(current_check_every_seconds())
                 continue
 
