@@ -65,6 +65,8 @@ GEMINI_API_KEYS = [
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
+GEMINI_TRANSLATION_ATTEMPTS = 5
+GEMINI_RETRY_WAIT_SECONDS = 20
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 
 X_ACCOUNTS = [
@@ -134,6 +136,10 @@ FEED_TEMPLATES = [
     "https://xcancel.com/{username}/rss",
     "https://twiiit.com/{username}/rss",
     "https://lightbrd.com/{username}/rss",
+    "https://twitt.re/{username}/rss",
+    "https://nitter.dashy.a3x.dn.nyx.im/{username}/rss",
+    "https://nitter.pek.li/{username}/rss",
+    "https://nitter.aishiteiru.moe/{username}/rss",
     "https://nitter.net/{username}/rss",
     "https://nitter.poast.org/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
@@ -711,7 +717,35 @@ TEAM_REPLACEMENTS = {
     "FCB": "ברצלונה",
 }
 
+ENTITY_CONFLICT_GROUPS = [
+    {
+        "Real Madrid": "ריאל מדריד",
+        "Real Sociedad": "ריאל סוסיאדד",
+        "Real Betis": "בטיס",
+    },
+    {
+        "Manchester United": "מנצ'סטר יונייטד",
+        "Man United": "מנצ'סטר יונייטד",
+        "Man Utd": "מנצ'סטר יונייטד",
+        "Manchester City": "מנצ'סטר סיטי",
+        "Man City": "מנצ'סטר סיטי",
+    },
+    {
+        "AC Milan": "מילאן",
+        "Milan": "מילאן",
+        "Inter Milan": "אינטר",
+        "Inter": "אינטר",
+    },
+    {
+        "Bayern Munich": "באיירן מינכן",
+        "Bayern": "באיירן",
+        "Bayer Leverkusen": "באייר לברקוזן",
+        "Leverkusen": "לברקוזן",
+    },
+]
+
 PLAYER_REPLACEMENTS = {
+    "Xabi Alonso": "צ'אבי אלונסו",
     "Marcus Rashford": "מרקוס ראשפורד",
     "Anthony Gordon": "אנתוני גורדון",
     "Florian Wirtz": "פלוריאן וירץ",
@@ -843,6 +877,14 @@ PLAYER_REPLACEMENTS.update(
 )
 
 HEBREW_FINAL_FIXES = {
+    "צ'לסי בוחנת את האפשרות למנות את צ'אבי אלונסו למאמנה הבא של ריאל סוסיאדד": "צ'לסי בוחנת את האפשרות למנות את צ'אבי אלונסו למאמנה הבא",
+    "למאמנה הבא של ריאל סוסיאדד": "למאמנה הבא",
+    "צאבי אלונסו": "צ'אבי אלונסו",
+    "צ׳אבי אלונסו": "צ'אבי אלונסו",
+    "קסאבי אלונסו": "צ'אבי אלונסו",
+    "לקיפה": "לאקיפ",
+    "ל'אקיפה": "לאקיפ",
+    "ל'אקיפ": "לאקיפ",
     "ניקולה שירה": "ניקולה סקירה",
     "ניקולו שירה": "ניקולה סקירה",
     "ניקולו סקירה": "ניקולה סקירה",
@@ -1691,6 +1733,14 @@ def remove_untranslated_tail_tokens(text: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 
+def remove_israel_time_additions(text: str) -> str:
+    text = re.sub(r"\s*\([^)]*שעון ישראל[^)]*\)", "", text or "")
+    text = re.sub(r"\s*,?\s*(?:בשעה\s*)?\d{1,2}:\d{2}\s*שעון ישראל", "", text)
+    text = re.sub(r"\s*שעון ישראל", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
 def clean_before_translation(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
@@ -1855,11 +1905,11 @@ def mymemory_translate(text: str) -> str:
     return html.unescape(data.get("responseData", {}).get("translatedText", "")).strip()
 
 
-def gemini_translate(text: str) -> str:
+def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
     global GEMINI_NEXT_KEY_INDEX
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
-    if time.time() < GEMINI_DISABLED_UNTIL:
+    if respect_global_cooldown and time.time() < GEMINI_DISABLED_UNTIL:
         if GEMINI_COOLDOWN_IS_QUOTA:
             raise RuntimeError("Gemini quota cooldown")
         raise RuntimeError("Gemini is in temporary cooldown")
@@ -1878,9 +1928,14 @@ def gemini_translate(text: str) -> str:
         "- For hashtags: turn meaningful basketball hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
         "- Before returning, verify every player, coach and team name against basketball context. Fix malformed transliterations and accents. Do not invent names.\n"
         "- If a name is uncertain, keep the clean original name instead of producing broken Hebrew.\n"
+        "- Never replace a club/team with a different club/team that is not explicitly in the original post. If a team is not named, do not invent one.\n"
+        "- Preserve the original news facts exactly: teams, players, destinations, scores, dates and competitions must match the source post.\n"
+        "- If the post mentions a role or move without naming the team in that phrase, do not add a team name by assumption.\n"
         "- Convert important team @handles such as @okcthunder into the team name in Hebrew. Remove handles only when they are just credits or promotion.\n"
         "- Remove sponsor lines such as 'presented by', 'sponsored by', broadcasts, TV/network credits and app promotions.\n"
+        "- Do not convert times to Israel time and never add the words 'שעון ישראל'. Keep original time-zone wording only if it is essential.\n"
         "- If the post is mostly a video caption, write one clean Hebrew sentence that explains the actual clip.\n"
+        "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
         "- Keep useful numbers, stats, years, dates, emojis and line breaks.\n"
         "- Never leave raw @handles, random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
         "- Use common Hebrew basketball terms: טרייד, בחירת דראפט, שחקן חופשי, פלייאוף, ריבאונדים, אסיסטים.\n"
@@ -1982,7 +2037,26 @@ def final_hebrew_polish(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = remove_untranslated_tail_tokens(text)
     text = remove_junk_tail_lines(text)
+    text = remove_israel_time_additions(text)
     return text.strip()
+
+
+def translation_contradicts_source(original: str, translated: str) -> bool:
+    original_norm = original or ""
+    translated_norm = translated or ""
+    sensitive_pairs = (
+        ("Real Madrid", "ריאל מדריד", "Real Sociedad", "ריאל סוסיאדד"),
+        ("Real Sociedad", "ריאל סוסיאדד", "Real Madrid", "ריאל מדריד"),
+        ("Barcelona", "ברצלונה", "Real Madrid", "ריאל מדריד"),
+        ("Real Madrid", "ריאל מדריד", "Barcelona", "ברצלונה"),
+    )
+    for source_en, source_he, wrong_en, wrong_he in sensitive_pairs:
+        source_in_original = source_en.lower() in original_norm.lower() or source_he in original_norm
+        wrong_in_original = wrong_en.lower() in original_norm.lower() or wrong_he in original_norm
+        wrong_in_translation = wrong_he in translated_norm or wrong_en.lower() in translated_norm.lower()
+        if source_in_original and not wrong_in_original and wrong_in_translation:
+            return True
+    return False
 
 
 def translate_in_sentences(text: str) -> str:
@@ -1997,6 +2071,14 @@ def translate_in_sentences(text: str) -> str:
         except Exception:
             translated.append(piece)
     return "\n\n".join(translated)
+
+
+def untranslated_fallback_text(text: str) -> str:
+    text = clean_before_translation(text)
+    text = remove_untranslated_tail_tokens(text)
+    text = remove_junk_tail_lines(text)
+    text = remove_israel_time_additions(text)
+    return text.strip()
 
 
 def translate_text(text: str) -> str:
@@ -2016,15 +2098,29 @@ def translate_text(text: str) -> str:
         return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
 
     if GEMINI_API_KEYS and ai_text:
-        try:
-            polished = final_hebrew_polish(gemini_translate(ai_text))
-            polished = preserve_original_emojis(ai_text, polished)
-            if polished:
-                TRANSLATION_CACHE[gemini_key] = polished
-                return polished
-        except Exception as exc:
-            if not is_gemini_quota_error(exc):
-                raise
+        last_error: Exception | None = None
+        for attempt in range(1, GEMINI_TRANSLATION_ATTEMPTS + 1):
+            try:
+                polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
+                polished = preserve_original_emojis(ai_text, polished)
+                if translation_contradicts_source(ai_text, polished):
+                    raise RuntimeError("Gemini translation contradicted source names")
+                if polished:
+                    TRANSLATION_CACHE[gemini_key] = polished
+                    return polished
+            except Exception as exc:
+                last_error = exc
+                if attempt < GEMINI_TRANSLATION_ATTEMPTS:
+                    logging.warning(
+                        "⚠️ ג'מיני נכשל זמנית בתרגום, ממתין %s שניות ומנסה שוב (%s/%s). סיבה: %s",
+                        GEMINI_RETRY_WAIT_SECONDS,
+                        attempt,
+                        GEMINI_TRANSLATION_ATTEMPTS,
+                        gemini_error_summary(exc),
+                    )
+                    time.sleep(GEMINI_RETRY_WAIT_SECONDS)
+        logging.warning("⚠️ ג'מיני נכשל אחרי %s ניסיונות. הפוסט לא יישלח כרגע וינוסה שוב בסיבוב הבא.", GEMINI_TRANSLATION_ATTEMPTS)
+        raise RuntimeError("Gemini translation failed after retries")
 
     if fallback_key in TRANSLATION_CACHE:
         return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
