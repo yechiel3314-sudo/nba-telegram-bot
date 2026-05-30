@@ -204,6 +204,8 @@ URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]")
+
 PODCAST_BLOCK_PATTERNS = (
     r"\bpodcast\b",
     r"\bfull\s+episode\b",
@@ -1402,6 +1404,25 @@ def clean_for_ai_translation(text: str) -> str:
     return text.strip()
 
 
+def extract_emojis(text: str, limit: int = 6) -> list[str]:
+    emojis: list[str] = []
+    for emoji in EMOJI_RE.findall(text or ""):
+        if emoji not in emojis:
+            emojis.append(emoji)
+        if len(emojis) >= limit:
+            break
+    return emojis
+
+
+def preserve_original_emojis(original: str, translated: str) -> str:
+    if not translated:
+        return translated
+    missing = [emoji for emoji in extract_emojis(original) if emoji not in translated]
+    if not missing:
+        return translated
+    return f"{' '.join(missing)} {translated}".strip()
+
+
 def cache_path() -> Path:
     return Path(__file__).resolve().parent / TRANSLATION_CACHE_FILE
 
@@ -1432,6 +1453,8 @@ TRANSLATION_CACHE = load_translation_cache()
 GEMINI_FAILURE_LOGGED = False
 GEMINI_DISABLED_UNTIL = 0.0
 GEMINI_COOLDOWN_IS_QUOTA = False
+GEMINI_KEY_COOLDOWNS: dict[str, float] = {}
+GEMINI_NEXT_KEY_INDEX = 0
 
 
 def translation_cache_key(text: str) -> str:
@@ -1454,6 +1477,26 @@ def gemini_error_summary(error: Exception | None) -> str:
 def is_gemini_quota_error(error: Exception | None) -> bool:
     lowered = str(error or "").lower()
     return "quota" in lowered or "429" in lowered or "resource_exhausted" in lowered
+
+
+def gemini_key_label(index: int) -> str:
+    return f"מפתח {index + 1}/{len(GEMINI_API_KEYS)}"
+
+
+def gemini_key_order() -> list[tuple[int, str]]:
+    if not GEMINI_API_KEYS:
+        return []
+    start = GEMINI_NEXT_KEY_INDEX % len(GEMINI_API_KEYS)
+    now = time.time()
+    ordered = [(index, GEMINI_API_KEYS[index]) for index in range(len(GEMINI_API_KEYS))]
+    rotated = ordered[start:] + ordered[:start]
+    active = [(index, key) for index, key in rotated if GEMINI_KEY_COOLDOWNS.get(key, 0.0) <= now]
+    return active or rotated
+
+
+def cool_down_gemini_key(key: str, error: Exception | None) -> None:
+    cooldown = GEMINI_COOLDOWN_SECONDS if is_gemini_quota_error(error) else 60
+    GEMINI_KEY_COOLDOWNS[key] = time.time() + cooldown
 
 
 def log_gemini_unavailable(error: Exception | None) -> None:
@@ -1501,6 +1544,7 @@ def mymemory_translate(text: str) -> str:
 
 
 def gemini_translate(text: str) -> str:
+    global GEMINI_NEXT_KEY_INDEX
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
     if time.time() < GEMINI_DISABLED_UNTIL:
@@ -1538,7 +1582,7 @@ def gemini_translate(text: str) -> str:
         "generationConfig": {"temperature": 0.1, "topP": 0.8},
     }
     last_error: Exception | None = None
-    for key in GEMINI_API_KEYS:
+    for index, key in gemini_key_order():
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
@@ -1548,10 +1592,14 @@ def gemini_translate(text: str) -> str:
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
             if translated:
+                GEMINI_NEXT_KEY_INDEX = (index + 1) % len(GEMINI_API_KEYS)
+                GEMINI_KEY_COOLDOWNS.pop(key, None)
                 mark_gemini_available()
                 return translated
         except Exception as exc:
             last_error = exc
+            cool_down_gemini_key(key, exc)
+            logging.warning("⚠️ ג'מיני נכשל עם %s, מנסה מפתח הבא. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
             continue
     log_gemini_unavailable(last_error)
     raise RuntimeError(f"Gemini translation failed: {last_error}")
@@ -1649,13 +1697,14 @@ def translate_text(text: str) -> str:
     gemini_key = translation_cache_key(ai_text or prepared)
     fallback_key = hashlib.sha256(f"fallback\n{prepared}".encode("utf-8")).hexdigest()
     if GEMINI_API_KEYS and gemini_key in TRANSLATION_CACHE:
-        return TRANSLATION_CACHE[gemini_key]
+        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key])
     if not GEMINI_API_KEYS and fallback_key in TRANSLATION_CACHE:
-        return TRANSLATION_CACHE[fallback_key]
+        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
 
     if GEMINI_API_KEYS and ai_text:
         try:
             polished = final_hebrew_polish(gemini_translate(ai_text))
+            polished = preserve_original_emojis(ai_text, polished)
             if polished:
                 TRANSLATION_CACHE[gemini_key] = polished
                 return polished
@@ -1664,7 +1713,7 @@ def translate_text(text: str) -> str:
                 raise
 
     if fallback_key in TRANSLATION_CACHE:
-        return TRANSLATION_CACHE[fallback_key]
+        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
 
     for source_text in (prepared, cleaned):
         for provider in (google_translate, mymemory_translate):
@@ -1673,6 +1722,7 @@ def translate_text(text: str) -> str:
                 if latin_ratio(translated) > 0.45:
                     translated = translate_in_sentences(source_text)
                 polished = final_hebrew_polish(translated)
+                polished = preserve_original_emojis(source_text, polished)
                 if polished and latin_ratio(polished) <= 0.30:
                     TRANSLATION_CACHE[fallback_key] = polished
                     return polished
@@ -1680,6 +1730,7 @@ def translate_text(text: str) -> str:
                 continue
 
     fallback = final_hebrew_polish(prepared)
+    fallback = preserve_original_emojis(ai_text or text, fallback)
     TRANSLATION_CACHE[fallback_key] = fallback
     return fallback
 
