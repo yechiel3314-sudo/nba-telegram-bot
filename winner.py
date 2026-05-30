@@ -65,6 +65,7 @@ GEMINI_API_KEYS = [
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
+GEMINI_COOLDOWN_SECONDS = 10 * 60
 
 X_ACCOUNTS = [
     "FabrizioRomano",
@@ -148,7 +149,6 @@ HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
 FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
-MIN_FEED_POSTS_FOR_EARLY_RETURN = 20
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
@@ -181,6 +181,9 @@ RTL_MARK = "\u200f"
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
     "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://xcancel.com/{username}/rss",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
     "https://nitter.net/{username}/rss",
     "https://nitter.poast.org/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
@@ -648,6 +651,7 @@ class Post:
     quoted_text: str
     published_ts: float
     dedupe_ids: list[str]
+    source_name: str
 
 
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> bytes:
@@ -694,7 +698,13 @@ def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> byte
         return response.read()
 
 
-def http_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
+def http_post_json(
+    url: str,
+    payload: dict[str, Any],
+    timeout: int = 30,
+    max_attempts: int = HTTP_RETRIES,
+    respect_retry_after: bool = True,
+) -> dict[str, Any]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -703,7 +713,7 @@ def http_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> dict
         method="POST",
     )
     last_error: Exception | None = None
-    for attempt in range(1, HTTP_RETRIES + 1):
+    for attempt in range(1, max_attempts + 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -715,15 +725,15 @@ def http_post_json(url: str, payload: dict[str, Any], timeout: int = 30) -> dict
             except Exception:
                 retry_after = 0
             last_error = RuntimeError(f"HTTP {exc.code}: {raw}")
-            if exc.code == 429 and retry_after:
+            if exc.code == 429 and retry_after and respect_retry_after:
                 time.sleep(retry_after + 1)
-            elif attempt < HTTP_RETRIES:
+            elif attempt < max_attempts:
                 time.sleep(1.5 * attempt)
         except Exception as exc:
             last_error = exc
-            if attempt < HTTP_RETRIES:
+            if attempt < max_attempts:
                 time.sleep(1.5 * attempt)
-    raise RuntimeError(f"POST failed after {HTTP_RETRIES} attempts: {last_error}")
+    raise RuntimeError(f"POST failed after {max_attempts} attempts: {last_error}")
 
 
 def remote_file_size(url: str, timeout: int = 4) -> int | None:
@@ -945,7 +955,15 @@ def parse_timestamp(item: ET.Element) -> float:
         return 0.0
 
 
-def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
+def feed_source_name(template: str) -> str:
+    try:
+        host = urllib.parse.urlparse(template).netloc.lower()
+    except Exception:
+        return "unknown"
+    return host.removeprefix("www.")
+
+
+def parse_posts(username: str, xml_bytes: bytes, source_name: str) -> list[Post]:
     root = ET.fromstring(xml_bytes)
     items = [element for element in root.iter() if strip_namespace(element.tag) in ("item", "entry")]
     posts: list[Post] = []
@@ -986,6 +1004,7 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
                 quoted_text=quoted_text,
                 published_ts=parse_timestamp(item),
                 dedupe_ids=dedupe_ids,
+                source_name=source_name,
             )
         )
     return posts
@@ -993,7 +1012,7 @@ def parse_posts(username: str, xml_bytes: bytes) -> list[Post]:
 
 def fetch_feed(username: str, template: str) -> list[Post]:
     url = template.format(username=urllib.parse.quote(username))
-    return parse_posts(username, http_get_feed(url))
+    return parse_posts(username, http_get_feed(url), feed_source_name(template))
 
 
 def fetch_posts(username: str) -> list[Post]:
@@ -1005,8 +1024,6 @@ def fetch_posts(username: str) -> list[Post]:
             try:
                 for post in future.result():
                     all_posts.setdefault(post.post_id, post)
-                if len(all_posts) >= MIN_FEED_POSTS_FOR_EARLY_RETURN:
-                    break
             except Exception:
                 continue
     except FuturesTimeoutError:
@@ -1413,6 +1430,8 @@ def save_translation_cache(cache: dict[str, str]) -> None:
 
 TRANSLATION_CACHE = load_translation_cache()
 GEMINI_FAILURE_LOGGED = False
+GEMINI_DISABLED_UNTIL = 0.0
+GEMINI_COOLDOWN_IS_QUOTA = False
 
 
 def translation_cache_key(text: str) -> str:
@@ -1432,19 +1451,28 @@ def gemini_error_summary(error: Exception | None) -> str:
     return "שגיאת ג'מיני זמנית"
 
 
+def is_gemini_quota_error(error: Exception | None) -> bool:
+    lowered = str(error or "").lower()
+    return "quota" in lowered or "429" in lowered or "resource_exhausted" in lowered
+
+
 def log_gemini_unavailable(error: Exception | None) -> None:
-    global GEMINI_FAILURE_LOGGED
+    global GEMINI_FAILURE_LOGGED, GEMINI_DISABLED_UNTIL, GEMINI_COOLDOWN_IS_QUOTA
+    GEMINI_DISABLED_UNTIL = time.time() + GEMINI_COOLDOWN_SECONDS
+    GEMINI_COOLDOWN_IS_QUOTA = is_gemini_quota_error(error)
     if GEMINI_FAILURE_LOGGED:
         return
     GEMINI_FAILURE_LOGGED = True
-    logging.warning("⚠️ ג'מיני לא זמין כרגע, הבוט עובר זמנית לתרגום גיבוי. סיבה: %s", gemini_error_summary(error))
+    logging.warning("⚠️ ג'מיני לא זמין כרגע. אם זו מכסה, הפוסט יישלח בגיבוי; אחרת הבוט ינסה שוב בהמשך. סיבה: %s", gemini_error_summary(error))
 
 
 def mark_gemini_available() -> None:
-    global GEMINI_FAILURE_LOGGED
+    global GEMINI_FAILURE_LOGGED, GEMINI_DISABLED_UNTIL, GEMINI_COOLDOWN_IS_QUOTA
     if GEMINI_FAILURE_LOGGED:
         logging.info("✅ ג'מיני חזר לעבוד")
     GEMINI_FAILURE_LOGGED = False
+    GEMINI_DISABLED_UNTIL = 0.0
+    GEMINI_COOLDOWN_IS_QUOTA = False
 
 
 def relevant_name_glossary(text: str) -> str:
@@ -1475,6 +1503,10 @@ def mymemory_translate(text: str) -> str:
 def gemini_translate(text: str) -> str:
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
+    if time.time() < GEMINI_DISABLED_UNTIL:
+        if GEMINI_COOLDOWN_IS_QUOTA:
+            raise RuntimeError("Gemini quota cooldown")
+        raise RuntimeError("Gemini is in temporary cooldown")
     glossary = relevant_name_glossary(text)
     glossary_block = f"\nKnown names glossary. Use these exact Hebrew names when relevant:\n{glossary}\n" if glossary else ""
     prompt = (
@@ -1512,7 +1544,7 @@ def gemini_translate(text: str) -> str:
             f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
         )
         try:
-            data = http_post_json(url, payload, timeout=25)
+            data = http_post_json(url, payload, timeout=8, max_attempts=1, respect_retry_after=False)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
             if translated:
@@ -1627,8 +1659,9 @@ def translate_text(text: str) -> str:
             if polished:
                 TRANSLATION_CACHE[gemini_key] = polished
                 return polished
-        except Exception:
-            pass
+        except Exception as exc:
+            if not is_gemini_quota_error(exc):
+                raise
 
     if fallback_key in TRANSLATION_CACHE:
         return TRANSLATION_CACHE[fallback_key]
@@ -1978,6 +2011,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             result = send_post(post)
             result["found_seconds"] = found_seconds
             result["post_age_seconds"] = max(0.0, time.time() - post.published_ts) if post.published_ts else 0.0
+            result["source_name"] = post.source_name
             return username, post.dedupe_ids, post.link, True, result
         except Exception as exc:
             logging.error("Failed sending %s: %s", post.link, exc)
@@ -2029,7 +2063,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             state[username] = list(seen)[-500:]
             if result.get("sent"):
                 sent += 1
-                logging.info("✅ נשלח פוסט מ-@%s", username)
+                logging.info("✅ נשלח פוסט מ-@%s | מקור: %s", username, result.get("source_name", "unknown"))
                 logging.info(
                     "זמנים: גיל %.0fs | מציאה %.2fs | בינה %.2fs | וידיאו %.2fs | הכנה %.2fs | שליחה %.2fs | סה״כ %.2fs",
                     result.get("post_age_seconds", 0.0),
