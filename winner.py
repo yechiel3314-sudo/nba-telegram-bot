@@ -143,18 +143,19 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 8
+CHECK_EVERY_SECONDS = 5
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = 4
-FEED_COLLECTION_TIMEOUT_SECONDS = 5
+FEED_REQUEST_TIMEOUT_SECONDS = 2
+FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
+MIN_FEED_POSTS_FOR_EARLY_RETURN = 12
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 NIGHT_MODE_ENABLED = True
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
-NIGHT_CHECK_EVERY_SECONDS = 30
+NIGHT_CHECK_EVERY_SECONDS = 20
 NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 16
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
@@ -991,6 +992,8 @@ def fetch_posts(username: str) -> list[Post]:
             try:
                 for post in future.result():
                     all_posts.setdefault(post.post_id, post)
+                if len(all_posts) >= MIN_FEED_POSTS_FOR_EARLY_RETURN:
+                    break
             except Exception:
                 continue
     except FuturesTimeoutError:
@@ -1413,6 +1416,8 @@ def gemini_translate(text: str) -> str:
         "- Remove all URLs, website domains and link text.\n"
         "- For @handles: if it is a real player, club, journalist or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
         "- For hashtags: turn meaningful football hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
+        "- Before returning, verify every player, coach and club name against football context. Fix malformed transliterations and accents. Do not invent names.\n"
+        "- If a name is uncertain, keep the clean original name instead of producing broken Hebrew.\n"
         "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
         "- Do not leave random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
@@ -1882,6 +1887,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
         try:
             result = send_post(post)
             result["found_seconds"] = found_seconds
+            result["post_age_seconds"] = max(0.0, time.time() - post.published_ts) if post.published_ts else 0.0
             return username, post.post_id, post.link, True, result
         except Exception as exc:
             logging.error("Failed sending %s: %s", post.link, exc)
@@ -1928,9 +1934,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             if result.get("sent"):
                 sent += 1
                 logging.info(
-                    "נשלח פוסט מ-@%s | סוג: %s | מציאה: %.2f שניות | בינה: %.2f שניות | חיפוש וידיאו: %.2f שניות | הכנה: %.2f שניות | שליחה: %.2f שניות | סה״כ: %.2f שניות | %s",
+                    "נשלח פוסט מ-@%s | סוג: %s | גיל פוסט: %.0f שניות | מציאה: %.2f שניות | בינה: %.2f שניות | חיפוש וידיאו: %.2f שניות | הכנה: %.2f שניות | שליחה: %.2f שניות | סה״כ: %.2f שניות | %s",
                     username,
                     result.get("mode", "לא ידוע"),
+                    result.get("post_age_seconds", 0.0),
                     result.get("found_seconds", 0.0),
                     result.get("translation_seconds", 0.0),
                     result.get("video_lookup_seconds", 0.0),
