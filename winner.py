@@ -1405,12 +1405,17 @@ def gemini_translate(text: str) -> str:
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
     prompt = (
-        "Translate this football news post into natural, clear Hebrew.\n"
+        "Rewrite this football news post as a clean Hebrew Telegram update.\n"
+        "Use the full context and meaning. Do not translate word by word.\n"
         "Rules:\n"
-        "- Return only the Hebrew translation.\n"
-        "- Translate every word, including names and @handles, into Hebrew spelling when possible.\n"
-        "- Do not include any URLs or website domains.\n"
-        "- Keep numbers, transfer fees, emojis and line breaks when useful.\n"
+        "- Return only the final Hebrew post text.\n"
+        "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
+        "- Remove all URLs, website domains and link text.\n"
+        "- For @handles: if it is a real player, club, journalist or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
+        "- For hashtags: turn meaningful football hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
+        "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
+        "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
+        "- Do not leave random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
         "- Do not explain anything.\n\n"
         f"POST:\n{text}"
     )
@@ -1686,7 +1691,7 @@ def build_message(
     safe_link = html.escape(post.link)
     video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
-    post_link_label = f"<b>{html.escape(rtl('קישור לפוסט:'))}</b>"
+    post_link_label = f'<a href="{safe_link}">{html.escape(rtl("קישור לפוסט"))}</a>'
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
 
@@ -1703,7 +1708,7 @@ def build_message(
             parts.extend(["", video_label])
 
     if post.link:
-        parts.extend(["", "", post_link_label, safe_link])
+        parts.extend(["", "", post_link_label])
 
     return "\n".join(parts)
 
