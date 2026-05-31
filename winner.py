@@ -192,6 +192,7 @@ URL_RE = re.compile(
 )
 
 EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]")
+TAG_FLAG_RE = re.compile(r"\U0001F3F4[\U000E0061-\U000E007A]+\U000E007F")
 
 COUNTRY_CODE_FLAGS = {
     "AR": "\U0001F1E6\U0001F1F7",
@@ -1522,10 +1523,15 @@ def is_non_news_social_post(post: Post) -> bool:
         r"\bsuspended\b",
         r"\bconfirmed\b",
         r"\bofficial\b",
+        r"\bcalled\s+up\b",
+        r"\bsquad\b",
+        r"\bnational\s+team\b",
         r"הושג|סוכם|חתם|יחתום|מצטרף|יעבור|העברה|השאלה|חוזה|רשמי|בלעדי|פציעה|מונה|פוטר",
     )
     if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in news_patterns):
         return False
+    if re.search(r"[\"“”׳״].{4,}[\"“”׳״]", cleaned):
+        return True
 
     social_patterns = (
         r"\binstagram\b",
@@ -1534,6 +1540,12 @@ def is_non_news_social_post(post: Post) -> bool:
         r"\bquote\b",
         r"\bcaption\b",
         r"\bmessage\b",
+        r"\binterview\b",
+        r"\btold\b",
+        r"\bsays?\b",
+        r"\basked\b",
+        r"\bspeaking\b",
+        r"\bon\s+[A-Z][A-Za-zÀ-ÿ'’-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’-]+){0,3}\s*:",
         r"\bcongrat",
         r"\brespect\b",
         r"\bclass\b",
@@ -1541,7 +1553,7 @@ def is_non_news_social_post(post: Post) -> bool:
         r"\bunderstand me\b",
         r"\byou cannot understand\b",
         r"vous ne pouvez pas comprendre",
-        r"אי אפשר להבין|לא יכול להבין|סטורי|אינסטגרם|ברכה|מחווה|תגובה|ציטוט|מסר|אגדה|כבוד",
+        r"אי אפשר להבין|לא יכול להבין|סטורי|אינסטגרם|ברכה|מחווה|תגובה|ציטוט|מסר|אגדה|כבוד|בראיון|אמר|אומר|נשאל|דיבר על|מדבר על",
     )
     if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in social_patterns):
         return True
@@ -1686,6 +1698,7 @@ def final_visual_cleanup(text: str) -> str:
     text = re.sub(rf"{georgia_flag}(?:\s*{georgia_flag})+", georgia_flag, text)
     text = re.sub(rf"{georgia_flag}(?:\s*[\U0001F535\U0001F534\u26aa\u26ab]){{1,6}}", georgia_flag, text)
     text = re.sub(rf"(?:[\U0001F535\U0001F534\u26aa\u26ab]\s*){{1,6}}{georgia_flag}", georgia_flag, text)
+    text = re.sub(r"\U0001F3F4(?![\U000E0061-\U000E007A])\ufe0f?", "", text)
     text = re.sub(r"\b(?:חבצ'ה|חביציה|חביצ׳ה|חביצה)\b", "חביצ'ה קווארצחליה", text)
     text = re.sub(r"\b(?:קווארה|קווארא|קווארצ׳חליה|קווארצחלייה)\b", "קווארצחליה", text)
     link_markers = r"(?:\U0001F447|\u2b07\ufe0f?|\U0001F53D|\u2198\ufe0f?|\u2935\ufe0f?|\u2193)"
@@ -1725,7 +1738,16 @@ def clean_for_ai_translation(text: str) -> str:
 
 def extract_emojis(text: str, limit: int = 6) -> list[str]:
     emojis: list[str] = []
-    for emoji in EMOJI_RE.findall(text or ""):
+    text = text or ""
+    for emoji in TAG_FLAG_RE.findall(text):
+        if emoji not in emojis:
+            emojis.append(emoji)
+        if len(emojis) >= limit:
+            return emojis
+    text_without_tag_flags = TAG_FLAG_RE.sub("", text)
+    for emoji in EMOJI_RE.findall(text_without_tag_flags):
+        if emoji == "\U0001F3F4":
+            continue
         if emoji not in emojis:
             emojis.append(emoji)
         if len(emojis) >= limit:
@@ -1880,7 +1902,8 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "Rules:\n"
         "- Return only the final Hebrew post text, ready to publish.\n"
         "- First decide if this is a real football news update. Send only reports with concrete news: transfer, contract, injury, squad, appointment, dismissal, official announcement, negotiation, bid, match-relevant update, or a verified factual development.\n"
-        "- If it is only a social/atmosphere post, quote, meme, congratulation, reaction, Instagram/story screenshot, personal message, vague caption, tribute, joke, opinion or image with no concrete news update, return an empty string.\n"
+        "- If it is only a social/atmosphere post, quote, interview sentence, player/coach reaction, meme, congratulation, reaction, Instagram/story screenshot, personal message, vague caption, tribute, joke, opinion or image with no concrete news update, return an empty string.\n"
+        "- Interview quotes such as 'X on Y: ...', 'X said...', 'X told...' are not news unless they include a concrete factual development like an injury, signing, official decision, squad call-up, bid or contract.\n"
         "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
         "- Remove all URLs, website domains and link text.\n"
@@ -1902,7 +1925,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
         "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
-        "- If a two-letter country code is used as a flag marker, output the correct flag emoji instead of the letters.\n"
+        "- If a two-letter country code is used as a flag marker, output the correct flag emoji instead of the letters. Preserve real flag emojis from the source and never replace a flag with a generic black flag.\n"
         "- Remove down arrows or pointing-down emojis when they only pointed to a removed link or quoted post.\n"
         "- Never leave raw @handles, random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
         "- If the post contains only a vague teaser/link/promo and no real news, return an empty string.\n"
