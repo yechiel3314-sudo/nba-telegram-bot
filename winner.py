@@ -50,7 +50,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
     "8480434397:AAF8ay6JxuYsf7ytVOLG73bVJiJQHq8CMx4",
 )
-TELEGRAM_CHAT_ID = "-1003869452843"
+TELEGRAM_CHAT_ID = "-1002272784260"
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
