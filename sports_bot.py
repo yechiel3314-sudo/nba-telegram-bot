@@ -40,6 +40,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from threading import BoundedSemaphore
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -68,6 +69,7 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 GEMINI_TRANSLATION_ATTEMPTS = 5
 GEMINI_RETRY_WAIT_SECONDS = 20
 GEMINI_COOLDOWN_SECONDS = 10 * 60
+GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 
 X_ACCOUNTS = [
     "NBA",
@@ -1817,6 +1819,7 @@ GEMINI_DISABLED_UNTIL = 0.0
 GEMINI_COOLDOWN_IS_QUOTA = False
 GEMINI_KEY_COOLDOWNS: dict[str, float] = {}
 GEMINI_NEXT_KEY_INDEX = 0
+GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
 
 
 def translation_cache_key(text: str) -> str:
@@ -2101,7 +2104,8 @@ def translate_text(text: str) -> str:
         last_error: Exception | None = None
         for attempt in range(1, GEMINI_TRANSLATION_ATTEMPTS + 1):
             try:
-                polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
+                with GEMINI_TRANSLATION_SEMAPHORE:
+                    polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
                 polished = preserve_original_emojis(ai_text, polished)
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
