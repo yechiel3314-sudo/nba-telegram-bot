@@ -225,6 +225,80 @@ COUNTRY_CODE_FLAGS = {
     "UY": "\U0001F1FA\U0001F1FE",
 }
 
+
+COUNTRY_FLAG_ALIAS_PATTERNS = {
+    # Gemini sometimes keeps ISO country codes as Hebrew/phonetic letters instead of emoji.
+    # Add more aliases here if you ever see another code survive translation in text form.
+    "TR": (
+        r"(?<![א-תA-Za-z])טי\s*[-.־]?\s*אר(?![א-תA-Za-z])",
+        r"(?<![א-תA-Za-z])טי\s*[-.־]?\s*ר(?![א-תA-Za-z])",
+    ),
+    "GE": (
+        r"(?<![א-תA-Za-z])ג׳?י\s*[-.־]?\s*אי(?![א-תA-Za-z])",
+        r"(?<![א-תA-Za-z])גי\s*[-.־]?\s*אי(?![א-תA-Za-z])",
+    ),
+}
+
+
+def normalize_country_flags(text: str) -> str:
+    """Convert standalone ISO country codes like TR/GE/FR into flag emojis.
+
+    RSS mirrors and Gemini sometimes leave only the two-letter country marker
+    instead of the flag. This runs before translation and again after translation,
+    including support for hidden RTL marks and spaced codes like T R / T-R / T.R.
+    """
+    text = text or ""
+    invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
+    separator = r"[\s\u00a0._/\-־]*"
+
+    for code, flag in COUNTRY_CODE_FLAGS.items():
+        first, second = re.escape(code[0]), re.escape(code[1])
+        text = re.sub(
+            rf"(?<![A-Za-z]){invisible}{first}{invisible}{separator}{invisible}{second}{invisible}(?![A-Za-z])",
+            flag,
+            text,
+        )
+        # Remove duplicate leftovers around the flag, for example: TR 🇹🇷 or 🇹🇷 TR.
+        text = re.sub(
+            rf"(?<![A-Za-z]){invisible}{first}{invisible}{separator}{invisible}{second}{invisible}\s*{re.escape(flag)}",
+            flag,
+            text,
+        )
+        text = re.sub(
+            rf"{re.escape(flag)}\s*{invisible}{first}{invisible}{separator}{invisible}{second}{invisible}(?![A-Za-z])",
+            flag,
+            text,
+        )
+        text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
+
+    for code, patterns in COUNTRY_FLAG_ALIAS_PATTERNS.items():
+        flag = COUNTRY_CODE_FLAGS.get(code)
+        if not flag:
+            continue
+        for pattern in patterns:
+            text = re.sub(pattern, flag, text, flags=re.IGNORECASE)
+        text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
+
+    return text
+
+
+def country_flags_in_text(text: str) -> list[str]:
+    normalized = normalize_country_flags(text or "")
+    flags: list[str] = []
+    for flag in COUNTRY_CODE_FLAGS.values():
+        if flag in normalized and flag not in flags:
+            flags.append(flag)
+    return flags
+
+
+def preserve_original_country_flags(original: str, translated: str) -> str:
+    translated = normalize_country_flags(translated or "")
+    missing = [flag for flag in country_flags_in_text(original) if flag not in translated]
+    if missing:
+        translated = f"{' '.join(missing)} {translated}".strip()
+    return normalize_country_flags(translated)
+
+
 PODCAST_BLOCK_PATTERNS = (
     r"\bpodcast\b",
     r"\bfull\s+episode\b",
@@ -1731,7 +1805,7 @@ def remove_israel_time_additions(text: str) -> str:
 
 
 def final_visual_cleanup(text: str) -> str:
-    text = text or ""
+    text = normalize_country_flags(text or "")
     invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
     georgia_flag = "\U0001F1EC\U0001F1EA"
     for code, flag in COUNTRY_CODE_FLAGS.items():
@@ -1757,6 +1831,7 @@ def final_visual_cleanup(text: str) -> str:
 
 
 def clean_before_translation(text: str) -> str:
+    text = normalize_country_flags(text)
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
     text = apply_handle_replacements(text)
@@ -1771,6 +1846,7 @@ def clean_before_translation(text: str) -> str:
 
 
 def clean_for_ai_translation(text: str) -> str:
+    text = normalize_country_flags(text)
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
     text = convert_hashtags_to_text(text)
@@ -2060,7 +2136,7 @@ def final_hebrew_polish(text: str) -> str:
     text = convert_hashtags_to_text(text)
     for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, FOOTBALL_TERMS, HEBREW_FINAL_FIXES):
         text = apply_phrase_replacements(text, replacements)
-    text = re.sub(r"(?<![A-Za-z])GE(?![A-Za-z])", "🇬🇪", text)
+    text = normalize_country_flags(text)
     for english, hebrew in STAT_REPLACEMENTS.items():
         text = re.sub(rf"\b(\d+)\s*{re.escape(english)}\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
         text = re.sub(rf"\b{re.escape(english)}\s*(\d+)\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
@@ -2145,9 +2221,9 @@ def translate_text(text: str) -> str:
     gemini_key = translation_cache_key(ai_text or prepared)
     fallback_key = hashlib.sha256(f"fallback\n{prepared}".encode("utf-8")).hexdigest()
     if GEMINI_API_KEYS and gemini_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key]))
+        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key])))
     if not GEMINI_API_KEYS and fallback_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key]))
+        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
 
     if GEMINI_API_KEYS and ai_text:
         last_error: Exception | None = None
@@ -2155,7 +2231,7 @@ def translate_text(text: str) -> str:
             try:
                 with GEMINI_TRANSLATION_SEMAPHORE:
                     polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
-                polished = final_visual_cleanup(preserve_original_emojis(ai_text, polished))
+                polished = final_visual_cleanup(preserve_original_country_flags(ai_text, preserve_original_emojis(ai_text, polished)))
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
                 if translation_changes_locked_numbers(ai_text, polished):
@@ -2178,7 +2254,7 @@ def translate_text(text: str) -> str:
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
     if fallback_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key]))
+        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
 
     if not GEMINI_API_KEYS:
         logging.error("⛔ אין מפתח ג'מיני מוגדר. הפוסט לא יישלח בלי תרגום ג'מיני.")
@@ -2191,7 +2267,7 @@ def translate_text(text: str) -> str:
                 if latin_ratio(translated) > 0.45:
                     translated = translate_in_sentences(source_text)
                 polished = final_hebrew_polish(translated)
-                polished = final_visual_cleanup(preserve_original_emojis(source_text, polished))
+                polished = final_visual_cleanup(preserve_original_country_flags(source_text, preserve_original_emojis(source_text, polished)))
                 if polished and latin_ratio(polished) <= 0.30:
                     TRANSLATION_CACHE[fallback_key] = polished
                     return polished
@@ -2279,7 +2355,7 @@ def translate_quoted_author(text: str) -> str:
 
 
 def tidy_translated_text(text: str) -> str:
-    text = final_hebrew_polish(html.unescape(text or "").strip())
+    text = final_hebrew_polish(normalize_country_flags(html.unescape(text or "").strip()))
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = remove_junk_tail_lines(text)
