@@ -128,6 +128,7 @@ FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
+MAX_POST_AGE_SECONDS = 30 * 60
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
@@ -966,6 +967,22 @@ def canonical_post_id(username: str, guid: str, link: str, title: str) -> str:
     return f"{username}:{guid or link or title}"
 
 
+def post_content_signature(username: str, text: str, quoted_text: str) -> str:
+    value = html.unescape("\n".join([text or "", quoted_text or ""]))
+    value = URL_RE.sub("", value)
+    value = BARE_EXTERNAL_DOMAIN_RE.sub("", value)
+    value = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", "", value)
+    value = re.sub(r"(?<!\w)#([\w]+)", r"\1", value, flags=re.UNICODE)
+    value = re.sub(r"[^A-Za-z0-9א-ת]+", "", value).lower()
+    if len(value) < 18:
+        return ""
+    return f"{username}:text:{hashlib.sha1(value.encode('utf-8')).hexdigest()}"
+
+
+def is_too_old_post(post: Post) -> bool:
+    return bool(post.published_ts and time.time() - post.published_ts > MAX_POST_AGE_SECONDS)
+
+
 def parse_timestamp(item: ET.Element) -> float:
     value = child_text(item, ("pubDate", "published", "updated", "dc:date"))
     if not value:
@@ -1001,7 +1018,18 @@ def parse_posts(username: str, xml_bytes: bytes, source_name: str) -> list[Post]
                     break
         guid = child_text(item, ("guid", "id")) or link or title
         post_id = canonical_post_id(username, guid, link, title)
-        dedupe_ids = list(dict.fromkeys([post_id, f"{username}:{guid}", f"{username}:{link}"]))
+        dedupe_ids = list(
+            dict.fromkeys(
+                item
+                for item in [
+                    post_id,
+                    f"{username}:{guid}",
+                    f"{username}:{link}",
+                    post_content_signature(username, text, quoted_text),
+                ]
+                if item
+            )
+        )
         images = extract_images(raw_text, item)
         videos = extract_videos(raw_text, item)
         raw_has_video = bool(videos) or has_video_marker(raw_text, item)
@@ -2136,6 +2164,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     fetch_workers = min(current_max_parallel_account_checks(), max(1, len(X_ACCOUNTS)))
     send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
+    queued_ids: set[str] = set()
 
     def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
@@ -2176,6 +2205,13 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     continue
 
                 for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
+                    if is_too_old_post(post):
+                        seen.update(post.dedupe_ids)
+                        logging.info("דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
+                        continue
+                    if any(post_id in queued_ids for post_id in post.dedupe_ids):
+                        logging.info("דילוג: כפילות באותו סבב מ-@%s לא נשלחה: %s", username, post.link)
+                        continue
                     if is_link_only_or_details_post(post):
                         seen.update(post.dedupe_ids)
                         continue
@@ -2183,6 +2219,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                         seen.update(post.dedupe_ids)
                         continue
                     send_futures.append(send_executor.submit(send_task, (username, post, time.perf_counter() - cycle_started)))
+                    queued_ids.update(post.dedupe_ids)
 
                 state[username] = list(seen)[-500:]
 
