@@ -137,7 +137,7 @@ NIGHT_CHECK_EVERY_SECONDS = 20
 NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 16
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
-SEND_LAST_POST_ON_EVERY_START = True
+SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
 CONTROL_CHAT_ID = "-1003924267158"
 CONTROL_STATE_FILE = "football_control_state.json"
@@ -192,6 +192,38 @@ URL_RE = re.compile(
 )
 
 EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]")
+
+COUNTRY_CODE_FLAGS = {
+    "AR": "\U0001F1E6\U0001F1F7",
+    "AT": "\U0001F1E6\U0001F1F9",
+    "BE": "\U0001F1E7\U0001F1EA",
+    "BR": "\U0001F1E7\U0001F1F7",
+    "CH": "\U0001F1E8\U0001F1ED",
+    "CL": "\U0001F1E8\U0001F1F1",
+    "CM": "\U0001F1E8\U0001F1F2",
+    "CO": "\U0001F1E8\U0001F1F4",
+    "DE": "\U0001F1E9\U0001F1EA",
+    "DK": "\U0001F1E9\U0001F1F0",
+    "EC": "\U0001F1EA\U0001F1E8",
+    "ES": "\U0001F1EA\U0001F1F8",
+    "FR": "\U0001F1EB\U0001F1F7",
+    "GB": "\U0001F1EC\U0001F1E7",
+    "GE": "\U0001F1EC\U0001F1EA",
+    "GH": "\U0001F1EC\U0001F1ED",
+    "HR": "\U0001F1ED\U0001F1F7",
+    "IL": "\U0001F1EE\U0001F1F1",
+    "IT": "\U0001F1EE\U0001F1F9",
+    "MA": "\U0001F1F2\U0001F1E6",
+    "MX": "\U0001F1F2\U0001F1FD",
+    "NG": "\U0001F1F3\U0001F1EC",
+    "NL": "\U0001F1F3\U0001F1F1",
+    "PT": "\U0001F1F5\U0001F1F9",
+    "RS": "\U0001F1F7\U0001F1F8",
+    "SN": "\U0001F1F8\U0001F1F3",
+    "TR": "\U0001F1F9\U0001F1F7",
+    "US": "\U0001F1FA\U0001F1F8",
+    "UY": "\U0001F1FA\U0001F1FE",
+}
 
 PODCAST_BLOCK_PATTERNS = (
     r"\bpodcast\b",
@@ -1578,6 +1610,8 @@ def final_visual_cleanup(text: str) -> str:
     text = text or ""
     invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
     georgia_flag = "\U0001F1EC\U0001F1EA"
+    for code, flag in COUNTRY_CODE_FLAGS.items():
+        text = re.sub(rf"(?<![A-Za-z]){invisible}{code[0]}{invisible}[\s._-]*{invisible}{code[1]}{invisible}(?![A-Za-z])", flag, text)
     text = re.sub(rf"(?<![A-Za-z]){invisible}G{invisible}[\s._-]*{invisible}E{invisible}(?![A-Za-z])", georgia_flag, text)
     text = re.sub(rf"(?i)(?:\bGeorgia\b|\bGeorgian\b|גאורגיה|גיאורגיה|גרוזיה)\s*(?:flag|דגל)?\s*[:：-]?\s*{invisible}GE{invisible}\b", georgia_flag, text)
     text = re.sub(rf"{georgia_flag}(?:\s*GE\b)+", georgia_flag, text)
@@ -1799,6 +1833,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
         "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
+        "- If a two-letter country code is used as a flag marker, output the correct flag emoji instead of the letters.\n"
         "- Remove down arrows or pointing-down emojis when they only pointed to a removed link or quoted post.\n"
         "- Never leave raw @handles, random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
         "- If the post contains only a vague teaser/link/promo and no real news, return an empty string.\n"
