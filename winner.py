@@ -69,8 +69,8 @@ GEMINI_API_KEYS = [
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
-GEMINI_TRANSLATION_ATTEMPTS = 5
-GEMINI_RETRY_WAIT_SECONDS = 20
+GEMINI_TRANSLATION_ATTEMPTS = 8
+GEMINI_RETRY_WAIT_SECONDS = 32
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 
@@ -137,7 +137,7 @@ NIGHT_CHECK_EVERY_SECONDS = 20
 NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 16
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
-SEND_LAST_POST_ON_EVERY_START = False
+SEND_LAST_POST_ON_EVERY_START = True
 SEND_STARTUP_STATUS_MESSAGE = False
 CONTROL_CHAT_ID = ""  # כאן תכניס את ה-chat id של ערוץ השליטה בבוט
 SHABBAT_MODE_ENABLED = True
@@ -1644,6 +1644,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
     }
     last_error: Exception | None = None
     for index, key in gemini_key_order():
+        GEMINI_NEXT_KEY_INDEX = (index + 1) % len(GEMINI_API_KEYS)
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
@@ -1653,7 +1654,6 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
             if translated:
-                GEMINI_NEXT_KEY_INDEX = (index + 1) % len(GEMINI_API_KEYS)
                 GEMINI_KEY_COOLDOWNS.pop(key, None)
                 mark_gemini_available()
                 return translated
@@ -1812,11 +1812,15 @@ def translate_text(text: str) -> str:
                         gemini_error_summary(exc),
                     )
                     time.sleep(GEMINI_RETRY_WAIT_SECONDS)
-        logging.warning("⚠️ ג'מיני נכשל אחרי %s ניסיונות. כדי שהבוט לא ייעצר, הפוסט יישלח נקי בלי תרגום.", GEMINI_TRANSLATION_ATTEMPTS)
-        return preserve_original_emojis(ai_text or text, untranslated_fallback_text(text))
+        logging.error("⛔ ג'מיני נכשל אחרי %s ניסיונות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS)
+        return ""
 
     if fallback_key in TRANSLATION_CACHE:
         return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
+
+    if not GEMINI_API_KEYS:
+        logging.error("⛔ אין מפתח ג'מיני מוגדר. הפוסט לא יישלח בלי תרגום ג'מיני.")
+        return ""
 
     for source_text in (prepared, cleaned):
         for provider in (google_translate, mymemory_translate):
@@ -1937,10 +1941,20 @@ def telegram_api(method: str, payload: dict[str, Any]) -> None:
 
 
 def telegram_broadcast(method: str, payload: dict[str, Any]) -> None:
+    sent_count = 0
+    errors: list[str] = []
     for chat_id in TELEGRAM_CHAT_IDS:
         chat_payload = dict(payload)
         chat_payload["chat_id"] = chat_id
-        telegram_api(method, chat_payload)
+        try:
+            telegram_api(method, chat_payload)
+            sent_count += 1
+            logging.info("טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
+        except Exception as exc:
+            errors.append(f"{chat_id}: {exc}")
+            logging.error("טלגרם: %s נכשל לערוץ %s, ממשיך לערוצים האחרים: %s", method, chat_id, exc)
+    if sent_count == 0:
+        raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
 
 
 def trim(text: str, limit: int) -> str:
@@ -2205,7 +2219,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     continue
 
                 for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
-                    if is_too_old_post(post):
+                    if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
                         logging.info("דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
                         continue
@@ -2227,10 +2241,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             username, post_ids, link, ok, result = future.result()
             if not ok:
                 continue
-            seen = set(state.get(username, []))
-            seen.update(post_ids)
-            state[username] = list(seen)[-500:]
             if result.get("sent"):
+                seen = set(state.get(username, []))
+                seen.update(post_ids)
+                state[username] = list(seen)[-500:]
                 sent += 1
                 logging.info("✅ נשלח פוסט מ-@%s | מקור: %s", username, result.get("source_name", "unknown"))
                 logging.info(
@@ -2243,6 +2257,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     result.get("send_seconds", 0.0),
                     result.get("total_seconds", 0.0),
                 )
+            else:
+                logging.warning("⏳ פוסט מ-@%s לא נשלח ולכן לא סומן כנראה, יישאר לניסיון הבא: %s", username, link)
     finally:
         send_executor.shutdown(wait=True, cancel_futures=False)
 
