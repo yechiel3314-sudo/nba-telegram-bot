@@ -1284,6 +1284,11 @@ def process_control_update(update: dict[str, Any]) -> None:
         send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
 
 
+def is_getupdates_conflict(error: Exception) -> bool:
+    error_text = str(error).lower()
+    return "409" in error_text and "getupdates" in error_text
+
+
 def control_loop() -> None:
     if not CONTROL_CHAT_ID:
         return
@@ -1306,6 +1311,11 @@ def control_loop() -> None:
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
                 process_control_update(update)
         except Exception as exc:
+            if is_getupdates_conflict(exc):
+                logging.warning(
+                    "כפתורי השליטה כבויים בעותק הזה: טלגרם מזהה עוד עותק של הבוט שמאזין לכפתורים. הסריקה והשליחה לערוצים ממשיכות כרגיל."
+                )
+                return
             logging.warning("Control panel polling failed: %s", exc)
             time.sleep(CONTROL_POLL_SECONDS)
 
@@ -2215,6 +2225,11 @@ def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], 
                 chat_id,
                 fallback_exc,
             )
+            if "need administrator rights" in str(fallback_exc):
+                logging.error(
+                    "בדיקת הרשאות: טלגרם אומר שהבוט לא יכול לפרסם בערוץ %s. צריך לפתוח בערוץ: Administrators -> הבוט -> להפעיל Post Messages/פרסום הודעות.",
+                    chat_id,
+                )
 
     if sent_count == 0:
         raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
