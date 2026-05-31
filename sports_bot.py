@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -66,12 +66,13 @@ GEMINI_API_KEYS = [
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
-GEMINI_TRANSLATION_ATTEMPTS = 5
-GEMINI_RETRY_WAIT_SECONDS = 20
+GEMINI_TRANSLATION_ATTEMPTS = 8
+GEMINI_RETRY_WAIT_SECONDS = 32
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 
 X_ACCOUNTS = [
+    "NBA",
     "ShamsCharania",
     "highkin",
     "ChrisBHaynes",
@@ -105,6 +106,8 @@ FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
 MAX_PARALLEL_ACCOUNT_CHECKS = 28
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
+MAX_POSTS_SENT_PER_CYCLE = 4
+MIN_SECONDS_BETWEEN_TELEGRAM_POSTS = 3
 MAX_POST_AGE_SECONDS = 30 * 60
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
@@ -124,7 +127,7 @@ SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
 SHABBAT_CACHE_FILE = "nba_shabbat_times_cache.json"
-MAX_PARALLEL_POST_SENDS = 12
+MAX_PARALLEL_POST_SENDS = 3
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
@@ -1011,6 +1014,10 @@ class Post:
     source_name: str
 
 
+class TranslationUnavailable(Exception):
+    pass
+
+
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> bytes:
     request = urllib.request.Request(
         url,
@@ -1847,6 +1854,8 @@ GEMINI_COOLDOWN_IS_QUOTA = False
 GEMINI_KEY_COOLDOWNS: dict[str, float] = {}
 GEMINI_NEXT_KEY_INDEX = 0
 GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
+TELEGRAM_SEND_LOCK = Lock()
+LAST_TELEGRAM_POST_SENT_AT = 0.0
 
 
 def translation_cache_key(text: str) -> str:
@@ -1980,6 +1989,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
     }
     last_error: Exception | None = None
     for index, key in gemini_key_order():
+        GEMINI_NEXT_KEY_INDEX = (index + 1) % len(GEMINI_API_KEYS)
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
@@ -1989,7 +1999,6 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
             if translated:
-                GEMINI_NEXT_KEY_INDEX = (index + 1) % len(GEMINI_API_KEYS)
                 GEMINI_KEY_COOLDOWNS.pop(key, None)
                 mark_gemini_available()
                 return translated
@@ -2150,11 +2159,15 @@ def translate_text(text: str) -> str:
                         gemini_error_summary(exc),
                     )
                     time.sleep(GEMINI_RETRY_WAIT_SECONDS)
-        logging.warning("⚠️ ג'מיני נכשל אחרי %s ניסיונות. כדי שבוט ה-NBA לא ייעצר, הפוסט יישלח נקי בלי תרגום.", GEMINI_TRANSLATION_ATTEMPTS)
-        return preserve_original_emojis(ai_text or text, untranslated_fallback_text(text))
+        logging.error("⛔ ג'מיני נכשל אחרי %s ניסיונות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS)
+        raise TranslationUnavailable("Gemini translation failed after all attempts")
 
     if fallback_key in TRANSLATION_CACHE:
         return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
+
+    if not GEMINI_API_KEYS:
+        logging.error("⛔ אין מפתח ג'מיני מוגדר. הפוסט לא יישלח בלי תרגום ג'מיני.")
+        raise TranslationUnavailable("No Gemini API key configured")
 
     for source_text in (prepared, cleaned):
         for provider in (google_translate, mymemory_translate):
@@ -2274,6 +2287,18 @@ def telegram_api(method: str, payload: dict[str, Any]) -> None:
         raise RuntimeError(f"Telegram error: {response}")
 
 
+def wait_for_telegram_spacing() -> None:
+    global LAST_TELEGRAM_POST_SENT_AT
+    if MIN_SECONDS_BETWEEN_TELEGRAM_POSTS <= 0:
+        return
+    with TELEGRAM_SEND_LOCK:
+        now = time.time()
+        wait_seconds = LAST_TELEGRAM_POST_SENT_AT + MIN_SECONDS_BETWEEN_TELEGRAM_POSTS - now
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        LAST_TELEGRAM_POST_SENT_AT = time.time()
+
+
 def trim(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -2306,10 +2331,8 @@ def build_message(
     safe_body = html.escape(rtl(translated or "עדכון חדש"))
     safe_quoted_author = html.escape(rtl(quoted_author_translated))
     safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
-    safe_link = html.escape(post.link)
     video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
-    post_link_label = f'<a href="{safe_link}">{html.escape(rtl("קישור לפוסט"))}</a>'
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
 
@@ -2324,9 +2347,6 @@ def build_message(
         parts.append(safe_quoted_body)
         if include_video_link and post.link and post.quoted_has_video:
             parts.extend(["", video_label])
-
-    if post.link:
-        parts.extend(["", "", post_link_label])
 
     return "\n".join(parts)
 
@@ -2346,6 +2366,7 @@ def send_post(post: Post) -> dict[str, Any]:
 
     if not has_meaningful_text(translated) and not has_meaningful_text(quoted_translated):
         timings["total_seconds"] = time.perf_counter() - started
+        timings["mode"] = "no_news"
         return timings
 
     video_started = time.perf_counter()
@@ -2362,6 +2383,8 @@ def send_post(post: Post) -> dict[str, Any]:
     )
     images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
     timings["prepare_seconds"] = time.perf_counter() - prepare_started
+
+    wait_for_telegram_spacing()
 
     if video_url:
         try:
@@ -2497,6 +2520,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
     queued_ids: set[str] = set()
+    spam_limit_logged = False
 
     def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
@@ -2536,7 +2560,13 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     state[username] = list(seen)[-500:]
                     continue
 
-                for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
+                posts_to_consider = new_posts[: min(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK, MAX_POSTS_SENT_PER_CYCLE)]
+                for post in reversed(posts_to_consider):
+                    if len(send_futures) >= MAX_POSTS_SENT_PER_CYCLE:
+                        if not spam_limit_logged:
+                            logging.info("מנגנון אנטי-הצפה: נשמר קצב רגוע, שאר הפוסטים יישארו לניסיון בסבב הבא.")
+                            spam_limit_logged = True
+                        break
                     if is_too_old_post(post):
                         seen.update(post.dedupe_ids)
                         logging.info("דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
@@ -2559,10 +2589,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
             username, post_ids, link, ok, result = future.result()
             if not ok:
                 continue
-            seen = set(state.get(username, []))
-            seen.update(post_ids)
-            state[username] = list(seen)[-500:]
             if result.get("sent"):
+                seen = set(state.get(username, []))
+                seen.update(post_ids)
+                state[username] = list(seen)[-500:]
                 sent += 1
                 logging.info("✅ נשלח פוסט מ-@%s | מקור: %s", username, result.get("source_name", "unknown"))
                 logging.info(
@@ -2575,6 +2605,13 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     result.get("send_seconds", 0.0),
                     result.get("total_seconds", 0.0),
                 )
+            elif result.get("mode") == "no_news":
+                seen = set(state.get(username, []))
+                seen.update(post_ids)
+                state[username] = list(seen)[-500:]
+                logging.info("דילוג: ג'מיני זיהה שאין עדכון חדשותי, הפוסט סומן כנראה: %s", link)
+            else:
+                logging.warning("⏳ פוסט מ-@%s לא נשלח ולכן לא סומן כנראה, יישאר לניסיון הבא: %s", username, link)
     finally:
         send_executor.shutdown(wait=True, cancel_futures=False)
 
