@@ -75,27 +75,6 @@ X_ACCOUNTS = [
     "DiMarzio",
     "JacobsBen",
     "NicoSchira",
-    "lauriewhitwell",
-    "SamLee",
-    "_pauljoyce",
-    "Matt_Law_DT",
-    "SimonJones_DM",
-    "MatteMoretto",
-    "ffpolo",
-    "gerardromero",
-    "AranchaMOBILE",
-    "JLSanchez78",
-    "AlfredoPedulla",
-    "Plettigoal",
-    "cfbayern",
-    "FabriceHawkins",
-    "Tanziloic",
-    "MonfortCarlos",
-    "Barca_Buzz",
-    "MadridXtra",
-    "iMiaSanMia",
-    "Santi_J_FM",
-    "AndyMitten",
 ]
 
 PRIORITY_X_ACCOUNTS = {
@@ -104,24 +83,14 @@ PRIORITY_X_ACCOUNTS = {
     "DiMarzio",
     "JacobsBen",
     "NicoSchira",
-    "MatteMoretto",
-    "ffpolo",
-    "gerardromero",
-    "AranchaMOBILE",
-    "JLSanchez78",
-    "Barca_Buzz",
-    "MadridXtra",
-    "iMiaSanMia",
-    "Santi_J_FM",
-    "AndyMitten",
 }
 
 ACCOUNT_DISPLAY_NAMES = {
-    "FabrizioRomano": "פבריציו רומאנו - כללי",
-    "David_Ornstein": "דיוויד אורנשטיין - כללי",
-    "DiMarzio": "ג'אנלוקה די מארציו - כללי",
-    "JacobsBen": "בן ג'ייקובס - כללי",
-    "NicoSchira": "ניקולה סקירה - כללי",
+    "FabrizioRomano": "פבריציו רומאנו",
+    "David_Ornstein": "דיוויד אורנשטיין",
+    "DiMarzio": "ג'אנלוקה די מארציו",
+    "JacobsBen": "בן ג'ייקובס",
+    "NicoSchira": "ניקולה סקירה",
     "lauriewhitwell": "לורי וויטוול - מנצ'סטר יונייטד",
     "SamLee": "סם לי - מנצ'סטר סיטי",
     "_pauljoyce": "פול ג'ויס - ליברפול",
@@ -164,6 +133,7 @@ NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
+CONTROL_CHAT_ID = ""  # כאן תכניס את ה-chat id של ערוץ השליטה בבוט
 SHABBAT_MODE_ENABLED = True
 SHABBAT_TIMEZONE = "Asia/Jerusalem"
 SHABBAT_HEBCAL_GEOID = "281184"  # Jerusalem
