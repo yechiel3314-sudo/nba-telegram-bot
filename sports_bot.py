@@ -1657,6 +1657,153 @@ def is_link_only_or_details_post(post: Post) -> bool:
     return False
 
 
+
+def is_interesting_quote_post(cleaned: str) -> bool:
+    senior_voice = re.search(
+        r"\b(commissioner|owner|governor|ceo|president|general manager|gm|head coach|coach|agent|executive)\b|"
+        r"קומישינר|בעלים|מנכ\"ל|נשיא|ג'נרל מנג'ר|GM|מאמן|סוכן|בכיר|הנהלה",
+        cleaned,
+        re.IGNORECASE,
+    )
+    important_subject = re.search(
+        r"\b(LeBron|Curry|Durant|Giannis|Jokic|Jokić|Doncic|Dončić|Tatum|Butler|Embiid|Wembanyama|Shai|SGA|"
+        r"trade|contract|extension|free agent|free agency|future|injury|suspension|draft|pick|coach|gm|front office|NBA)\b|"
+        r"לברון|קרי|דוראנט|יאניס|יוקיץ|דונצ'יץ|טייטום|באטלר|אמביד|וומבניאמה|שיי|"
+        r"טרייד|חוזה|הארכת חוזה|שחקן חופשי|עתיד|פציעה|השעיה|דראפט|בחירה|מאמן|הנהלה|NBA",
+        cleaned,
+        re.IGNORECASE,
+    )
+    quoted = re.search(r"[\"“”׳״].{4,}[\"“”׳״]", cleaned)
+    return bool(quoted and senior_voice and important_subject)
+
+
+def is_stats_only_post(cleaned: str) -> bool:
+    has_stats = re.search(
+        r"\b(stats|statistics|points|pts|rebounds|reb|assists|ast|blocks|steals|minutes|mins|per game|triple-double|double-double)\b|"
+        r"סטטיסטיקה|נקודות|ריבאונדים|אסיסטים|חסימות|חטיפות|דקות|טריפל דאבל|דאבל דאבל",
+        cleaned,
+        re.IGNORECASE,
+    )
+    has_news_context = re.search(
+        r"\b(breaking|exclusive|official|trade|traded|contract|extension|signs?|waived|buyout|injury|ruled out|draft|record|suspended)\b|"
+        r"דיווח דרמטי|בלעדי|רשמי|טרייד|עבר בטרייד|חוזה|הארכת חוזה|חתם|שוחרר|בייאאוט|פציעה|לא ישחק|דראפט|שיא|הושעה",
+        cleaned,
+        re.IGNORECASE,
+    )
+    return bool(has_stats and not has_news_context)
+
+
+def filtered_post_text_preview(post: Post, limit: int = 260) -> str:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = clean_for_ai_translation(raw_text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return trim(cleaned, limit) if cleaned else "(טקסט ריק)"
+
+
+def is_non_news_social_post(post: Post) -> bool:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = clean_for_ai_translation(raw_text)
+    lowered = cleaned.lower()
+    if not cleaned:
+        return True
+
+    news_patterns = (
+        r"\bbreaking\b",
+        r"\bexclusive\b",
+        r"\bofficial\b",
+        r"\bsources?\b",
+        r"\bleague sources\b",
+        r"\btrade(?:d|s)?\b",
+        r"\bsign(?:s|ed|ing)?\b",
+        r"\bcontract\b",
+        r"\bextension\b",
+        r"\bfree agent\b",
+        r"\bfree agency\b",
+        r"\bwaived\b",
+        r"\bbuyout\b",
+        r"\binjury\b",
+        r"\binjury report\b",
+        r"\bruled out\b",
+        r"\bquestionable\b",
+        r"\bprobable\b",
+        r"\bdoubtful\b",
+        r"\bsuspended\b",
+        r"\bdraft\b",
+        r"\bpick\b",
+        r"\bhires?\b",
+        r"\bfires?\b",
+        r"\bcoach\b",
+        r"\bgeneral manager\b",
+        r"\bfront office\b",
+        r"\bdeadline\b",
+        r"\bstarting lineup\b",
+        r"\bavailable\b",
+        r"דיווח דרמטי|בלעדי|רשמי|לפי מקורות|מקורות בליגה|טרייד|עבר בטרייד|חתם|יחתום|חוזה|הארכת חוזה|"
+        r"שחקן חופשי|שוק השחקנים החופשיים|שוחרר|בייאאוט|פציעה|דוח פציעות|לא ישחק|בספק|ככל הנראה ישחק|"
+        r"הושעה|דראפט|בחירה|מונה|פוטר|מאמן|ג'נרל מנג'ר|הנהלה|דדליין|חמישייה|זמין",
+    )
+    if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in news_patterns):
+        return False
+    if is_interesting_quote_post(cleaned):
+        return False
+    if is_stats_only_post(cleaned):
+        return True
+    if re.search(r"[\"“”׳״].{4,}[\"“”׳״]", cleaned):
+        return True
+
+    social_patterns = (
+        r"\binstagram\b",
+        r"\bstory\b",
+        r"\breaction\b",
+        r"\bquote\b",
+        r"\bcaption\b",
+        r"\bmessage\b",
+        r"\binterview\b",
+        r"\btold\b",
+        r"\bsays?\b",
+        r"\basked\b",
+        r"\bspeaking\b",
+        r"\bcongrat",
+        r"\bcongrats\b",
+        r"\bhappy birthday\b",
+        r"\bbirthday\b",
+        r"\brespect\b",
+        r"\bclass\b",
+        r"\blegend\b",
+        r"\bgoat\b",
+        r"\barrivals?\b",
+        r"\bfit check\b",
+        r"\btunnel fit\b",
+        r"\bwalk-in\b",
+        r"\bhighlights?\b",
+        r"\btop plays?\b",
+        r"\bplays of the night\b",
+        r"\bphoto dump\b",
+        r"\bwallpaper\b",
+        r"\bedit\b",
+        r"\bmeme\b",
+        r"\bpractice clips?\b",
+        r"\bworkout clips?\b",
+        r"\bmixtape\b",
+        r"\bthrowback\b",
+        r"\bon this day\b",
+        r"סטורי|אינסטגרם|תגובה|ציטוט|כיתוב|מסר|ראיון|אמר|אומר|נשאל|דיבר על|מדבר על|"
+        r"ברכה|מזל טוב|יום הולדת|אגדה|כבוד|מחווה|הגעה|הגעות|לבוש|מנהרה|היילייטס|מהלכים|תמונה|רקע|מם|אימון|קליפ|מיקסטייפ|נוסטלגיה|היום לפני",
+    )
+    if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in social_patterns):
+        return True
+
+    # פוסטים קצרים עם תמונה בלבד הם בדרך כלל תמונת אווירה / הגעה למשחק ולא עדכון חדשותי.
+    words = re.findall(r"[A-Za-zא-ת0-9]+", cleaned)
+    if post.image_urls and len(words) <= 14 and not post.video_urls:
+        return True
+
+    # ציוצי תוצאה/הייפ קצרים בלי הקשר חדשותי — לא שולחים.
+    if len(words) <= 10 and re.search(r"\b(win|wins|lost|final|tonight|wow|crazy|insane)\b|ניצחה|הפסידה|סיום|הלילה|מטורף|וואו", lowered, re.IGNORECASE):
+        return True
+
+    return False
+
 def apply_phrase_replacements(text: str, replacements: dict[str, str]) -> str:
     for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         if re.fullmatch(r"[A-Za-z0-9 ._'’:-]+", source):
@@ -2588,6 +2735,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                         seen.update(post.dedupe_ids)
                         continue
                     if is_podcast_or_longform_post(post):
+                        seen.update(post.dedupe_ids)
+                        continue
+                    if is_non_news_social_post(post):
+                        logging.info("דילוג: פוסט לא חדשותי מ-@%s לא נשלח: %s | %s", username, post.link, filtered_post_text_preview(post))
                         seen.update(post.dedupe_ids)
                         continue
                     send_futures.append(send_executor.submit(send_task, (username, post, time.perf_counter() - cycle_started)))
