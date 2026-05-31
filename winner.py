@@ -551,6 +551,8 @@ PLAYER_REPLACEMENTS = {
     "Antonio Conte": "אנטוניו קונטה",
     "Mauricio Pochettino": "מאוריסיו פוצ'טינו",
     "Pep Guardiola": "פפ גווארדיולה",
+    "Khvicha Kvaratskhelia": "חביצ'ה קווארצחליה",
+    "Kvaratskhelia": "קווארצחליה",
 }
 
 HEBREW_FINAL_FIXES = {
@@ -635,6 +637,16 @@ HEBREW_FINAL_FIXES.update(
         "\u05d1\u05e8\u05e0\u05d0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d0": "\u05d1\u05e8\u05e0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d4",
         "\u05d1\u05e8\u05e0\u05d0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d4": "\u05d1\u05e8\u05e0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d4",
         "\u05d1\u05e8\u05e0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d0": "\u05d1\u05e8\u05e0\u05e8\u05d3\u05d5 \u05e1\u05d9\u05dc\u05d1\u05d4",
+    }
+)
+
+HEBREW_FINAL_FIXES.update(
+    {
+        "\u05d7\u05d1\u05e6'\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
+        "\u05d7\u05d1\u05d9\u05e6\u05d9\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
+        "\u05d7\u05d1\u05d9\u05e6\u05f3\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
+        "\u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05f3\u05d7\u05dc\u05d9\u05d4": "\u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
+        "GE": "\U0001F1EC\U0001F1EA",
     }
 )
 
@@ -1565,8 +1577,16 @@ def remove_israel_time_additions(text: str) -> str:
 def final_visual_cleanup(text: str) -> str:
     text = text or ""
     invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
-    text = re.sub(rf"(?<![A-Za-z]){invisible}G{invisible}E{invisible}(?![A-Za-z])", "\U0001F1EC\U0001F1EA", text)
-    text = re.sub(r"\U0001F1EC\U0001F1EA(?:\s*[\U0001F535\U0001F534\u26aa\u26ab]){1,6}", "\U0001F1EC\U0001F1EA", text)
+    georgia_flag = "\U0001F1EC\U0001F1EA"
+    text = re.sub(rf"(?<![A-Za-z]){invisible}G{invisible}[\s._-]*{invisible}E{invisible}(?![A-Za-z])", georgia_flag, text)
+    text = re.sub(rf"(?i)(?:\bGeorgia\b|\bGeorgian\b|גאורגיה|גיאורגיה|גרוזיה)\s*(?:flag|דגל)?\s*[:：-]?\s*{invisible}GE{invisible}\b", georgia_flag, text)
+    text = re.sub(rf"{georgia_flag}(?:\s*GE\b)+", georgia_flag, text)
+    text = re.sub(rf"(?:\bGE\s*)+{georgia_flag}", georgia_flag, text)
+    text = re.sub(rf"{georgia_flag}(?:\s*{georgia_flag})+", georgia_flag, text)
+    text = re.sub(rf"{georgia_flag}(?:\s*[\U0001F535\U0001F534\u26aa\u26ab]){{1,6}}", georgia_flag, text)
+    text = re.sub(rf"(?:[\U0001F535\U0001F534\u26aa\u26ab]\s*){{1,6}}{georgia_flag}", georgia_flag, text)
+    text = re.sub(r"\b(?:חבצ'ה|חביציה|חביצ׳ה|חביצה)\b", "חביצ'ה קווארצחליה", text)
+    text = re.sub(r"\b(?:קווארה|קווארא|קווארצ׳חליה|קווארצחלייה)\b", "קווארצחליה", text)
     link_markers = r"(?:\U0001F447|\u2b07\ufe0f?|\U0001F53D|\u2198\ufe0f?|\u2935\ufe0f?|\u2193)"
     text = re.sub(rf"(?m)^\s*(?:{link_markers}\s*)+$", "", text)
     text = re.sub(rf"\s*(?:{link_markers}\s*)+(?=$|\n)", "", text)
@@ -1764,9 +1784,12 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "- For @handles: if it is a real player, club, journalist or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
         "- For hashtags: turn meaningful football hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
         "- Before returning, verify every player, coach and club name against football context. Fix malformed transliterations and accents. Do not invent names.\n"
+        "- For famous players with nicknames or partial names, expand to the correct common full Hebrew name when the identity is clear. Example: Khvicha/Kvaratskhelia should be חביצ'ה קווארצחליה, not a shortened broken name.\n"
         "- If a name is uncertain, keep the clean original name instead of producing broken Hebrew.\n"
         "- Never replace a club/team with a different club/team that is not explicitly in the original post. If Real Madrid appears, do not change it to Real Sociedad; if a club is not named, do not invent one.\n"
         "- Preserve the original news facts exactly: clubs, teams, player names, destinations, scores, dates and competitions must match the source post.\n"
+        "- Preserve tense and time exactly. Do not turn past into future, future into past, or change any year/date/time such as 2026 into another year.\n"
+        "- Treat facts as locked data: names, clubs, years, numbers, scorelines and dates may be translated but never corrected, guessed or rewritten into different facts.\n"
         "- If the post mentions a role such as 'next manager/coach' without naming the club in that phrase, do not add a club name by assumption.\n"
         "- Convert important club/player @handles into natural Hebrew names. Remove handles only when they are just credits or promotion.\n"
         "- Remove sponsor lines such as 'presented by', 'sponsored by', broadcasts, TV/network credits and app promotions.\n"
@@ -1898,6 +1921,20 @@ def translation_contradicts_source(original: str, translated: str) -> bool:
     return False
 
 
+def translation_changes_locked_numbers(original: str, translated: str) -> bool:
+    original_years = set(re.findall(r"\b(?:19|20)\d{2}\b", original or ""))
+    translated_years = set(re.findall(r"\b(?:19|20)\d{2}\b", translated or ""))
+    if translated_years - original_years:
+        return True
+
+    original_scores = set(re.findall(r"\b\d+\s*[-:]\s*\d+\b", original or ""))
+    translated_scores = set(re.findall(r"\b\d+\s*[-:]\s*\d+\b", translated or ""))
+    if translated_scores - original_scores:
+        return True
+
+    return False
+
+
 def translate_in_sentences(text: str) -> str:
     pieces = re.split(r"(?<=[.!?])\s+|\n+", text)
     translated: list[str] = []
@@ -1945,6 +1982,8 @@ def translate_text(text: str) -> str:
                 polished = final_visual_cleanup(preserve_original_emojis(ai_text, polished))
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
+                if translation_changes_locked_numbers(ai_text, polished):
+                    raise RuntimeError("Gemini translation changed locked numbers or years")
                 if polished:
                     TRANSLATION_CACHE[gemini_key] = polished
                     return polished
