@@ -2180,6 +2180,46 @@ def telegram_broadcast(method: str, payload: dict[str, Any]) -> None:
         raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
 
 
+def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], fallback_text: str) -> None:
+    sent_count = 0
+    errors: list[str] = []
+    for chat_id in TELEGRAM_CHAT_IDS:
+        chat_payload = dict(payload)
+        chat_payload["chat_id"] = chat_id
+        try:
+            telegram_api(method, chat_payload)
+            sent_count += 1
+            logging.info("טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
+            continue
+        except Exception as exc:
+            errors.append(f"{chat_id} {method}: {exc}")
+            logging.error("טלגרם: %s נכשל לערוץ %s. מנסה לשלוח טקסט רגיל לאותו ערוץ: %s", method, chat_id, exc)
+
+        try:
+            telegram_api(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": trim(fallback_text, 4096),
+                    "disable_web_page_preview": True,
+                    "parse_mode": "HTML",
+                },
+            )
+            sent_count += 1
+            logging.info("טלגרם: fallback טקסט נשלח בהצלחה לערוץ %s", chat_id)
+        except Exception as fallback_exc:
+            errors.append(f"{chat_id} fallback: {fallback_exc}")
+            logging.error(
+                "טלגרם: גם fallback טקסט נכשל לערוץ %s. אם זה הערוץ %s, צריך לבדוק שהבוט אדמין עם הרשאה לפרסם הודעות: %s",
+                chat_id,
+                chat_id,
+                fallback_exc,
+            )
+
+    if sent_count == 0:
+        raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
+
+
 def trim(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -2271,7 +2311,7 @@ def send_post(post: Post) -> dict[str, Any]:
     if video_url:
         try:
             send_started = time.perf_counter()
-            telegram_broadcast(
+            telegram_broadcast_with_text_fallback(
                 "sendVideo",
                 {
                     "video": video_url,
@@ -2279,6 +2319,7 @@ def send_post(post: Post) -> dict[str, Any]:
                     "parse_mode": "HTML",
                     "supports_streaming": True,
                 },
+                message,
             )
             timings["send_seconds"] = time.perf_counter() - send_started
             timings["total_seconds"] = time.perf_counter() - started
@@ -2306,7 +2347,7 @@ def send_post(post: Post) -> dict[str, Any]:
             media.append(item)
         try:
             send_started = time.perf_counter()
-            telegram_broadcast("sendMediaGroup", {"media": media})
+            telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message)
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
