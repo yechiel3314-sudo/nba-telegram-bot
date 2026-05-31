@@ -142,6 +142,7 @@ SEND_STARTUP_STATUS_MESSAGE = False
 CONTROL_CHAT_ID = "-1003924267158"
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = 2
+CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
 SHABBAT_MODE_ENABLED = True
 SHABBAT_TIMEZONE = "Asia/Jerusalem"
 SHABBAT_HEBCAL_GEOID = "281184"  # Jerusalem
@@ -1155,15 +1156,22 @@ def load_control_state() -> dict[str, Any]:
         return {"paused": False}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return {"paused": bool(data.get("paused", False))}
+        if not isinstance(data, dict):
+            return {"paused": False}
+        data["paused"] = bool(data.get("paused", False))
+        return data
     except Exception:
         return {"paused": False}
 
 
-def save_control_state(paused: bool) -> None:
+def save_control_state(paused: bool | None = None, **updates: Any) -> None:
+    state = load_control_state()
+    if paused is not None:
+        state["paused"] = paused
+    state.update(updates)
     path = control_state_path()
     temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps({"paused": paused}, ensure_ascii=False), encoding="utf-8")
+    temp_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     temp_path.replace(path)
 
 
@@ -1182,14 +1190,25 @@ def send_control_panel(paused: bool, action_done: str = "") -> None:
         return
     status = "כבוי" if paused else "פעיל"
     text = action_done or f"לוח שליטה בבוט הכדורגל. מצב נוכחי: {status}."
-    telegram_api(
-        "sendMessage",
-        {
-            "chat_id": CONTROL_CHAT_ID,
-            "text": text,
-            "reply_markup": control_reply_markup(paused),
-        },
-    )
+    state = load_control_state()
+    message_id = state.get("control_message_id")
+    payload = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": text,
+        "reply_markup": control_reply_markup(paused),
+    }
+    if message_id:
+        try:
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)})
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logging.warning("Control panel edit failed, sending one new panel: %s", exc)
+    response = telegram_api("sendMessage", payload)
+    new_message_id = response.get("result", {}).get("message_id")
+    if new_message_id:
+        save_control_state(paused, control_message_id=new_message_id)
 
 
 def answer_control_callback(callback_id: str, text: str = "") -> None:
@@ -1215,10 +1234,10 @@ def process_control_update(update: dict[str, Any]) -> None:
             answer_control_callback(callback_id, "הבוט כובה")
         send_control_panel(True, "הפעולה בוצעה בהצלחה: הבוט כובה.")
     elif data == "football_bot_on":
-        save_control_state(False)
+        save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
         if callback_id:
             answer_control_callback(callback_id, "הבוט הופעל")
-        send_control_panel(False, "הפעולה בוצעה בהצלחה: הבוט הופעל.")
+        send_control_panel(False, "הפעולה בוצעה בהצלחה: הבוט הופעל. יישלחו רק פוסטים שעלו ב-10 הדקות האחרונות.")
 
 
 def control_loop() -> None:
@@ -2278,7 +2297,7 @@ def validate_settings() -> None:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
 
-def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
+def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
     cycle_started = time.perf_counter()
     first_run = not any(state.values())
     sent = 0
@@ -2326,6 +2345,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     continue
 
                 for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
+                    if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
+                        seen.update(post.dedupe_ids)
+                        logging.info("דילוג: הבוט הופעל מחדש, ופוסט ישן מ-10 דקות לא נשלח: %s", post.link)
+                        continue
                     if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
                         logging.info("דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
@@ -2404,7 +2427,8 @@ def main() -> None:
     while True:
         cycle_started = time.time()
         try:
-            if is_control_paused():
+            control_state = load_control_state()
+            if bool(control_state.get("paused", False)):
                 if not paused_logged:
                     logging.info("בוט הכדורגל כבוי מלוח השליטה. לא סורק ולא שולח.")
                     paused_logged = True
@@ -2430,9 +2454,12 @@ def main() -> None:
                 time.sleep(current_check_every_seconds())
                 continue
 
-            sent = run_once(state, startup_cycle=startup_cycle)
+            resume_min_ts = float(control_state.get("resume_min_ts", 0.0) or 0.0)
+            sent = run_once(state, startup_cycle=startup_cycle, min_published_ts=resume_min_ts)
             startup_cycle = False
             save_state(state)
+            if resume_min_ts:
+                save_control_state(False, resume_min_ts=0.0)
             save_translation_cache(TRANSLATION_CACHE)
             if sent:
                 print(f"Sent {sent} new post(s).", flush=True)
