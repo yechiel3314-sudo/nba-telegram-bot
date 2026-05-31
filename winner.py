@@ -127,7 +127,7 @@ FEED_REQUEST_TIMEOUT_SECONDS = 2
 FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
-MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 1
 MAX_POST_AGE_SECONDS = 30 * 60
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
@@ -1989,10 +1989,8 @@ def build_message(
     safe_body = html.escape(rtl(translated or "עדכון חדש"))
     safe_quoted_author = html.escape(rtl(quoted_author_translated))
     safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
-    safe_link = html.escape(post.link)
     video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
-    post_link_label = f'<a href="{safe_link}">{html.escape(rtl("קישור לפוסט"))}</a>'
     signature = f'<a href="{html.escape(SIGNATURE_LINK)}">{html.escape(rtl(SIGNATURE_TEXT))}</a>'
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
@@ -2008,9 +2006,6 @@ def build_message(
         parts.append(safe_quoted_body)
         if include_video_link and post.link and post.quoted_has_video:
             parts.extend(["", video_label])
-
-    if post.link:
-        parts.extend(["", "", post_link_label])
 
     parts.extend(["", signature])
 
@@ -2218,7 +2213,11 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     state[username] = list(seen)[-500:]
                     continue
 
-                for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
+                posts_to_send = new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]
+                for skipped_post in new_posts[MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK:]:
+                    seen.update(skipped_post.dedupe_ids)
+
+                for post in reversed(posts_to_send):
                     if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
                         logging.info("דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
