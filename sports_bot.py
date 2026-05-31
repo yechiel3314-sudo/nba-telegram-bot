@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from threading import BoundedSemaphore, Lock
+from threading import BoundedSemaphore, Lock, Thread
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -67,13 +67,20 @@ GEMINI_API_KEYS = [
 ][:GEMINI_MAX_API_KEYS]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
-GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "2"))
+# Local key/cooldown checks do not call Gemini and do not use credits.
+# Real network attempts below DO use one Gemini request each.
+GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "8"))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "2"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 TRANSLATE_QUOTED_POSTS = os.environ.get("TRANSLATE_QUOTED_POSTS", "0") == "1"
 TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "1") != "0"
 MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE", "45"))
+# How many keys may be checked locally for cooldown/availability. This is free.
+GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", "8"))
+# How many keys may be tried with a real Gemini network request per single AI operation.
+# Keep this low to avoid burning quota during outages.
 GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", "1"))
 
 X_ACCOUNTS = [
@@ -132,6 +139,11 @@ SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
 SHABBAT_CACHE_FILE = "nba_shabbat_times_cache.json"
+CONTROL_CHAT_ID = os.environ.get("CONTROL_CHAT_ID", TELEGRAM_CHAT_ID)
+CONTROL_STATE_FILE = "nba_control_state.json"
+CONTROL_POLL_SECONDS = 2
+CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
+CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
 MAX_PARALLEL_POST_SENDS = 3
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
@@ -1486,6 +1498,131 @@ def shabbat_cache_path() -> Path:
     return Path(__file__).resolve().parent / SHABBAT_CACHE_FILE
 
 
+def control_state_path() -> Path:
+    return Path(__file__).resolve().parent / CONTROL_STATE_FILE
+
+
+def load_control_state() -> dict[str, Any]:
+    path = control_state_path()
+    if not path.exists():
+        return {"paused": False}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"paused": False}
+        data["paused"] = bool(data.get("paused", False))
+        return data
+    except Exception:
+        return {"paused": False}
+
+
+def save_control_state(paused: bool | None = None, **updates: Any) -> None:
+    state = load_control_state()
+    if paused is not None:
+        state["paused"] = paused
+    state.update(updates)
+    path = control_state_path()
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def is_control_paused() -> bool:
+    return bool(load_control_state().get("paused", False))
+
+
+def control_reply_markup(paused: bool) -> dict[str, Any]:
+    if paused:
+        return {"inline_keyboard": [[{"text": "להפעיל את בוט ה-NBA", "callback_data": "nba_bot_on"}]]}
+    return {"inline_keyboard": [[{"text": "לכבות את בוט ה-NBA", "callback_data": "nba_bot_off"}]]}
+
+
+def send_control_panel(paused: bool, action_done: str = "") -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    status = "כבוי" if paused else "פעיל"
+    text = action_done or f"לוח שליטה בבוט ה-NBA. מצב נוכחי: {status}."
+    state = load_control_state()
+    message_id = state.get("control_message_id")
+    payload = {"chat_id": CONTROL_CHAT_ID, "text": text, "reply_markup": control_reply_markup(paused)}
+    if message_id:
+        try:
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)})
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logging.warning("NBA control panel edit failed, sending one new panel: %s", exc)
+    response = telegram_api("sendMessage", payload)
+    new_message_id = response.get("result", {}).get("message_id")
+    if new_message_id:
+        save_control_state(paused, control_message_id=new_message_id)
+
+
+def answer_control_callback(callback_id: str, text: str = "") -> None:
+    telegram_api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text, "show_alert": False})
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query")
+    if not callback:
+        return
+    callback_id = str(callback.get("id", ""))
+    message = callback.get("message", {}) or {}
+    chat = message.get("chat", {}) or {}
+    chat_id = str(chat.get("id", ""))
+    if message.get("message_id"):
+        save_control_state(control_message_id=message.get("message_id"))
+    data = str(callback.get("data", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    if data == "nba_bot_off":
+        save_control_state(True)
+        if callback_id:
+            answer_control_callback(callback_id, "בוט ה-NBA כובה")
+        send_control_panel(True, "הפעולה בוצעה בהצלחה: בוט ה-NBA כובה.")
+    elif data == "nba_bot_on":
+        save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
+        if callback_id:
+            answer_control_callback(callback_id, "בוט ה-NBA הופעל")
+        send_control_panel(False, "הפעולה בוצעה בהצלחה: בוט ה-NBA הופעל.")
+
+
+def is_getupdates_conflict(error: Exception) -> bool:
+    error_text = str(error).lower()
+    return "409" in error_text and "getupdates" in error_text
+
+
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    offset = 0
+    if CONTROL_SEND_PANEL_ON_STARTUP:
+        try:
+            send_control_panel(is_control_paused())
+        except Exception as exc:
+            logging.warning("NBA control panel startup failed: %s", exc)
+    else:
+        logging.info("NBA control panel startup send is disabled; existing button callbacks will still work.")
+    while True:
+        try:
+            response = telegram_api(
+                "getUpdates",
+                {"offset": offset, "timeout": 20, "allowed_updates": ["callback_query"]},
+            )
+            for update in response.get("result", []):
+                offset = max(offset, int(update.get("update_id", 0)) + 1)
+                process_control_update(update)
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                logging.warning("כפתורי השליטה בבוט ה-NBA כבויים בעותק הזה: טלגרם מזהה עוד עותק שמאזין לכפתורים. הסריקה והשליחה ממשיכות כרגיל.")
+                return
+            logging.warning("NBA control panel polling failed: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+
 def parse_hebcal_datetime(value: str) -> datetime | None:
     if not value:
         return None
@@ -2789,7 +2926,8 @@ def gemini_key_order_limited(max_keys: int | None = None) -> list[tuple[int, str
     return keys[:limit]
 
 def has_gemini_key_available() -> bool:
-    return bool(GEMINI_API_KEYS and gemini_key_order_limited(1))
+    # Free local check only: scans key cooldowns in memory, never calls Gemini.
+    return bool(GEMINI_API_KEYS and gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE))
 
 
 def cool_down_gemini_key(key: str, error: Exception | None) -> None:
@@ -3038,9 +3176,20 @@ def translate_text(text: str) -> str:
             logging.warning("⏳ ג'מיני לא זמין לפי cooldown מקומי. לא שורף בקשה; הפוסט יישאר לניסיון הבא.")
             raise TranslationUnavailable("Gemini currently unavailable without network check")
         last_error: Exception | None = None
+        real_requests_used = 0
         for attempt in range(1, GEMINI_TRANSLATION_ATTEMPTS + 1):
+            if real_requests_used >= GEMINI_MAX_REAL_TRANSLATION_REQUESTS:
+                logging.warning(
+                    "⏳ נעצר אחרי %s בקשות Gemini אמיתיות לתרגום. בדיקות זמינות מקומיות ממשיכות בלי קרדיט; הפוסט יישאר לניסיון הבא.",
+                    GEMINI_MAX_REAL_TRANSLATION_REQUESTS,
+                )
+                break
+            if not has_gemini_key_available():
+                logging.warning("⏳ אין כרגע מפתח Gemini זמין לפי cooldown מקומי. לא שורף בקשה; הפוסט יישאר לניסיון הבא.")
+                break
             try:
                 with GEMINI_TRANSLATION_SEMAPHORE:
+                    real_requests_used += 1
                     polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
                 polished = preserve_original_emojis(ai_text, polished)
                 if translation_contradicts_source(ai_text, polished):
@@ -3059,7 +3208,7 @@ def translate_text(text: str) -> str:
                         gemini_error_summary(exc),
                     )
                     time.sleep(GEMINI_RETRY_WAIT_SECONDS)
-        logging.error("⛔ ג'מיני נכשל אחרי %s ניסיונות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS)
+        logging.error("⛔ ג'מיני לא הצליח בתרגום אחרי עד %s בדיקות / עד %s בקשות אמיתיות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS, GEMINI_MAX_REAL_TRANSLATION_REQUESTS)
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
     if fallback_key in TRANSLATION_CACHE:
@@ -3190,10 +3339,11 @@ def rtl(text: str) -> str:
     return "\n".join(f"{RTL_MARK}{line}" if line.strip() else line for line in text.splitlines())
 
 
-def telegram_api(method: str, payload: dict[str, Any]) -> None:
+def telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload)
     if not response.get("ok"):
         raise RuntimeError(f"Telegram error: {response}")
+    return response
 
 
 def wait_for_telegram_spacing() -> None:
@@ -3269,9 +3419,45 @@ def build_message(
     return "\n".join(parts)
 
 
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    """Last cheap safety gate before any Gemini translation or video lookup.
+
+    This function must stay deterministic and network-free. It guarantees that if a
+    post reached send_post by mistake, the bot still will not spend Gemini/video
+    requests on content that is clearly not publishable.
+    """
+    if is_too_old_post(post):
+        return "old_post"
+    if is_women_or_wnba_post(post):
+        return "women_or_wnba"
+    if is_link_only_or_details_post(post):
+        return "link_or_details_only"
+    if is_podcast_or_longform_post(post):
+        return "podcast_or_longform"
+    if is_non_news_social_post(post):
+        return "non_news_social"
+    return ""
+
 def send_post(post: Post) -> dict[str, Any]:
     started = time.perf_counter()
     timings: dict[str, Any] = {"sent": False, "mode": "skipped"}
+
+    # Final network-free approval gate. No Gemini request, video HEAD/GET,
+    # external video API, or Telegram upload is allowed before this passes.
+    block_reason = pre_send_final_local_block_reason(post)
+    if block_reason:
+        timings["total_seconds"] = time.perf_counter() - started
+        timings["mode"] = f"pre_send_blocked:{block_reason}"
+        logging.info(
+            "דילוג לפני בינה/וידיאו: %s מ-@%s לא נשלח ולא בוצעה בדיקת וידיאו/Gemini: %s | %s",
+            block_reason,
+            post.username,
+            post.link,
+            filtered_post_text_preview(post),
+        )
+        return timings
+
     translation_started = time.perf_counter()
     translated = translate_text(post.text)
     if is_self_quote(post):
@@ -3529,6 +3715,17 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                 break
             username, post, _ = candidate
             seen = set(state.get(username, []))
+            final_block_reason = pre_send_final_local_block_reason(post)
+            if final_block_reason:
+                mark_candidate_seen(state, candidate)
+                logging.info(
+                    "דילוג סופי לפני שליחה: %s מ-@%s לא נשלח, לפני Gemini/וידיאו: %s | %s",
+                    final_block_reason,
+                    username,
+                    post.link,
+                    filtered_post_text_preview(post),
+                )
+                continue
             duplicate_event = find_recent_duplicate_event(post, state)
             if duplicate_event:
                 mark_candidate_seen(state, candidate)
@@ -3577,6 +3774,8 @@ def main() -> None:
     print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
+    if CONTROL_CHAT_ID:
+        Thread(target=control_loop, daemon=True).start()
 
     if SEND_STARTUP_STATUS_MESSAGE:
         try:
@@ -3596,6 +3795,10 @@ def main() -> None:
     while True:
         cycle_started = time.time()
         try:
+            if is_control_paused():
+                logging.info("בוט ה-NBA כבוי דרך כפתור השליטה: לא סורק, לא מתרגם ולא שורף Gemini.")
+                time.sleep(current_check_every_seconds())
+                continue
             if is_shabbat_now():
                 if not skipped_for_shabbat:
                     logging.info("מצב שבת פעיל: הבוט לא סורק, לא שולח ולא שומר מצב")
