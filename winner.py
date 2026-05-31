@@ -127,6 +127,7 @@ FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
+MAX_POSTS_SENT_PER_CYCLE = 4
 MAX_POST_AGE_SECONDS = 30 * 60
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
@@ -1871,6 +1872,7 @@ def remember_recent_news_event(post: Post, state: dict[str, Any]) -> None:
             "username": post.username,
             "priority": SOURCE_PRIORITY.get(post.username, 0),
             "link": post.link,
+            "ai_text": _ai_duplicate_text_from_post(post) if "_ai_duplicate_text_from_post" in globals() else _news_duplicate_clean_text(post),
             "signature": news_event_signature(post),
         }
     )
@@ -1885,6 +1887,121 @@ def sort_candidate_posts_for_priority(candidates: list[tuple[str, Post, float]])
             -(item[1].published_ts or 0),
         ),
     )
+
+
+# ====== SMART AI DUPLICATE CHECK ======
+# The cheap token/entity check runs first. Gemini is used only for borderline cases,
+# and only for posts that already passed all filters and are about to be sent.
+ENABLE_AI_DUPLICATE_CHECK = os.environ.get("ENABLE_AI_DUPLICATE_CHECK", "1") != "0"
+AI_DUPLICATE_MIN_SIMILARITY = float(os.environ.get("AI_DUPLICATE_MIN_SIMILARITY", "0.52"))
+AI_DUPLICATE_AUTO_SKIP_SIMILARITY = float(os.environ.get("AI_DUPLICATE_AUTO_SKIP_SIMILARITY", "0.90"))
+AI_DUPLICATE_ADVANCED_SOURCES = {"FabrizioRomano", "David_Ornstein", "ShamsCharania"}
+
+
+def _event_similarity_score_for_post(post: Post, previous_item: dict[str, Any]) -> float:
+    previous = previous_item.get("signature", {}) if isinstance(previous_item, dict) else {}
+    if not isinstance(previous, dict):
+        return 0.0
+    return _event_similarity(news_event_signature(post), previous)
+
+
+def _ai_duplicate_text_from_post(post: Post) -> str:
+    text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    text = normalize_country_flags(text) if "normalize_country_flags" in globals() else text
+    text = remove_external_links(text)
+    text = convert_hashtags_to_text(text)
+    text = re.sub(r"(?<!\w)@[A-Za-z0-9_]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:1800]
+
+
+def _ai_duplicate_text_from_item(item: dict[str, Any]) -> str:
+    value = str(item.get("ai_text") or item.get("text") or "")
+    if not value and isinstance(item.get("signature"), dict):
+        value = str(item["signature"].get("text") or "")
+    return value[:1800]
+
+
+def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, Any]) -> str:
+    """
+    Returns one of: SAME_DUPLICATE, ADVANCED_NEW, DIFFERENT, UNKNOWN.
+    SAME_DUPLICATE = do not send. ADVANCED_NEW/DIFFERENT = send.
+    """
+    if not ENABLE_AI_DUPLICATE_CHECK or not GEMINI_API_KEYS:
+        return "UNKNOWN"
+    previous_text = _ai_duplicate_text_from_item(previous_item)
+    current_text = _ai_duplicate_text_from_post(current_post)
+    if not previous_text or not current_text:
+        return "UNKNOWN"
+
+    prompt = (
+        "You are a strict sports-news duplicate detector for a Telegram news bot.\n"
+        "Compare PREVIOUS_SENT and CURRENT_CANDIDATE.\n"
+        "Return exactly one label only:\n"
+        "SAME_DUPLICATE = same core news event and CURRENT adds no important new factual development.\n"
+        "ADVANCED_NEW = same topic/player/team, but CURRENT materially advances the story: official confirmation after rumor, completed deal after talks, new club/destination, new fee, new injury severity, new contract decision, new date, lineup/squad update, or stronger verified source.\n"
+        "DIFFERENT = related sport but a different event/story.\n"
+        "When unsure, prefer ADVANCED_NEW instead of blocking.\n\n"
+        f"PREVIOUS_SENT_SOURCE: @{previous_item.get('username', 'unknown')}\n"
+        f"CURRENT_SOURCE: @{current_post.username}\n"
+        f"PREVIOUS_SENT:\n{previous_text}\n\n"
+        f"CURRENT_CANDIDATE:\n{current_text}\n"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 12},
+    }
+    last_error: Exception | None = None
+    for index, key in gemini_key_order():
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FAST_MODEL}:generateContent?key={urllib.parse.quote(key)}"
+        try:
+            data = http_post_json(url, payload, timeout=18, max_attempts=1, respect_retry_after=False)
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            answer = "".join(part.get("text", "") for part in parts).strip().upper()
+            if "SAME_DUPLICATE" in answer:
+                return "SAME_DUPLICATE"
+            if "ADVANCED_NEW" in answer:
+                return "ADVANCED_NEW"
+            if "DIFFERENT" in answer:
+                return "DIFFERENT"
+            return "UNKNOWN"
+        except Exception as exc:
+            last_error = exc
+            try:
+                cool_down_gemini_key(key, exc)
+            except Exception:
+                pass
+            continue
+    if last_error:
+        logging.warning("AI duplicate check unavailable: %s", gemini_error_summary(last_error) if 'gemini_error_summary' in globals() else last_error)
+    return "UNKNOWN"
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    """Final duplicate gate. It runs only for posts that are already selected for sending."""
+    recent = list(reversed(cleanup_recent_news_events(state)))
+    fallback_duplicate: dict[str, Any] | None = None
+    for item in recent:
+        if not isinstance(item, dict):
+            continue
+        score = _event_similarity_score_for_post(post, item)
+        if score >= AI_DUPLICATE_AUTO_SKIP_SIMILARITY:
+            # If this is a stronger source, let AI decide whether it is an important advancement.
+            if SOURCE_PRIORITY.get(post.username, 0) > int(item.get("priority", 0) or 0):
+                verdict = gemini_duplicate_event_verdict(post, item)
+                if verdict in {"ADVANCED_NEW", "DIFFERENT"}:
+                    continue
+            return item
+        if score >= AI_DUPLICATE_MIN_SIMILARITY:
+            verdict = gemini_duplicate_event_verdict(post, item)
+            if verdict == "SAME_DUPLICATE":
+                return item
+            if verdict in {"ADVANCED_NEW", "DIFFERENT"}:
+                continue
+            if score >= 0.78 and fallback_duplicate is None:
+                fallback_duplicate = item
+    return fallback_duplicate
+
 
 def apply_phrase_replacements(text: str, replacements: dict[str, str]) -> str:
     for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
@@ -2904,7 +3021,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     continue
 
                 candidate_posts: list[tuple[str, Post, float]] = []
-                for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
+                posts_to_consider = new_posts[: min(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK, MAX_POSTS_SENT_PER_CYCLE)]
+                for post in reversed(posts_to_consider):
                     if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
                         seen.update(post.dedupe_ids)
                         logging.info("דילוג: הבוט הופעל מחדש, ופוסט ישן מ-10 דקות לא נשלח: %s", post.link)
@@ -2945,9 +3063,11 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 state[username] = list(seen)[-500:]
 
         for candidate in sort_candidate_posts_for_priority(global_candidate_posts):
+            if len(send_futures) >= MAX_POSTS_SENT_PER_CYCLE:
+                break
             username, post, _ = candidate
             seen = set(state.get(username, []))
-            duplicate_event = find_recent_duplicate_event(post, state)
+            duplicate_event = find_recent_duplicate_event_ai_aware(post, state)
             if duplicate_event:
                 seen.update(post.dedupe_ids)
                 state[username] = list(seen)[-500:]
