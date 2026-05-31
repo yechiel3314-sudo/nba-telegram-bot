@@ -68,10 +68,14 @@ GEMINI_API_KEYS = [
 ]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
-GEMINI_TRANSLATION_ATTEMPTS = 8
-GEMINI_RETRY_WAIT_SECONDS = 32
+GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "2"))
+GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
+TRANSLATE_QUOTED_POSTS = os.environ.get("TRANSLATE_QUOTED_POSTS", "0") == "1"
+TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "1") != "0"
+MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE", "45"))
+GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", "1"))
 
 X_ACCOUNTS = [
     "FabrizioRomano",
@@ -156,6 +160,7 @@ MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
 STATE_FILE = "football_x_to_telegram_state.json"
+AI_DECISION_CACHE_FILE = os.environ.get("AI_DECISION_CACHE_FILE", "football_ai_decision_cache.json")
 TRANSLATION_CACHE_FILE = "football_translation_cache.json"
 RTL_MARK = "\u200f"
 SIGNATURE_LINK = "https://t.me/neto_sport"
@@ -1934,6 +1939,50 @@ AI_PARALLEL_MERGE_USE_AI_MIN_DETAIL_DELTA = int(os.environ.get("AI_PARALLEL_MERG
 AI_DECISION_CACHE: dict[str, str] = {}
 AI_DECISION_CACHE_ORDER: list[str] = []
 
+
+def ai_decision_cache_path() -> Path:
+    return Path(__file__).resolve().parent / AI_DECISION_CACHE_FILE
+
+def _load_ai_decision_cache_from_disk() -> None:
+    if not ENABLE_AI_REQUEST_SAVER:
+        return
+    path = ai_decision_cache_path()
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        items = data.get("items", data) if isinstance(data, dict) else data
+        if isinstance(items, dict):
+            iterable = list(items.items())
+        elif isinstance(items, list):
+            iterable = [(str(item.get("key", "")), str(item.get("verdict", ""))) for item in items if isinstance(item, dict)]
+        else:
+            return
+        for key, verdict in iterable[-AI_DECISION_CACHE_MAX_ITEMS:]:
+            if key and verdict in {"SAME_DUPLICATE", "ADVANCED_NEW", "DIFFERENT", "UNKNOWN"}:
+                AI_DECISION_CACHE[key] = verdict
+                AI_DECISION_CACHE_ORDER.append(key)
+        # remove duplicate order entries while preserving order
+        seen_keys: set[str] = set()
+        AI_DECISION_CACHE_ORDER[:] = [k for k in AI_DECISION_CACHE_ORDER if not (k in seen_keys or seen_keys.add(k))]
+        logging.info("נטען cache כפילויות AI מהדיסק: %s החלטות", len(AI_DECISION_CACHE))
+    except Exception as exc:
+        logging.warning("Could not load AI decision cache: %s", exc)
+
+def save_ai_decision_cache() -> None:
+    if not ENABLE_AI_REQUEST_SAVER:
+        return
+    try:
+        path = ai_decision_cache_path()
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        ordered = {key: AI_DECISION_CACHE[key] for key in AI_DECISION_CACHE_ORDER[-AI_DECISION_CACHE_MAX_ITEMS:] if key in AI_DECISION_CACHE}
+        temp_path.write_text(json.dumps({"items": ordered}, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(path)
+    except Exception as exc:
+        logging.warning("Could not save AI decision cache: %s", exc)
+
+_load_ai_decision_cache_from_disk()
+
 EVENT_STAGE_PATTERNS: list[tuple[int, str, tuple[str, ...]]] = [
     (100, "official", ("official", "confirmed", "announce", "announced", "announcement", "club statement", "רשמי", "אישר", "אישרה", "הודיעה", "הודעה רשמית")),
     (90, "completed", ("done deal", "completed", "signed", "has signed", "joins", "traded", "waived", "released", "חתם", "חתמה", "עבר", "הצטרף", "שוחרר", "עזב")),
@@ -2041,6 +2090,7 @@ def _ai_cache_set(previous_text: str, current_text: str, verdict: str) -> None:
     if key not in AI_DECISION_CACHE:
         AI_DECISION_CACHE_ORDER.append(key)
     AI_DECISION_CACHE[key] = verdict
+    save_ai_decision_cache()
     while len(AI_DECISION_CACHE_ORDER) > AI_DECISION_CACHE_MAX_ITEMS:
         old = AI_DECISION_CACHE_ORDER.pop(0)
         AI_DECISION_CACHE.pop(old, None)
@@ -2083,6 +2133,9 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
 
     if not ENABLE_AI_DUPLICATE_CHECK or not GEMINI_API_KEYS:
         return "UNKNOWN"
+    if not has_gemini_key_available():
+        logging.info("חיסכון Gemini: אין מפתח זמין כרגע לפי cooldown מקומי; מדלג על AI כפילות למחזור הזה")
+        return "UNKNOWN"
 
     prompt = (
         "You are a strict sports-news duplicate detector for a Telegram news bot.\n"
@@ -2102,7 +2155,7 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
         "generationConfig": {"temperature": 0.0, "maxOutputTokens": 12},
     }
     last_error: Exception | None = None
-    for index, key in gemini_key_order():
+    for index, key in gemini_key_order_limited(1):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FAST_MODEL}:generateContent?key={urllib.parse.quote(key)}"
         try:
             data = http_post_json(url, payload, timeout=18, max_attempts=1, respect_retry_after=False)
@@ -2249,6 +2302,10 @@ def ai_merge_parallel_posts(cluster: list[tuple[str, Post, float]]) -> str:
         also = ", ".join("@" + _candidate_username(item) for item in ordered[1:4])
         logging.info("חיסכון Gemini: מיזוג מקביל מקומי בלי AI. מקורות: %s", also or _candidate_username(ordered[0]))
         return fallback + (f"\nAlso reported by: {also}" if also else "")
+    if not has_gemini_key_available():
+        also = ", ".join("@" + _candidate_username(item) for item in ordered[1:4])
+        logging.info("חיסכון Gemini: מיזוג AI נדחה כי אין מפתח זמין; משתמש במקור הטוב ביותר")
+        return fallback + (f"\nAlso reported by: {also}" if also else "")
     logging.info("Gemini merge: משתמש בבינה רק כי יש כמה מקורות/פרטים חדשים שצריך למזג חכם")
     prompt = (
         "You are an elite sports Telegram news editor. Several sources posted at nearly the same time.\n"
@@ -2266,7 +2323,7 @@ def ai_merge_parallel_posts(cluster: list[tuple[str, Post, float]]) -> str:
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.1, "maxOutputTokens": 320},
     }
-    for _index, key in gemini_key_order():
+    for _index, key in gemini_key_order_limited(1):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FAST_MODEL}:generateContent?key={urllib.parse.quote(key)}"
         try:
             data = http_post_json(url, payload, timeout=22, max_attempts=1, respect_retry_after=False)
@@ -2637,6 +2694,23 @@ def gemini_key_order() -> list[tuple[int, str]]:
     return active or rotated
 
 
+def gemini_key_order_limited(max_keys: int | None = None) -> list[tuple[int, str]]:
+    """Return available Gemini keys without doing any network request.
+
+    This is intentionally only a local availability/cooldown check. It keeps the
+    bot scanning often, but prevents one borderline post from burning all API
+    keys/retries in a single cycle.
+    """
+    keys = gemini_key_order()
+    limit = GEMINI_MAX_KEYS_PER_OPERATION if max_keys is None else max_keys
+    if limit <= 0:
+        return keys
+    return keys[:limit]
+
+def has_gemini_key_available() -> bool:
+    return bool(GEMINI_API_KEYS and gemini_key_order_limited(1))
+
+
 def cool_down_gemini_key(key: str, error: Exception | None) -> None:
     cooldown = GEMINI_COOLDOWN_SECONDS if is_gemini_quota_error(error) else 60
     GEMINI_KEY_COOLDOWNS[key] = time.time() + cooldown
@@ -2740,7 +2814,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "generationConfig": {"temperature": 0.1, "topP": 0.8},
     }
     last_error: Exception | None = None
-    for index, key in gemini_key_order():
+    for index, key in gemini_key_order_limited(1):
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
@@ -2902,6 +2976,9 @@ def translate_text(text: str) -> str:
         return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
 
     if GEMINI_API_KEYS and ai_text:
+        if not has_gemini_key_available():
+            logging.warning("⏳ ג'מיני לא זמין לפי cooldown מקומי. לא שורף בקשה; הפוסט יישאר לניסיון הבא.")
+            raise TranslationUnavailable("Gemini currently unavailable without network check")
         last_error: Exception | None = None
         for attempt in range(1, GEMINI_TRANSLATION_ATTEMPTS + 1):
             try:
@@ -3009,14 +3086,18 @@ def is_self_quote(post: Post) -> bool:
     return False
 
 
-def translate_quoted_text(text: str) -> str:
+def translate_quoted_text(text: str, force: bool = False) -> str:
     cleaned = clean_before_translation(text)
     if not cleaned:
+        return ""
+    # Big Gemini saver: quoted posts are usually duplicated context, not the news
+    # we publish. By default we do NOT translate them with AI.
+    if not force and not TRANSLATE_QUOTED_POSTS:
+        logging.info("חיסכון Gemini: ציטוט לא תורגם כי TRANSLATE_QUOTED_POSTS כבוי")
         return ""
     translated = translate_text(cleaned)
     if not translated:
         return cleaned
-    # If translation clearly failed, keep the original quote in English/its source language.
     if latin_ratio(translated) > 0.45:
         return cleaned
     return translated
@@ -3026,7 +3107,11 @@ def translate_quoted_author(text: str) -> str:
     cleaned = clean_before_translation(text)
     if not cleaned:
         return ""
-    translated = translate_short_label(cleaned)
+    # Never call Gemini for quoted author labels; dictionary/local cleanup is enough.
+    translated = apply_phrase_replacements(cleaned, HANDLE_REPLACEMENTS)
+    translated = apply_phrase_replacements(translated, TEAM_REPLACEMENTS)
+    translated = apply_phrase_replacements(translated, PLAYER_REPLACEMENTS)
+    translated = final_hebrew_polish(translated)
     return translated or cleaned
 
 
@@ -3182,8 +3267,13 @@ def send_post(post: Post) -> dict[str, Any]:
         quoted_translated = ""
         quoted_author_translated = ""
     else:
-        quoted_translated = translate_quoted_text(post.quoted_text) if post.quoted_text else ""
-        quoted_author_translated = translate_quoted_author(post.quoted_author) if post.quoted_author else ""
+        force_quote_translation = bool(
+            post.quoted_text
+            and TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT
+            and len(clean_before_translation(post.text)) < MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE
+        )
+        quoted_translated = translate_quoted_text(post.quoted_text, force=force_quote_translation) if post.quoted_text else ""
+        quoted_author_translated = translate_quoted_author(post.quoted_author) if quoted_translated and post.quoted_author else ""
     timings["translation_seconds"] = time.perf_counter() - translation_started
 
     if not has_meaningful_text(translated) and not has_meaningful_text(quoted_translated):
@@ -3516,6 +3606,7 @@ def main() -> None:
                 mark_existing_posts_seen(state)
                 save_state(state)
                 save_translation_cache(TRANSLATION_CACHE)
+                save_ai_decision_cache()
                 skipped_for_shabbat = False
                 startup_cycle = False
                 logging.info("מצב שבת הסתיים: פוסטים משבת סומנו כנצפו בלי שליחה")
@@ -3529,6 +3620,7 @@ def main() -> None:
             if resume_min_ts:
                 save_control_state(False, resume_min_ts=0.0)
             save_translation_cache(TRANSLATION_CACHE)
+            save_ai_decision_cache()
             if sent:
                 print(f"Sent {sent} new post(s).", flush=True)
         except Exception as exc:
