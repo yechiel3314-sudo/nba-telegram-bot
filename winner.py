@@ -1496,6 +1496,63 @@ def is_link_only_or_details_post(post: Post) -> bool:
     return False
 
 
+def is_non_news_social_post(post: Post) -> bool:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = clean_for_ai_translation(raw_text)
+    lowered = cleaned.lower()
+    if not cleaned:
+        return True
+
+    news_patterns = (
+        r"\bbreaking\b",
+        r"\bexclusive\b",
+        r"\bdeal\b",
+        r"\bagreement\b",
+        r"\bsigns?\b",
+        r"\bjoins?\b",
+        r"\bmedical\b",
+        r"\bcontract\b",
+        r"\bbid\b",
+        r"\bclause\b",
+        r"\bloan\b",
+        r"\btransfer\b",
+        r"\bappointed\b",
+        r"\bsacked\b",
+        r"\binjury\b",
+        r"\bsuspended\b",
+        r"\bconfirmed\b",
+        r"\bofficial\b",
+        r"הושג|סוכם|חתם|יחתום|מצטרף|יעבור|העברה|השאלה|חוזה|רשמי|בלעדי|פציעה|מונה|פוטר",
+    )
+    if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in news_patterns):
+        return False
+
+    social_patterns = (
+        r"\binstagram\b",
+        r"\bstory\b",
+        r"\breaction\b",
+        r"\bquote\b",
+        r"\bcaption\b",
+        r"\bmessage\b",
+        r"\bcongrat",
+        r"\brespect\b",
+        r"\bclass\b",
+        r"\blegend\b",
+        r"\bunderstand me\b",
+        r"\byou cannot understand\b",
+        r"vous ne pouvez pas comprendre",
+        r"אי אפשר להבין|לא יכול להבין|סטורי|אינסטגרם|ברכה|מחווה|תגובה|ציטוט|מסר|אגדה|כבוד",
+    )
+    if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in social_patterns):
+        return True
+
+    words = re.findall(r"[A-Za-zא-ת0-9]+", cleaned)
+    if post.image_urls and len(words) <= 14 and not post.video_urls:
+        return True
+
+    return False
+
+
 def apply_phrase_replacements(text: str, replacements: dict[str, str]) -> str:
     for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         if re.fullmatch(r"[A-Za-z0-9 ._'’:-]+", source):
@@ -1822,6 +1879,8 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "Use the full context and meaning. Do not translate word by word and do not preserve awkward original order.\n"
         "Rules:\n"
         "- Return only the final Hebrew post text, ready to publish.\n"
+        "- First decide if this is a real football news update. Send only reports with concrete news: transfer, contract, injury, squad, appointment, dismissal, official announcement, negotiation, bid, match-relevant update, or a verified factual development.\n"
+        "- If it is only a social/atmosphere post, quote, meme, congratulation, reaction, Instagram/story screenshot, personal message, vague caption, tribute, joke, opinion or image with no concrete news update, return an empty string.\n"
         "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
         "- Remove all URLs, website domains and link text.\n"
@@ -2510,6 +2569,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         continue
                     if is_podcast_or_longform_post(post):
                         seen.update(post.dedupe_ids)
+                        continue
+                    if is_non_news_social_post(post):
+                        seen.update(post.dedupe_ids)
+                        logging.info("דילוג: פוסט חברתי/אווירה בלי דיווח חדשותי מ-@%s לא נשלח: %s", username, post.link)
                         continue
                     send_futures.append(send_executor.submit(send_task, (username, post, time.perf_counter() - cycle_started)))
                     queued_ids.update(post.dedupe_ids)
