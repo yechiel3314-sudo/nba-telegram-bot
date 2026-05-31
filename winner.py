@@ -1237,7 +1237,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
         if callback_id:
             answer_control_callback(callback_id, "הבוט הופעל")
-        send_control_panel(False, הפעולה בוצעה בהצלחה: הבוט הופעל")
+        send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
 
 
 def control_loop() -> None:
@@ -1562,6 +1562,21 @@ def remove_israel_time_additions(text: str) -> str:
     return text.strip()
 
 
+def final_visual_cleanup(text: str) -> str:
+    text = text or ""
+    invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
+    text = re.sub(rf"(?<![A-Za-z]){invisible}G{invisible}E{invisible}(?![A-Za-z])", "\U0001F1EC\U0001F1EA", text)
+    text = re.sub(r"\U0001F1EC\U0001F1EA(?:\s*[\U0001F535\U0001F534\u26aa\u26ab]){1,6}", "\U0001F1EC\U0001F1EA", text)
+    link_markers = r"(?:\U0001F447|\u2b07\ufe0f?|\U0001F53D|\u2198\ufe0f?|\u2935\ufe0f?|\u2193)"
+    text = re.sub(rf"(?m)^\s*(?:{link_markers}\s*)+$", "", text)
+    text = re.sub(rf"\s*(?:{link_markers}\s*)+(?=$|\n)", "", text)
+    text = re.sub(rf"(?m)^\s*(?:{link_markers}\s*)+", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n+ *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def clean_before_translation(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
@@ -1760,6 +1775,8 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
         "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
+        "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
+        "- Remove down arrows or pointing-down emojis when they only pointed to a removed link or quoted post.\n"
         "- Never leave raw @handles, random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
         "- If the post contains only a vague teaser/link/promo and no real news, return an empty string.\n"
         "- Do not explain anything.\n"
@@ -1859,6 +1876,7 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_untranslated_tail_tokens(text)
     text = remove_junk_tail_lines(text)
     text = remove_israel_time_additions(text)
+    text = final_visual_cleanup(text)
     return text.strip()
 
 
@@ -1914,9 +1932,9 @@ def translate_text(text: str) -> str:
     gemini_key = translation_cache_key(ai_text or prepared)
     fallback_key = hashlib.sha256(f"fallback\n{prepared}".encode("utf-8")).hexdigest()
     if GEMINI_API_KEYS and gemini_key in TRANSLATION_CACHE:
-        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key])
+        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key]))
     if not GEMINI_API_KEYS and fallback_key in TRANSLATION_CACHE:
-        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
+        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key]))
 
     if GEMINI_API_KEYS and ai_text:
         last_error: Exception | None = None
@@ -1924,7 +1942,7 @@ def translate_text(text: str) -> str:
             try:
                 with GEMINI_TRANSLATION_SEMAPHORE:
                     polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
-                polished = preserve_original_emojis(ai_text, polished)
+                polished = final_visual_cleanup(preserve_original_emojis(ai_text, polished))
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
                 if polished:
@@ -1945,7 +1963,7 @@ def translate_text(text: str) -> str:
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
     if fallback_key in TRANSLATION_CACHE:
-        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
+        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key]))
 
     if not GEMINI_API_KEYS:
         logging.error("⛔ אין מפתח ג'מיני מוגדר. הפוסט לא יישלח בלי תרגום ג'מיני.")
@@ -1958,7 +1976,7 @@ def translate_text(text: str) -> str:
                 if latin_ratio(translated) > 0.45:
                     translated = translate_in_sentences(source_text)
                 polished = final_hebrew_polish(translated)
-                polished = preserve_original_emojis(source_text, polished)
+                polished = final_visual_cleanup(preserve_original_emojis(source_text, polished))
                 if polished and latin_ratio(polished) <= 0.30:
                     TRANSLATION_CACHE[fallback_key] = polished
                     return polished
@@ -1966,7 +1984,7 @@ def translate_text(text: str) -> str:
                 continue
 
     fallback = final_hebrew_polish(prepared)
-    fallback = preserve_original_emojis(ai_text or text, fallback)
+    fallback = final_visual_cleanup(preserve_original_emojis(ai_text or text, fallback))
     TRANSLATION_CACHE[fallback_key] = fallback
     return fallback
 
@@ -2050,6 +2068,7 @@ def tidy_translated_text(text: str) -> str:
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = remove_junk_tail_lines(text)
+    text = final_visual_cleanup(text)
     return text.strip()
 
 
