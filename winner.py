@@ -1237,7 +1237,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
         if callback_id:
             answer_control_callback(callback_id, "הבוט הופעל")
-        send_control_panel(False, "הפעולה בוצעה בהצלחה: הבוט הופעל. יישלחו רק פוסטים שעלו ב-10 הדקות האחרונות.")
+        send_control_panel(False, הפעולה בוצעה בהצלחה: הבוט הופעל")
 
 
 def control_loop() -> None:
