@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Single-file X/Twitter to Telegram NBA news forwarder.
+Single-file X/Twitter to Telegram football news forwarder.
 
 Run:
-  python3 x_to_telegram_single.py
+  python3 football_x_to_telegram.py
 
 What this version does:
 - Scans all accounts in parallel every 30 seconds.
@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from threading import BoundedSemaphore, Lock
+from threading import BoundedSemaphore, Thread
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -49,9 +49,12 @@ from zoneinfo import ZoneInfo
 
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
-    "8795392686:AAFElKo3sML_dqA9YaVz2iArTUoYGcGgBuI",
+    "8480434397:AAF8ay6JxuYsf7ytVOLG73bVJiJQHq8CMx4",
 )
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1003918247986")
+TELEGRAM_CHAT_IDS = [
+    "-1002272784260",
+    "-1003756461493",
+]
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -72,29 +75,48 @@ GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 
 X_ACCOUNTS = [
-    "NBA",
-    "ShamsCharania",
-    "highkin",
-    "ChrisBHaynes",
-    "UnderdogNBA",
-    "TheDunkCentral",
-    "LegionHoops",
-    "NBACentral",
-    "ClutchPoints",
+    "FabrizioRomano",
+    "David_Ornstein",
+    "DiMarzio",
+    "JacobsBen",
+    "NicoSchira",
 ]
 
-PRIORITY_X_ACCOUNTS = set(X_ACCOUNTS)
+PRIORITY_X_ACCOUNTS = {
+    "FabrizioRomano",
+    "David_Ornstein",
+    "DiMarzio",
+    "JacobsBen",
+    "NicoSchira",
+}
 
 ACCOUNT_DISPLAY_NAMES = {
-    "NBA": "NBA",
-    "ShamsCharania": "שאמס צ'ראניה",
-    "highkin": "שון הייקין - פורטלנד",
-    "ChrisBHaynes": "כריס היינס",
-    "UnderdogNBA": "אנדרדוג NBA",
-    "TheDunkCentral": "דאנק סנטרל",
-    "LegionHoops": "לגיון הופס",
-    "NBACentral": "NBA סנטרל",
-    "ClutchPoints": "קלאץ' פוינטס",
+    "FabrizioRomano": "פבריציו רומאנו",
+    "David_Ornstein": "דיוויד אורנשטיין",
+    "DiMarzio": "ג'אנלוקה די מארציו",
+    "JacobsBen": "בן ג'ייקובס",
+    "NicoSchira": "ניקולה סקירה",
+    "lauriewhitwell": "לורי וויטוול - מנצ'סטר יונייטד",
+    "SamLee": "סם לי - מנצ'סטר סיטי",
+    "_pauljoyce": "פול ג'ויס - ליברפול",
+    "Matt_Law_DT": "מאט לאו - צ'לסי",
+    "SimonJones_DM": "סיימון ג'ונס - אנגליה",
+    "MatteMoretto": "מתאו מורטו - ספרד",
+    "ffpolo": "פרננדו פולו - ברצלונה",
+    "gerardromero": "ג'ראד רומרו - ברצלונה",
+    "AranchaMOBILE": "ארנצ'ה רודריגז - ריאל מדריד",
+    "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
+    "AlfredoPedulla": "אלפרדו פדולה - איטליה",
+    "Plettigoal": "פלוריאן פלטנברג - גרמניה",
+    "cfbayern": "כריסטיאן פאלק - גרמניה",
+    "FabriceHawkins": "פבריס הוקינס - צרפת",
+    "Tanziloic": "לואיק טנזי - צרפת",
+    "MonfortCarlos": "קרלוס מונפור - ברצלונה",
+    "Barca_Buzz": "בארסה באז - ברצלונה",
+    "MadridXtra": "מדריד אקסטרה - ריאל מדריד",
+    "iMiaSanMia": "מיה סן מיה - באיירן",
+    "Santi_J_FM": "סנטי אאונה - פריז סן ז'רמן",
+    "AndyMitten": "אנדי מיטן - מנצ'סטר יונייטד",
 }
 
 TARGET_LANGUAGE = "he"
@@ -103,22 +125,24 @@ HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
 FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
-MAX_PARALLEL_ACCOUNT_CHECKS = 28
+MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
-MAX_POSTS_SENT_PER_CYCLE = 4
-MIN_SECONDS_BETWEEN_TELEGRAM_POSTS = 3
 MAX_POST_AGE_SECONDS = 30 * 60
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
 NIGHT_CHECK_EVERY_SECONDS = 20
-NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 8
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 16
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
+CONTROL_CHAT_ID = "-1003924267158"
+CONTROL_STATE_FILE = "football_control_state.json"
+CONTROL_POLL_SECONDS = 2
+CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
 SHABBAT_MODE_ENABLED = True
 SHABBAT_TIMEZONE = "Asia/Jerusalem"
 SHABBAT_HEBCAL_GEOID = "281184"  # Jerusalem
@@ -126,14 +150,16 @@ SHABBAT_HAVDALAH_MINUTES = 50
 SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
-SHABBAT_CACHE_FILE = "nba_shabbat_times_cache.json"
-MAX_PARALLEL_POST_SENDS = 3
+SHABBAT_CACHE_FILE = "football_shabbat_times_cache.json"
+MAX_PARALLEL_POST_SENDS = 12
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
-STATE_FILE = "nba_x_to_telegram_state.json"
-TRANSLATION_CACHE_FILE = "nba_translation_cache.json"
+STATE_FILE = "football_x_to_telegram_state.json"
+TRANSLATION_CACHE_FILE = "football_translation_cache.json"
 RTL_MARK = "\u200f"
+SIGNATURE_LINK = "https://t.me/neto_sport"
+SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
@@ -166,6 +192,38 @@ URL_RE = re.compile(
 )
 
 EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]")
+
+COUNTRY_CODE_FLAGS = {
+    "AR": "\U0001F1E6\U0001F1F7",
+    "AT": "\U0001F1E6\U0001F1F9",
+    "BE": "\U0001F1E7\U0001F1EA",
+    "BR": "\U0001F1E7\U0001F1F7",
+    "CH": "\U0001F1E8\U0001F1ED",
+    "CL": "\U0001F1E8\U0001F1F1",
+    "CM": "\U0001F1E8\U0001F1F2",
+    "CO": "\U0001F1E8\U0001F1F4",
+    "DE": "\U0001F1E9\U0001F1EA",
+    "DK": "\U0001F1E9\U0001F1F0",
+    "EC": "\U0001F1EA\U0001F1E8",
+    "ES": "\U0001F1EA\U0001F1F8",
+    "FR": "\U0001F1EB\U0001F1F7",
+    "GB": "\U0001F1EC\U0001F1E7",
+    "GE": "\U0001F1EC\U0001F1EA",
+    "GH": "\U0001F1EC\U0001F1ED",
+    "HR": "\U0001F1ED\U0001F1F7",
+    "IL": "\U0001F1EE\U0001F1F1",
+    "IT": "\U0001F1EE\U0001F1F9",
+    "MA": "\U0001F1F2\U0001F1E6",
+    "MX": "\U0001F1F2\U0001F1FD",
+    "NG": "\U0001F1F3\U0001F1EC",
+    "NL": "\U0001F1F3\U0001F1F1",
+    "PT": "\U0001F1F5\U0001F1F9",
+    "RS": "\U0001F1F7\U0001F1F8",
+    "SN": "\U0001F1F8\U0001F1F3",
+    "TR": "\U0001F1F9\U0001F1F7",
+    "US": "\U0001F1FA\U0001F1F8",
+    "UY": "\U0001F1FA\U0001F1FE",
+}
 
 PODCAST_BLOCK_PATTERNS = (
     r"\bpodcast\b",
@@ -210,26 +268,6 @@ PODCAST_DOMAINS = (
 # ====== TRANSLATION DICTIONARIES ======
 
 HANDLE_REPLACEMENTS = {
-    "NBA": "NBA",
-    "WNBA": "WNBA",
-    "ShamsCharania": "שאמס צ'ראניה",
-    "Shams Charania": "שאמס צ'ראניה",
-    "Shams": "שאמס",
-    "highkin": "שון הייקין",
-    "Sean Highkin": "שון הייקין",
-    "TheSteinLine": "מארק סטיין",
-    "wojespn": "אדריאן ווג'נרובסקי",
-    "espn_macmahon": "טים מקמהון",
-    "BobbyMarks42": "בובי מרקס",
-    "ChrisBHaynes": "כריס היינס",
-    "UnderdogNBA": "אנדרדוג NBA",
-    "TheDunkCentral": "דאנק סנטרל",
-    "LegionHoops": "לגיון הופס",
-    "NBACentral": "NBA סנטרל",
-    "ClutchPoints": "קלאץ' פוינטס",
-    "espn": "ESPN",
-    "ESPNNBA": "ESPN NBA",
-    "espn_macmahon": "טים מקמהון",
     "FabrizioRomano": "פבריציו רומאנו",
     "David_Ornstein": "דיוויד אורנשטיין",
     "DiMarzio": "ג'אנלוקה די מארציו",
@@ -246,7 +284,6 @@ HANDLE_REPLACEMENTS = {
     "AranchaMOBILE": "ארנצ'ה רודריגז",
     "JLSanchez78": "חוסה לואיס סאנצ'ס",
     "AlfredoPedulla": "אלפרדו פדולה",
-    "86_longo": "דניאלה לונגו",
     "Plettigoal": "פלוריאן פלטנברג",
     "cfbayern": "כריסטיאן פאלק",
     "FabriceHawkins": "פבריס הוקינס",
@@ -267,150 +304,56 @@ HANDLE_REPLACEMENTS = {
     "PipersierraR": "פיפה סיירה",
     "CLMerlo": "ססאר לואיס מרלו",
     "mundodeportivo": "מונדו דפורטיבו",
-    "JijantesFC": "ג'יגאנטס",
     "RMCsport": "RMC ספורט",
     "lequipe": "לאקיפ",
     "ActuFoot_": "אקטו פוט",
-    "MadridXtra": "מדריד אקסטרה",
-    "ManagingBarca": "מנג'ינג בארסה",
     "Barca_Buzz": "בארסה באז",
     "iMiaSanMia": "מיה סן מיה",
+    "Santi_J_FM": "סנטי אאונה",
+    "AndyMitten": "אנדי מיטן",
 }
 
 HANDLE_REPLACEMENTS.update(
     {
-        "okcthunder": "אוקלהומה סיטי ת'אנדר",
-        "OKCThunder": "אוקלהומה סיטי ת'אנדר",
-        "okc thunder": "אוקלהומה סיטי ת'אנדר",
-        "Pacers": "אינדיאנה פייסרס",
-        "nyknicks": "ניו יורק ניקס",
-        "celtics": "בוסטון סלטיקס",
-        "warriors": "גולדן סטייט ווריירס",
-        "lakers": "לוס אנג'לס לייקרס",
-        "timberwolves": "מינסוטה טימברוולבס",
-        "nuggets": "דנבר נאגטס",
-        "dallasmavs": "דאלאס מאבריקס",
-        "sixers": "פילדלפיה 76",
-        "MiamiHEAT": "מיאמי היט",
-        "Bucks": "מילווקי באקס",
-        "Suns": "פיניקס סאנס",
-        "LAClippers": "לוס אנג'לס קליפרס",
-        "memgrizz": "ממפיס גריזליס",
-        "PelicansNBA": "ניו אורלינס פליקנס",
-        "spurs": "סן אנטוניו ספרס",
-        "HoustonRockets": "יוסטון רוקטס",
-        "trailblazers": "פורטלנד טרייל בלייזרס",
-        "utahjazz": "יוטה ג'אז",
-        "OrlandoMagic": "אורלנדו מג'יק",
-        "ATLHawks": "אטלנטה הוקס",
-        "hornets": "שארלוט הורנטס",
-        "Raptors": "טורונטו ראפטורס",
-        "DetroitPistons": "דטרויט פיסטונס",
-        "WashWizards": "וושינגטון וויזארדס",
-        "cavs": "קליבלנד קאבלירס",
-        "SacramentoKings": "סקרמנטו קינגס",
-        "BrooklynNets": "ברוקלין נטס",
-        "chicagobulls": "שיקגו בולס",
+        "MadridXtra": "מדריד אקסטרה",
     }
 )
 
 SELF_QUOTE_ALIASES = {
-    "NBA": ["NBA", "NBA Today", "אן בי איי"],
-    "ShamsCharania": ["Shams Charania", "Shams", "שאמס צ'ראניה", "שאמס צראניה", "שאמש צ'ראניה"],
-    "highkin": ["Sean Highkin", "Highkin", "שון הייקין", "שון הייקין - פורטלנד"],
-    "ChrisBHaynes": ["Chris Haynes", "כריס היינס"],
-    "UnderdogNBA": ["Underdog NBA", "אנדרדוג NBA"],
-    "TheDunkCentral": ["Dunk Central", "The Dunk Central", "דאנק סנטרל"],
-    "LegionHoops": ["Legion Hoops", "לגיון הופס"],
-    "NBACentral": ["NBA Central", "NBA סנטרל"],
-    "ClutchPoints": ["ClutchPoints", "Clutch Points", "קלאץ' פוינטס"],
+    "FabrizioRomano": ["Fabrizio Romano", "פבריציו רומאנו"],
+    "David_Ornstein": ["David Ornstein", "דיוויד אורנשטיין"],
+    "DiMarzio": ["Gianluca Di Marzio", "Gianluca DiMarzio", "ג'אנלוקה די מארציו", "גיאנלוקה די מארציו"],
+    "JacobsBen": ["Ben Jacobs", "בן ג'ייקובס", "בן גייקובס", "בן יעקבס"],
+    "NicoSchira": ["Nicolò Schira", "Nicolo Schira", "Nico Schira", "ניקולה סקירה", "ניקולו סקירה", "ניקולה שירה", "ניקולו שירה", "ניקולה סקירה - כללי"],
+    "lauriewhitwell": ["Laurie Whitwell", "לורי וויטוול"],
+    "SamLee": ["Sam Lee", "סם לי"],
+    "_pauljoyce": ["Paul Joyce", "פול ג'ויס"],
+    "Matt_Law_DT": ["Matt Law", "מאט לאו"],
+    "SimonJones_DM": ["Simon Jones", "סיימון ג'ונס"],
+    "MatteMoretto": ["Matteo Moretto", "Matte Moretto", "מתאו מורטו", "מתאו מורטו - ספרד"],
+    "ffpolo": ["Fernando Polo", "פרננדו פולו"],
+    "gerardromero": ["Gerard Romero", "ג'ראד רומרו", "חרארד רומרו", "ז'ראר רומרו"],
+    "AranchaMOBILE": ["Arancha Rodríguez", "Arancha Rodriguez", "ארנצ'ה רודריגז"],
+    "JLSanchez78": ["José Luis Sánchez", "Jose Luis Sanchez", "חוסה לואיס סאנצ'ס"],
+    "AlfredoPedulla": ["Alfredo Pedullà", "Alfredo Pedulla", "אלפרדו פדולה", "אלפרהדו פדולה"],
+    "Plettigoal": ["Florian Plettenberg", "Florian Pletti", "פלוריאן פלטנברג", "פלוריאן פחלטנברג"],
+    "cfbayern": ["Christian Falk", "כריסטיאן פאלק"],
+    "FabriceHawkins": ["Fabrice Hawkins", "פבריס הוקינס"],
+    "Tanziloic": ["Loïc Tanzi", "Loic Tanzi", "לואיק טנזי"],
+    "MonfortCarlos": ["Carlos Monfort", "קרלוס מונפור"],
+    "Barca_Buzz": ["Barca Buzz", "Barça Buzz", "בארסה באז"],
+    "iMiaSanMia": ["Mia San Mia", "מיה סן מיה"],
+    "Santi_J_FM": ["Santi Aouna", "סנטי אאונה"],
+    "AndyMitten": ["Andy Mitten", "אנדי מיטן"],
 }
 
-BASKETBALL_TERMS = {
-    "league sources tell": "לפי מקורות בליגה",
-    "sources tell": "לפי מקורות",
-    "sources say": "לפי מקורות",
-    "per sources": "לפי מקורות",
-    "breaking": "דיווח דרמטי",
-    "free agent": "שחקן חופשי",
-    "free agency": "שוק השחקנים החופשיים",
-    "trade deadline": "דדליין הטריידים",
-    "trade": "טרייד",
-    "traded": "עבר בטרייד",
-    "has been traded": "עבר בטרייד",
-    "is being traded": "עובר בטרייד",
-    "has requested a trade": "ביקש טרייד",
-    "sign-and-trade": "חתימה והעברה",
-    "first-round pick": "בחירת סיבוב ראשון",
-    "second-round pick": "בחירת סיבוב שני",
-    "draft pick": "בחירת דראפט",
-    "NBA Draft": "דראפט ה-NBA",
-    "two-way contract": "חוזה דו-כיווני",
-    "two-way": "דו-כיווני",
-    "training camp": "מחנה האימונים",
-    "regular season": "העונה הסדירה",
-    "postseason": "הפלייאוף",
-    "playoffs": "הפלייאוף",
-    "all arrivals for game": "כל ההגעות למשחק",
-    "all arrivals": "כל ההגעות",
-    "arrivals": "הגעות",
-    "Game 7": "משחק 7",
-    "Game": "משחק",
-    "NBA Conference Finals": "גמר האזור ב-NBA",
-    "Finals": "הגמר",
-    "conference finals": "גמר האזור",
-    "game winner": "סל ניצחון",
-    "career-high": "שיא קריירה",
-    "season-high": "שיא עונתי",
-    "home court": "הבית",
-    "on the season": "העונה",
-    "behind big performances from": "בזכות הופעות גדולות של",
-    "went off": "התפוצץ",
-    "extension": "הארכת חוזה",
-    "max contract": "חוזה מקסימום",
-    "rookie scale extension": "הארכת חוזה רוקי",
-    "waived": "שוחרר",
-    "buyout": "בייאאוט",
-    "injury report": "דוח פציעות",
-    "questionable": "בספק",
-    "probable": "ככל הנראה ישחק",
-    "ruled out": "לא ישחק",
-    "questionable to return": "בספק לחזור",
-    "doubtful": "בספק גדול",
-    "day-to-day": "יום-יומי",
-    "minutes restriction": "הגבלת דקות",
-    "starting lineup": "החמישייה הפותחת",
-    "depth chart": "רוטציה",
-    "front office": "הנהלת הקבוצה",
-    "head coach": "המאמן הראשי",
-    "assistant coach": "עוזר המאמן",
-    "general manager": "הג'נרל מנג'ר",
-    "president of basketball operations": "נשיא פעולות הכדורסל",
-    "basketball operations": "פעולות הכדורסל",
-    "salary cap": "תקרת השכר",
-    "luxury tax": "מס המותרות",
-    "tax apron": "אפרון המס",
-    "second apron": "האפרון השני",
-    "player option": "אופציית שחקן",
-    "team option": "אופציית קבוצה",
-    "non-guaranteed": "לא מובטח",
-    "guaranteed": "מובטח",
-    "hard cap": "תקרה קשיחה",
-    "double-double": "דאבל-דאבל",
-    "triple-double": "טריפל-דאבל",
-    "clutch": "קלאץ'",
-    "buzzer-beater": "סל עם הבאזר",
-    "shot clock": "שעון הזריקות",
-    "overtime": "הארכה",
-    "OT": "הארכה",
-    "MVP": "MVP",
-    "points": "נקודות",
-    "rebounds": "ריבאונדים",
-    "assists": "אסיסטים",
-    "steals": "חטיפות",
-    "blocks": "חסימות",
-    "mins": "דקות",
-    "minutes": "דקות",
+SELF_QUOTE_ALIASES.update(
+    {
+        "MadridXtra": ["Madrid Xtra", "MadridXtra", "מדריד אקסטרה"],
+    }
+)
+
+FOOTBALL_TERMS = {
     "here we go": "הנה זה קורה",
     "breaking": "דיווח דרמטי",
     "exclusive": "בלעדי",
@@ -493,154 +436,7 @@ BASKETBALL_TERMS = {
     "Ligue 1": "ליגה 1",
 }
 
-for football_only_term in (
-    "here we go",
-    "club sources",
-    "deal agreed",
-    "agreement reached",
-    "verbal agreement",
-    "full agreement",
-    "medical tests",
-    "medical booked",
-    "loan deal",
-    "loan move",
-    "permanent move",
-    "option to buy",
-    "obligation to buy",
-    "release clause",
-    "sell-on clause",
-    "fixed fee",
-    "transfer fee",
-    "free transfer",
-    "advanced talks",
-    "talks ongoing",
-    "negotiations ongoing",
-    "deal off",
-    "set to join",
-    "set to sign",
-    "close to joining",
-    "close to signing",
-    "joins",
-    "signs for",
-    "will sign",
-    "has signed",
-    "bid submitted",
-    "formal bid",
-    "bid rejected",
-    "bid accepted",
-    "official soon",
-    "done deal",
-    "sporting director",
-    "goalkeeper",
-    "centre back",
-    "center back",
-    "left back",
-    "right back",
-    "full back",
-    "midfielder",
-    "defensive midfielder",
-    "attacking midfielder",
-    "winger",
-    "striker",
-    "starting XI",
-    "clean sheet",
-    "stoppage time",
-    "penalty shootout",
-    "Champions League",
-    "Europa League",
-    "Conference League",
-    "Premier League",
-    "La Liga",
-    "Serie A",
-    "Bundesliga",
-    "Ligue 1",
-):
-    BASKETBALL_TERMS.pop(football_only_term, None)
-
 TEAM_REPLACEMENTS = {
-    "Atlanta Hawks": "אטלנטה הוקס",
-    "Boston Celtics": "בוסטון סלטיקס",
-    "Brooklyn Nets": "ברוקלין נטס",
-    "BrooklynNets": "ברוקלין נטס",
-    "Charlotte Hornets": "שארלוט הורנטס",
-    "Chicago Bulls": "שיקגו בולס",
-    "Cleveland Cavaliers": "קליבלנד קאבלירס",
-    "Dallas Mavericks": "דאלאס מאבריקס",
-    "Denver Nuggets": "דנבר נאגטס",
-    "Detroit Pistons": "דטרויט פיסטונס",
-    "Golden State Warriors": "גולדן סטייט ווריורס",
-    "GoldenStateWarriors": "גולדן סטייט ווריורס",
-    "Houston Rockets": "יוסטון רוקטס",
-    "Indiana Pacers": "אינדיאנה פייסרס",
-    "LA Clippers": "לוס אנג'לס קליפרס",
-    "Los Angeles Clippers": "לוס אנג'לס קליפרס",
-    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
-    "Memphis Grizzlies": "ממפיס גריזליס",
-    "Miami Heat": "מיאמי היט",
-    "Milwaukee Bucks": "מילווקי באקס",
-    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
-    "New Orleans Pelicans": "ניו אורלינס פליקנס",
-    "New York Knicks": "ניו יורק ניקס",
-    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
-    "Orlando Magic": "אורלנדו מג'יק",
-    "Philadelphia 76ers": "פילדלפיה 76'רס",
-    "Phoenix Suns": "פיניקס סאנס",
-    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
-    "Sacramento Kings": "סקרמנטו קינגס",
-    "San Antonio Spurs": "סן אנטוניו ספרס",
-    "Toronto Raptors": "טורונטו ראפטורס",
-    "Utah Jazz": "יוטה ג'אז",
-    "Washington Wizards": "וושינגטון וויזארדס",
-    "Warriors": "ווריורס",
-    "Nets": "נטס",
-    "Hawks": "הוקס",
-    "Celtics": "סלטיקס",
-    "Hornets": "הורנטס",
-    "Bulls": "בולס",
-    "Cavaliers": "קאבלירס",
-    "Cavs": "קאבס",
-    "Mavericks": "מאבריקס",
-    "Mavs": "מאבריקס",
-    "Nuggets": "נאגטס",
-    "Pistons": "פיסטונס",
-    "Rockets": "רוקטס",
-    "Pacers": "פייסרס",
-    "Clippers": "קליפרס",
-    "Lakers": "לייקרס",
-    "Grizzlies": "גריזליס",
-    "Heat": "היט",
-    "Bucks": "באקס",
-    "Timberwolves": "טימברוולבס",
-    "Lynx": "לינקס",
-    "minnesotalynx": "מינסוטה לינקס",
-    "Pelicans": "פליקנס",
-    "Knicks": "ניקס",
-    "Thunder": "ת'אנדר",
-    "Magic": "מג'יק",
-    "76ers": "76'רס",
-    "Sixers": "סיקסרס",
-    "Suns": "סאנס",
-    "Blazers": "בלייזרס",
-    "Trail Blazers": "טרייל בלייזרס",
-    "Kings": "קינגס",
-    "Spurs": "ספרס",
-    "Raptors": "ראפטורס",
-    "Jazz": "ג'אז",
-    "Wizards": "וויזארדס",
-    "הלוחמים": "הווריורס",
-    "לוחמים": "ווריורס",
-    "הרשתות": "הנטס",
-    "רשתות": "נטס",
-    "השמשות": "הסאנס",
-    "שמשות": "סאנס",
-    "קסם": "מג'יק",
-    "הקסם": "המג'יק",
-    "חלוצים": "בלייזרס",
-    "שבילים": "בלייזרס",
-    "קוצצים": "קליפרס",
-    "הקוצצים": "הקליפרס",
-    "אשפים": "וויזארדס",
-    "אשף": "וויזארדס",
     "Manchester United": "מנצ'סטר יונייטד",
     "Man United": "מנצ'סטר יונייטד",
     "Man Utd": "מנצ'סטר יונייטד",
@@ -778,6 +574,8 @@ PLAYER_REPLACEMENTS = {
     "Bernardo Silva": "ברנרדו סילבה",
     "Julian Alvarez": "חוליאן אלבארס",
     "Julián Álvarez": "חוליאן אלבארס",
+    "Ousmane Dembele": "אוסמן דמבלה",
+    "Ousmane Dembélé": "אוסמן דמבלה",
     "Jose Mourinho": "ז'וזה מוריניו",
     "José Mourinho": "ז'וזה מוריניו",
     "Gabriel Jesus": "גבריאל ז'סוס",
@@ -785,101 +583,9 @@ PLAYER_REPLACEMENTS = {
     "Antonio Conte": "אנטוניו קונטה",
     "Mauricio Pochettino": "מאוריסיו פוצ'טינו",
     "Pep Guardiola": "פפ גווארדיולה",
-    "Jared McCain": "ג'ארד מקיין",
+    "Khvicha Kvaratskhelia": "חביצ'ה קווארצחליה",
+    "Kvaratskhelia": "קווארצחליה",
 }
-
-for football_only_player in (
-    "Marcus Rashford",
-    "Anthony Gordon",
-    "Florian Wirtz",
-    "Viktor Gyokeres",
-    "Victor Osimhen",
-    "Kylian Mbappe",
-    "Kylian Mbappé",
-    "Vinicius Junior",
-    "Vinícius Júnior",
-    "Erling Haaland",
-    "Mohamed Salah",
-    "Trent Alexander-Arnold",
-    "Alexander Isak",
-    "Bruno Fernandes",
-    "Lamine Yamal",
-    "Nico Williams",
-    "Rodrygo",
-    "Jude Bellingham",
-    "Harry Kane",
-    "Lautaro Martinez",
-    "Lautaro Martínez",
-    "Rafael Leao",
-    "Rafael Leão",
-    "Xavi Simons",
-    "Bernardo Silva",
-    "Julian Alvarez",
-    "Julián Álvarez",
-    "Jose Mourinho",
-    "José Mourinho",
-    "Gabriel Jesus",
-    "Massimiliano Allegri",
-    "Antonio Conte",
-    "Mauricio Pochettino",
-    "Pep Guardiola",
-):
-    PLAYER_REPLACEMENTS.pop(football_only_player, None)
-
-PLAYER_REPLACEMENTS.update(
-    {
-        "Jared McCain": "ג'ארד מקיין",
-        "Shai Gilgeous-Alexander": "שיי גילג'ס-אלכסנדר",
-        "Shai Gilgeous Alexander": "שיי גילג'ס-אלכסנדר",
-        "SGA": "שיי גילג'ס-אלכסנדר",
-        "Nikola Jokic": "ניקולה יוקיץ'",
-        "Nikola Jokić": "ניקולה יוקיץ'",
-        "Luka Doncic": "לוקה דונצ'יץ'",
-        "Luka Dončić": "לוקה דונצ'יץ'",
-        "Giannis Antetokounmpo": "יאניס אנטטוקומפו",
-        "Jayson Tatum": "ג'ייסון טייטום",
-        "Jaylen Brown": "ג'יילן בראון",
-        "Tyrese Haliburton": "טייריס הליברטון",
-        "Jalen Brunson": "ג'יילן ברונסון",
-        "Anthony Edwards": "אנתוני אדוארדס",
-        "LeBron James": "לברון ג'יימס",
-        "Stephen Curry": "סטף קרי",
-        "Steph Curry": "סטף קרי",
-        "Kevin Durant": "קווין דוראנט",
-        "Victor Wembanyama": "ויקטור וומבניאמה",
-        "Chet Holmgren": "צ'ט הולמגרן",
-        "Jalen Williams": "ג'יילן וויליאמס",
-        "Pascal Siakam": "פסקל סיאקם",
-        "Karl-Anthony Towns": "קארל-אנתוני טאונס",
-        "Karl Anthony Towns": "קארל-אנתוני טאונס",
-        "Rudy Gobert": "רודי גובר",
-        "James Harden": "ג'יימס הארדן",
-        "Kawhi Leonard": "קוואי לנארד",
-        "Damian Lillard": "דמיאן לילארד",
-        "Joel Embiid": "ג'ואל אמביד",
-        "Tyrese Maxey": "טייריס מקסי",
-        "Devin Booker": "דווין בוקר",
-        "Donovan Mitchell": "דונובן מיטשל",
-        "Ja Morant": "ג'ה מוראנט",
-        "Zion Williamson": "זאיון וויליאמסון",
-        "Jimmy Butler": "ג'ימי באטלר",
-        "Bam Adebayo": "באם אדבאיו",
-        "Trae Young": "טריי יאנג",
-        "LaMelo Ball": "לאמלו בול",
-        "Paolo Banchero": "פאולו באנקרו",
-        "Franz Wagner": "פרנץ ואגנר",
-        "Cade Cunningham": "קייד קנינגהם",
-        "Evan Mobley": "אוון מובלי",
-        "Darius Garland": "דריוס גארלנד",
-        "Mikal Bridges": "מיקאל ברידג'ס",
-        "OG Anunoby": "או.ג'י אנונובי",
-        "Josh Hart": "ג'וש הארט",
-        "Myles Turner": "מיילס טרנר",
-        "Bennedict Mathurin": "בנדיקט מת'ורין",
-        "Caitlin Clark": "קייטלין קלארק",
-        "Angel Reese": "אנג'ל ריס",
-    }
-)
 
 HEBREW_FINAL_FIXES = {
     "צ'לסי בוחנת את האפשרות למנות את צ'אבי אלונסו למאמנה הבא של ריאל סוסיאדד": "צ'לסי בוחנת את האפשרות למנות את צ'אבי אלונסו למאמנה הבא",
@@ -898,8 +604,13 @@ HEBREW_FINAL_FIXES = {
     "ג׳וליאן אלווארז": "חוליאן אלבארס",
     "ג'וליאן אלוורז": "חוליאן אלבארס",
     "ג׳וליאן אלוורז": "חוליאן אלבארס",
-    "ברנארדו סילבה": "ברנרדו סילבה",
-    "ברנרדו סילבא": "ברנרדו סילבה",
+    "אוסמאנה דהמבéלé": "אוסמן דמבלה",
+    "אוסמאנה דהמבלה": "אוסמן דמבלה",
+    "אוסמן דמבל": "אוסמן דמבלה",
+    "אוסמן דמבלהה": "אוסמן דמבלה",
+    "דהמבéלé": "דמבלה",
+    "דהמבלה": "דמבלה",
+    "דהמבלהה": "דמבלה",
     "זוזה מורינייו": "ז'וזה מוריניו",
     "זוזה מוריניו": "ז'וזה מוריניו",
     "ז׳וזה מורינייו": "ז'וזה מוריניו",
@@ -909,20 +620,11 @@ HEBREW_FINAL_FIXES = {
     "ז׳וזה מאוריניו": "ז'וזה מוריניו",
     "מאוריניו": "מוריניו",
     "חוזה מוריניו": "ז'וזה מוריניו",
-    "אוסמן דמבלהה": "אוסמן דמבלה",
-    "דהמבלהה": "דמבלה",
+    "ברנארדו סילבה": "ברנרדו סילבה",
+    "ברנרדו סילבא": "ברנרדו סילבה",
     "חרארד רומרו": "ג'ראד רומרו",
     "ז'ראר רומרו": "ג'ראד רומרו",
-    "שאמש": "שאמס",
-    "שאמש צ'ראניה": "שאמס צ'ראניה",
-    "שאמש צ׳ראניה": "שאמס צ׳ראניה",
-    "נהא טודיי": "NBA Today",
-    "נבא טודיי": "NBA Today",
-    "נבה טודיי": "NBA Today",
-    "נ.ב.א טודיי": "NBA Today",
-    "אנ.בי.איי טודיי": "NBA Today",
-    "אן-בי-איי טודיי": "NBA Today",
-    "אן בי איי טודיי": "NBA Today",
+    "GE": "🇬🇪",
     "כאן אנחנו הולכים": "הנה זה קורה",
     "הנה אנחנו הולכים": "הנה זה קורה",
     "לפי הבנתי": "לפי המידע",
@@ -970,13 +672,21 @@ HEBREW_FINAL_FIXES.update(
     }
 )
 
+HEBREW_FINAL_FIXES.update(
+    {
+        "\u05d7\u05d1\u05e6'\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
+        "\u05d7\u05d1\u05d9\u05e6\u05d9\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
+        "\u05d7\u05d1\u05d9\u05e6\u05f3\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
+        "\u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05f3\u05d7\u05dc\u05d9\u05d4": "\u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
+        "GE": "\U0001F1EC\U0001F1EA",
+    }
+)
+
 STAT_REPLACEMENTS = {
     "goals": "שערים",
     "goal": "שער",
     "assists": "בישולים",
     "assist": "בישול",
-    "blocks": "חסימות",
-    "block": "חסימה",
     "appearances": "הופעות",
     "appearance": "הופעה",
     "matches": "משחקים",
@@ -985,7 +695,7 @@ STAT_REPLACEMENTS = {
     "apps": "הופעות",
 }
 
-LATIN_KEEP = {"NBA", "WNBA", "NBA Today", "VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
+LATIN_KEEP = {"VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
 
 HEBREW_LETTER = {
     "a": "א", "b": "ב", "c": "ק", "d": "ד", "e": "ה", "f": "פ",
@@ -1480,6 +1190,126 @@ def shabbat_cache_path() -> Path:
     return Path(__file__).resolve().parent / SHABBAT_CACHE_FILE
 
 
+def control_state_path() -> Path:
+    return Path(__file__).resolve().parent / CONTROL_STATE_FILE
+
+
+def load_control_state() -> dict[str, Any]:
+    path = control_state_path()
+    if not path.exists():
+        return {"paused": False}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"paused": False}
+        data["paused"] = bool(data.get("paused", False))
+        return data
+    except Exception:
+        return {"paused": False}
+
+
+def save_control_state(paused: bool | None = None, **updates: Any) -> None:
+    state = load_control_state()
+    if paused is not None:
+        state["paused"] = paused
+    state.update(updates)
+    path = control_state_path()
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def is_control_paused() -> bool:
+    return bool(load_control_state().get("paused", False))
+
+
+def control_reply_markup(paused: bool) -> dict[str, Any]:
+    if paused:
+        return {"inline_keyboard": [[{"text": "להפעיל את הבוט", "callback_data": "football_bot_on"}]]}
+    return {"inline_keyboard": [[{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}]]}
+
+
+def send_control_panel(paused: bool, action_done: str = "") -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    status = "כבוי" if paused else "פעיל"
+    text = action_done or f"לוח שליטה בבוט הכדורגל. מצב נוכחי: {status}."
+    state = load_control_state()
+    message_id = state.get("control_message_id")
+    payload = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": text,
+        "reply_markup": control_reply_markup(paused),
+    }
+    if message_id:
+        try:
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)})
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logging.warning("Control panel edit failed, sending one new panel: %s", exc)
+    response = telegram_api("sendMessage", payload)
+    new_message_id = response.get("result", {}).get("message_id")
+    if new_message_id:
+        save_control_state(paused, control_message_id=new_message_id)
+
+
+def answer_control_callback(callback_id: str, text: str = "") -> None:
+    telegram_api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text, "show_alert": False})
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query")
+    if not callback:
+        return
+    callback_id = str(callback.get("id", ""))
+    message = callback.get("message", {}) or {}
+    chat = message.get("chat", {}) or {}
+    chat_id = str(chat.get("id", ""))
+    data = str(callback.get("data", ""))
+    if CONTROL_CHAT_ID and chat_id != CONTROL_CHAT_ID:
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    if data == "football_bot_off":
+        save_control_state(True)
+        if callback_id:
+            answer_control_callback(callback_id, "הבוט כובה")
+        send_control_panel(True, "הפעולה בוצעה בהצלחה: הבוט כובה.")
+    elif data == "football_bot_on":
+        save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
+        if callback_id:
+            answer_control_callback(callback_id, "הבוט הופעל")
+        send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
+
+
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    offset = 0
+    try:
+        send_control_panel(is_control_paused())
+    except Exception as exc:
+        logging.warning("Control panel startup failed: %s", exc)
+    while True:
+        try:
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": 20,
+                    "allowed_updates": ["callback_query"],
+                },
+            )
+            for update in response.get("result", []):
+                offset = max(offset, int(update.get("update_id", 0)) + 1)
+                process_control_update(update)
+        except Exception as exc:
+            logging.warning("Control panel polling failed: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+
 def parse_hebcal_datetime(value: str) -> datetime | None:
     if not value:
         return None
@@ -1682,7 +1512,6 @@ def remove_credit_handles(text: str) -> str:
     text = text or ""
     text = re.sub(r"(?im)^\s*(?:presented|sponsored|brought to you)\s+by\s+.+$", "", text)
     text = re.sub(r"(?iu)\s+(?:presented|sponsored|brought to you)\s+by\s+[A-Za-z0-9 ._-]+[.!?]?\s*$", "", text)
-    text = re.sub(r"(?iu)\s+NBA\s+(?:presented|sponsored)\s+by\s+[A-Za-z0-9 ._-]+[.!?]?\s*$", "", text)
     text = re.sub(r"(?iu)\s+(?:מוצג על ידי|בחסות|פרזנטד ביי)\s+[A-Za-zא-ת0-9 ._-]+[.!?]?\s*$", "", text)
     text = re.sub(
         r"(?<!\w)@[A-Za-z0-9_]*(?:FC|CF|TV|News|Sport|Sports|Calcio|Official|Media)[A-Za-z0-9_]*\b",
@@ -1777,6 +1606,31 @@ def remove_israel_time_additions(text: str) -> str:
     return text.strip()
 
 
+def final_visual_cleanup(text: str) -> str:
+    text = text or ""
+    invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
+    georgia_flag = "\U0001F1EC\U0001F1EA"
+    for code, flag in COUNTRY_CODE_FLAGS.items():
+        text = re.sub(rf"(?<![A-Za-z]){invisible}{code[0]}{invisible}[\s._-]*{invisible}{code[1]}{invisible}(?![A-Za-z])", flag, text)
+    text = re.sub(rf"(?<![A-Za-z]){invisible}G{invisible}[\s._-]*{invisible}E{invisible}(?![A-Za-z])", georgia_flag, text)
+    text = re.sub(rf"(?i)(?:\bGeorgia\b|\bGeorgian\b|גאורגיה|גיאורגיה|גרוזיה)\s*(?:flag|דגל)?\s*[:：-]?\s*{invisible}GE{invisible}\b", georgia_flag, text)
+    text = re.sub(rf"{georgia_flag}(?:\s*GE\b)+", georgia_flag, text)
+    text = re.sub(rf"(?:\bGE\s*)+{georgia_flag}", georgia_flag, text)
+    text = re.sub(rf"{georgia_flag}(?:\s*{georgia_flag})+", georgia_flag, text)
+    text = re.sub(rf"{georgia_flag}(?:\s*[\U0001F535\U0001F534\u26aa\u26ab]){{1,6}}", georgia_flag, text)
+    text = re.sub(rf"(?:[\U0001F535\U0001F534\u26aa\u26ab]\s*){{1,6}}{georgia_flag}", georgia_flag, text)
+    text = re.sub(r"\b(?:חבצ'ה|חביציה|חביצ׳ה|חביצה)\b", "חביצ'ה קווארצחליה", text)
+    text = re.sub(r"\b(?:קווארה|קווארא|קווארצ׳חליה|קווארצחלייה)\b", "קווארצחליה", text)
+    link_markers = r"(?:\U0001F447|\u2b07\ufe0f?|\U0001F53D|\u2198\ufe0f?|\u2935\ufe0f?|\u2193)"
+    text = re.sub(rf"(?m)^\s*(?:{link_markers}\s*)+$", "", text)
+    text = re.sub(rf"\s*(?:{link_markers}\s*)+(?=$|\n)", "", text)
+    text = re.sub(rf"(?m)^\s*(?:{link_markers}\s*)+", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n+ *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def clean_before_translation(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
@@ -1854,8 +1708,6 @@ GEMINI_COOLDOWN_IS_QUOTA = False
 GEMINI_KEY_COOLDOWNS: dict[str, float] = {}
 GEMINI_NEXT_KEY_INDEX = 0
 GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
-TELEGRAM_SEND_LOCK = Lock()
-LAST_TELEGRAM_POST_SENT_AT = 0.0
 
 
 def translation_cache_key(text: str) -> str:
@@ -1955,29 +1807,35 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
     glossary = relevant_name_glossary(text)
     glossary_block = f"\nKnown names glossary. Use these exact Hebrew names when relevant:\n{glossary}\n" if glossary else ""
     prompt = (
-        "You are a senior Hebrew basketball-news editor.\n"
-        "Rewrite this X/Twitter NBA / basketball post as a polished Hebrew Telegram news update.\n"
+        "You are a senior Hebrew sports-news editor.\n"
+        "Rewrite this X/Twitter football post as a polished Hebrew Telegram news update.\n"
         "Use the full context and meaning. Do not translate word by word and do not preserve awkward original order.\n"
         "Rules:\n"
         "- Return only the final Hebrew post text, ready to publish.\n"
         "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
         "- Remove all URLs, website domains and link text.\n"
-        "- For @handles: if it is a real player, team, reporter or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
-        "- For hashtags: turn meaningful basketball hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
-        "- Before returning, verify every player, coach and team name against basketball context. Fix malformed transliterations and accents. Do not invent names.\n"
+        "- For @handles: if it is a real player, club, journalist or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
+        "- For hashtags: turn meaningful football hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
+        "- Before returning, verify every player, coach and club name against football context. Fix malformed transliterations and accents. Do not invent names.\n"
+        "- For famous players with nicknames or partial names, expand to the correct common full Hebrew name when the identity is clear. Example: Khvicha/Kvaratskhelia should be חביצ'ה קווארצחליה, not a shortened broken name.\n"
         "- If a name is uncertain, keep the clean original name instead of producing broken Hebrew.\n"
-        "- Never replace a club/team with a different club/team that is not explicitly in the original post. If a team is not named, do not invent one.\n"
-        "- Preserve the original news facts exactly: teams, players, destinations, scores, dates and competitions must match the source post.\n"
-        "- If the post mentions a role or move without naming the team in that phrase, do not add a team name by assumption.\n"
-        "- Convert important team @handles such as @okcthunder into the team name in Hebrew. Remove handles only when they are just credits or promotion.\n"
+        "- Never replace a club/team with a different club/team that is not explicitly in the original post. If Real Madrid appears, do not change it to Real Sociedad; if a club is not named, do not invent one.\n"
+        "- Preserve the original news facts exactly: clubs, teams, player names, destinations, scores, dates and competitions must match the source post.\n"
+        "- Preserve tense and time exactly. Do not turn past into future, future into past, or change any year/date/time such as 2026 into another year.\n"
+        "- Treat facts as locked data: names, clubs, years, numbers, scorelines and dates may be translated but never corrected, guessed or rewritten into different facts.\n"
+        "- If the post mentions a role such as 'next manager/coach' without naming the club in that phrase, do not add a club name by assumption.\n"
+        "- Convert important club/player @handles into natural Hebrew names. Remove handles only when they are just credits or promotion.\n"
         "- Remove sponsor lines such as 'presented by', 'sponsored by', broadcasts, TV/network credits and app promotions.\n"
         "- Do not convert times to Israel time and never add the words 'שעון ישראל'. Keep original time-zone wording only if it is essential.\n"
         "- If the post is mostly a video caption, write one clean Hebrew sentence that explains the actual clip.\n"
+        "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
         "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
-        "- Keep useful numbers, stats, years, dates, emojis and line breaks.\n"
+        "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
+        "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
+        "- If a two-letter country code is used as a flag marker, output the correct flag emoji instead of the letters.\n"
+        "- Remove down arrows or pointing-down emojis when they only pointed to a removed link or quoted post.\n"
         "- Never leave raw @handles, random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
-        "- Use common Hebrew basketball terms: טרייד, בחירת דראפט, שחקן חופשי, פלייאוף, ריבאונדים, אסיסטים.\n"
         "- If the post contains only a vague teaser/link/promo and no real news, return an empty string.\n"
         "- Do not explain anything.\n"
         f"{glossary_block}\n"
@@ -2059,15 +1917,14 @@ def final_hebrew_polish(text: str) -> str:
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
     text = convert_hashtags_to_text(text)
-    for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, BASKETBALL_TERMS, HEBREW_FINAL_FIXES):
+    for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, FOOTBALL_TERMS, HEBREW_FINAL_FIXES):
         text = apply_phrase_replacements(text, replacements)
+    text = re.sub(r"(?<![A-Za-z])GE(?![A-Za-z])", "🇬🇪", text)
     for english, hebrew in STAT_REPLACEMENTS.items():
         text = re.sub(rf"\b(\d+)\s*{re.escape(english)}\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
         text = re.sub(rf"\b{re.escape(english)}\s*(\d+)\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
     text = transliterate_latin_names(text)
     text = remove_external_links(text)
-    text = re.sub(r"\b(\d+(?:\.\d+)?)\s+רחובות\b", r"\1 חסימות", text)
-    text = re.sub(r"\bרחובות\s+(\d+(?:\.\d+)?)\b", r"\1 חסימות", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"([א-ת])\s+-\s+([א-ת])", r"\1-\2", text)
     text = re.sub(r"\b(\d+)\s*-\s*(\d+)\b", r"\1-\2", text)
@@ -2077,6 +1934,7 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_untranslated_tail_tokens(text)
     text = remove_junk_tail_lines(text)
     text = remove_israel_time_additions(text)
+    text = final_visual_cleanup(text)
     return text.strip()
 
 
@@ -2095,6 +1953,20 @@ def translation_contradicts_source(original: str, translated: str) -> bool:
         wrong_in_translation = wrong_he in translated_norm or wrong_en.lower() in translated_norm.lower()
         if source_in_original and not wrong_in_original and wrong_in_translation:
             return True
+    return False
+
+
+def translation_changes_locked_numbers(original: str, translated: str) -> bool:
+    original_years = set(re.findall(r"\b(?:19|20)\d{2}\b", original or ""))
+    translated_years = set(re.findall(r"\b(?:19|20)\d{2}\b", translated or ""))
+    if translated_years - original_years:
+        return True
+
+    original_scores = set(re.findall(r"\b\d+\s*[-:]\s*\d+\b", original or ""))
+    translated_scores = set(re.findall(r"\b\d+\s*[-:]\s*\d+\b", translated or ""))
+    if translated_scores - original_scores:
+        return True
+
     return False
 
 
@@ -2126,15 +1998,15 @@ def translate_text(text: str) -> str:
     cleaned = clean_before_translation(text)
     if not ai_text and not cleaned:
         return ""
-    prepared = apply_phrase_replacements(cleaned, BASKETBALL_TERMS)
+    prepared = apply_phrase_replacements(cleaned, FOOTBALL_TERMS)
     prepared = apply_phrase_replacements(prepared, TEAM_REPLACEMENTS)
     prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
     gemini_key = translation_cache_key(ai_text or prepared)
     fallback_key = hashlib.sha256(f"fallback\n{prepared}".encode("utf-8")).hexdigest()
     if GEMINI_API_KEYS and gemini_key in TRANSLATION_CACHE:
-        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key])
+        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key]))
     if not GEMINI_API_KEYS and fallback_key in TRANSLATION_CACHE:
-        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
+        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key]))
 
     if GEMINI_API_KEYS and ai_text:
         last_error: Exception | None = None
@@ -2142,9 +2014,11 @@ def translate_text(text: str) -> str:
             try:
                 with GEMINI_TRANSLATION_SEMAPHORE:
                     polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
-                polished = preserve_original_emojis(ai_text, polished)
+                polished = final_visual_cleanup(preserve_original_emojis(ai_text, polished))
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
+                if translation_changes_locked_numbers(ai_text, polished):
+                    raise RuntimeError("Gemini translation changed locked numbers or years")
                 if polished:
                     TRANSLATION_CACHE[gemini_key] = polished
                     return polished
@@ -2163,7 +2037,7 @@ def translate_text(text: str) -> str:
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
     if fallback_key in TRANSLATION_CACHE:
-        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
+        return final_visual_cleanup(preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key]))
 
     if not GEMINI_API_KEYS:
         logging.error("⛔ אין מפתח ג'מיני מוגדר. הפוסט לא יישלח בלי תרגום ג'מיני.")
@@ -2176,7 +2050,7 @@ def translate_text(text: str) -> str:
                 if latin_ratio(translated) > 0.45:
                     translated = translate_in_sentences(source_text)
                 polished = final_hebrew_polish(translated)
-                polished = preserve_original_emojis(source_text, polished)
+                polished = final_visual_cleanup(preserve_original_emojis(source_text, polished))
                 if polished and latin_ratio(polished) <= 0.30:
                     TRANSLATION_CACHE[fallback_key] = polished
                     return polished
@@ -2184,7 +2058,7 @@ def translate_text(text: str) -> str:
                 continue
 
     fallback = final_hebrew_polish(prepared)
-    fallback = preserve_original_emojis(ai_text or text, fallback)
+    fallback = final_visual_cleanup(preserve_original_emojis(ai_text or text, fallback))
     TRANSLATION_CACHE[fallback_key] = fallback
     return fallback
 
@@ -2212,7 +2086,6 @@ def normalize_identity(text: str) -> str:
     text = clean_before_translation(text)
     text = apply_phrase_replacements(text, HANDLE_REPLACEMENTS)
     text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
-    text = re.sub(r"שאמש", "שאמס", text)
     text = re.sub(r"[^A-Za-z0-9א-ת]+", "", text).lower()
     return text
 
@@ -2250,6 +2123,7 @@ def translate_quoted_text(text: str) -> str:
     translated = translate_text(cleaned)
     if not translated:
         return cleaned
+    # If translation clearly failed, keep the original quote in English/its source language.
     if latin_ratio(translated) > 0.45:
         return cleaned
     return translated
@@ -2268,6 +2142,7 @@ def tidy_translated_text(text: str) -> str:
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = remove_junk_tail_lines(text)
+    text = final_visual_cleanup(text)
     return text.strip()
 
 
@@ -2281,22 +2156,73 @@ def rtl(text: str) -> str:
     return "\n".join(f"{RTL_MARK}{line}" if line.strip() else line for line in text.splitlines())
 
 
-def telegram_api(method: str, payload: dict[str, Any]) -> None:
+def telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload)
     if not response.get("ok"):
         raise RuntimeError(f"Telegram error: {response}")
+    return response
 
 
-def wait_for_telegram_spacing() -> None:
-    global LAST_TELEGRAM_POST_SENT_AT
-    if MIN_SECONDS_BETWEEN_TELEGRAM_POSTS <= 0:
-        return
-    with TELEGRAM_SEND_LOCK:
-        now = time.time()
-        wait_seconds = LAST_TELEGRAM_POST_SENT_AT + MIN_SECONDS_BETWEEN_TELEGRAM_POSTS - now
-        if wait_seconds > 0:
-            time.sleep(wait_seconds)
-        LAST_TELEGRAM_POST_SENT_AT = time.time()
+def telegram_broadcast(method: str, payload: dict[str, Any]) -> None:
+    sent_count = 0
+    errors: list[str] = []
+    for chat_id in TELEGRAM_CHAT_IDS:
+        chat_payload = dict(payload)
+        chat_payload["chat_id"] = chat_id
+        try:
+            telegram_api(method, chat_payload)
+            sent_count += 1
+            logging.info("טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
+        except Exception as exc:
+            errors.append(f"{chat_id}: {exc}")
+            logging.error("טלגרם: %s נכשל לערוץ %s, ממשיך לערוצים האחרים: %s", method, chat_id, exc)
+    if sent_count == 0:
+        raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
+
+
+def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], fallback_text: str) -> None:
+    sent_count = 0
+    errors: list[str] = []
+    for chat_id in TELEGRAM_CHAT_IDS:
+        chat_payload = dict(payload)
+        chat_payload["chat_id"] = chat_id
+        try:
+            telegram_api(method, chat_payload)
+            sent_count += 1
+            logging.info("טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
+            continue
+        except Exception as exc:
+            errors.append(f"{chat_id} {method}: {exc}")
+            logging.error("טלגרם: %s נכשל לערוץ %s. מנסה לשלוח טקסט רגיל לאותו ערוץ: %s", method, chat_id, exc)
+
+        try:
+            telegram_api(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": trim(fallback_text, 4096),
+                    "disable_web_page_preview": True,
+                    "parse_mode": "HTML",
+                },
+            )
+            sent_count += 1
+            logging.info("טלגרם: fallback טקסט נשלח בהצלחה לערוץ %s", chat_id)
+        except Exception as fallback_exc:
+            errors.append(f"{chat_id} fallback: {fallback_exc}")
+            logging.error(
+                "טלגרם: גם fallback טקסט נכשל לערוץ %s. אם זה הערוץ %s, צריך לבדוק שהבוט אדמין עם הרשאה לפרסם הודעות: %s",
+                chat_id,
+                chat_id,
+                fallback_exc,
+            )
+            if "need administrator rights" in str(fallback_exc):
+                logging.error(
+                    "בדיקת הרשאות: טלגרם אומר שהבוט לא יכול לפרסם בערוץ %s. צריך לפתוח בערוץ: Administrators -> הבוט -> להפעיל Post Messages/פרסום הודעות.",
+                    chat_id,
+                )
+
+    if sent_count == 0:
+        raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
 
 
 def trim(text: str, limit: int) -> str:
@@ -2333,6 +2259,7 @@ def build_message(
     safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
     video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
+    signature = f'<a href="{html.escape(SIGNATURE_LINK)}">{html.escape(rtl(SIGNATURE_TEXT))}</a>'
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
 
@@ -2347,6 +2274,8 @@ def build_message(
         parts.append(safe_quoted_body)
         if include_video_link and post.link and post.quoted_has_video:
             parts.extend(["", video_label])
+
+    parts.extend(["", signature])
 
     return "\n".join(parts)
 
@@ -2384,20 +2313,18 @@ def send_post(post: Post) -> dict[str, Any]:
     images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
     timings["prepare_seconds"] = time.perf_counter() - prepare_started
 
-    wait_for_telegram_spacing()
-
     if video_url:
         try:
             send_started = time.perf_counter()
-            telegram_api(
+            telegram_broadcast_with_text_fallback(
                 "sendVideo",
                 {
-                    "chat_id": TELEGRAM_CHAT_ID,
                     "video": video_url,
                     "caption": trim_keep_ending(message, 1024),
                     "parse_mode": "HTML",
                     "supports_streaming": True,
                 },
+                message,
             )
             timings["send_seconds"] = time.perf_counter() - send_started
             timings["total_seconds"] = time.perf_counter() - started
@@ -2425,7 +2352,7 @@ def send_post(post: Post) -> dict[str, Any]:
             media.append(item)
         try:
             send_started = time.perf_counter()
-            telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
+            telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message)
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
@@ -2436,10 +2363,9 @@ def send_post(post: Post) -> dict[str, Any]:
             return timings
 
     send_started = time.perf_counter()
-    telegram_api(
+    telegram_broadcast(
         "sendMessage",
         {
-            "chat_id": TELEGRAM_CHAT_ID,
             "text": trim(message, 4096),
             "disable_web_page_preview": True,
             "parse_mode": "HTML",
@@ -2456,10 +2382,9 @@ def send_video_after_message(video_url: str) -> None:
     if not (SEND_VIDEO_FILES and video_url):
         return
     try:
-        telegram_api(
+        telegram_broadcast(
             "sendVideo",
             {
-                "chat_id": TELEGRAM_CHAT_ID,
                 "video": video_url,
                 "supports_streaming": True,
             },
@@ -2467,10 +2392,9 @@ def send_video_after_message(video_url: str) -> None:
     except Exception as exc:
         logging.warning("Post text was sent, but Telegram could not attach video: %s", exc)
         try:
-            telegram_api(
+            telegram_broadcast(
                 "sendMessage",
                 {
-                    "chat_id": TELEGRAM_CHAT_ID,
                     "text": f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>\n{html.escape(video_url)}",
                     "disable_web_page_preview": False,
                     "parse_mode": "HTML",
@@ -2506,13 +2430,13 @@ def save_state(state: dict[str, list[str]]) -> None:
 def validate_settings() -> None:
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
         raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
-    if not TELEGRAM_CHAT_ID:
-        raise ValueError("Put your Telegram group chat ID in TELEGRAM_CHAT_ID")
+    if not TELEGRAM_CHAT_IDS:
+        raise ValueError("Put at least one Telegram group chat ID in TELEGRAM_CHAT_IDS")
     if not X_ACCOUNTS:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
 
-def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
+def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
     cycle_started = time.perf_counter()
     first_run = not any(state.values())
     sent = 0
@@ -2520,7 +2444,6 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
     queued_ids: set[str] = set()
-    spam_limit_logged = False
 
     def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
@@ -2560,14 +2483,12 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
                     state[username] = list(seen)[-500:]
                     continue
 
-                posts_to_consider = new_posts[: min(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK, MAX_POSTS_SENT_PER_CYCLE)]
-                for post in reversed(posts_to_consider):
-                    if len(send_futures) >= MAX_POSTS_SENT_PER_CYCLE:
-                        if not spam_limit_logged:
-                            logging.info("מנגנון אנטי-הצפה: נשמר קצב רגוע, שאר הפוסטים יישארו לניסיון בסבב הבא.")
-                            spam_limit_logged = True
-                        break
-                    if is_too_old_post(post):
+                for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
+                    if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
+                        seen.update(post.dedupe_ids)
+                        logging.info("דילוג: הבוט הופעל מחדש, ופוסט ישן מ-10 דקות לא נשלח: %s", post.link)
+                        continue
+                    if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
                         logging.info("דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
                         continue
@@ -2621,17 +2542,18 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
-    print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
+    print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
+    if CONTROL_CHAT_ID:
+        Thread(target=control_loop, daemon=True).start()
 
     if SEND_STARTUP_STATUS_MESSAGE:
         try:
-            telegram_api(
+            telegram_broadcast(
                 "sendMessage",
                 {
-                    "chat_id": TELEGRAM_CHAT_ID,
-                    "text": "בוט ה-NBA הופעל. בודק עדכונים...",
+                    "text": "בוט הכדורגל הופעל. בודק עדכונים...",
                     "disable_web_page_preview": True,
                 },
             )
@@ -2640,9 +2562,19 @@ def main() -> None:
 
     startup_cycle = True
     skipped_for_shabbat = False
+    paused_logged = False
     while True:
         cycle_started = time.time()
         try:
+            control_state = load_control_state()
+            if bool(control_state.get("paused", False)):
+                if not paused_logged:
+                    logging.info("בוט הכדורגל כבוי מלוח השליטה. לא סורק ולא שולח.")
+                    paused_logged = True
+                time.sleep(current_check_every_seconds())
+                continue
+            paused_logged = False
+
             if is_shabbat_now():
                 if not skipped_for_shabbat:
                     logging.info("מצב שבת פעיל: הבוט לא סורק, לא שולח ולא שומר מצב")
@@ -2661,9 +2593,12 @@ def main() -> None:
                 time.sleep(current_check_every_seconds())
                 continue
 
-            sent = run_once(state, startup_cycle=startup_cycle)
+            resume_min_ts = float(control_state.get("resume_min_ts", 0.0) or 0.0)
+            sent = run_once(state, startup_cycle=startup_cycle, min_published_ts=resume_min_ts)
             startup_cycle = False
             save_state(state)
+            if resume_min_ts:
+                save_control_state(False, resume_min_ts=0.0)
             save_translation_cache(TRANSLATION_CACHE)
             if sent:
                 print(f"Sent {sent} new post(s).", flush=True)
