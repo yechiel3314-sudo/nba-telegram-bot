@@ -50,7 +50,10 @@ TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
     "8480434397:AAF8ay6JxuYsf7ytVOLG73bVJiJQHq8CMx4",
 )
-TELEGRAM_CHAT_ID = "-1002272784260"
+TELEGRAM_CHAT_IDS = [
+    "-1002272784260",
+    "-1003756461493",
+]
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -149,6 +152,8 @@ SEND_VIDEO_FILES = True
 STATE_FILE = "football_x_to_telegram_state.json"
 TRANSLATION_CACHE_FILE = "football_translation_cache.json"
 RTL_MARK = "\u200f"
+SIGNATURE_LINK = "https://t.me/neto_sport"
+SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
@@ -1899,6 +1904,13 @@ def telegram_api(method: str, payload: dict[str, Any]) -> None:
         raise RuntimeError(f"Telegram error: {response}")
 
 
+def telegram_broadcast(method: str, payload: dict[str, Any]) -> None:
+    for chat_id in TELEGRAM_CHAT_IDS:
+        chat_payload = dict(payload)
+        chat_payload["chat_id"] = chat_id
+        telegram_api(method, chat_payload)
+
+
 def trim(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -1935,6 +1947,7 @@ def build_message(
     video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
     post_link_label = f'<a href="{safe_link}">{html.escape(rtl("קישור לפוסט"))}</a>'
+    signature = f'<a href="{html.escape(SIGNATURE_LINK)}">{html.escape(rtl(SIGNATURE_TEXT))}</a>'
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
 
@@ -1952,6 +1965,8 @@ def build_message(
 
     if post.link:
         parts.extend(["", "", post_link_label])
+
+    parts.extend(["", signature])
 
     return "\n".join(parts)
 
@@ -1991,10 +2006,9 @@ def send_post(post: Post) -> dict[str, Any]:
     if video_url:
         try:
             send_started = time.perf_counter()
-            telegram_api(
+            telegram_broadcast(
                 "sendVideo",
                 {
-                    "chat_id": TELEGRAM_CHAT_ID,
                     "video": video_url,
                     "caption": trim_keep_ending(message, 1024),
                     "parse_mode": "HTML",
@@ -2027,7 +2041,7 @@ def send_post(post: Post) -> dict[str, Any]:
             media.append(item)
         try:
             send_started = time.perf_counter()
-            telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
+            telegram_broadcast("sendMediaGroup", {"media": media})
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
@@ -2038,10 +2052,9 @@ def send_post(post: Post) -> dict[str, Any]:
             return timings
 
     send_started = time.perf_counter()
-    telegram_api(
+    telegram_broadcast(
         "sendMessage",
         {
-            "chat_id": TELEGRAM_CHAT_ID,
             "text": trim(message, 4096),
             "disable_web_page_preview": True,
             "parse_mode": "HTML",
@@ -2058,10 +2071,9 @@ def send_video_after_message(video_url: str) -> None:
     if not (SEND_VIDEO_FILES and video_url):
         return
     try:
-        telegram_api(
+        telegram_broadcast(
             "sendVideo",
             {
-                "chat_id": TELEGRAM_CHAT_ID,
                 "video": video_url,
                 "supports_streaming": True,
             },
@@ -2069,10 +2081,9 @@ def send_video_after_message(video_url: str) -> None:
     except Exception as exc:
         logging.warning("Post text was sent, but Telegram could not attach video: %s", exc)
         try:
-            telegram_api(
+            telegram_broadcast(
                 "sendMessage",
                 {
-                    "chat_id": TELEGRAM_CHAT_ID,
                     "text": f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>\n{html.escape(video_url)}",
                     "disable_web_page_preview": False,
                     "parse_mode": "HTML",
@@ -2108,8 +2119,8 @@ def save_state(state: dict[str, list[str]]) -> None:
 def validate_settings() -> None:
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
         raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
-    if not TELEGRAM_CHAT_ID:
-        raise ValueError("Put your Telegram group chat ID in TELEGRAM_CHAT_ID")
+    if not TELEGRAM_CHAT_IDS:
+        raise ValueError("Put at least one Telegram group chat ID in TELEGRAM_CHAT_IDS")
     if not X_ACCOUNTS:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
@@ -2206,10 +2217,9 @@ def main() -> None:
 
     if SEND_STARTUP_STATUS_MESSAGE:
         try:
-            telegram_api(
+            telegram_broadcast(
                 "sendMessage",
                 {
-                    "chat_id": TELEGRAM_CHAT_ID,
                     "text": "בוט הכדורגל הופעל. בודק עדכונים...",
                     "disable_web_page_preview": True,
                 },
