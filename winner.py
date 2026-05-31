@@ -1946,7 +1946,6 @@ def build_message(
     safe_link = html.escape(post.link)
     video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
-    post_link_label = f'<a href="{safe_link}">{html.escape(rtl("קישור לפוסט"))}</a>'
     signature = f'<a href="{html.escape(SIGNATURE_LINK)}">{html.escape(rtl(SIGNATURE_TEXT))}</a>'
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
@@ -1962,9 +1961,6 @@ def build_message(
         parts.append(safe_quoted_body)
         if include_video_link and post.link and post.quoted_has_video:
             parts.extend(["", video_label])
-
-    if post.link:
-        parts.extend(["", "", post_link_label])
 
     parts.extend(["", signature])
 
