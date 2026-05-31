@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from threading import BoundedSemaphore, Thread
+from threading import BoundedSemaphore, Lock, Thread
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -53,7 +53,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get(
 )
 TELEGRAM_CHAT_IDS = [
     "-1002272784260",
-    "-1003756461493",
 ]
 
 # Optional AI translation. Put this in Railway Variables:
@@ -1497,6 +1496,48 @@ def is_link_only_or_details_post(post: Post) -> bool:
     return False
 
 
+def is_interesting_quote_post(cleaned: str) -> bool:
+    senior_voice = re.search(
+        r"\b(president|chairman|owner|ceo|director|sporting director|manager|coach|agent)\b|"
+        r"נשיא|יו\"ר|בעלים|מנכ\"ל|מנהל מקצועי|מאמן|סוכן",
+        cleaned,
+        re.IGNORECASE,
+    )
+    important_subject = re.search(
+        r"\b(Vinicius|Mbappe|Bellingham|Yamal|Salah|Haaland|Real Madrid|Barcelona|Man United|Manchester United|"
+        r"contract|renewal|future|stay|leave|transfer|sign|club|fans)\b|"
+        r"ויניסיוס|אמבפה|בלינגהאם|ימאל|סלאח|הולאנד|ריאל מדריד|ברצלונה|מנצ'סטר יונייטד|"
+        r"חוזה|חידוש|עתיד|יישאר|יעזוב|העברה|חתימה|מועדון|אוהדים|שחקן",
+        cleaned,
+        re.IGNORECASE,
+    )
+    quoted = re.search(r"[\"“”׳״].{4,}[\"“”׳״]", cleaned)
+    return bool(quoted and senior_voice and important_subject)
+
+
+def is_stats_only_post(cleaned: str) -> bool:
+    has_stats = re.search(
+        r"\b(stats|statistics|goals|assists|appearances|apps|minutes|rebounds|blocks|steals|points|per game)\b|"
+        r"סטטיסטיקה|שערים|בישולים|הופעות|דקות|נקודות|ריבאונדים|חסימות|חטיפות",
+        cleaned,
+        re.IGNORECASE,
+    )
+    has_news_context = re.search(
+        r"\bbreaking|exclusive|official|contract|renewal|transfer|deal|sign|bid|injury|record\b|"
+        r"רשמי|בלעדי|חוזה|חידוש|העברה|עסקה|חתם|הצעה|פציעה|שיא",
+        cleaned,
+        re.IGNORECASE,
+    )
+    return bool(has_stats and not has_news_context)
+
+
+def filtered_post_text_preview(post: Post, limit: int = 260) -> str:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = clean_for_ai_translation(raw_text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return trim(cleaned, limit) if cleaned else "(טקסט ריק)"
+
+
 def is_non_news_social_post(post: Post) -> bool:
     raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     cleaned = clean_for_ai_translation(raw_text)
@@ -1530,6 +1571,10 @@ def is_non_news_social_post(post: Post) -> bool:
     )
     if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in news_patterns):
         return False
+    if is_interesting_quote_post(cleaned):
+        return False
+    if is_stats_only_post(cleaned):
+        return True
     if re.search(r"[\"“”׳״].{4,}[\"“”׳״]", cleaned):
         return True
 
@@ -1796,6 +1841,7 @@ GEMINI_DISABLED_UNTIL = 0.0
 GEMINI_COOLDOWN_IS_QUOTA = False
 GEMINI_KEY_COOLDOWNS: dict[str, float] = {}
 GEMINI_NEXT_KEY_INDEX = 0
+GEMINI_KEY_LOCK = Lock()
 GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
 
 
@@ -1826,9 +1872,12 @@ def gemini_key_label(index: int) -> str:
 
 
 def gemini_key_order() -> list[tuple[int, str]]:
+    global GEMINI_NEXT_KEY_INDEX
     if not GEMINI_API_KEYS:
         return []
-    start = GEMINI_NEXT_KEY_INDEX % len(GEMINI_API_KEYS)
+    with GEMINI_KEY_LOCK:
+        start = GEMINI_NEXT_KEY_INDEX % len(GEMINI_API_KEYS)
+        GEMINI_NEXT_KEY_INDEX = (GEMINI_NEXT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
     now = time.time()
     ordered = [(index, GEMINI_API_KEYS[index]) for index in range(len(GEMINI_API_KEYS))]
     rotated = ordered[start:] + ordered[:start]
@@ -1886,7 +1935,6 @@ def mymemory_translate(text: str) -> str:
 
 
 def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
-    global GEMINI_NEXT_KEY_INDEX
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
     if respect_global_cooldown and time.time() < GEMINI_DISABLED_UNTIL:
@@ -1903,7 +1951,9 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "- Return only the final Hebrew post text, ready to publish.\n"
         "- First decide if this is a real football news update. Send only reports with concrete news: transfer, contract, injury, squad, appointment, dismissal, official announcement, negotiation, bid, match-relevant update, or a verified factual development.\n"
         "- If it is only a social/atmosphere post, quote, interview sentence, player/coach reaction, meme, congratulation, reaction, Instagram/story screenshot, personal message, vague caption, tribute, joke, opinion or image with no concrete news update, return an empty string.\n"
-        "- Interview quotes such as 'X on Y: ...', 'X said...', 'X told...' are not news unless they include a concrete factual development like an injury, signing, official decision, squad call-up, bid or contract.\n"
+        "- Interview quotes such as 'X on Y: ...', 'X said...', 'X told...' are usually not news.\n"
+        "- Keep an interview/quote only when it is genuinely newsworthy or highly relevant: club president/owner/coach/agent speaking about a star player, contract renewal, future at the club, transfer, injury, official decision, squad call-up, bid, club direction or a major sporting development.\n"
+        "- Remove ordinary statistics-only posts unless they contain a real record, official achievement or current news angle.\n"
         "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
         "- Remove all URLs, website domains and link text.\n"
@@ -1939,7 +1989,6 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
     }
     last_error: Exception | None = None
     for index, key in gemini_key_order():
-        GEMINI_NEXT_KEY_INDEX = (index + 1) % len(GEMINI_API_KEYS)
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
@@ -2589,12 +2638,15 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         continue
                     if is_link_only_or_details_post(post):
                         seen.update(post.dedupe_ids)
+                        logging.info("דילוג מסנן: קישור/פרטים בלי דיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_podcast_or_longform_post(post):
                         seen.update(post.dedupe_ids)
+                        logging.info("דילוג מסנן: פודקאסט/תוכן ארוך מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_non_news_social_post(post):
                         seen.update(post.dedupe_ids)
+                        logging.info("דילוג מסנן: פוסט לא חדשותי/סטטיסטיקה בלבד מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         logging.info("דילוג: פוסט חברתי/אווירה בלי דיווח חדשותי מ-@%s לא נשלח: %s", username, post.link)
                         continue
                     send_futures.append(send_executor.submit(send_task, (username, post, time.perf_counter() - cycle_started)))
