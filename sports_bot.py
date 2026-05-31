@@ -81,7 +81,7 @@ MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR
 GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", "8"))
 # How many keys may be tried with a real Gemini network request per single AI operation.
 # Keep this low to avoid burning quota during outages.
-GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", "1"))
+GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_LOCAL_KEY_SWEEP_SIZE)))
 
 X_ACCOUNTS = [
     "NBA",
@@ -139,11 +139,12 @@ SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
 SHABBAT_CACHE_FILE = "nba_shabbat_times_cache.json"
-CONTROL_CHAT_ID = os.environ.get("CONTROL_CHAT_ID", TELEGRAM_CHAT_ID)
-CONTROL_STATE_FILE = "nba_control_state.json"
+# NBA bot stays independent: no Telegram control panel / no shared control state.
+CONTROL_CHAT_ID = ""
+CONTROL_STATE_FILE = ""
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
-CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
+CONTROL_SEND_PANEL_ON_STARTUP = False
 MAX_PARALLEL_POST_SENDS = 3
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
@@ -2411,9 +2412,14 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
         "generationConfig": {"temperature": 0.0, "maxOutputTokens": 12},
     }
     last_error: Exception | None = None
-    for index, key in gemini_key_order_limited(1):
+    real_requests_used = 0
+    for index, key in gemini_available_keys_for_operation():
+        if real_requests_used >= 1:
+            break
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FAST_MODEL}:generateContent?key={urllib.parse.quote(key)}"
         try:
+            # One real Gemini duplicate-judge request max. Key sweep is local/free.
+            real_requests_used += 1
             data = http_post_json(url, payload, timeout=18, max_attempts=1, respect_retry_after=False)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             answer = "".join(part.get("text", "") for part in parts).strip().upper()
@@ -2579,9 +2585,14 @@ def ai_merge_parallel_posts(cluster: list[tuple[str, Post, float]]) -> str:
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.1, "maxOutputTokens": 320},
     }
-    for _index, key in gemini_key_order_limited(1):
+    real_requests_used = 0
+    for _index, key in gemini_available_keys_for_operation():
+        if real_requests_used >= 1:
+            break
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FAST_MODEL}:generateContent?key={urllib.parse.quote(key)}"
         try:
+            # One real Gemini merge request max. Key sweep is local/free.
+            real_requests_used += 1
             data = http_post_json(url, payload, timeout=22, max_attempts=1, respect_retry_after=False)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             merged = "".join(part.get("text", "") for part in parts).strip()
@@ -2926,8 +2937,20 @@ def gemini_key_order_limited(max_keys: int | None = None) -> list[tuple[int, str
     return keys[:limit]
 
 def has_gemini_key_available() -> bool:
-    # Free local check only: scans key cooldowns in memory, never calls Gemini.
+    # Free local check only: scans all configured key cooldowns in memory, never calls Gemini.
     return bool(GEMINI_API_KEYS and gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE))
+
+
+def gemini_available_keys_for_operation() -> list[tuple[int, str]]:
+    """Return every locally-available Gemini key for this operation.
+
+    This performs only an in-memory cooldown sweep over up to
+    GEMINI_LOCAL_KEY_SWEEP_SIZE keys. It does not contact Gemini and therefore
+    does not spend requests/credit. Real requests are still capped separately by
+    GEMINI_MAX_REAL_TRANSLATION_REQUESTS and the max_real_requests argument in
+    gemini_translate().
+    """
+    return gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE)
 
 
 def cool_down_gemini_key(key: str, error: Exception | None) -> None:
@@ -2979,7 +3002,7 @@ def mymemory_translate(text: str) -> str:
     return html.unescape(data.get("responseData", {}).get("translatedText", "")).strip()
 
 
-def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
+def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_requests: int = 1) -> str:
     global GEMINI_NEXT_KEY_INDEX
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
@@ -3023,13 +3046,21 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         "generationConfig": {"temperature": 0.1, "topP": 0.8},
     }
     last_error: Exception | None = None
-    for index, key in gemini_key_order():
-        GEMINI_NEXT_KEY_INDEX = (index + 1) % len(GEMINI_API_KEYS)
+    real_requests_used = 0
+    available_keys = gemini_available_keys_for_operation()
+    if not available_keys:
+        raise RuntimeError("No Gemini key is locally available")
+    for index, key in available_keys:
+        if real_requests_used >= max(1, max_real_requests):
+            break
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
         )
         try:
+            # This is the only line in this loop that spends a Gemini request.
+            # The sweep above over all 8 keys is local/cooldown-only and free.
+            real_requests_used += 1
             data = http_post_json(url, payload, timeout=8, max_attempts=1, respect_retry_after=False)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
@@ -3040,10 +3071,10 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True) -> str:
         except Exception as exc:
             last_error = exc
             cool_down_gemini_key(key, exc)
-            logging.warning("⚠️ ג'מיני נכשל עם %s, מנסה מפתח הבא. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
+            logging.warning("⚠️ ג'מיני נכשל עם %s. בדיקת שאר המפתחות היא מקומית וחינמית; בקשות אמיתיות מוגבלות. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
             continue
     log_gemini_unavailable(last_error)
-    raise RuntimeError(f"Gemini translation failed: {last_error}")
+    raise RuntimeError(f"Gemini translation failed after {real_requests_used} real request(s): {last_error}")
 
 
 def latin_ratio(text: str) -> float:
@@ -3189,8 +3220,9 @@ def translate_text(text: str) -> str:
                 break
             try:
                 with GEMINI_TRANSLATION_SEMAPHORE:
-                    real_requests_used += 1
-                    polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
+                    allowed_real_requests = max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS - real_requests_used)
+                    polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False, max_real_requests=allowed_real_requests))
+                    real_requests_used += allowed_real_requests
                 polished = preserve_original_emojis(ai_text, polished)
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
@@ -3774,9 +3806,6 @@ def main() -> None:
     print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
-    if CONTROL_CHAT_ID:
-        Thread(target=control_loop, daemon=True).start()
-
     if SEND_STARTUP_STATUS_MESSAGE:
         try:
             telegram_api(
@@ -3795,10 +3824,6 @@ def main() -> None:
     while True:
         cycle_started = time.time()
         try:
-            if is_control_paused():
-                logging.info("בוט ה-NBA כבוי דרך כפתור השליטה: לא סורק, לא מתרגם ולא שורף Gemini.")
-                time.sleep(current_check_every_seconds())
-                continue
             if is_shabbat_now():
                 if not skipped_for_shabbat:
                     logging.info("מצב שבת פעיל: הבוט לא סורק, לא שולח ולא שומר מצב")
