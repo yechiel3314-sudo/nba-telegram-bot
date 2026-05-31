@@ -1684,6 +1684,208 @@ def is_non_news_social_post(post: Post) -> bool:
     return False
 
 
+
+# ====== SMART FILTERS: FLAGS, WOMEN/WNBA, DUPLICATE NEWS ======
+RECENT_NEWS_STATE_KEY = "__recent_news_events__"
+RECENT_NEWS_WINDOW_SECONDS = 2 * 60 * 60
+
+SOURCE_PRIORITY = {
+    "FabrizioRomano": 100,
+    "ShamsCharania": 100,
+    "David_Ornstein": 95,
+    "DiMarzio": 90,
+    "JacobsBen": 80,
+    "NicoSchira": 75,
+    "TheDunkCentral": 70,
+    "NBACentral": 70,
+    "LegionHoops": 65,
+    "UnderdogNBA": 60,
+}
+
+WOMEN_SPORT_BLOCK_PATTERNS = (
+    r"\bwomen(?:'s)?\b",
+    r"\bwomens\b",
+    r"\bfemale\b",
+    r"\bgirls?\b",
+    r"\bWSL\b",
+    r"\bUWCL\b",
+    r"\bNWSL\b",
+    r"\bLiga\s+F\b",
+    r"\bBarclays\s+Women",
+    r"\bLionesses\b",
+    r"\bUSWNT\b",
+    r"\bMatildas\b",
+    r"\bFrauen\b",
+    r"\bFemen[íi]\b",
+    r"\bF[ée]minine\b",
+    r"\bD1\s+Arkema\b",
+    r"\bWNBA\b",
+    r"\bCaitlin\s+Clark\b",
+    r"\bAngel\s+Reese\b",
+    r"\bA'ja\s+Wilson\b",
+    r"\bBreanna\s+Stewart\b",
+    r"\bSabrina\s+Ionescu\b",
+    r"כדורגל\s+נשים",
+    r"נשים",
+    r"שחקנית",
+    r"שחקניות",
+    r"מאמנת",
+    r"ליגת\s+הנשים",
+    r"נבחרת\s+הנשים",
+    r"WNBA",
+)
+
+NEWS_DUP_STOPWORDS = {
+    "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "from", "as", "by", "at", "is", "are", "was", "were", "be", "been", "being",
+    "this", "that", "these", "those", "it", "he", "she", "they", "we", "you", "his", "her", "their", "our", "your",
+    "according", "sources", "source", "reported", "report", "reports", "exclusive", "breaking", "official", "confirmed", "understand", "now", "today",
+    "לפי", "מקורות", "דיווח", "דיווחים", "רשמי", "בלעדי", "היום", "כעת", "לאחר", "כפי", "כך", "כי", "של", "את", "עם", "על", "אל", "הוא", "היא", "הם", "הן", "זה", "זו", "הזה", "הזו",
+}
+
+NEWS_DUP_ACTION_WORDS = {
+    "leave", "leaves", "leaving", "left", "exit", "exits", "depart", "departs", "free", "agent", "contract", "extend", "extension", "sign", "signs", "signed", "join", "joins", "joined",
+    "transfer", "trade", "traded", "waive", "waived", "injury", "injured", "out", "sacked", "appointed", "agreed", "agreement", "deal", "announce", "announced", "confirmed",
+    "עוזב", "יעזוב", "עזב", "שוחרר", "חופשי", "חוזה", "חתם", "יחתום", "מצטרף", "עבר", "יעבור", "העברה", "טרייד", "פציעה", "נפצע", "לא", "ישחק", "מונה", "פוטר", "סוכם", "אישרה", "אישר", "הודיעה", "פורסם",
+}
+
+
+def strip_country_code_leftovers_near_flags(text: str) -> str:
+    """Keep the flag emoji and remove its duplicated ISO letters around it."""
+    text = text or ""
+    invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
+    separator = r"[\s\u00a0._/\-־]*"
+    if "COUNTRY_CODE_FLAGS" not in globals():
+        return text
+    for code, flag in COUNTRY_CODE_FLAGS.items():
+        first, second = re.escape(code[0]), re.escape(code[1])
+        code_pattern = rf"{invisible}{first}{invisible}{separator}{invisible}{second}{invisible}"
+        text = re.sub(rf"(?<![A-Za-z]){code_pattern}\s*{re.escape(flag)}", flag, text)
+        text = re.sub(rf"{re.escape(flag)}\s*{code_pattern}(?![A-Za-z])", flag, text)
+        text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
+    return text
+
+
+def is_women_or_wnba_post(post: Post) -> bool:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = remove_external_links(raw_text)
+    return any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in WOMEN_SPORT_BLOCK_PATTERNS)
+
+
+def _news_duplicate_clean_text(post: Post) -> str:
+    text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    text = normalize_country_flags(text) if "normalize_country_flags" in globals() else text
+    text = remove_external_links(text)
+    text = convert_hashtags_to_text(text)
+    text = apply_handle_replacements(text)
+    text = apply_phrase_replacements(text, TEAM_REPLACEMENTS)
+    text = apply_phrase_replacements(text, PLAYER_REPLACEMENTS)
+    text = re.sub(r"(?<!\w)@[A-Za-z0-9_]+", " ", text)
+    text = re.sub(r"[🚨✅🔴⚪🟢🔵🟡⚫⭐️📌📍🗣🔥💣🏆🥇📈✍️]", " ", text)
+    text = re.sub(r"[^A-Za-z0-9א-ת'׳\- ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    return text
+
+
+def _news_duplicate_tokens(text: str) -> set[str]:
+    raw_tokens = re.findall(r"[A-Za-zא-ת][A-Za-zא-ת'׳\-]{2,}|\d+", text or "")
+    tokens: set[str] = set()
+    for token in raw_tokens:
+        token = token.strip("-'׳").lower()
+        if len(token) < 3 or token in NEWS_DUP_STOPWORDS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def news_event_signature(post: Post) -> dict[str, Any]:
+    text = _news_duplicate_clean_text(post)
+    tokens = _news_duplicate_tokens(text)
+    action_tokens = tokens & NEWS_DUP_ACTION_WORDS
+    entity_tokens: set[str] = set()
+    for source, target in {**TEAM_REPLACEMENTS, **PLAYER_REPLACEMENTS, **HANDLE_REPLACEMENTS}.items():
+        for value in (source, target):
+            if value and re.search(r"(?<!\w)" + re.escape(value.lower()) + r"(?!\w)", text):
+                entity_tokens.update(_news_duplicate_tokens(value.lower()))
+    # Add repeated proper-name style tokens from the normalized text as a fallback.
+    for token in tokens:
+        if len(token) >= 5 and token not in NEWS_DUP_ACTION_WORDS:
+            entity_tokens.add(token)
+    return {
+        "text": text,
+        "tokens": sorted(tokens),
+        "entities": sorted(entity_tokens),
+        "actions": sorted(action_tokens),
+    }
+
+
+def _event_similarity(current: dict[str, Any], previous: dict[str, Any]) -> float:
+    current_tokens = set(current.get("tokens", []))
+    previous_tokens = set(previous.get("tokens", []))
+    if not current_tokens or not previous_tokens:
+        return 0.0
+    token_jaccard = len(current_tokens & previous_tokens) / max(1, len(current_tokens | previous_tokens))
+    current_entities = set(current.get("entities", []))
+    previous_entities = set(previous.get("entities", []))
+    entity_overlap = len(current_entities & previous_entities)
+    current_actions = set(current.get("actions", []))
+    previous_actions = set(previous.get("actions", []))
+    action_overlap = len(current_actions & previous_actions)
+    sequence_score = SequenceMatcher(None, " ".join(sorted(current_tokens)), " ".join(sorted(previous_tokens))).ratio()
+    score = max(token_jaccard, sequence_score * 0.75)
+    if entity_overlap >= 2 and (action_overlap >= 1 or token_jaccard >= 0.28):
+        score = max(score, 0.82)
+    elif entity_overlap >= 3 and token_jaccard >= 0.22:
+        score = max(score, 0.78)
+    return score
+
+
+def cleanup_recent_news_events(state: dict[str, Any], now: float | None = None) -> list[dict[str, Any]]:
+    now = now or time.time()
+    recent_raw = state.get(RECENT_NEWS_STATE_KEY, [])
+    if not isinstance(recent_raw, list):
+        recent_raw = []
+    recent: list[dict[str, Any]] = []
+    for item in recent_raw:
+        if isinstance(item, dict) and now - float(item.get("ts", 0) or 0) <= RECENT_NEWS_WINDOW_SECONDS:
+            recent.append(item)
+    state[RECENT_NEWS_STATE_KEY] = recent[-250:]
+    return state[RECENT_NEWS_STATE_KEY]
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    current = news_event_signature(post)
+    for item in reversed(cleanup_recent_news_events(state)):
+        previous = item.get("signature", {}) if isinstance(item, dict) else {}
+        if not isinstance(previous, dict):
+            continue
+        if _event_similarity(current, previous) >= 0.78:
+            return item
+    return None
+
+
+def remember_recent_news_event(post: Post, state: dict[str, Any]) -> None:
+    recent = cleanup_recent_news_events(state)
+    recent.append(
+        {
+            "ts": time.time(),
+            "username": post.username,
+            "priority": SOURCE_PRIORITY.get(post.username, 0),
+            "link": post.link,
+            "signature": news_event_signature(post),
+        }
+    )
+    state[RECENT_NEWS_STATE_KEY] = recent[-250:]
+
+
+def sort_candidate_posts_for_priority(candidates: list[tuple[str, Post, float]]) -> list[tuple[str, Post, float]]:
+    return sorted(
+        candidates,
+        key=lambda item: (
+            -SOURCE_PRIORITY.get(item[0], 0),
+            -(item[1].published_ts or 0),
+        ),
+    )
+
 def apply_phrase_replacements(text: str, replacements: dict[str, str]) -> str:
     for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         if re.fullmatch(r"[A-Za-z0-9 ._'’:-]+", source):
@@ -1827,7 +2029,7 @@ def final_visual_cleanup(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n+ *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return strip_country_code_leftovers_near_flags(text).strip()
 
 
 def clean_before_translation(text: str) -> str:
@@ -2661,6 +2863,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
     queued_ids: set[str] = set()
+    global_candidate_posts: list[tuple[str, Post, float]] = []
 
     def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
@@ -2700,6 +2903,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     state[username] = list(seen)[-500:]
                     continue
 
+                candidate_posts: list[tuple[str, Post, float]] = []
                 for post in reversed(new_posts[:MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK]):
                     if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
                         seen.update(post.dedupe_ids)
@@ -2711,6 +2915,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         continue
                     if any(post_id in queued_ids for post_id in post.dedupe_ids):
                         logging.info("דילוג: כפילות באותו סבב מ-@%s לא נשלחה: %s", username, post.link)
+                        continue
+                    if is_women_or_wnba_post(post):
+                        seen.update(post.dedupe_ids)
+                        logging.info("דילוג מסנן: נשים/WNBA מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_link_only_or_details_post(post):
                         seen.update(post.dedupe_ids)
@@ -2725,10 +2933,29 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         logging.info("דילוג מסנן: פוסט לא חדשותי/סטטיסטיקה בלבד מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         logging.info("דילוג: פוסט חברתי/אווירה בלי דיווח חדשותי מ-@%s לא נשלח: %s", username, post.link)
                         continue
-                    send_futures.append(send_executor.submit(send_task, (username, post, time.perf_counter() - cycle_started)))
-                    queued_ids.update(post.dedupe_ids)
+                    duplicate_event = find_recent_duplicate_event(post, state)
+                    if duplicate_event:
+                        seen.update(post.dedupe_ids)
+                        logging.info("דילוג כפילות חכמה: אותו אירוע כבר נשלח בשעתיים האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        continue
+                    candidate_posts.append((username, post, time.perf_counter() - cycle_started))
+
+                global_candidate_posts.extend(candidate_posts)
 
                 state[username] = list(seen)[-500:]
+
+        for candidate in sort_candidate_posts_for_priority(global_candidate_posts):
+            username, post, _ = candidate
+            seen = set(state.get(username, []))
+            duplicate_event = find_recent_duplicate_event(post, state)
+            if duplicate_event:
+                seen.update(post.dedupe_ids)
+                state[username] = list(seen)[-500:]
+                logging.info("דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
+                continue
+            remember_recent_news_event(post, state)
+            send_futures.append(send_executor.submit(send_task, candidate))
+            queued_ids.update(post.dedupe_ids)
 
         for future in as_completed(send_futures):
             username, post_ids, link, ok, result = future.result()
