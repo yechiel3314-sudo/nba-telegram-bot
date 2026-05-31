@@ -40,6 +40,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from threading import BoundedSemaphore
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -71,6 +72,7 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 GEMINI_TRANSLATION_ATTEMPTS = 5
 GEMINI_RETRY_WAIT_SECONDS = 20
 GEMINI_COOLDOWN_SECONDS = 10 * 60
+GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 
 X_ACCOUNTS = [
     "FabrizioRomano",
@@ -1480,6 +1482,7 @@ GEMINI_DISABLED_UNTIL = 0.0
 GEMINI_COOLDOWN_IS_QUOTA = False
 GEMINI_KEY_COOLDOWNS: dict[str, float] = {}
 GEMINI_NEXT_KEY_INDEX = 0
+GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
 
 
 def translation_cache_key(text: str) -> str:
@@ -1762,7 +1765,8 @@ def translate_text(text: str) -> str:
         last_error: Exception | None = None
         for attempt in range(1, GEMINI_TRANSLATION_ATTEMPTS + 1):
             try:
-                polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
+                with GEMINI_TRANSLATION_SEMAPHORE:
+                    polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False))
                 polished = preserve_original_emojis(ai_text, polished)
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
@@ -1780,8 +1784,8 @@ def translate_text(text: str) -> str:
                         gemini_error_summary(exc),
                     )
                     time.sleep(GEMINI_RETRY_WAIT_SECONDS)
-        logging.warning("⚠️ ג'מיני נכשל אחרי %s ניסיונות. הפוסט לא יישלח כרגע וינוסה שוב בסיבוב הבא.", GEMINI_TRANSLATION_ATTEMPTS)
-        raise RuntimeError("Gemini translation failed after retries")
+        logging.warning("⚠️ ג'מיני נכשל אחרי %s ניסיונות. כדי שהבוט לא ייעצר, הפוסט יישלח נקי בלי תרגום.", GEMINI_TRANSLATION_ATTEMPTS)
+        return preserve_original_emojis(ai_text or text, untranslated_fallback_text(text))
 
     if fallback_key in TRANSLATION_CACHE:
         return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
@@ -1946,6 +1950,7 @@ def build_message(
     safe_link = html.escape(post.link)
     video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
+    post_link_label = f'<a href="{safe_link}">{html.escape(rtl("קישור לפוסט"))}</a>'
     signature = f'<a href="{html.escape(SIGNATURE_LINK)}">{html.escape(rtl(SIGNATURE_TEXT))}</a>'
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
@@ -1961,6 +1966,9 @@ def build_message(
         parts.append(safe_quoted_body)
         if include_video_link and post.link and post.quoted_has_video:
             parts.extend(["", video_label])
+
+    if post.link:
+        parts.extend(["", "", post_link_label])
 
     parts.extend(["", signature])
 
