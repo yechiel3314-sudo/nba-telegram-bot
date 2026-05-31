@@ -72,7 +72,6 @@ GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 
 X_ACCOUNTS = [
-    "NBA",
     "ShamsCharania",
     "highkin",
     "ChrisBHaynes",
