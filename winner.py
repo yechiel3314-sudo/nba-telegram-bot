@@ -1922,16 +1922,166 @@ def _ai_duplicate_text_from_item(item: dict[str, Any]) -> str:
     return value[:1800]
 
 
+
+
+# ====== GEMINI REQUEST SAVER / SMART LOCAL DECISION LAYER ======
+# Goal: do every cheap deterministic check first and use Gemini only for truly borderline cases.
+# This saves Gemini quota and also prevents wasting AI work on posts that will be filtered/skipped anyway.
+ENABLE_AI_REQUEST_SAVER = os.environ.get("ENABLE_AI_REQUEST_SAVER", "1") != "0"
+AI_DECISION_CACHE_MAX_ITEMS = int(os.environ.get("AI_DECISION_CACHE_MAX_ITEMS", "1000"))
+AI_PARALLEL_MERGE_USE_AI_MIN_CLUSTER_SIZE = int(os.environ.get("AI_PARALLEL_MERGE_USE_AI_MIN_CLUSTER_SIZE", "3"))
+AI_PARALLEL_MERGE_USE_AI_MIN_DETAIL_DELTA = int(os.environ.get("AI_PARALLEL_MERGE_USE_AI_MIN_DETAIL_DELTA", "2"))
+AI_DECISION_CACHE: dict[str, str] = {}
+AI_DECISION_CACHE_ORDER: list[str] = []
+
+EVENT_STAGE_PATTERNS: list[tuple[int, str, tuple[str, ...]]] = [
+    (100, "official", ("official", "confirmed", "announce", "announced", "announcement", "club statement", "רשמי", "אישר", "אישרה", "הודיעה", "הודעה רשמית")),
+    (90, "completed", ("done deal", "completed", "signed", "has signed", "joins", "traded", "waived", "released", "חתם", "חתמה", "עבר", "הצטרף", "שוחרר", "עזב")),
+    (80, "agreement", ("agreed", "agreement", "deal agreed", "verbal agreement", "contract agreed", "סיכם", "סיכמה", "סוכם", "סיכום", "הסכמה")),
+    (70, "medical_or_final_steps", ("medical", "medical tests", "paperwork", "final details", "בדיקות רפואיות", "ניירת", "פרטים אחרונים")),
+    (60, "formal_bid", ("bid", "offer", "proposal", "rejected", "accepted", "הצעה", "הוגשה", "נדחתה", "התקבלה")),
+    (50, "talks", ("talks", "negotiations", "advanced talks", "contact", "שיחות", "משא ומתן", "מגעים")),
+    (40, "interest", ("interested", "monitoring", "considering", "target", "מעוניינת", "מעוניין", "עוקבת", "מועמד", "יעד")),
+    (30, "availability", ("injury", "injured", "out", "questionable", "probable", "ruled out", "פציעה", "פצוע", "ייעדר", "בספק", "לא ישחק")),
+]
+
+IMPORTANT_DETAIL_WORDS = {
+    "official", "confirmed", "contract", "fee", "salary", "years", "year", "option", "clause", "medical", "loan", "permanent",
+    "pick", "picks", "first-round", "second-round", "extension", "waived", "injury", "severity", "return", "date", "deadline",
+    "רשמי", "אישרה", "אישר", "חוזה", "שכר", "מיליון", "שנים", "שנה", "אופציה", "סעיף", "בדיקות", "רפואיות", "השאלה",
+    "בחירה", "דראפט", "הארכת", "שוחרר", "פציעה", "חומרת", "חזרה", "תאריך", "דדליין",
+}
+
+
+def _text_stage_rank(text: str) -> tuple[int, str]:
+    lowered = (text or "").lower()
+    for rank, label, patterns in EVENT_STAGE_PATTERNS:
+        if any(pattern.lower() in lowered for pattern in patterns):
+            return rank, label
+    return 0, "unknown"
+
+
+def _signature_sets_from_post(post: Post) -> tuple[set[str], set[str], set[str], str]:
+    sig = news_event_signature(post)
+    return set(sig.get("entities", [])), set(sig.get("actions", [])), set(sig.get("tokens", [])), str(sig.get("text", ""))
+
+
+def _signature_sets_from_item(item: dict[str, Any]) -> tuple[set[str], set[str], set[str], str]:
+    sig = item.get("signature", {}) if isinstance(item, dict) else {}
+    if not isinstance(sig, dict):
+        sig = {}
+    return set(sig.get("entities", [])), set(sig.get("actions", [])), set(sig.get("tokens", [])), str(sig.get("text", "") or _ai_duplicate_text_from_item(item))
+
+
+def _important_detail_delta(current_tokens: set[str], previous_tokens: set[str]) -> int:
+    return len((current_tokens - previous_tokens) & IMPORTANT_DETAIL_WORDS)
+
+
+def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
+    """Fast local decision before Gemini. Returns SAME_DUPLICATE, ADVANCED_NEW, DIFFERENT or BORDERLINE."""
+    if not ENABLE_AI_REQUEST_SAVER:
+        return "BORDERLINE"
+    cur_entities, cur_actions, cur_tokens, cur_text = _signature_sets_from_post(current_post)
+    prev_entities, prev_actions, prev_tokens, prev_text = _signature_sets_from_item(previous_item)
+    if not cur_tokens or not prev_tokens:
+        return "BORDERLINE"
+    if score is None:
+        previous_sig = previous_item.get("signature", {}) if isinstance(previous_item, dict) else {}
+        if isinstance(previous_sig, dict):
+            score = _event_similarity(news_event_signature(current_post), previous_sig)
+        else:
+            score = 0.0
+
+    entity_overlap = len(cur_entities & prev_entities)
+    action_overlap = len(cur_actions & prev_actions)
+    current_rank, current_stage = _text_stage_rank(cur_text)
+    previous_rank, previous_stage = _text_stage_rank(prev_text)
+    detail_delta = _important_detail_delta(cur_tokens, prev_tokens)
+
+    # Clearly different: not enough shared entities and not enough text/action overlap.
+    if score < AI_DUPLICATE_MIN_SIMILARITY and entity_overlap < 2:
+        return "DIFFERENT"
+    if entity_overlap == 0 and score < 0.72:
+        return "DIFFERENT"
+
+    # Material advancement: official/completed/agreed after a lower stage, or important new detail.
+    if entity_overlap >= 1 and current_rank >= previous_rank + 20 and current_rank >= 50:
+        return "ADVANCED_NEW"
+    if entity_overlap >= 2 and detail_delta >= 3 and current_rank >= previous_rank:
+        return "ADVANCED_NEW"
+
+    # Very strong same-event match with no higher stage: skip locally, no Gemini needed.
+    if score >= AI_DUPLICATE_AUTO_SKIP_SIMILARITY and current_rank <= previous_rank and detail_delta == 0:
+        return "SAME_DUPLICATE"
+    if entity_overlap >= 3 and action_overlap >= 1 and score >= 0.80 and current_rank <= previous_rank and detail_delta <= 1:
+        return "SAME_DUPLICATE"
+
+    # Same entity but stronger trusted source: usually same duplicate unless it materially advances.
+    if entity_overlap >= 2 and score >= 0.82 and SOURCE_PRIORITY.get(current_post.username, 0) > int(previous_item.get("priority", 0) or 0) and current_rank <= previous_rank and detail_delta <= 1:
+        return "SAME_DUPLICATE"
+
+    return "BORDERLINE"
+
+
+def _ai_cache_key(previous_text: str, current_text: str) -> str:
+    base = (previous_text.strip().lower() + "\n---\n" + current_text.strip().lower()).encode("utf-8", errors="ignore")
+    return hashlib.sha1(base).hexdigest()
+
+
+def _ai_cache_get(previous_text: str, current_text: str) -> str | None:
+    if not ENABLE_AI_REQUEST_SAVER:
+        return None
+    return AI_DECISION_CACHE.get(_ai_cache_key(previous_text, current_text))
+
+
+def _ai_cache_set(previous_text: str, current_text: str, verdict: str) -> None:
+    if not ENABLE_AI_REQUEST_SAVER or verdict not in {"SAME_DUPLICATE", "ADVANCED_NEW", "DIFFERENT", "UNKNOWN"}:
+        return
+    key = _ai_cache_key(previous_text, current_text)
+    if key not in AI_DECISION_CACHE:
+        AI_DECISION_CACHE_ORDER.append(key)
+    AI_DECISION_CACHE[key] = verdict
+    while len(AI_DECISION_CACHE_ORDER) > AI_DECISION_CACHE_MAX_ITEMS:
+        old = AI_DECISION_CACHE_ORDER.pop(0)
+        AI_DECISION_CACHE.pop(old, None)
+
+
+def parallel_merge_needs_ai(cluster: list[tuple[str, Post, float]]) -> bool:
+    """Use AI merge only when there are enough parallel sources or one source adds real details."""
+    if not ENABLE_AI_PARALLEL_MERGE or not GEMINI_API_KEYS or not ENABLE_AI_REQUEST_SAVER:
+        return bool(ENABLE_AI_PARALLEL_MERGE and GEMINI_API_KEYS)
+    if len(cluster) >= AI_PARALLEL_MERGE_USE_AI_MIN_CLUSTER_SIZE:
+        return True
+    ordered = sorted(cluster, key=lambda item: (-SOURCE_PRIORITY.get(_candidate_username(item), 0), -(_candidate_post(item).published_ts or 0)))
+    base_tokens = set(news_event_signature(_candidate_post(ordered[0])).get("tokens", []))
+    for _username, post, _found in ordered[1:]:
+        tokens = set(news_event_signature(post).get("tokens", []))
+        if _important_detail_delta(tokens, base_tokens) >= AI_PARALLEL_MERGE_USE_AI_MIN_DETAIL_DELTA:
+            return True
+    return False
+
 def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, Any]) -> str:
     """
     Returns one of: SAME_DUPLICATE, ADVANCED_NEW, DIFFERENT, UNKNOWN.
-    SAME_DUPLICATE = do not send. ADVANCED_NEW/DIFFERENT = send.
+    Gemini is called only after local cheap checks and cache lookup fail.
     """
-    if not ENABLE_AI_DUPLICATE_CHECK or not GEMINI_API_KEYS:
-        return "UNKNOWN"
     previous_text = _ai_duplicate_text_from_item(previous_item)
     current_text = _ai_duplicate_text_from_post(current_post)
     if not previous_text or not current_text:
+        return "UNKNOWN"
+
+    score = _event_similarity_score_for_post(current_post, previous_item)
+    local = local_duplicate_verdict(current_post, previous_item, score)
+    if local in {"SAME_DUPLICATE", "ADVANCED_NEW", "DIFFERENT"}:
+        logging.info("חיסכון Gemini: החלטה מקומית בכפילות @%s מול @%s => %s | score=%.2f", current_post.username, previous_item.get("username", "unknown"), local, score)
+        return local
+
+    cached = _ai_cache_get(previous_text, current_text)
+    if cached:
+        logging.info("חיסכון Gemini: תשובת כפילות מה-cache @%s מול @%s => %s", current_post.username, previous_item.get("username", "unknown"), cached)
+        return cached
+
+    if not ENABLE_AI_DUPLICATE_CHECK or not GEMINI_API_KEYS:
         return "UNKNOWN"
 
     prompt = (
@@ -1959,12 +2109,14 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             answer = "".join(part.get("text", "") for part in parts).strip().upper()
             if "SAME_DUPLICATE" in answer:
+                _ai_cache_set(previous_text, current_text, "SAME_DUPLICATE")
                 return "SAME_DUPLICATE"
             if "ADVANCED_NEW" in answer:
+                _ai_cache_set(previous_text, current_text, "ADVANCED_NEW")
                 return "ADVANCED_NEW"
             if "DIFFERENT" in answer:
+                _ai_cache_set(previous_text, current_text, "DIFFERENT")
                 return "DIFFERENT"
-            return "UNKNOWN"
         except Exception as exc:
             last_error = exc
             try:
@@ -1974,24 +2126,27 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
             continue
     if last_error:
         logging.warning("AI duplicate check unavailable: %s", gemini_error_summary(last_error) if 'gemini_error_summary' in globals() else last_error)
+    _ai_cache_set(previous_text, current_text, "UNKNOWN")
     return "UNKNOWN"
 
-
 def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
-    """Final duplicate gate. It runs only for posts that are already selected for sending."""
+    """Final duplicate gate. Cheap local rules first, Gemini only for borderline near-matches."""
     recent = list(reversed(cleanup_recent_news_events(state)))
     fallback_duplicate: dict[str, Any] | None = None
     for item in recent:
         if not isinstance(item, dict):
             continue
         score = _event_similarity_score_for_post(post, item)
-        if score >= AI_DUPLICATE_AUTO_SKIP_SIMILARITY:
-            # If this is a stronger source, let AI decide whether it is an important advancement.
-            if SOURCE_PRIORITY.get(post.username, 0) > int(item.get("priority", 0) or 0):
-                verdict = gemini_duplicate_event_verdict(post, item)
-                if verdict in {"ADVANCED_NEW", "DIFFERENT"}:
-                    continue
+        if score < AI_DUPLICATE_MIN_SIMILARITY and score < 0.72:
+            continue
+
+        local = local_duplicate_verdict(post, item, score)
+        if local == "SAME_DUPLICATE":
             return item
+        if local in {"ADVANCED_NEW", "DIFFERENT"}:
+            continue
+
+        # Gemini only for true borderline cases.
         if score >= AI_DUPLICATE_MIN_SIMILARITY:
             verdict = gemini_duplicate_event_verdict(post, item)
             if verdict == "SAME_DUPLICATE":
@@ -2002,6 +2157,208 @@ def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> d
                 fallback_duplicate = item
     return fallback_duplicate
 
+
+
+# ====== PARALLEL BREAKING-FATIGUE MERGE ======
+# This layer runs after all cheap filters and before translation/video lookup.
+# It solves the "many accounts posted the same thing at the same second" problem:
+# candidates from the same run are clustered, then either merged into one smart update
+# or kept separate if Gemini says one of them is a real advancement.
+ENABLE_AI_PARALLEL_MERGE = os.environ.get("ENABLE_AI_PARALLEL_MERGE", "1") != "0"
+PARALLEL_MERGE_WINDOW_SECONDS = int(os.environ.get("PARALLEL_MERGE_WINDOW_SECONDS", "180"))
+PARALLEL_MERGE_MIN_SIMILARITY = float(os.environ.get("PARALLEL_MERGE_MIN_SIMILARITY", "0.52"))
+PARALLEL_MERGE_AUTO_SIMILARITY = float(os.environ.get("PARALLEL_MERGE_AUTO_SIMILARITY", "0.86"))
+
+
+def _candidate_post(item: tuple[str, Post, float]) -> Post:
+    return item[1]
+
+
+def _candidate_username(item: tuple[str, Post, float]) -> str:
+    return item[0]
+
+
+def _published_gap_ok(post_a: Post, post_b: Post) -> bool:
+    if not post_a.published_ts or not post_b.published_ts:
+        return True
+    return abs(post_a.published_ts - post_b.published_ts) <= PARALLEL_MERGE_WINDOW_SECONDS
+
+
+def parallel_duplicate_relation(post_a: Post, post_b: Post) -> str:
+    """Return SAME, ADVANCED, DIFFERENT or UNKNOWN for two same-cycle candidates. Gemini is last resort."""
+    if not _published_gap_ok(post_a, post_b):
+        return "DIFFERENT"
+    sig_a = news_event_signature(post_a)
+    sig_b = news_event_signature(post_b)
+    score = _event_similarity(sig_a, sig_b)
+    if score >= PARALLEL_MERGE_AUTO_SIMILARITY:
+        # Same-cycle very strong match: merge locally, no Gemini.
+        return "SAME"
+    if score < PARALLEL_MERGE_MIN_SIMILARITY:
+        return "DIFFERENT"
+
+    fake_previous = {
+        "username": post_a.username,
+        "priority": SOURCE_PRIORITY.get(post_a.username, 0),
+        "ai_text": _ai_duplicate_text_from_post(post_a),
+        "signature": sig_a,
+    }
+    local = local_duplicate_verdict(post_b, fake_previous, score)
+    if local == "SAME_DUPLICATE":
+        return "SAME"
+    if local == "ADVANCED_NEW":
+        return "ADVANCED"
+    if local == "DIFFERENT":
+        return "DIFFERENT"
+
+    if ENABLE_AI_PARALLEL_MERGE and GEMINI_API_KEYS:
+        verdict = gemini_duplicate_event_verdict(post_b, fake_previous)
+        if verdict == "SAME_DUPLICATE":
+            return "SAME"
+        if verdict == "ADVANCED_NEW":
+            return "ADVANCED"
+        if verdict == "DIFFERENT":
+            return "DIFFERENT"
+    return "SAME" if score >= 0.74 else "DIFFERENT"
+
+
+def best_source_item(cluster: list[tuple[str, Post, float]]) -> tuple[str, Post, float]:
+    return sorted(
+        cluster,
+        key=lambda item: (
+            -SOURCE_PRIORITY.get(_candidate_username(item), 0),
+            -(_candidate_post(item).published_ts or 0),
+            _candidate_username(item),
+        ),
+    )[0]
+
+
+def ai_merge_parallel_posts(cluster: list[tuple[str, Post, float]]) -> str:
+    """Create one concise English source text for a merged same-event update."""
+    if len(cluster) <= 1:
+        return _ai_duplicate_text_from_post(_candidate_post(cluster[0]))
+    ordered = sorted(
+        cluster,
+        key=lambda item: (-SOURCE_PRIORITY.get(_candidate_username(item), 0), -(_candidate_post(item).published_ts or 0)),
+    )[:6]
+    source_blocks = []
+    for username, post, _found in ordered:
+        source_blocks.append(f"@{username}: {_ai_duplicate_text_from_post(post)}")
+    fallback = _ai_duplicate_text_from_post(_candidate_post(ordered[0]))
+    if not parallel_merge_needs_ai(cluster):
+        also = ", ".join("@" + _candidate_username(item) for item in ordered[1:4])
+        logging.info("חיסכון Gemini: מיזוג מקביל מקומי בלי AI. מקורות: %s", also or _candidate_username(ordered[0]))
+        return fallback + (f"\nAlso reported by: {also}" if also else "")
+    logging.info("Gemini merge: משתמש בבינה רק כי יש כמה מקורות/פרטים חדשים שצריך למזג חכם")
+    prompt = (
+        "You are an elite sports Telegram news editor. Several sources posted at nearly the same time.\n"
+        "Merge them into ONE short factual English update for translation to Hebrew.\n"
+        "Rules:\n"
+        "- Do not invent facts.\n"
+        "- Keep only the newest/strongest facts.\n"
+        "- If sources repeat the same news, write it once.\n"
+        "- If one source adds a material detail, include that detail.\n"
+        "- Do not write analysis/opinion.\n"
+        "- End with: Sources: @source1, @source2.\n\n"
+        + "\n\n".join(source_blocks)
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 320},
+    }
+    for _index, key in gemini_key_order():
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FAST_MODEL}:generateContent?key={urllib.parse.quote(key)}"
+        try:
+            data = http_post_json(url, payload, timeout=22, max_attempts=1, respect_retry_after=False)
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            merged = "".join(part.get("text", "") for part in parts).strip()
+            if merged and len(merged) >= 20:
+                return merged[:1800]
+        except Exception as exc:
+            try:
+                cool_down_gemini_key(key, exc)
+            except Exception:
+                pass
+            continue
+    also = ", ".join("@" + _candidate_username(item) for item in ordered[1:4])
+    return fallback + (f"\nAlso reported by: {also}" if also else "")
+
+
+def make_merged_parallel_candidate(cluster: list[tuple[str, Post, float]]) -> tuple[str, Post, float]:
+    best_username, best_post, found_seconds = best_source_item(cluster)
+    if len(cluster) <= 1:
+        return best_username, best_post, found_seconds
+    merged_text = ai_merge_parallel_posts(cluster)
+    all_ids: list[str] = []
+    all_images: list[str] = []
+    all_videos: list[str] = []
+    has_video = False
+    for username, post, _found in cluster:
+        all_ids.extend(post.dedupe_ids)
+        all_images.extend(post.image_urls)
+        all_videos.extend(post.video_urls)
+        has_video = has_video or post.has_video
+    merged_post = Post(
+        post_id="merged:" + hashlib.sha1("|".join(sorted(set(all_ids))).encode("utf-8")).hexdigest(),
+        username=best_username,
+        text=merged_text,
+        link=best_post.link,
+        image_urls=list(dict.fromkeys(all_images))[:MAX_IMAGES_PER_POST],
+        video_urls=list(dict.fromkeys(all_videos)),
+        has_video=has_video,
+        primary_has_video=best_post.primary_has_video,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=max((post.published_ts or 0.0) for _u, post, _f in cluster),
+        dedupe_ids=list(dict.fromkeys(all_ids)),
+        source_name="parallel-merged",
+    )
+    # Dynamic metadata for state/logging. Dataclass has no slots, so this is safe.
+    setattr(merged_post, "merged_sources", [_candidate_username(item) for item in cluster])
+    logging.info(
+        "מיזוג חכם: %s דיווחים מקבילים אוחדו להודעה אחת. מקור מוביל: @%s | מקורות: %s",
+        len(cluster),
+        best_username,
+        ", ".join("@" + _candidate_username(item) for item in cluster),
+    )
+    return best_username, merged_post, min(found_seconds for _u, _p, found_seconds in cluster)
+
+
+def cluster_parallel_candidates(candidates: list[tuple[str, Post, float]]) -> list[tuple[str, Post, float]]:
+    """Merge same-cycle duplicate bursts before any translation/video work is done."""
+    if len(candidates) <= 1:
+        return candidates
+    ordered = sort_candidate_posts_for_priority(candidates)
+    clusters: list[list[tuple[str, Post, float]]] = []
+    for candidate in ordered:
+        post = _candidate_post(candidate)
+        placed = False
+        for cluster in clusters:
+            # Compare to the best representative and at least one member.
+            representative = _candidate_post(best_source_item(cluster))
+            relation = parallel_duplicate_relation(representative, post)
+            if relation == "SAME" or any(parallel_duplicate_relation(_candidate_post(item), post) == "SAME" for item in cluster):
+                cluster.append(candidate)
+                placed = True
+                break
+            if relation == "ADVANCED":
+                # Real development: keep separate, do not merge.
+                continue
+        if not placed:
+            clusters.append([candidate])
+    merged = [make_merged_parallel_candidate(cluster) for cluster in clusters]
+    return sort_candidate_posts_for_priority(merged)
+
+
+def mark_candidate_seen(state: dict[str, Any], candidate: tuple[str, Post, float]) -> None:
+    """Mark all dedupe ids for a candidate, including merged-source ids, without doing extra work later."""
+    username, post, _found = candidate
+    target_names = list(getattr(post, "merged_sources", []) or [username])
+    for target in target_names:
+        seen = set(state.get(target, []))
+        seen.update(post.dedupe_ids)
+        state[target] = list(seen)[-500:]
 
 def apply_phrase_replacements(text: str, replacements: dict[str, str]) -> str:
     for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
@@ -3062,6 +3419,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
 
                 state[username] = list(seen)[-500:]
 
+        global_candidate_posts = cluster_parallel_candidates(global_candidate_posts)
+
         for candidate in sort_candidate_posts_for_priority(global_candidate_posts):
             if len(send_futures) >= MAX_POSTS_SENT_PER_CYCLE:
                 break
@@ -3069,8 +3428,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             seen = set(state.get(username, []))
             duplicate_event = find_recent_duplicate_event_ai_aware(post, state)
             if duplicate_event:
-                seen.update(post.dedupe_ids)
-                state[username] = list(seen)[-500:]
+                mark_candidate_seen(state, candidate)
                 logging.info("דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
                 continue
             remember_recent_news_event(post, state)
