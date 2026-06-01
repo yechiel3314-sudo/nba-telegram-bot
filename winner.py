@@ -1398,7 +1398,7 @@ def delete_control_webhook_if_needed() -> None:
     if not CONTROL_DELETE_WEBHOOK_ON_STARTUP:
         return
     try:
-        telegram_api("deleteWebhook", {"drop_pending_updates": True})
+        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
         logging.debug("Control panel: webhook cleared, polling callbacks is active.")
     except Exception as exc:
         logging.debug("Control panel: could not clear webhook before polling: %s", exc)
@@ -1453,7 +1453,7 @@ def control_loop() -> None:
                 if now - last_conflict_cleanup > 30:
                     last_conflict_cleanup = now
                     try:
-                        telegram_api("deleteWebhook", {"drop_pending_updates": True})
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
                     except Exception as cleanup_exc:
                         logging.warning("Control panel conflict cleanup failed: %s", cleanup_exc)
                 time.sleep(CONTROL_POLL_SECONDS)
@@ -3582,6 +3582,19 @@ SERIOUS_INJURY_PATTERNS = (
     r"ניתוח|קרע|רצועה|שבר|ייעדר|בחוץ ל|יחמיץ|גמר את העונה|סיים את העונה|חודשים|שבועות|פציעה קשה|פציעה משמעותית",
 )
 
+# Broad fitness/recovery/injury-status words. These catch reports that do not say
+# "injury" explicitly, for example: "his recovery is progressing well",
+# "he will be ready for the World Cup", "fit for the opener".
+INJURY_OR_FITNESS_UPDATE_PATTERNS = (
+    r"\b(?:injury|injured|fitness|fit|unfit|available|ready|recovered|recovery|recovering|rehab|returning|return to training|back in training|back with the squad|progressing well|steps up recovery|close to return|expected back|set to return|will be ready|should be fit|match fit|opener|opening game|first game|ruled out|out for|will miss|set to miss|doubt|doubtful|assessment|tests|scan|surgery|operation|ACL|hamstring|muscle|fracture|broken)\b",
+    r"פציעה|פצוע|נפצע|כשיר|כשירות|לא כשיר|זמין|מוכן|יהיה מוכן|אמור להיות כשיר|יהיה כשיר|החלים|החלמה|מחלים|שיקום|חזרה לאימונים|חזר לאימונים|חוזר לאימונים|חזר לסגל|חוזר לסגל|מתקדם יפה|מתקדמת יפה|התקדמות|מתקרב לחזרה|צפוי לחזור|צפויה לחזור|חזרה קרובה|משחק הפתיחה|פתיחת|ייעדר|בחוץ|יחמיץ|בספק|ייבדק|בדיקות|סריקה|ניתוח|קרע|רצועה|שריר|שבר",
+)
+
+MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS = (
+    r"\b(?:World Cup|FIFA World Cup|Euro|EURO|Euros|Copa America|AFCON|Nations League|national team|international duty|Argentina|Brazil|England|France|Spain|Germany|Italy|Portugal|Netherlands|Belgium|Croatia|Uruguay|Colombia|Morocco|Senegal|Nigeria|Japan|USA|Mexico|Luis de la Fuente|De la Fuente)\b",
+    r"מונדיאל|גביע העולם|יורו|קופה אמריקה|אליפות אפריקה|ליגת האומות|נבחרת|נבחרות|ארגנטינה|ברזיל|אנגליה|צרפת|ספרד|גרמניה|איטליה|פורטוגל|הולנד|בלגיה|קרואטיה|אורוגוואי|קולומביה|מרוקו|סנגל|ניגריה|יפן|ארה\"ב|מקסיקו|דה לה פואנטה|לואיס דה לה פואנטה|🇪🇸|🇦🇷|🇧🇷|🇫🇷|🇩🇪|🇮🇹|🇵🇹|🇳🇱|🇧🇪|🇭🇷|🇺🇾|🇨🇴|🇲🇦|🇸🇳|🇳🇬|🇯🇵|🇺🇸|🇲🇽",
+)
+
 PURE_ADMIN_APPOINTMENT_PATTERNS = (
     r"\b(?:appointed|set to be appointed|will become|new)\b.*\b(?:sporting director|technical director|director of football|chief scout|head of recruitment|advisor|consultant)\b",
     r"(?:צפוי להתמנות|ימונה|מונה|מנהל חדש|המנהל החדש).{0,80}(?:מנהל\s+(?:טכני|מקצועי|ספורטיבי)|סקאוט|יועץ|ראש\s+גיוס|מנהל\s+הכדורגל)",
@@ -3623,6 +3636,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_pure_admin_appointment = _matches_any(PURE_ADMIN_APPOINTMENT_PATTERNS, cleaned)
     has_injury = _matches_any(INJURY_PATTERNS, cleaned)
     has_serious_injury = _matches_any(SERIOUS_INJURY_PATTERNS, cleaned)
+    has_injury_or_fitness_update = _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
+    has_major_national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
 
     score = 0
     signals: list[str] = []
@@ -3650,6 +3665,10 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         add(10, "injury")
     if has_serious_injury:
         add(25, "serious_injury")
+    if has_injury_or_fitness_update:
+        add(30, "injury_or_fitness_update")
+    if has_major_national_context:
+        add(25, "major_national_context")
     if has_weak_interest:
         add(-10, "weak_interest")
     if has_vague_player_idea:
@@ -3665,12 +3684,18 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if has_admin_role and not has_elite_admin_club:
         return False, "admin_or_backroom_only_barca_real_allowed", score, signals
 
-    # Injuries: send meaningful injury news for big clubs/top-5 clubs, block minor fitness noise.
-    if has_injury:
-        if has_big_rumor_club and has_serious_injury:
-            return True, "big_club_serious_injury", score, signals
-        if has_top5_or_promoted_club and has_serious_injury and score >= 55:
-            return True, "top5_serious_injury", score, signals
+    # Injuries / fitness / recovery: send broadly for popular clubs, top-5 clubs,
+    # and major national-team or World Cup contexts. This intentionally catches
+    # reports that do not say "injury" but discuss recovery/fitness/readiness.
+    if has_injury_or_fitness_update:
+        if has_big_rumor_club:
+            return True, "big_club_injury_or_fitness_update", score, signals
+        if has_top5_or_promoted_club:
+            return True, "top5_injury_or_fitness_update", score, signals
+        if has_major_national_context:
+            return True, "major_national_team_injury_or_fitness_update", score, signals
+        if has_serious_injury:
+            return True, "serious_injury_update", score, signals
         if not (has_strong_move or has_transfer_or_future or has_coach_news):
             return False, "minor_or_unclear_injury_not_enough", score, signals
 
