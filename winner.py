@@ -1399,9 +1399,9 @@ def delete_control_webhook_if_needed() -> None:
         return
     try:
         telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
-        logging.info("Control panel: webhook cleared, polling callbacks is active.")
+        logging.debug("Control panel: webhook cleared, polling callbacks is active.")
     except Exception as exc:
-        logging.warning("Control panel: could not clear webhook before polling: %s", exc)
+        logging.debug("Control panel: could not clear webhook before polling: %s", exc)
 
 
 def ensure_control_panel_once_if_requested() -> None:
@@ -1425,13 +1425,13 @@ def control_loop() -> None:
         try:
             send_control_panel(is_control_paused(), force_new=True)
         except Exception as exc:
-            logging.warning("Control panel startup failed: %s", exc)
+            logging.debug("Control panel startup failed: %s", exc)
     else:
         try:
             ensure_control_panel_once_if_requested()
         except Exception as exc:
-            logging.warning("Control panel create-if-missing failed: %s", exc)
-        logging.info("Control panel startup send is disabled; existing button callbacks will still work.")
+            logging.debug("Control panel create-if-missing failed: %s", exc)
+        logging.debug("Control panel startup send is disabled; existing button callbacks will still work.")
     while True:
         try:
             response = telegram_api(
@@ -1448,9 +1448,7 @@ def control_loop() -> None:
                 process_control_update(update)
         except Exception as exc:
             if is_getupdates_conflict(exc):
-                logging.warning(
-                    "כפתורי השליטה לא נקלטו כרגע: יש Webhook פעיל או עותק נוסף של הבוט מאזין ל-getUpdates. מנסה לנקות Webhook ולהמשיך. אם זה חוזר - ודא שרץ רק עותק אחד של הבוט."
-                )
+                logging.debug("Control panel getUpdates conflict; trying webhook cleanup.")
                 now = time.time()
                 if now - last_conflict_cleanup > 30:
                     last_conflict_cleanup = now
@@ -3556,6 +3554,34 @@ BIG_CLUB_CONTEXT_PATTERNS = (
     r"(?:לשעבר|אקס|שחקן חופשי מ|עוזב את)\s+(?:ריאל מדריד|ברצלונה|ליברפול|מנצ'סטר יונייטד|מנצ'סטר סיטי|ארסנל|צ'לסי|טוטנהאם|באיירן|פ\.ס\.ז|יובנטוס|אינטר|מילאן|נאפולי|רומא)",
 )
 
+
+# Level 1: truly big clubs. For these, even early transfer-rumour language
+# such as interested/monitoring/appreciate is worth sending from the trusted writers.
+# If a report mentions both a big club and a small club, this big-club signal wins.
+BIG_CLUB_RUMOR_PATTERNS = (
+    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma)\b",
+    r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא",
+)
+
+# Transfer/future language broad enough to catch quotes like "his son wants Napoli",
+# but still specific enough to block ordinary post-match interviews.
+TRANSFER_OR_FUTURE_PATTERNS = (
+    r"\b(?:transfer|move|join|joining|sign|signing|leave|leaving|return|back to|future|loan|buy option|option to buy|purchase option|clause|release clause|bid|offer|proposal|talks|negotiations|agreement|medical|deal|contract|free agent|wants? to|would like to|keen to|open to|dreams? of)\b",
+    r"העברה|מעבר|לעבור|להצטרף|חתימה|יחתום|יחתמו|יעזוב|לעזוב|לחזור|חזרה ל|עתידו|עתיד ב|השאלה|אופציית רכישה|אופציית הקנייה|סעיף שחרור|הצעה|שיחות|מו\"מ|משא ומתן|סיכום|בדיקות רפואיות|עסקה|חוזה|שחקן חופשי|רוצה|מעוניין|מעוניינת|חולם|פתוח להצטרף",
+)
+
+# Injury reports are allowed only when they are meaningful, especially around big clubs.
+# Minor "doubt / trained separately / will be assessed" items remain blocked.
+INJURY_PATTERNS = (
+    r"\b(?:injury|injured|surgery|operation|ACL|hamstring|muscle injury|fracture|broken|ruled out|out for|set to miss|will miss|misses|season over|out until|recovery|rehab)\b",
+    r"פציעה|נפצע|פצוע|ניתוח|קרע|רצועה|שריר|שבר|ייעדר|בחוץ ל|יחמיץ|גמר את העונה|סיים את העונה|שיקום|החלמה",
+)
+
+SERIOUS_INJURY_PATTERNS = (
+    r"\b(?:surgery|operation|ACL|fracture|broken|ruled out|out for|set to miss|will miss|season over|out until|months?|weeks?|long-term|major injury)\b",
+    r"ניתוח|קרע|רצועה|שבר|ייעדר|בחוץ ל|יחמיץ|גמר את העונה|סיים את העונה|חודשים|שבועות|פציעה קשה|פציעה משמעותית",
+)
+
 PURE_ADMIN_APPOINTMENT_PATTERNS = (
     r"\b(?:appointed|set to be appointed|will become|new)\b.*\b(?:sporting director|technical director|director of football|chief scout|head of recruitment|advisor|consultant)\b",
     r"(?:צפוי להתמנות|ימונה|מונה|מנהל חדש|המנהל החדש).{0,80}(?:מנהל\s+(?:טכני|מקצועי|ספורטיבי)|סקאוט|יועץ|ראש\s+גיוס|מנהל\s+הכדורגל)",
@@ -3572,94 +3598,116 @@ def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
 def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     """Return (allowed, reason, score, signals) for football relevance.
 
-    This does not call Gemini and does not use a player-name database. It lets weak
-    reports through only when the report itself mentions a popular club or strong
-    big-club context. For sporting/technical/director/admin appointments specifically,
-    it allows only Barcelona/Barça or Real Madrid and blocks all other clubs.
+    Updated logic:
+    1) Big clubs: send even early transfer rumours from trusted writers.
+    2) Top-5 league / promoted clubs: send when there is a real transfer/future/contract link.
+    3) Small clubs: send only strong transfer steps or clear big-club connection.
+    Interviews/quotes after matches are blocked unless they contain a real transfer/future link.
     """
     raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     cleaned = clean_for_ai_translation(raw_text)
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
 
-    has_popular_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
+    has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
+    has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
     has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
     has_admin_role = _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
     has_weak_interest = _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
-    has_transfer_linked_weak = _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
+    has_transfer_or_future = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
     has_vague_player_idea = _matches_any(VAGUE_PLAYER_IDEA_PATTERNS, cleaned)
     has_strong_move = _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
     has_coach_news = _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
     has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
     has_pure_admin_appointment = _matches_any(PURE_ADMIN_APPOINTMENT_PATTERNS, cleaned)
+    has_injury = _matches_any(INJURY_PATTERNS, cleaned)
+    has_serious_injury = _matches_any(SERIOUS_INJURY_PATTERNS, cleaned)
 
     score = 0
     signals: list[str] = []
 
-    if has_popular_club:
-        score += 45
-        signals.append("popular_club")
-    if has_elite_admin_club:
-        score += 20
-        signals.append("elite_admin_club")
-    if has_big_club_context:
-        score += 35
-        signals.append("big_club_context")
-    if has_strong_move:
-        score += 35
-        signals.append("strong_transfer_step")
-    if has_transfer_linked_weak:
-        score += 20
-        signals.append("transfer_linked_weak_report")
-    if has_vague_player_idea:
-        score -= 20
-        signals.append("vague_player_idea")
-    if has_coach_news:
-        score += 25
-        signals.append("coach_news")
-    if has_weak_interest:
-        score -= 15
-        signals.append("weak_interest")
-    if has_low_interest_club:
-        score -= 20
-        signals.append("low_interest_club")
-    if has_admin_role:
-        score -= 45
-        signals.append("admin_or_backroom_role")
-    if has_pure_admin_appointment:
-        score -= 25
-        signals.append("pure_admin_appointment")
+    def add(points: int, signal: str) -> None:
+        nonlocal score
+        score += points
+        signals.append(signal)
 
-    # Hard block: sporting/technical/professional director and other backroom/admin items
-    # are allowed ONLY for Barcelona/Barça or Real Madrid.
-    # Even popular clubs like Liverpool, United, City, Bayern, PSG, Milan, etc. are blocked
-    # for this specific category, per user preference. Player/coach/transfer news keeps
-    # using the wider popular-club list above.
+    if has_big_rumor_club:
+        add(70, "big_club")
+    if has_top5_or_promoted_club:
+        add(45, "top5_or_promoted_club")
+    if has_elite_admin_club:
+        add(20, "elite_admin_club")
+    if has_big_club_context:
+        add(55, "big_club_context")
+    if has_strong_move:
+        add(45, "strong_transfer_step")
+    if has_transfer_or_future:
+        add(25, "transfer_or_future_link")
+    if has_coach_news:
+        add(25, "coach_news")
+    if has_injury:
+        add(10, "injury")
+    if has_serious_injury:
+        add(25, "serious_injury")
+    if has_weak_interest:
+        add(-10, "weak_interest")
+    if has_vague_player_idea:
+        add(-20, "vague_player_idea")
+    if has_low_interest_club and not (has_big_rumor_club or has_big_club_context):
+        add(-25, "low_interest_club")
+    if has_admin_role:
+        add(-45, "admin_or_backroom_role")
+    if has_pure_admin_appointment:
+        add(-25, "pure_admin_appointment")
+
+    # Backroom/admin appointments remain restricted: only Barcelona/Barça or Real Madrid.
     if has_admin_role and not has_elite_admin_club:
         return False, "admin_or_backroom_only_barca_real_allowed", score, signals
 
-    # Weak interest is allowed only when a popular club or explicit big-club context is present.
-    # In addition, with popular clubs we still require an actual transfer/future signal.
-    # This blocks vague "player idea / profile / monitoring" posts, but sends reports like
-    # "can return to Napoli", "option to buy not activated", "wants to join/leave".
-    if has_weak_interest and not (has_popular_club or has_big_club_context):
-        return False, "weak_interest_without_popular_club_context", score, signals
-    if has_weak_interest and has_vague_player_idea and not (has_transfer_linked_weak or has_strong_move or has_coach_news):
-        return False, "vague_player_idea_without_transfer_link", score, signals
-    if has_weak_interest and (has_popular_club or has_big_club_context) and not (has_transfer_linked_weak or has_strong_move or has_coach_news):
-        return False, "weak_interest_popular_club_but_no_transfer_link", score, signals
+    # Injuries: send meaningful injury news for big clubs/top-5 clubs, block minor fitness noise.
+    if has_injury:
+        if has_big_rumor_club and has_serious_injury:
+            return True, "big_club_serious_injury", score, signals
+        if has_top5_or_promoted_club and has_serious_injury and score >= 55:
+            return True, "top5_serious_injury", score, signals
+        if not (has_strong_move or has_transfer_or_future or has_coach_news):
+            return False, "minor_or_unclear_injury_not_enough", score, signals
 
-    # Smaller clubs are allowed for strong moves or head coach news, but blocked for vague/low-value items.
-    if has_low_interest_club and not (has_popular_club or has_big_club_context or has_strong_move or has_coach_news):
-        return False, "low_interest_club_not_important_enough", score, signals
+    # Strong transfer steps are always newsworthy from the trusted writers.
+    if has_strong_move:
+        return True, "strong_transfer_step", score, signals
+
+    # Big-club logic: early rumours are allowed, but pure vague player-idea posts still need
+    # either interest language or a transfer/future link. A small club mentioned in the same
+    # post does NOT drag it down; the big-club connection wins.
+    if has_big_rumor_club or has_big_club_context:
+        if has_vague_player_idea and not (has_weak_interest or has_transfer_or_future or has_coach_news):
+            return False, "vague_big_club_player_idea_without_real_rumour", score, signals
+        if has_weak_interest or has_transfer_or_future or has_coach_news:
+            return True, "big_club_rumour_or_transfer_context", score, signals
+
+    # Top-5 / promoted clubs are relevant, but they need a real transfer/future/contract/coach link.
+    # This blocks regular post-match interviews and generic admiration.
+    if has_top5_or_promoted_club:
+        if has_transfer_or_future or has_coach_news:
+            return True, "top5_or_promoted_transfer_context", score, signals
+        if has_weak_interest:
+            return False, "top5_weak_interest_without_transfer_link", score, signals
+        return False, "top5_club_but_no_transfer_or_coach_context", score, signals
+
+    # Small clubs: only send concrete transfer steps, coach news, or explicit big-club context.
+    if has_low_interest_club and not (has_strong_move or has_big_club_context or has_coach_news):
+        return False, "small_club_not_important_enough", score, signals
+
+    if has_coach_news and score >= MIN_IMPORTANCE_SCORE_TO_SEND:
+        return True, "coach_news", score, signals
 
     threshold = MIN_IMPORTANCE_SCORE_TO_SEND_WEAK_INTEREST if has_weak_interest else MIN_IMPORTANCE_SCORE_TO_SEND
-    if score < threshold and not (has_popular_club or has_big_club_context or has_strong_move or has_coach_news):
+    if score < threshold:
         return False, f"importance_score_too_low:{score}<{threshold}", score, signals
 
     return True, "allowed", score, signals
-
 
 def football_importance_block_reason(post: Post) -> str:
     allowed, reason, score, signals = football_relevance_decision(post)
