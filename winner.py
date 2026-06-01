@@ -3383,21 +3383,45 @@ def build_message(
 # Core rule: judge by club relevance + report strength + role type, not by player names.
 
 POPULAR_OR_RECENT_UCL_CLUB_PATTERNS = (
-    # England / global Premier League brands
+    # Existing popular / UCL / global clubs
     r"\b(?:Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Newcastle|Aston Villa)\b",
-    # Spain
     r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid)\b",
-    # Germany / France
     r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|RB Leipzig|Leipzig|PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille)\b",
-    # Italy / Portugal / Netherlands
     r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Atalanta|Lazio|Benfica|Porto|Sporting CP|Sporting Lisbon|Ajax|PSV|Feyenoord)\b",
-    # Globally relevant non-European / high-traffic clubs
     r"\b(?:Al Hilal|Al-Hilal|Al Ittihad|Al-Ittihad|Al Nassr|Al-Nassr|Inter Miami)\b",
-    # Hebrew equivalents
+
+    # ===== Top 5 leagues: treat as popular for relevance sending =====
+    # Premier League / recent promoted-return context
+    r"\b(?:Brighton|Brighton and Hove Albion|Bournemouth|AFC Bournemouth|Brentford|Fulham|Wolves|Wolverhampton|Everton|West Ham|West Ham United|Crystal Palace|Nottingham Forest|Leeds|Leeds United|Sunderland|Leicester|Leicester City|Southampton|Burnley|Sheffield United|Ipswich|Ipswich Town|Luton|Luton Town|Norwich|Norwich City|Middlesbrough|West Brom|West Bromwich Albion)\b",
+    # La Liga / recent promoted-return context
+    r"\b(?:Sevilla|Valencia|Villarreal|Real Sociedad|Athletic Club|Athletic Bilbao|Real Betis|Betis|Girona|Osasuna|Getafe|Mallorca|Rayo Vallecano|Celta Vigo|Celta|Alaves|Alavés|Espanyol|Las Palmas|Leganes|Leganés|Levante|Valladolid|Granada|Cadiz|Cádiz|Eibar|Elche|Deportivo La Coruna|Deportivo La Coruña|Real Oviedo|Racing Santander|Sporting Gijon|Sporting Gijón)\b",
+    # Serie A / recent promoted-return context
+    r"\b(?:Fiorentina|Torino|Bologna|Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Monza|Verona|Hellas Verona|Parma|Sampdoria|Salernitana|Spezia|Pisa|Cremonese|Frosinone|Venezia|Bari|Palermo|Catanzaro|Cesena|Modena)\b",
+    # Bundesliga / recent promoted-return context
+    r"\b(?:Eintracht Frankfurt|Frankfurt|Stuttgart|VfB Stuttgart|Freiburg|Mainz|Mainz 05|Augsburg|Bochum|Heidenheim|St Pauli|St\. Pauli|Werder Bremen|Bremen|Wolfsburg|Union Berlin|Hoffenheim|Borussia Monchengladbach|Borussia Mönchengladbach|Gladbach|Koln|Köln|Cologne|Hamburg|HSV|Holstein Kiel|Darmstadt|Schalke|Hertha Berlin|Fortuna Dusseldorf|Fortuna Düsseldorf|Hannover|Karlsruhe|Nurnberg|Nürnberg)\b",
+    # Ligue 1 / recent promoted-return context
+    r"\b(?:Nice|Lille|Rennes|Lens|Brest|Strasbourg|Nantes|Toulouse|Montpellier|Reims|Metz|Auxerre|Angers|Lorient|Paris FC|Saint-Etienne|Saint Etienne|Saint-Étienne|ASSE|Le Havre|Clermont|Troyes|Bordeaux|Caen|Bastia|Guingamp)\b",
+
+    # Hebrew equivalents - existing popular clubs
     r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה",
     r"באיירן|דורטמונד|לברקוזן|לייפציג|פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל",
     r"יובנטוס|אינטר|מילאן|נאפולי|רומא|אטאלנטה|לאציו|בנפיקה|פורטו|ספורטינג|אייאקס|פ.ס.וו|פיינורד",
     r"אל[- ]?הילאל|אל[- ]?איתיחאד|אל[- ]?נאסר|אינטר מיאמי",
+
+    # Hebrew equivalents - top 5 leagues / promoted-return context
+    r"ברייטון|בורנמות|בורנמות'|ברנטפורד|פולהאם|וולבס|וולברהמפטון|אברטון|ווסטהאם|ווסט האם|קריסטל פאלאס|נוטינגהאם פורסט|לידס|סנדרלנד|לסטר|סאות'המפטון|ברנלי|שפילד יונייטד|איפסוויץ|לוטון|נוריץ|מידלסברו|ווסט ברום",
+    r"סביליה|ולנסיה|ויאריאל|ריאל סוסיאדד|אתלטיק בילבאו|בילבאו|בטיס|ג'ירונה|אוססונה|חטאפה|מיורקה|ראיו|ראיו וייקאנו|סלטה|סלטה ויגו|אלאבס|אספניול|לאס פלמאס|לגאנס|לבאנטה|ויאדוליד|גרנאדה|קאדיס|אייבר|אלצ'ה|דפורטיבו|אוביידו|ראסינג סנטנדר|ספורטינג חיחון",
+    r"פיורנטינה|טורינו|בולוניה|גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|מונצה|ורונה|פארמה|סמפדוריה|סלרניטנה|ספציה|פיזה|קרמונזה|פרוזינונה|ונציה|בארי|פאלרמו|קטנזארו|צ'זנה|מודנה",
+    r"פרנקפורט|שטוטגרט|פרייבורג|מיינץ|אוגסבורג|בוכום|היידנהיים|סט פאולי|ורדר ברמן|ברמן|וולפסבורג|אוניון ברלין|הופנהיים|גלדבאך|קלן|המבורג|הולשטיין קיל|דרמשטאדט|שאלקה|הרטה ברלין|פורטונה דיסלדורף|האנובר|קרלסרוהה|נירנברג",
+    r"ניס|רן|לאנס|ברסט|שטרסבורג|נאנט|טולוז|מונפלייה|ריימס|מץ|אוקזר|אנג'ה|לוריין|פאריס FC|פריז FC|סן אטיין|לה האבר|קלרמון|טרואה|בורדו|קאן|באסטיה|גנגאן",
+
+    # Context: a post says a club is in / returned / promoted to a top league,
+    # even if the club name itself is not in the static lists yet.
+    r"\b(?:promoted|promotion|newly promoted|back in|return to|returns to|returned to|won promotion to|secured promotion to)\s+(?:the\s+)?(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\b",
+    r"\b(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\s+(?:newcomers|new boys|side|club|team)\b",
+    r"\b(?:joins|signs for|set to join|close to joining|targeted by|wanted by|interest from|bid from|offer from)\s+(?:a\s+)?(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\s+(?:club|side|team)\b",
+    r"עלתה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)|חזרה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)",
+    r"קבוצה\s+(?:מה|מ)(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)|מועדון\s+(?:מה|מ)(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)",
 )
 
 
@@ -3486,7 +3510,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
 
     if has_popular_club:
         score += 45
-        signals.append("popular_club")
+        signals.append("popular_or_top5_club")
     if has_elite_admin_club:
         score += 20
         signals.append("elite_admin_club")
