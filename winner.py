@@ -154,7 +154,9 @@ CONTROL_CHAT_ID = "-1003924267158"
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
-CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
+CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "1") == "1"
+CONTROL_CREATE_PANEL_IF_MISSING = os.environ.get("CONTROL_CREATE_PANEL_IF_MISSING", "0") == "1"
+CONTROL_DELETE_WEBHOOK_ON_STARTUP = os.environ.get("CONTROL_DELETE_WEBHOOK_ON_STARTUP", "1") == "1"
 SHABBAT_MODE_ENABLED = True
 SHABBAT_TIMEZONE = "Asia/Jerusalem"
 SHABBAT_HEBCAL_GEOID = "281184"  # Jerusalem
@@ -1317,7 +1319,7 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
     return {"inline_keyboard": [[{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}]]}
 
 
-def send_control_panel(paused: bool, action_done: str = "") -> None:
+def send_control_panel(paused: bool, action_done: str = "", force_new: bool = False) -> None:
     if not CONTROL_CHAT_ID:
         return
     status = "כבוי" if paused else "פעיל"
@@ -1329,7 +1331,9 @@ def send_control_panel(paused: bool, action_done: str = "") -> None:
         "text": text,
         "reply_markup": control_reply_markup(paused),
     }
-    if message_id:
+    # Startup should create a fresh control panel every run, like the old behavior.
+    # Button clicks still try to edit the active panel to avoid unnecessary spam.
+    if message_id and not force_new:
         try:
             telegram_api("editMessageText", {**payload, "message_id": int(message_id)})
             return
@@ -1379,16 +1383,51 @@ def is_getupdates_conflict(error: Exception) -> bool:
     return "409" in error_text and "getupdates" in error_text
 
 
+def control_saved_offset() -> int:
+    try:
+        return max(0, int(load_control_state().get("control_update_offset", 0)))
+    except Exception:
+        return 0
+
+
+def delete_control_webhook_if_needed() -> None:
+    # getUpdates will not receive button clicks if a Telegram webhook is still attached.
+    # This call does not send messages and does not use Gemini/AI credits.
+    if not CONTROL_DELETE_WEBHOOK_ON_STARTUP:
+        return
+    try:
+        telegram_api("deleteWebhook", {"drop_pending_updates": False}, max_attempts=1)
+        logging.info("Control panel: webhook cleared, polling callbacks is active.")
+    except Exception as exc:
+        logging.warning("Control panel: could not clear webhook before polling: %s", exc)
+
+
+def ensure_control_panel_once_if_requested() -> None:
+    # Default is false, so the old button can keep working without sending a new one.
+    # Set CONTROL_CREATE_PANEL_IF_MISSING=1 only if you want the bot to create one panel when no saved id exists.
+    if not CONTROL_CREATE_PANEL_IF_MISSING:
+        return
+    state = load_control_state()
+    if state.get("control_message_id"):
+        return
+    send_control_panel(is_control_paused())
+
+
 def control_loop() -> None:
     if not CONTROL_CHAT_ID:
         return
-    offset = 0
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
     if CONTROL_SEND_PANEL_ON_STARTUP:
         try:
-            send_control_panel(is_control_paused())
+            send_control_panel(is_control_paused(), force_new=True)
         except Exception as exc:
             logging.warning("Control panel startup failed: %s", exc)
     else:
+        try:
+            ensure_control_panel_once_if_requested()
+        except Exception as exc:
+            logging.warning("Control panel create-if-missing failed: %s", exc)
         logging.info("Control panel startup send is disabled; existing button callbacks will still work.")
     while True:
         try:
@@ -1402,11 +1441,12 @@ def control_loop() -> None:
             )
             for update in response.get("result", []):
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
+                save_control_state(control_update_offset=offset)
                 process_control_update(update)
         except Exception as exc:
             if is_getupdates_conflict(exc):
                 logging.warning(
-                    "כפתורי השליטה כבויים בעותק הזה: טלגרם מזהה עוד עותק של הבוט שמאזין לכפתורים. הסריקה והשליחה לערוצים ממשיכות כרגיל."
+                    "כפתורי השליטה כבויים בעותק הזה: טלגרם מזהה עוד עותק של הבוט שמאזין לכפתורים או Webhook פעיל. עצור עותקים כפולים/נקה Webhook ואז הפעל שוב."
                 )
                 return
             logging.warning("Control panel polling failed: %s", exc)
@@ -3172,8 +3212,28 @@ def translate_quoted_author(text: str) -> str:
     return translated or cleaned
 
 
+
+# ====== PLAYER ROLE/POSITION SAFETY FIXES ======
+# Gemini/free translators sometimes infer a wrong position from a generic word
+# such as “forward”. These deterministic fixes run after translation and before
+# sending. Keep this list small and high-confidence.
+PLAYER_POSITION_FIXES = (
+    (r"חלוץ\s+(?:איברהימה\s+)?קונאטה", "בלם איברהימה קונאטה"),
+    (r"(?:איברהימה\s+)?קונאטה,?\s+החלוץ", "איברהימה קונאטה, הבלם"),
+    (r"(?:איברהימה\s+)?קונאטה\s+החלוץ", "איברהימה קונאטה הבלם"),
+    (r"forward\s+Ibrahima\s+Konat[ée]", "centre-back Ibrahima Konaté"),
+)
+
+
+def fix_known_player_positions(text: str) -> str:
+    value = text or ""
+    for pattern, replacement in PLAYER_POSITION_FIXES:
+        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
+    return value
+
 def tidy_translated_text(text: str) -> str:
     text = final_hebrew_polish(normalize_country_flags(html.unescape(text or "").strip()))
+    text = fix_known_player_positions(text)
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = remove_junk_tail_lines(text)
@@ -3316,6 +3376,179 @@ def build_message(
 
 
 
+
+# ====== FOOTBALL SMART RELEVANCE FILTER ======
+# Network-free editor gate. It runs before Gemini/video/Telegram and blocks low-value
+# football noise without relying on a manually-maintained player list.
+# Core rule: judge by club relevance + report strength + role type, not by player names.
+
+POPULAR_OR_RECENT_UCL_CLUB_PATTERNS = (
+    # England / global Premier League brands
+    r"\b(?:Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Newcastle|Aston Villa)\b",
+    # Spain
+    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid)\b",
+    # Germany / France
+    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|RB Leipzig|Leipzig|PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille)\b",
+    # Italy / Portugal / Netherlands
+    r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Atalanta|Lazio|Benfica|Porto|Sporting CP|Sporting Lisbon|Ajax|PSV|Feyenoord)\b",
+    # Globally relevant non-European / high-traffic clubs
+    r"\b(?:Al Hilal|Al-Hilal|Al Ittihad|Al-Ittihad|Al Nassr|Al-Nassr|Inter Miami)\b",
+    # Hebrew equivalents
+    r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה",
+    r"באיירן|דורטמונד|לברקוזן|לייפציג|פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל",
+    r"יובנטוס|אינטר|מילאן|נאפולי|רומא|אטאלנטה|לאציו|בנפיקה|פורטו|ספורטינג|אייאקס|פ.ס.וו|פיינורד",
+    r"אל[- ]?הילאל|אל[- ]?איתיחאד|אל[- ]?נאסר|אינטר מיאמי",
+)
+
+
+# For backroom/admin appointments, user wants ONLY the absolute biggest clubs:
+# Barcelona/Barça and Real Madrid. Other clubs remain popular for player/coach/transfer news,
+# but NOT for sporting/technical director or similar appointments.
+ELITE_ADMIN_CLUB_PATTERNS = (
+    r"\b(?:Real Madrid|Barcelona|Barca|Barça)\b",
+    r"ריאל מדריד|ברצלונה|בארסה",
+)
+
+# Smaller/mid-table clubs are NOT blocked automatically. They only get filtered when
+# the report is weak, administrative, or has no connection to a popular club.
+LOW_INTEREST_CLUB_PATTERNS = (
+    r"\b(?:Sampdoria|Parma|Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Salernitana|Bologna|Torino|Monza|Verona|Granada|Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Celta Vigo|Espanyol|Levante|Leganes|Nantes|Toulouse|Montpellier|Reims|Metz|Bochum|Augsburg|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Bournemouth|Brentford|Brighton|Fulham|Wolves|Everton|West Ham|Crystal Palace|Burnley|Leeds|Sunderland|Leicester|Southampton)\b",
+    r"סמפדוריה|פארמה|גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|בולוניה|טורינו|מונצה|ורונה|חטאפה|אוססונה|מיורקה|ראיו|אלאבס|סלטה|אספניול|נאנט|טולוז|מונפלייה|ריימס|בוכום|אוגסבורג|מיינץ|פרייבורג|ברנטפורד|ברייטון|פולהאם|וולבס|אברטון|ווסטהאם|קריסטל פאלאס|לידס|סנדרלנד|לסטר|סאות'המפטון",
+)
+
+# Non-playing staff roles. These are usually not urgent unless attached to a major club.
+ADMIN_OR_BACKROOM_ROLE_PATTERNS = (
+    r"\b(?:sporting director|sports director|technical director|technical manager|director of football|football director|head of recruitment|chief scout|recruitment director|technical area|technical chief|director deportivo|direttore sportivo|directeur sportif|academy director|youth director|club secretary|consultant|advisor|scout|head scout|data director|performance director|executive director|CEO|chairman|president)\b",
+    r"מנהל\s+(?:ספורטיבי|מקצועי|טכני|אקדמיה|נוער|גיוס|סקאוטינג|נתונים|ביצועים)|המנהל\s+(?:הספורטיבי|המקצועי|הטכני)|ראש\s+(?:מערך\s+)?(?:הסקאוטינג|גיוס|אקדמיה)|סקאוט|יועץ|מזכיר\s+המועדון|מנהל\s+הכדורגל|יו\"ר|נשיא|מנכ\"ל",
+)
+
+WEAK_INTEREST_PATTERNS = (
+    r"\b(?:interest|interested|monitoring|tracking|keeping tabs|admire|considering|could|might|eyeing|linked with|on the list|shortlist|inquired|enquired|exploring|watching|following)\b",
+    r"מתעניין|מתעניינת|הביע(?:ו)? עניין|עוקב(?:ת|ים)?|שוקל(?:ת|ים)?|עשוי|יכולה|מקושר|ברשימה|ברשימת המועמדים|בירר(?:ה|ו)?|בודק(?:ת|ים)?|נמצא במעקב",
+)
+
+STRONG_PLAYER_MOVE_PATTERNS = (
+    r"\b(?:official|confirmed|here we go|deal agreed|agreement reached|full agreement|verbal agreement|set to sign|set to join|close to signing|close to joining|medical|medical tests|contract signed|signs|joins|completed|done deal|bid accepted|release clause activated|loan agreed|permanent transfer|free agent)\b",
+    r"רשמי|אושר|הנה זה קורה|העסקה סוכמה|הושג סיכום|סיכום מלא|סיכום בעל פה|צפוי לחתום|צפוי להצטרף|קרוב לחתימה|קרוב להצטרף|בדיקות רפואיות|החוזה נחתם|חתם|יחתום|מצטרף|עסקה סגורה|ההצעה התקבלה|סעיף שחרור|שחקן חופשי|העברה קבועה|השאלה סוכמה",
+)
+
+COACH_IMPORTANT_PATTERNS = (
+    r"\b(?:head coach|manager|coach|appointed|set to be appointed|sacked|fired|dismissed|resigned|leaves role|new manager|new head coach)\b",
+    r"מאמן|מאמן ראשי|מונה|ימונה|צפוי להתמנות|פוטר|התפטר|עזב את תפקידו|מאמן חדש",
+)
+
+BIG_CLUB_CONTEXT_PATTERNS = (
+    # A small club can still be relevant if the player is described through a big club.
+    r"\b(?:former|ex|outgoing|current)\s+(?:Real Madrid|Barcelona|Barca|Barça|Liverpool|Manchester United|Man United|Manchester City|Man City|Arsenal|Chelsea|Tottenham|Bayern|PSG|Juventus|Inter|Milan|Napoli|Roma)\b",
+    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Liverpool|Manchester United|Man United|Manchester City|Man City|Arsenal|Chelsea|Tottenham|Bayern|PSG|Juventus|Inter|Milan|Napoli|Roma)\s+(?:defender|centre-back|center-back|midfielder|forward|striker|winger|goalkeeper|player|star)\b",
+    r"(?:שחקן|בלם|קשר|חלוץ|כנף|שוער)\s+(?:ריאל מדריד|ברצלונה|ליברפול|מנצ'סטר יונייטד|מנצ'סטר סיטי|ארסנל|צ'לסי|טוטנהאם|באיירן|פ\.ס\.ז|יובנטוס|אינטר|מילאן|נאפולי|רומא)",
+    r"(?:לשעבר|אקס|שחקן חופשי מ|עוזב את)\s+(?:ריאל מדריד|ברצלונה|ליברפול|מנצ'סטר יונייטד|מנצ'סטר סיטי|ארסנל|צ'לסי|טוטנהאם|באיירן|פ\.ס\.ז|יובנטוס|אינטר|מילאן|נאפולי|רומא)",
+)
+
+PURE_ADMIN_APPOINTMENT_PATTERNS = (
+    r"\b(?:appointed|set to be appointed|will become|new)\b.*\b(?:sporting director|technical director|director of football|chief scout|head of recruitment|advisor|consultant)\b",
+    r"(?:צפוי להתמנות|ימונה|מונה|מנהל חדש|המנהל החדש).{0,80}(?:מנהל\s+(?:טכני|מקצועי|ספורטיבי)|סקאוט|יועץ|ראש\s+גיוס|מנהל\s+הכדורגל)",
+)
+
+MIN_IMPORTANCE_SCORE_TO_SEND = 35
+MIN_IMPORTANCE_SCORE_TO_SEND_WEAK_INTEREST = 45
+
+
+def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
+    """Return (allowed, reason, score, signals) for football relevance.
+
+    This does not call Gemini and does not use a player-name database. It lets weak
+    reports through only when the report itself mentions a popular club or strong
+    big-club context. For sporting/technical/director/admin appointments specifically,
+    it allows only Barcelona/Barça or Real Madrid and blocks all other clubs.
+    """
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = clean_for_ai_translation(raw_text)
+    if not cleaned:
+        return False, "empty_after_clean", 0, ["empty"]
+
+    has_popular_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
+    has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
+    has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
+    has_admin_role = _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
+    has_weak_interest = _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
+    has_strong_move = _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+    has_coach_news = _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
+    has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
+    has_pure_admin_appointment = _matches_any(PURE_ADMIN_APPOINTMENT_PATTERNS, cleaned)
+
+    score = 0
+    signals: list[str] = []
+
+    if has_popular_club:
+        score += 45
+        signals.append("popular_club")
+    if has_elite_admin_club:
+        score += 20
+        signals.append("elite_admin_club")
+    if has_big_club_context:
+        score += 35
+        signals.append("big_club_context")
+    if has_strong_move:
+        score += 35
+        signals.append("strong_transfer_step")
+    if has_coach_news:
+        score += 25
+        signals.append("coach_news")
+    if has_weak_interest:
+        score -= 15
+        signals.append("weak_interest")
+    if has_low_interest_club:
+        score -= 20
+        signals.append("low_interest_club")
+    if has_admin_role:
+        score -= 45
+        signals.append("admin_or_backroom_role")
+    if has_pure_admin_appointment:
+        score -= 25
+        signals.append("pure_admin_appointment")
+
+    # Hard block: sporting/technical/professional director and other backroom/admin items
+    # are allowed ONLY for Barcelona/Barça or Real Madrid.
+    # Even popular clubs like Liverpool, United, City, Bayern, PSG, Milan, etc. are blocked
+    # for this specific category, per user preference. Player/coach/transfer news keeps
+    # using the wider popular-club list above.
+    if has_admin_role and not has_elite_admin_club:
+        return False, "admin_or_backroom_only_barca_real_allowed", score, signals
+
+    # Weak interest is allowed only when a popular club or explicit big-club context is present.
+    # This avoids needing a constantly-updated player list.
+    if has_weak_interest and not (has_popular_club or has_big_club_context):
+        return False, "weak_interest_without_popular_club_context", score, signals
+
+    # Smaller clubs are allowed for strong moves or head coach news, but blocked for vague/low-value items.
+    if has_low_interest_club and not (has_popular_club or has_big_club_context or has_strong_move or has_coach_news):
+        return False, "low_interest_club_not_important_enough", score, signals
+
+    threshold = MIN_IMPORTANCE_SCORE_TO_SEND_WEAK_INTEREST if has_weak_interest else MIN_IMPORTANCE_SCORE_TO_SEND
+    if score < threshold and not (has_popular_club or has_big_club_context or has_strong_move or has_coach_news):
+        return False, f"importance_score_too_low:{score}<{threshold}", score, signals
+
+    return True, "allowed", score, signals
+
+
+def football_importance_block_reason(post: Post) -> str:
+    allowed, reason, score, signals = football_relevance_decision(post)
+    if allowed:
+        logging.debug(
+            "מסנן חשיבות עבר: score=%s signals=%s @%s %s",
+            score,
+            ",".join(signals),
+            post.username,
+            post.link,
+        )
+        return ""
+    return f"{reason}; score={score}; signals={','.join(signals) or 'none'}"
+
 def pre_send_final_local_block_reason(post: Post) -> str:
     """Last cheap safety gate before any Gemini translation or video lookup.
 
@@ -3333,6 +3566,9 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "podcast_or_longform"
     if is_non_news_social_post(post):
         return "non_news_social"
+    importance_reason = football_importance_block_reason(post)
+    if importance_reason:
+        return importance_reason
     return ""
 
 def send_post(post: Post) -> dict[str, Any]:
@@ -3590,6 +3826,11 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         seen.update(post.dedupe_ids)
                         logging.info("דילוג מסנן: פוסט לא חדשותי/סטטיסטיקה בלבד מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         logging.info("דילוג: פוסט חברתי/אווירה בלי דיווח חדשותי מ-@%s לא נשלח: %s", username, post.link)
+                        continue
+                    importance_reason = football_importance_block_reason(post)
+                    if importance_reason:
+                        seen.update(post.dedupe_ids)
+                        logging.info("דילוג מסנן חשיבות: %s מ-@%s לא נשלח: %s | טקסט: %s", importance_reason, username, post.link, filtered_post_text_preview(post))
                         continue
                     duplicate_event = find_recent_duplicate_event(post, state)
                     if duplicate_event:
