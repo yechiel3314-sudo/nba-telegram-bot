@@ -1398,7 +1398,7 @@ def delete_control_webhook_if_needed() -> None:
     if not CONTROL_DELETE_WEBHOOK_ON_STARTUP:
         return
     try:
-        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+        telegram_api("deleteWebhook", {"drop_pending_updates": True})
         logging.debug("Control panel: webhook cleared, polling callbacks is active.")
     except Exception as exc:
         logging.debug("Control panel: could not clear webhook before polling: %s", exc)
@@ -1453,7 +1453,7 @@ def control_loop() -> None:
                 if now - last_conflict_cleanup > 30:
                     last_conflict_cleanup = now
                     try:
-                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True})
                     except Exception as cleanup_exc:
                         logging.warning("Control panel conflict cleanup failed: %s", cleanup_exc)
                 time.sleep(CONTROL_POLL_SECONDS)
