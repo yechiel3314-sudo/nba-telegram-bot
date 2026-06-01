@@ -1368,11 +1368,13 @@ def process_control_update(update: dict[str, Any]) -> None:
         return
     if data == "football_bot_off":
         save_control_state(True)
+        logging.info("Control panel: bot paused by button click.")
         if callback_id:
             answer_control_callback(callback_id, "הבוט כובה")
         send_control_panel(True, "הפעולה בוצעה בהצלחה: הבוט כובה.")
     elif data == "football_bot_on":
         save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
+        logging.info("Control panel: bot resumed by button click.")
         if callback_id:
             answer_control_callback(callback_id, "הבוט הופעל")
         send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
@@ -1396,7 +1398,7 @@ def delete_control_webhook_if_needed() -> None:
     if not CONTROL_DELETE_WEBHOOK_ON_STARTUP:
         return
     try:
-        telegram_api("deleteWebhook", {"drop_pending_updates": False}, max_attempts=1)
+        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
         logging.info("Control panel: webhook cleared, polling callbacks is active.")
     except Exception as exc:
         logging.warning("Control panel: could not clear webhook before polling: %s", exc)
@@ -1418,6 +1420,7 @@ def control_loop() -> None:
         return
     delete_control_webhook_if_needed()
     offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
     if CONTROL_SEND_PANEL_ON_STARTUP:
         try:
             send_control_panel(is_control_paused(), force_new=True)
@@ -1446,9 +1449,17 @@ def control_loop() -> None:
         except Exception as exc:
             if is_getupdates_conflict(exc):
                 logging.warning(
-                    "כפתורי השליטה כבויים בעותק הזה: טלגרם מזהה עוד עותק של הבוט שמאזין לכפתורים או Webhook פעיל. עצור עותקים כפולים/נקה Webhook ואז הפעל שוב."
+                    "כפתורי השליטה לא נקלטו כרגע: יש Webhook פעיל או עותק נוסף של הבוט מאזין ל-getUpdates. מנסה לנקות Webhook ולהמשיך. אם זה חוזר - ודא שרץ רק עותק אחד של הבוט."
                 )
-                return
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+                    except Exception as cleanup_exc:
+                        logging.warning("Control panel conflict cleanup failed: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
             logging.warning("Control panel polling failed: %s", exc)
             time.sleep(CONTROL_POLL_SECONDS)
 
@@ -1671,12 +1682,75 @@ def filtered_post_text_preview(post: Post, limit: int = 260) -> str:
     return trim(cleaned, limit) if cleaned else "(טקסט ריק)"
 
 
+
+# Early quote/interview rescue: keeps newsworthy "X said/told" reports when they
+# clearly include a top-5-league/big club plus transfer/future intent. This fixes
+# cases like a family/agent/player quote about wanting/being able to move to Napoli.
+EARLY_MAJOR_CLUB_CONTEXT_PATTERNS = (
+    r"\b(?:Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Newcastle|Aston Villa|West Ham|Brighton|Everton|Leicester|Crystal Palace|Wolves|Fulham|Bournemouth|Brentford|Nottingham Forest|Leeds|Sunderland|Burnley)\b",
+    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Sevilla|Valencia|Villarreal|Real Sociedad|Athletic Club|Athletic Bilbao|Real Betis|Girona|Celta Vigo|Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Espanyol|Levante|Leganes|Granada|Las Palmas|Valladolid)\b",
+    r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Lazio|Atalanta|Fiorentina|Torino|Bologna|Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Verona|Parma|Pisa|Cremonese)\b",
+    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|RB Leipzig|Leipzig|Eintracht Frankfurt|Mainz|Freiburg|Augsburg|Wolfsburg|Union Berlin|Hoffenheim|Werder Bremen|Hamburg|Koln|Köln|St Pauli|Heidenheim|Bochum)\b",
+    r"\b(?:PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille|Nice|Rennes|Lens|Strasbourg|Brest|Nantes|Toulouse|Montpellier|Reims|Metz|Auxerre|Angers|Lorient|Paris FC)\b",
+    r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה|ווסטהאם|ברייטון|אברטון|לסטר|קריסטל פאלאס|וולבס|פולהאם|בורנמות|ברנטפורד|נוטינגהאם|לידס|סנדרלנד|ברנלי",
+    r"יובנטוס|אינטר|מילאן|נאפולי|רומא|לאציו|אטאלנטה|פיורנטינה|טורינו|בולוניה|גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|ורונה|פארמה|פיזה|קרמונזה",
+    r"באיירן|דורטמונד|לברקוזן|לייפציג|פרנקפורט|מיינץ|פרייבורג|אוגסבורג|וולפסבורג|אוניון ברלין|הופנהיים|ורדר ברמן|המבורג|קלן|סט פאולי|בוכום",
+    r"פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל|ניס|רן|לאנס|שטרסבורג|ברסט|נאנט|טולוז|מונפלייה|ריימס|מץ|אוקזר|אנז'ה|לוריין",
+)
+
+# A quote/interview is rescued only when it has a REAL transfer/contract mechanism.
+# Do NOT rescue ordinary post-match interviews, admiration, vague interest, or "player ideas".
+EARLY_TRANSFER_FUTURE_NEWS_PATTERNS = (
+    r"\b(?:wants? to join|would like to join|dreams? of joining|keen to join|open to joining|ready to join|could join|could return|wants? to return|would return|return to|back to|wants? to leave|leave|leaving|transfer|move|sign|joining|proposal|offer|bid|talks|negotiations|release clause|loan|option to buy|buy option|purchase option|agreement|medical|contract|deal)\b",
+    r'רוצה\s+לעבור|רוצה\s+להצטרף|מעוניין\s+לעבור|מעוניין\s+להצטרף|חולם\s+לעבור|חולם\s+להצטרף|יכול\s+לעבור|יכול\s+להצטרף|יכול\s+לחזור|רוצה\s+לחזור|עשוי\s+לחזור|חזרה\s+ל|לחזור\s+ל|יעזוב|לעזוב|מעבר|העברה|חתימה|הצעה|שיחות|מו"מ|סעיף\s+שחרור|השאלה|אופציית\s+רכישה|אופציית\s+הקנייה|לא\s+הפעיל(?:ה|ו)?\s+את\s+אופציית\s+הרכישה|סיכום|בדיקות\s+רפואיות|חוזה|עסקה',
+)
+
+POST_MATCH_INTERVIEW_NOISE_PATTERNS = (
+    r"\b(?:post[- ]match|after the game|after the match|following the game|following the match|press conference|mixed zone|interview)\b",
+    r"אחרי\s+המשחק|לאחר\s+המשחק|בסיום\s+המשחק|מסיבת\s+עיתונאים|ראיון|בראיון|דיבר\s+אחרי|נשאל\s+אחרי",
+)
+
+def has_real_transfer_context(cleaned: str) -> bool:
+    if not cleaned:
+        return False
+    return any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in EARLY_TRANSFER_FUTURE_NEWS_PATTERNS)
+
+def is_post_match_interview_noise(cleaned: str) -> bool:
+    if not cleaned:
+        return False
+    has_interview_noise = any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in POST_MATCH_INTERVIEW_NOISE_PATTERNS)
+    return bool(has_interview_noise and not has_real_transfer_context(cleaned))
+
+def is_newsworthy_quote_or_interview_report(cleaned: str) -> bool:
+    """Do not treat every quote/interview as social noise.
+
+    If a top-5/big club is in the same report and the quote contains a clear
+    transfer/future/return/interest signal, it is a news report and should pass
+    to the football relevance filter.
+    """
+    if not cleaned:
+        return False
+    has_major_club = any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in EARLY_MAJOR_CLUB_CONTEXT_PATTERNS)
+    has_future_transfer_signal = has_real_transfer_context(cleaned)
+    if has_major_club and has_future_transfer_signal:
+        return True
+    return False
+
 def is_non_news_social_post(post: Post) -> bool:
     raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     cleaned = clean_for_ai_translation(raw_text)
     lowered = cleaned.lower()
     if not cleaned:
         return True
+
+    # Ordinary interviews/quotes after matches stay blocked unless they contain
+    # a concrete transfer/contract mechanism such as bid, offer, loan, option,
+    # clause, agreement, medical, wants to join/return/leave, etc.
+    if is_post_match_interview_noise(cleaned):
+        return True
+
+    if is_newsworthy_quote_or_interview_report(cleaned):
+        return False
 
     news_patterns = (
         r"\bbreaking\b",
@@ -1691,6 +1765,10 @@ def is_non_news_social_post(post: Post) -> bool:
         r"\bclause\b",
         r"\bloan\b",
         r"\btransfer\b",
+        r"\breturn(?:s|ed|ing)?\s+to\b",
+        r"\bwants?\s+to\s+(?:join|return|leave)\b",
+        r"\bcould\s+(?:join|return|leave)\b",
+        r"\bfuture\b",
         r"\bappointed\b",
         r"\bsacked\b",
         r"\binjury\b",
@@ -1700,7 +1778,7 @@ def is_non_news_social_post(post: Post) -> bool:
         r"\bcalled\s+up\b",
         r"\bsquad\b",
         r"\bnational\s+team\b",
-        r"הושג|סוכם|חתם|יחתום|מצטרף|יעבור|העברה|השאלה|חוזה|רשמי|בלעדי|פציעה|מונה|פוטר",
+        r"הושג|סוכם|חתם|יחתום|מצטרף|יעבור|העברה|השאלה|חוזה|רשמי|בלעדי|פציעה|מונה|פוטר|יכול לחזור|רוצה לחזור|לחזור ל|עתידו",
     )
     if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in news_patterns):
         return False
@@ -1734,7 +1812,9 @@ def is_non_news_social_post(post: Post) -> bool:
         r"אי אפשר להבין|לא יכול להבין|סטורי|אינסטגרם|ברכה|מחווה|תגובה|ציטוט|מסר|אגדה|כבוד|בראיון|אמר|אומר|נשאל|דיבר על|מדבר על",
     )
     if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in social_patterns):
-        return True
+        # A social/quote/interview format is allowed through only when it is
+        # clearly about transfers/contracts. Otherwise it is ordinary interview noise.
+        return not has_real_transfer_context(cleaned)
 
     words = re.findall(r"[A-Za-zא-ת0-9]+", cleaned)
     if post.image_urls and len(words) <= 14 and not post.video_urls:
@@ -3383,45 +3463,36 @@ def build_message(
 # Core rule: judge by club relevance + report strength + role type, not by player names.
 
 POPULAR_OR_RECENT_UCL_CLUB_PATTERNS = (
-    # Existing popular / UCL / global clubs
+    # All current/recent top-5 league clubs and clubs promoted/back to a top league are treated like popular clubs.
+    # This prevents important reports from Premier League / La Liga / Serie A / Bundesliga / Ligue 1 sides being blocked as "small".
+    r"\b(?:Brighton|Bournemouth|Brentford|Fulham|Wolves|Everton|West Ham|Crystal Palace|Nottingham Forest|Leeds|Sunderland|Leicester|Southampton|Burnley|Sheffield United|Ipswich|Luton|Aston Villa|Newcastle)\b",
+    r"\b(?:Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Bologna|Torino|Monza|Verona|Parma|Sampdoria|Pisa|Cremonese|Salernitana)\b",
+    r"\b(?:Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Alavés|Celta Vigo|Espanyol|Levante|Leganes|Leganés|Granada|Las Palmas|Valladolid|Girona)\b",
+    r"\b(?:Nantes|Toulouse|Montpellier|Reims|Metz|Nice|Rennes|Strasbourg|Lens|Brest|Auxerre|Angers|Lorient|Paris FC|Saint-Étienne|Saint Etienne)\b",
+    r"\b(?:Bochum|Augsburg|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Hamburg|Koln|Köln|Darmstadt|Holstein Kiel)\b",
+    r"ברייטון|בורנמות|ברנטפורד|פולהאם|וולבס|אברטון|ווסטהאם|קריסטל פאלאס|נוטינגהאם|לידס|סנדרלנד|לסטר|סאות'המפטון|ברנלי|אסטון וילה|ניוקאסל",
+    r"גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|בולוניה|טורינו|מונצה|ורונה|פארמה|סמפדוריה|פיזה|קרמונזה",
+    r"חטאפה|אוססונה|מיורקה|ראיו|אלאבס|סלטה|אספניול|לבאנטה|לגאנס|גרנאדה|לאס פאלמאס|ויאדוליד|ג'ירונה",
+    r"נאנט|טולוז|מונפלייה|ריימס|מץ|ניס|רן|שטרסבורג|לאנס|ברסט|אוקזר|אנז'ה|לוריין|פאריס FC|סנט אטיין",
+    r"בוכום|אוגסבורג|מיינץ|פרייבורג|היידנהיים|סט פאולי|ורדר ברמן|וולפסבורג|אוניון ברלין|הופנהיים|המבורג|קלן|דרמשטאדט|הולשטיין קיל",
+    r"\b(?:promoted|promotion|newly promoted|back in|back to|return to|returns to)\s+(?:the\s+)?(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\b",
+    r"\b(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\s+(?:newcomers|side|club|team)\b",
+    r"עלתה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)|חזרה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)",
+    # England / global Premier League brands
     r"\b(?:Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Newcastle|Aston Villa)\b",
+    # Spain
     r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid)\b",
+    # Germany / France
     r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|RB Leipzig|Leipzig|PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille)\b",
+    # Italy / Portugal / Netherlands
     r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Atalanta|Lazio|Benfica|Porto|Sporting CP|Sporting Lisbon|Ajax|PSV|Feyenoord)\b",
+    # Globally relevant non-European / high-traffic clubs
     r"\b(?:Al Hilal|Al-Hilal|Al Ittihad|Al-Ittihad|Al Nassr|Al-Nassr|Inter Miami)\b",
-
-    # ===== Top 5 leagues: treat as popular for relevance sending =====
-    # Premier League / recent promoted-return context
-    r"\b(?:Brighton|Brighton and Hove Albion|Bournemouth|AFC Bournemouth|Brentford|Fulham|Wolves|Wolverhampton|Everton|West Ham|West Ham United|Crystal Palace|Nottingham Forest|Leeds|Leeds United|Sunderland|Leicester|Leicester City|Southampton|Burnley|Sheffield United|Ipswich|Ipswich Town|Luton|Luton Town|Norwich|Norwich City|Middlesbrough|West Brom|West Bromwich Albion)\b",
-    # La Liga / recent promoted-return context
-    r"\b(?:Sevilla|Valencia|Villarreal|Real Sociedad|Athletic Club|Athletic Bilbao|Real Betis|Betis|Girona|Osasuna|Getafe|Mallorca|Rayo Vallecano|Celta Vigo|Celta|Alaves|Alavés|Espanyol|Las Palmas|Leganes|Leganés|Levante|Valladolid|Granada|Cadiz|Cádiz|Eibar|Elche|Deportivo La Coruna|Deportivo La Coruña|Real Oviedo|Racing Santander|Sporting Gijon|Sporting Gijón)\b",
-    # Serie A / recent promoted-return context
-    r"\b(?:Fiorentina|Torino|Bologna|Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Monza|Verona|Hellas Verona|Parma|Sampdoria|Salernitana|Spezia|Pisa|Cremonese|Frosinone|Venezia|Bari|Palermo|Catanzaro|Cesena|Modena)\b",
-    # Bundesliga / recent promoted-return context
-    r"\b(?:Eintracht Frankfurt|Frankfurt|Stuttgart|VfB Stuttgart|Freiburg|Mainz|Mainz 05|Augsburg|Bochum|Heidenheim|St Pauli|St\. Pauli|Werder Bremen|Bremen|Wolfsburg|Union Berlin|Hoffenheim|Borussia Monchengladbach|Borussia Mönchengladbach|Gladbach|Koln|Köln|Cologne|Hamburg|HSV|Holstein Kiel|Darmstadt|Schalke|Hertha Berlin|Fortuna Dusseldorf|Fortuna Düsseldorf|Hannover|Karlsruhe|Nurnberg|Nürnberg)\b",
-    # Ligue 1 / recent promoted-return context
-    r"\b(?:Nice|Lille|Rennes|Lens|Brest|Strasbourg|Nantes|Toulouse|Montpellier|Reims|Metz|Auxerre|Angers|Lorient|Paris FC|Saint-Etienne|Saint Etienne|Saint-Étienne|ASSE|Le Havre|Clermont|Troyes|Bordeaux|Caen|Bastia|Guingamp)\b",
-
-    # Hebrew equivalents - existing popular clubs
+    # Hebrew equivalents
     r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה",
     r"באיירן|דורטמונד|לברקוזן|לייפציג|פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל",
     r"יובנטוס|אינטר|מילאן|נאפולי|רומא|אטאלנטה|לאציו|בנפיקה|פורטו|ספורטינג|אייאקס|פ.ס.וו|פיינורד",
     r"אל[- ]?הילאל|אל[- ]?איתיחאד|אל[- ]?נאסר|אינטר מיאמי",
-
-    # Hebrew equivalents - top 5 leagues / promoted-return context
-    r"ברייטון|בורנמות|בורנמות'|ברנטפורד|פולהאם|וולבס|וולברהמפטון|אברטון|ווסטהאם|ווסט האם|קריסטל פאלאס|נוטינגהאם פורסט|לידס|סנדרלנד|לסטר|סאות'המפטון|ברנלי|שפילד יונייטד|איפסוויץ|לוטון|נוריץ|מידלסברו|ווסט ברום",
-    r"סביליה|ולנסיה|ויאריאל|ריאל סוסיאדד|אתלטיק בילבאו|בילבאו|בטיס|ג'ירונה|אוססונה|חטאפה|מיורקה|ראיו|ראיו וייקאנו|סלטה|סלטה ויגו|אלאבס|אספניול|לאס פלמאס|לגאנס|לבאנטה|ויאדוליד|גרנאדה|קאדיס|אייבר|אלצ'ה|דפורטיבו|אוביידו|ראסינג סנטנדר|ספורטינג חיחון",
-    r"פיורנטינה|טורינו|בולוניה|גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|מונצה|ורונה|פארמה|סמפדוריה|סלרניטנה|ספציה|פיזה|קרמונזה|פרוזינונה|ונציה|בארי|פאלרמו|קטנזארו|צ'זנה|מודנה",
-    r"פרנקפורט|שטוטגרט|פרייבורג|מיינץ|אוגסבורג|בוכום|היידנהיים|סט פאולי|ורדר ברמן|ברמן|וולפסבורג|אוניון ברלין|הופנהיים|גלדבאך|קלן|המבורג|הולשטיין קיל|דרמשטאדט|שאלקה|הרטה ברלין|פורטונה דיסלדורף|האנובר|קרלסרוהה|נירנברג",
-    r"ניס|רן|לאנס|ברסט|שטרסבורג|נאנט|טולוז|מונפלייה|ריימס|מץ|אוקזר|אנג'ה|לוריין|פאריס FC|פריז FC|סן אטיין|לה האבר|קלרמון|טרואה|בורדו|קאן|באסטיה|גנגאן",
-
-    # Context: a post says a club is in / returned / promoted to a top league,
-    # even if the club name itself is not in the static lists yet.
-    r"\b(?:promoted|promotion|newly promoted|back in|return to|returns to|returned to|won promotion to|secured promotion to)\s+(?:the\s+)?(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\b",
-    r"\b(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\s+(?:newcomers|new boys|side|club|team)\b",
-    r"\b(?:joins|signs for|set to join|close to joining|targeted by|wanted by|interest from|bid from|offer from)\s+(?:a\s+)?(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\s+(?:club|side|team)\b",
-    r"עלתה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)|חזרה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)",
-    r"קבוצה\s+(?:מה|מ)(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)|מועדון\s+(?:מה|מ)(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)",
 )
 
 
@@ -3436,8 +3507,10 @@ ELITE_ADMIN_CLUB_PATTERNS = (
 # Smaller/mid-table clubs are NOT blocked automatically. They only get filtered when
 # the report is weak, administrative, or has no connection to a popular club.
 LOW_INTEREST_CLUB_PATTERNS = (
-    r"\b(?:Sampdoria|Parma|Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Salernitana|Bologna|Torino|Monza|Verona|Granada|Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Celta Vigo|Espanyol|Levante|Leganes|Nantes|Toulouse|Montpellier|Reims|Metz|Bochum|Augsburg|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Bournemouth|Brentford|Brighton|Fulham|Wolves|Everton|West Ham|Crystal Palace|Burnley|Leeds|Sunderland|Leicester|Southampton)\b",
-    r"סמפדוריה|פארמה|גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|בולוניה|טורינו|מונצה|ורונה|חטאפה|אוססונה|מיורקה|ראיו|אלאבס|סלטה|אספניול|נאנט|טולוז|מונפלייה|ריימס|בוכום|אוגסבורג|מיינץ|פרייבורג|ברנטפורד|ברייטון|פולהאם|וולבס|אברטון|ווסטהאם|קריסטל פאלאס|לידס|סנדרלנד|לסטר|סאות'המפטון",
+    # Do NOT put top-5-league clubs here. They are handled as popular clubs above.
+    # Keep this list only for genuinely small/non-top-5/non-UCL contexts if you add any later.
+    r"\b(?:FC Vaduz|Vaduz|Dudelange|Lincoln Red Imps|Flora Tallinn|Klaksvik|KÍ Klaksvík|Ballkani)\b",
+    r"ואדוץ|דודלאנג'|לינקולן רד אימפס|פלורה טאלין|קלאקסוויק|בלקאני",
 )
 
 # Non-playing staff roles. These are usually not urgent unless attached to a major club.
@@ -3449,6 +3522,20 @@ ADMIN_OR_BACKROOM_ROLE_PATTERNS = (
 WEAK_INTEREST_PATTERNS = (
     r"\b(?:interest|interested|monitoring|tracking|keeping tabs|admire|considering|could|might|eyeing|linked with|on the list|shortlist|inquired|enquired|exploring|watching|following)\b",
     r"מתעניין|מתעניינת|הביע(?:ו)? עניין|עוקב(?:ת|ים)?|שוקל(?:ת|ים)?|עשוי|יכולה|מקושר|ברשימה|ברשימת המועמדים|בירר(?:ה|ו)?|בודק(?:ת|ים)?|נמצא במעקב",
+)
+
+# Weak/quote reports around big clubs should pass only when the text itself is
+# connected to transfer/future mechanics. This keeps items like "his son says
+# he can return to Napoli after the option was not activated", but blocks vague
+# player ideas/lists/admiration with no concrete transfer angle.
+TRANSFER_LINKED_WEAK_PATTERNS = (
+    r"\b(?:wants? to join|would like to join|keen to join|open to joining|dreams? of joining|wants? to return|could return|can return|expected to return|set to return|return to|back to|wants? to leave|could leave|future|transfer|move|signing|sign|join|loan|option to buy|buy option|purchase option|clause|release clause|bid|offer|proposal|talks|negotiations|agreement|medical|deal)\b",
+    r"רוצה\s+לעבור|רוצה\s+להצטרף|מעוניין\s+לעבור|מעוניין\s+להצטרף|חולם\s+לעבור|חולם\s+להצטרף|רוצה\s+לחזור|יכול\s+לחזור|יכולה\s+לחזור|צפוי\s+לחזור|עשוי\s+לחזור|חזרה\s+ל|לחזור\s+ל|רוצה\s+לעזוב|יכול\s+לעזוב|עתידו|עתיד\s+ב|מעבר|העברה|חתימה|יחתום|יצטרף|השאלה|אופציית\s+רכישה|אופציית\s+הקנייה|לא\s+הפעיל(?:ה|ו)?\s+את\s+אופציית\s+הרכישה|סעיף\s+שחרור|הצעה|שיחות|מו\"מ|סיכום|בדיקות\s+רפואיות|עסקה",
+)
+
+VAGUE_PLAYER_IDEA_PATTERNS = (
+    r"\b(?:idea|option|profile|candidate|shortlist|on the list|monitoring|tracking|watching|following|admire|appreciate|considering|exploring)\b",
+    r"רעיון|אופציה|פרופיל|מועמד|ברשימה|ברשימת\s+המועמדים|עוקב(?:ת|ים)?|נמצא\s+במעקב|מעריכ(?:ה|ים)|שוקל(?:ת|ים)?|בודק(?:ת|ים)?",
 )
 
 STRONG_PLAYER_MOVE_PATTERNS = (
@@ -3500,6 +3587,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
     has_admin_role = _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
     has_weak_interest = _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
+    has_transfer_linked_weak = _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
+    has_vague_player_idea = _matches_any(VAGUE_PLAYER_IDEA_PATTERNS, cleaned)
     has_strong_move = _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
     has_coach_news = _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
     has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
@@ -3510,7 +3599,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
 
     if has_popular_club:
         score += 45
-        signals.append("popular_or_top5_club")
+        signals.append("popular_club")
     if has_elite_admin_club:
         score += 20
         signals.append("elite_admin_club")
@@ -3520,6 +3609,12 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if has_strong_move:
         score += 35
         signals.append("strong_transfer_step")
+    if has_transfer_linked_weak:
+        score += 20
+        signals.append("transfer_linked_weak_report")
+    if has_vague_player_idea:
+        score -= 20
+        signals.append("vague_player_idea")
     if has_coach_news:
         score += 25
         signals.append("coach_news")
@@ -3545,9 +3640,15 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "admin_or_backroom_only_barca_real_allowed", score, signals
 
     # Weak interest is allowed only when a popular club or explicit big-club context is present.
-    # This avoids needing a constantly-updated player list.
+    # In addition, with popular clubs we still require an actual transfer/future signal.
+    # This blocks vague "player idea / profile / monitoring" posts, but sends reports like
+    # "can return to Napoli", "option to buy not activated", "wants to join/leave".
     if has_weak_interest and not (has_popular_club or has_big_club_context):
         return False, "weak_interest_without_popular_club_context", score, signals
+    if has_weak_interest and has_vague_player_idea and not (has_transfer_linked_weak or has_strong_move or has_coach_news):
+        return False, "vague_player_idea_without_transfer_link", score, signals
+    if has_weak_interest and (has_popular_club or has_big_club_context) and not (has_transfer_linked_weak or has_strong_move or has_coach_news):
+        return False, "weak_interest_popular_club_but_no_transfer_link", score, signals
 
     # Smaller clubs are allowed for strong moves or head coach news, but blocked for vague/low-value items.
     if has_low_interest_club and not (has_popular_club or has_big_club_context or has_strong_move or has_coach_news):
