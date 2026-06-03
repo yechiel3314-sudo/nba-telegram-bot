@@ -375,6 +375,24 @@ PODCAST_BLOCK_PATTERNS = (
     r"לצפייה\s+בפרק",
     r"לצפייה\s+בפודקאסט",
     r"פרק\s+חדש",
+    # Strong Hebrew/transliterated podcast spellings and common RSS/Gemini distortions.
+    r"פוד\s*קאסט",
+    r"פודקסט",
+    r"פודקאסטים",
+    r"פודקראסט",
+    r"פוד\s*קראסט",
+    r"פרקקאסט",
+    r"פרקאסט",
+    r"פוד\s+חדש",
+    r"פודק\s+חדש",
+    r"פרק\s+של\s+הפודקאסט",
+    r"בפוד",
+    r"בפודקאסט",
+    r"בפודקסט",
+    r"בפודקראסט",
+    r"on\s+the\s+pod(?:cast)?\b",
+    r"new\s+pod(?:cast)?\b",
+    r"pod(?:cast)?\s+episode",
 )
 
 PODCAST_DOMAINS = (
@@ -1686,8 +1704,9 @@ def has_linkish_text(text: str) -> bool:
 
 def is_podcast_or_longform_post(post: Post) -> bool:
     raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
-    lowered = raw_text.lower()
-    has_podcast_phrase = any(re.search(pattern, raw_text, re.IGNORECASE) for pattern in PODCAST_BLOCK_PATTERNS)
+    normalized_text = normalize_country_flags(raw_text)
+    lowered = normalized_text.lower()
+    has_podcast_phrase = any(re.search(pattern, normalized_text, re.IGNORECASE) for pattern in PODCAST_BLOCK_PATTERNS)
     has_podcast_domain = any(domain in lowered for domain in PODCAST_DOMAINS)
     has_youtube = "youtube.com" in lowered or "youtu.be" in lowered
     has_longform_youtube_hint = has_youtube and any(
@@ -1699,12 +1718,19 @@ def is_podcast_or_longform_post(post: Post) -> bool:
             "watch the full",
             "listen",
             "פודקאסט",
+            "פודקסט",
+            "פודקראסט",
+            "פרקאסט",
+            "פרקקאסט",
             "האזינו",
             "פרק מלא",
             "הפרק המלא",
         )
     )
-    return (has_linkish_text(raw_text) and has_podcast_phrase) or has_podcast_domain or has_longform_youtube_hint
+    # Podcast/longform posts should be blocked even when the RSS text does not expose
+    # the external link. Previously we required a visible link, so posts such as
+    # "פרקאסט חדש ..." could slip through.
+    return has_podcast_phrase or has_podcast_domain or has_longform_youtube_hint
 
 
 def is_link_only_or_details_post(post: Post) -> bool:
