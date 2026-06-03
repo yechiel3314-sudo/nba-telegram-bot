@@ -47,11 +47,18 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN",
-    "8795392686:AAFElKo3sML_dqA9YaVz2iArTUoYGcGgBuI",
-)
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1003918247986")
+# Security: never hardcode Telegram tokens or chat IDs in the source code.
+# This NBA forwarder uses the same Telegram bot token as the football bot,
+# but sends to a separate NBA target chat/channel.
+TELEGRAM_BOT_TOKEN = (
+    os.environ.get("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE")
+    or os.environ.get("NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE")
+    or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+).strip()
+TELEGRAM_CHAT_ID = (
+    os.environ.get("NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE")
+    or os.environ.get("TELEGRAM_CHAT_ID", "")
+).strip()
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -120,6 +127,7 @@ MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
 MIN_SECONDS_BETWEEN_TELEGRAM_POSTS = 3
+BOT_HEARTBEAT_LOG_EVERY_SECONDS = int(os.environ.get("NETO_SPORT_NBA_NEWS_HEARTBEAT_LOG_EVERY_SECONDS", "300"))
 MAX_POST_AGE_SECONDS = 30 * 60
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
@@ -3646,9 +3654,15 @@ def save_state(state: dict[str, list[str]]) -> None:
 
 def validate_settings() -> None:
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
-        raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
+        raise ValueError(
+            "Missing Telegram token. Set NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE "
+            "or NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE in Railway Variables."
+        )
     if not TELEGRAM_CHAT_ID:
-        raise ValueError("Put your Telegram group chat ID in TELEGRAM_CHAT_ID")
+        raise ValueError(
+            "Missing NBA Telegram target chat ID. Set NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE "
+            "in Railway Variables."
+        )
     if not X_ACCOUNTS:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
@@ -3821,8 +3835,15 @@ def main() -> None:
 
     startup_cycle = True
     skipped_for_shabbat = False
+    last_heartbeat_log_ts = 0.0
     while True:
         cycle_started = time.time()
+        if (
+            BOT_HEARTBEAT_LOG_EVERY_SECONDS > 0
+            and cycle_started - last_heartbeat_log_ts >= BOT_HEARTBEAT_LOG_EVERY_SECONDS
+        ):
+            logging.info("✅ בוט ה-NBA עדיין עובד")
+            last_heartbeat_log_ts = cycle_started
         try:
             if is_shabbat_now():
                 if not skipped_for_shabbat:
