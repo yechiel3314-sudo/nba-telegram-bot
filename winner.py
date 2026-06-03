@@ -144,6 +144,7 @@ ACCOUNT_DISPLAY_NAMES = {
 
 TARGET_LANGUAGE = "he"
 CHECK_EVERY_SECONDS = 5
+HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
@@ -167,7 +168,7 @@ CONTROL_CHAT_ID = required_env("NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_I
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
-CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
+CONTROL_SEND_PANEL_ON_STARTUP = True  # שולח כפתורי שליטה חדשים בכל הרצה של הבוט
 CONTROL_CREATE_PANEL_IF_MISSING = os.environ.get("CONTROL_CREATE_PANEL_IF_MISSING", "0") == "1"
 CONTROL_DELETE_WEBHOOK_ON_STARTUP = os.environ.get("CONTROL_DELETE_WEBHOOK_ON_STARTUP", "1") == "1"
 SHABBAT_MODE_ENABLED = True
@@ -4476,8 +4477,12 @@ def main() -> None:
     startup_cycle = True
     skipped_for_shabbat = False
     paused_logged = False
+    last_heartbeat_log_ts = 0.0
     while True:
         cycle_started = time.time()
+        if cycle_started - last_heartbeat_log_ts >= HEARTBEAT_LOG_SECONDS:
+            logging.info("✅ בוט הכדורגל עדיין עובד")
+            last_heartbeat_log_ts = cycle_started
         try:
             control_state = load_control_state()
             if bool(control_state.get("paused", False)):
