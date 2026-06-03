@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -47,13 +48,25 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN",
-    "8480434397:AAF8ay6JxuYsf7ytVOLG73bVJiJQHq8CMx4",
-)
-TELEGRAM_CHAT_IDS = [
-    "-1002272784260",
-]
+# Telegram secrets are intentionally NOT hardcoded in this file.
+# Set these in Railway -> Variables.
+def required_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def required_env_list(name: str) -> list[str]:
+    raw_value = required_env(name)
+    values = [item.strip() for item in raw_value.split(",") if item.strip()]
+    if not values:
+        raise RuntimeError(f"Environment variable {name} must contain at least one value")
+    return values
+
+
+TELEGRAM_BOT_TOKEN = required_env("NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE")
+TELEGRAM_CHAT_IDS = required_env_list("NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE")
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -114,7 +127,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "MatteMoretto": "מתאו מורטו - ספרד",
     "ffpolo": "פרננדו פולו - ברצלונה",
     "gerardromero": "ג'ראד רומרו - ברצלונה",
-    "AranchaMOBILE": "ארנצ'ה רודריגז - ריאל מדריד",
+    "AranchaMOBILE": "ארנצ'ה רודריגס - ריאל מדריד",
     "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
     "AlfredoPedulla": "אלפרדו פדולה - איטליה",
     "Plettigoal": "פלוריאן פלטנברג - גרמניה",
@@ -150,11 +163,11 @@ NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
-CONTROL_CHAT_ID = "-1003924267158"
+CONTROL_CHAT_ID = required_env("NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE")
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
-CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "1") == "1"
+CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
 CONTROL_CREATE_PANEL_IF_MISSING = os.environ.get("CONTROL_CREATE_PANEL_IF_MISSING", "0") == "1"
 CONTROL_DELETE_WEBHOOK_ON_STARTUP = os.environ.get("CONTROL_DELETE_WEBHOOK_ON_STARTUP", "1") == "1"
 SHABBAT_MODE_ENABLED = True
@@ -244,15 +257,24 @@ COUNTRY_CODE_FLAGS = {
 
 COUNTRY_FLAG_ALIAS_PATTERNS = {
     # Gemini sometimes keeps ISO country codes as Hebrew/phonetic letters instead of emoji.
-    # Add more aliases here if you ever see another code survive translation in text form.
-    "TR": (
-        r"(?<![א-תA-Za-z])טי\s*[-.־]?\s*אר(?![א-תA-Za-z])",
-        r"(?<![א-תA-Za-z])טי\s*[-.־]?\s*ר(?![א-תA-Za-z])",
-    ),
-    "GE": (
-        r"(?<![א-תA-Za-z])ג׳?י\s*[-.־]?\s*אי(?![א-תA-Za-z])",
-        r"(?<![א-תA-Za-z])גי\s*[-.־]?\s*אי(?![א-תA-Za-z])",
-    ),
+    # This list catches normal, spaced and translated-looking country-code leftovers.
+    # The flag emoji itself is preserved; only the extra letters are converted/removed.
+    "TR": (r"(?<![א-תA-Za-z])טי\s*[-.־]?\s*אר(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])טי\s*[-.־]?\s*ר(?![א-תA-Za-z])"),
+    "GE": (r"(?<![א-תA-Za-z])ג׳?י\s*[-.־]?\s*אי(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])גי\s*[-.־]?\s*אי(?![א-תA-Za-z])"),
+    "IT": (r"(?<![א-תA-Za-z])אי\s*[-.־]?\s*טי(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])איי\s*[-.־]?\s*טי(?![א-תA-Za-z])"),
+    "ES": (r"(?<![א-תA-Za-z])אי\s*[-.־]?\s*אס(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])איי\s*[-.־]?\s*אס(?![א-תA-Za-z])"),
+    "FR": (r"(?<![א-תA-Za-z])אף\s*[-.־]?\s*אר(?![א-תA-Za-z])",),
+    "DE": (r"(?<![א-תA-Za-z])די\s*[-.־]?\s*אי(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])דה\s*[-.־]?\s*אי(?![א-תA-Za-z])"),
+    "PT": (r"(?<![א-תA-Za-z])פי\s*[-.־]?\s*טי(?![א-תA-Za-z])",),
+    "NL": (r"(?<![א-תA-Za-z])אן\s*[-.־]?\s*אל(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])אנ\s*[-.־]?\s*אל(?![א-תA-Za-z])"),
+    "BE": (r"(?<![א-תA-Za-z])בי\s*[-.־]?\s*אי(?![א-תA-Za-z])",),
+    "BR": (r"(?<![א-תA-Za-z])בי\s*[-.־]?\s*אר(?![א-תA-Za-z])",),
+    "AR": (r"(?<![א-תA-Za-z])איי?\s*[-.־]?\s*אר(?![א-תA-Za-z])",),
+    "GB": (r"(?<![א-תA-Za-z])ג׳?י\s*[-.־]?\s*בי(?![א-תA-Za-z])",),
+    "US": (r"(?<![א-תA-Za-z])יו\s*[-.־]?\s*אס(?![א-תA-Za-z])",),
+    "MA": (r"(?<![א-תA-Za-z])אם\s*[-.־]?\s*איי?(?![א-תA-Za-z])",),
+    "SN": (r"(?<![א-תA-Za-z])אס\s*[-.־]?\s*אן(?![א-תA-Za-z])",),
+    "NG": (r"(?<![א-תA-Za-z])אן\s*[-.־]?\s*ג׳?י(?![א-תA-Za-z])",),
 }
 
 
@@ -263,7 +285,9 @@ def normalize_country_flags(text: str) -> str:
     instead of the flag. This runs before translation and again after translation,
     including support for hidden RTL marks and spaced codes like T R / T-R / T.R.
     """
-    text = text or ""
+    text = unicodedata.normalize("NFKC", text or "")
+    # NFKC converts styled/full-width Latin letters such as 𝐓𝐑 / ＴＲ into normal TR,
+    # so the next regexes can remove/convert them while keeping the flag emoji.
     invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
     separator = r"[\s\u00a0._/\-־]*"
 
@@ -423,7 +447,7 @@ SELF_QUOTE_ALIASES = {
     "MatteMoretto": ["Matteo Moretto", "Matte Moretto", "מתאו מורטו", "מתאו מורטו - ספרד"],
     "ffpolo": ["Fernando Polo", "פרננדו פולו"],
     "gerardromero": ["Gerard Romero", "ג'ראד רומרו", "חרארד רומרו", "ז'ראר רומרו"],
-    "AranchaMOBILE": ["Arancha Rodríguez", "Arancha Rodriguez", "ארנצ'ה רודריגז"],
+    "AranchaMOBILE": ["Arancha Rodríguez", "Arancha Rodriguez", "ארנצ'ה רודריגס", "ארנצ'ה רודריגז"],
     "JLSanchez78": ["José Luis Sánchez", "Jose Luis Sanchez", "חוסה לואיס סאנצ'ס"],
     "AlfredoPedulla": ["Alfredo Pedullà", "Alfredo Pedulla", "אלפרדו פדולה", "אלפרהדו פדולה"],
     "Plettigoal": ["Florian Plettenberg", "Florian Pletti", "פלוריאן פלטנברג", "פלוריאן פחלטנברג"],
@@ -607,6 +631,79 @@ TEAM_REPLACEMENTS = {
     "THFC": "טוטנהאם",
     "FCB": "ברצלונה",
 }
+
+
+
+# Extra club abbreviations / aliases. These help both filtering and Hebrew output.
+# Important: FCB can mean Barcelona or Bayern, so it is handled mainly by the allow-list matcher,
+# while more explicit forms such as FC Bayern / Barça are preferred for translation.
+TEAM_REPLACEMENTS.update(
+    {
+        "MUFC": "מנצ'סטר יונייטד",
+        "MCFC": "מנצ'סטר סיטי",
+        "LFC": "ליברפול",
+        "CFC": "צ'לסי",
+        "AFC": "ארסנל",
+        "THFC": "טוטנהאם",
+        "NUFC": "ניוקאסל",
+        "AVFC": "אסטון וילה",
+        "WHUFC": "ווסטהאם",
+        "BHAFC": "ברייטון",
+        "EFC": "אברטון",
+        "BVB": "בורוסיה דורטמונד",
+        "B04": "באייר לברקוזן",
+        "RBL": "רד בול לייפציג",
+        "SGE": "איינטרכט פרנקפורט",
+        "FC Bayern": "באיירן מינכן",
+        "FCBayern": "באיירן מינכן",
+        "RMA": "ריאל מדריד",
+        "Atleti": "אתלטיקו מדריד",
+        "ATM": "אתלטיקו מדריד",
+        "Athletic Bilbao": "אתלטיק בילבאו",
+        "Real Sociedad": "ריאל סוסיאדד",
+        "La Real": "ריאל סוסיאדד",
+        "Villarreal CF": "ויאריאל",
+        "ACM": "מילאן",
+        "A.C. Milan": "מילאן",
+        "Internazionale": "אינטר",
+        "Inter Miami CF": "אינטר מיאמי",
+        "OM": "מארסיי",
+        "Olympique Marseille": "מארסיי",
+        "Olympique Lyon": "ליון",
+        "OL": "ליון",
+        "LOSC": "ליל",
+        "RC Lens": "לאנס",
+        "RCL": "לאנס",
+        "AS Monaco": "מונאקו",
+        "ASM": "מונאקו",
+        "SL Benfica": "בנפיקה",
+        "Benfica Lisbon": "בנפיקה ליסבון",
+        "Sporting CP": "ספורטינג ליסבון",
+        "Sporting Lisbon": "ספורטינג ליסבון",
+        "PSV Eindhoven": "פ.ס.וו איינדהובן",
+        "PSV": "פ.ס.וו",
+        "CR Flamengo": "פלמנגו",
+        "Flamengo": "פלמנגו",
+        "Palmeiras": "פלמייראס",
+        "Sao Paulo": "סאו פאולו",
+        "São Paulo": "סאו פאולו",
+        "Boca Juniors": "בוקה ג'וניורס",
+        "River Plate": "ריבר פלייט",
+        "Al Nassr": "אל-נאסר",
+        "Al-Nassr": "אל-נאסר",
+        "Al Hilal": "אל-הילאל",
+        "Al-Hilal": "אל-הילאל",
+        "Al Ahli": "אל-אהלי",
+        "Al-Ahli": "אל-אהלי",
+        "Galatasaray": "גלאטסראיי",
+        "Fenerbahce": "פנרבחצ'ה",
+        "Fenerbahçe": "פנרבחצ'ה",
+        "Club Brugge": "קלאב ברוז'",
+        "Red Star Belgrade": "הכוכב האדום",
+        "Crvena Zvezda": "הכוכב האדום",
+        "Botafogo": "בוטאפוגו",
+    }
+)
 
 ENTITY_CONFLICT_GROUPS = [
     {
@@ -1824,7 +1921,7 @@ def is_non_news_social_post(post: Post) -> bool:
 
 # ====== SMART FILTERS: FLAGS, WOMEN/WNBA, DUPLICATE NEWS ======
 RECENT_NEWS_STATE_KEY = "__recent_news_events__"
-RECENT_NEWS_WINDOW_SECONDS = 2 * 60 * 60
+RECENT_NEWS_WINDOW_SECONDS = 8 * 60 * 60
 
 SOURCE_PRIORITY = {
     "FabrizioRomano": 100,
@@ -1887,8 +1984,14 @@ NEWS_DUP_ACTION_WORDS = {
 
 
 def strip_country_code_leftovers_near_flags(text: str) -> str:
-    """Keep the flag emoji and remove its duplicated ISO letters around it."""
-    text = text or ""
+    """Keep the flag emoji and remove duplicated ISO/transliterated country-code leftovers.
+
+    Gemini sometimes turns a flag/ISO marker into Hebrew phonetics such as
+    "טי אר" next to 🇹🇷. This keeps the emoji and removes the junk letters.
+    """
+    text = unicodedata.normalize("NFKC", text or "")
+    # NFKC converts styled/full-width Latin letters such as 𝐓𝐑 / ＴＲ into normal TR,
+    # so the next regexes can remove/convert them while keeping the flag emoji.
     invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
     separator = r"[\s\u00a0._/\-־]*"
     if "COUNTRY_CODE_FLAGS" not in globals():
@@ -1899,6 +2002,38 @@ def strip_country_code_leftovers_near_flags(text: str) -> str:
         text = re.sub(rf"(?<![A-Za-z]){code_pattern}\s*{re.escape(flag)}", flag, text)
         text = re.sub(rf"{re.escape(flag)}\s*{code_pattern}(?![A-Za-z])", flag, text)
         text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
+
+    # Hebrew phonetic leftovers for common two-letter country codes after translation.
+    # These are removed only near the matching flag so normal Hebrew words are not touched.
+    phonetic_near_flag = {
+        "TR": (r"טי\s*[-.־]?\s*אר", r"טי\s*[-.־]?\s*ר"),
+        "GE": (r"ג׳?י\s*[-.־]?\s*אי", r"גי\s*[-.־]?\s*אי"),
+        "FR": (r"אף\s*[-.־]?\s*אר", r"אפ\s*[-.־]?\s*אר"),
+        "IT": (r"איי\s*[-.־]?\s*טי", r"אי\s*[-.־]?\s*טי"),
+        "ES": (r"אי\s*[-.־]?\s*אס", r"איי\s*[-.־]?\s*אס"),
+        "DE": (r"די\s*[-.־]?\s*אי",),
+        "BR": (r"בי\s*[-.־]?\s*אר",),
+        "AR": (r"איי\s*[-.־]?\s*אר", r"אי\s*[-.־]?\s*אר"),
+        "PT": (r"פי\s*[-.־]?\s*טי",),
+        "NL": (r"אן\s*[-.־]?\s*אל",),
+        "BE": (r"בי\s*[-.־]?\s*אי",),
+        "GB": (r"ג׳?י\s*[-.־]?\s*בי", r"גי\s*[-.־]?\s*בי"),
+        "US": (r"יו\s*[-.־]?\s*אס",),
+        "UY": (r"יו\s*[-.־]?\s*וואי",),
+        "CO": (r"סי\s*[-.־]?\s*או",),
+        "MX": (r"אם\s*[-.־]?\s*אקס",),
+        "MA": (r"אם\s*[-.־]?\s*איי", r"אם\s*[-.־]?\s*אי"),
+        "SN": (r"אס\s*[-.־]?\s*אן",),
+        "NG": (r"אן\s*[-.־]?\s*ג׳?י",),
+        "JP": (r"ג׳?יי\s*[-.־]?\s*פי",),
+    }
+    for code, patterns in phonetic_near_flag.items():
+        flag = COUNTRY_CODE_FLAGS.get(code)
+        if not flag:
+            continue
+        for pattern in patterns:
+            text = re.sub(rf"(?<![א-תA-Za-z]){pattern}(?![א-תA-Za-z])\s*{re.escape(flag)}", flag, text, flags=re.IGNORECASE)
+            text = re.sub(rf"{re.escape(flag)}\s*(?<![א-תA-Za-z]){pattern}(?![א-תA-Za-z])", flag, text, flags=re.IGNORECASE)
     return text
 
 
@@ -2929,11 +3064,13 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "Use the full context and meaning. Do not translate word by word and do not preserve awkward original order.\n"
         "Rules:\n"
         "- Return only the final Hebrew post text, ready to publish.\n"
-        "- First decide if this is a real football news update. Send only reports with concrete news: transfer, contract, injury, squad, appointment, dismissal, official announcement, negotiation, bid, match-relevant update, or a verified factual development.\n"
+        "- First decide if this is a real MEN'S football news update connected to one of the allowed clubs or to an Israeli-league club. If not, return an empty string.\n"
+        "- Send only reports with concrete news: transfer, contract, injury, squad, appointment, dismissal, official announcement, negotiation, bid, match-relevant update, or a verified factual development.\n"
         "- If it is only a social/atmosphere post, quote, interview sentence, player/coach reaction, meme, congratulation, reaction, Instagram/story screenshot, personal message, vague caption, tribute, joke, opinion or image with no concrete news update, return an empty string.\n"
         "- Interview quotes such as 'X on Y: ...', 'X said...', 'X told...' are usually not news.\n"
         "- Keep an interview/quote only when it is genuinely newsworthy or highly relevant: club president/owner/coach/agent speaking about a star player, contract renewal, future at the club, transfer, injury, official decision, squad call-up, bid, club direction or a major sporting development.\n"
         "- Remove ordinary statistics-only posts unless they contain a real record, official achievement or current news angle.\n"
+        "- Block women's football, women's leagues/teams, WNBA/NBA/NFL/UFC/tennis/basketball and every sport that is not men's football.\n"
         "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
         "- Remove all URLs, website domains and link text.\n"
@@ -3054,6 +3191,7 @@ def final_hebrew_polish(text: str) -> str:
         text = re.sub(rf"\b(\d+)\s*{re.escape(english)}\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
         text = re.sub(rf"\b{re.escape(english)}\s*(\d+)\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
     text = transliterate_latin_names(text)
+    text = strip_country_code_leftovers_near_flags(text)
     text = remove_external_links(text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"([א-ת])\s+-\s+([א-ת])", r"\1-\2", text)
@@ -3329,8 +3467,10 @@ def rtl(text: str) -> str:
     return "\n".join(f"{RTL_MARK}{line}" if line.strip() else line for line in text.splitlines())
 
 
-def telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
-    response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload)
+def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    if not TELEGRAM_BOT_TOKEN:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN environment variable")
+    response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload, **kwargs)
     if not response.get("ok"):
         raise RuntimeError(f"Telegram error: {response}")
     return response
@@ -3453,6 +3593,130 @@ def build_message(
     return "\n".join(parts)
 
 
+
+
+
+# ====== STRICT ALLOWED CLUB FILTER ======
+# The bot may publish ONLY posts connected to these clubs or to Israeli-league clubs.
+# If an allowed club is mentioned anywhere in the main or quoted text, the post can continue
+# to the normal news-quality filter. If no allowed club appears, it is blocked before Gemini.
+ALLOWED_CLUB_PATTERNS = (
+    # Germany
+    r"\b(?:Bayern Munich|FC Bayern|FCBayern|Bayern|FCB|Borussia Dortmund|Dortmund|BVB|Bayer Leverkusen|Leverkusen|B04|Eintracht Frankfurt|Frankfurt|SGE|RB Leipzig|Red Bull Leipzig|Leipzig|RBL|Stuttgart|VfB Stuttgart)\b",
+    r"באיירן(?: מינכן)?|בורוסיה דורטמונד|דורטמונד|באייר לברקוזן|לברקוזן|איינטרכט פרנקפורט|פרנקפורט|רד בול לייפציג|לייפציג|שטוטגרט",
+    # France
+    r"\b(?:Paris Saint-Germain|Paris Saint Germain|PSG|Marseille|Olympique Marseille|OM|Lyon|Olympique Lyon|OL|Lille|LOSC|Lens|RC Lens|RCL|Monaco|AS Monaco|ASM)\b",
+    r"פריז סן[- ]?ז'רמן|פ\.ס\.ז|פ.ס.ז|מארסיי|מרסיי|אולימפיק מארסיי|ליון|אולימפיק ליון|ליל|לאנס|מונאקו",
+    # Spain
+    r"\b(?:Real Madrid|RMA|Barcelona|Barca|Barça|FC Barcelona|Atletico Madrid|Atlético Madrid|Atleti|ATM|Sevilla|Villarreal|Athletic Bilbao|Athletic Club|Real Betis|Betis|Valencia|Real Sociedad|La Real)\b",
+    r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|סביליה|ויאריאל|אתלטיק בילבאו|בטיס|ריאל בטיס|ולנסיה|ריאל סוסיאדד",
+    # England
+    r"\b(?:Manchester United|Man United|Man Utd|MUFC|Manchester City|Man City|MCFC|Liverpool|LFC|Chelsea|CFC|Arsenal|AFC|Tottenham|Spurs|THFC|Newcastle United|Newcastle|NUFC|Aston Villa|AVFC|West Ham|West Ham United|WHUFC|Everton|EFC|Brighton|BHAFC)\b",
+    r"מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|צ'לסי|ארסנל|טוטנהאם|ספרס|ניוקאסל(?: יונייטד)?|אסטון וילה|ווסטהאם|אברטון|ברייטון",
+    # Italy
+    r"\b(?:Juventus|Juve|AC Milan|A\.C\. Milan|ACM|Milan|Inter Milan|Internazionale|Inter|Roma|Napoli|Lazio|Atalanta|Fiorentina)\b",
+    r"יובנטוס|מילאן|איי סי מילאן|אינטר(?: מילאנו)?|רומא|נאפולי|לאציו|אטאלנטה|אטלנטה|פיורנטינה",
+    # Portugal / Netherlands / Belgium / Serbia
+    r"\b(?:Porto|FC Porto|Benfica|SL Benfica|Benfica Lisbon|Sporting CP|Sporting Lisbon|Ajax|PSV|PSV Eindhoven|Club Brugge|Red Star Belgrade|Crvena Zvezda)\b",
+    r"פורטו|בנפיקה(?: ליסבון)?|ספורטינג(?: ליסבון)?|אייאקס|פ\.ס\.וו|פ.ס.וו|פסוו|קלאב ברוז'|קלאב ברוז|הכוכב האדום",
+    # South America / Saudi / Turkey / USA
+    r"\b(?:Flamengo|CR Flamengo|Palmeiras|Sao Paulo|São Paulo|Boca Juniors|River Plate|Botafogo|Al Nassr|Al-Nassr|Al Hilal|Al-Hilal|Al Ahli|Al-Ahli|Galatasaray|Fenerbahce|Fenerbahçe|Inter Miami|Inter Miami CF)\b",
+    r"פלמנגו|פלמייראס|סאו פאולו|בוקה ג'וניורס|ריבר פלייט|בוטאפוגו|אל[- ]?נאסר|אל[- ]?הילאל|אל[- ]?אהלי|גלאטסראיי|פנרבחצ'ה|אינטר מיאמי",
+)
+
+# These allowed clubs are lower-priority for the channel: publish them only when
+# the report is final or almost final. If one of the bigger clubs also appears in
+# the same report, the bigger-club rule can still allow it.
+FINAL_ONLY_ALLOWED_CLUB_PATTERNS = (
+    # England
+    r"\b(?:Tottenham|Spurs|THFC|Newcastle United|Newcastle|NUFC|Aston Villa|AVFC|West Ham|West Ham United|WHUFC|Everton|EFC|Brighton|BHAFC)\b",
+    r"טוטנהאם|ספרס|ניוקאסל(?: יונייטד)?|אסטון וילה|ווסטהאם|אברטון|ברייטון",
+    # Spain
+    r"\b(?:Sevilla|Villarreal|Athletic Bilbao|Athletic Club|Real Betis|Betis|Valencia|Real Sociedad|La Real)\b",
+    r"סביליה|ויאריאל|אתלטיק בילבאו|בטיס|ריאל בטיס|ולנסיה|ריאל סוסיאדד",
+    # Italy
+    r"\b(?:Roma|Napoli|Lazio|Atalanta|Fiorentina)\b",
+    r"רומא|נאפולי|לאציו|אטאלנטה|אטלנטה|פיורנטינה",
+    # Germany
+    r"\b(?:Bayer Leverkusen|Leverkusen|B04|Eintracht Frankfurt|Frankfurt|SGE|RB Leipzig|Red Bull Leipzig|Leipzig|RBL|Stuttgart|VfB Stuttgart)\b",
+    r"באייר לברקוזן|לברקוזן|איינטרכט פרנקפורט|פרנקפורט|רד בול לייפציג|לייפציג|שטוטגרט",
+    # France
+    r"\b(?:Marseille|Olympique Marseille|OM|Lyon|Olympique Lyon|OL|Lille|LOSC|Lens|RC Lens|RCL|Monaco|AS Monaco|ASM)\b",
+    r"מארסיי|מרסיי|אולימפיק מארסיי|ליון|אולימפיק ליון|ליל|לאנס|מונאקו",
+    # Rest of Europe
+    r"\b(?:Porto|FC Porto|Benfica|SL Benfica|Benfica Lisbon|Sporting CP|Sporting Lisbon|Ajax|PSV|PSV Eindhoven|Galatasaray|Fenerbahce|Fenerbahçe|Club Brugge|Red Star Belgrade|Crvena Zvezda)\b",
+    r"פורטו|בנפיקה(?: ליסבון)?|ספורטינג(?: ליסבון)?|אייאקס|פ\.ס\.וו|פ.ס.וו|פסוו|גלאטסראיי|פנרבחצ'ה|קלאב ברוז'|קלאב ברוז|הכוכב האדום",
+    # South America
+    r"\b(?:Flamengo|CR Flamengo|Palmeiras|Sao Paulo|São Paulo|Boca Juniors)\b",
+    r"פלמנגו|פלמייראס|סאו פאולו|בוקה ג'וניורס",
+)
+
+FINAL_OR_NEAR_FINAL_PATTERNS = (
+    r"\b(?:official|confirmed|announced|announcement|club statement|signed|has signed|will sign|set to sign|set to join|here we go|done deal|deal done|deal agreed|agreement reached|full agreement|verbal agreement|agreed in principle|medical booked|medical tests|medical|documents signed|contracts signed|completed|sealed|final details|final stages|final steps|closing stages|one step away|imminent|expected to be completed|approved|green light|accepted bid|bid accepted)\b",
+    r"רשמי|אושר|אישר|אישרה|הודיע|הודיעה|הודעה רשמית|חתם|חתמה|יחתום|תחתום|צפוי לחתום|צפויה לחתום|צפוי להצטרף|צפויה להצטרף|הנה זה קורה|עסקה סגורה|העסקה סגורה|העסקה הושלמה|העסקה סוכמה|סוכמה העסקה|סיכום מלא|הושג סיכום|סיכום בעל פה|סוכמו התנאים|בדיקות רפואיות|נקבעו בדיקות|מסמכים נחתמו|חוזים נחתמו|הושלם|הושלמה|נסגר|נסגרה|פרטים אחרונים|בשלבים האחרונים|צעד אחד מסגירה|קרוב לסגירה|קרובה לסגירה|מיידי|צפוי להיסגר|אור ירוק|הצעה התקבלה|ההצעה התקבלה",
+)
+
+ISRAELI_LEAGUE_PATTERNS = (
+    r"\b(?:Israeli Premier League|Ligat HaAl|Ligat Ha'al|Israel Premier League|Israel league|Israeli league|Liga Leumit|Israel State Cup|Toto Cup)\b",
+    r"ליגת העל|ליגת ווינר|ליגה לאומית|הליגה הישראלית|גביע המדינה|גביע הטוטו|כדורגל ישראלי",
+    r"\b(?:Maccabi Tel Aviv|Maccabi Haifa|Hapoel Be'er Sheva|Hapoel Beer Sheva|Beitar Jerusalem|Beitar|Hapoel Tel Aviv|Maccabi Netanya|Bnei Sakhnin|Maccabi Bnei Reineh|Ironi Tiberias|Hapoel Haifa|Hapoel Jerusalem|Maccabi Petah Tikva|Hapoel Petah Tikva|MS Ashdod|Ashdod|Ironi Kiryat Shmona|Hapoel Hadera|Hapoel Raanana|Hapoel Ramat Gan|Bnei Yehuda|Hapoel Acre|Hapoel Kfar Saba|Hapoel Nof HaGalil|Hapoel Umm al-Fahm|Kafr Qasim|Sektzia Nes Tziona)\b",
+    r'מכבי תל אביב|מכבי חיפה|הפועל באר שבע|בית"ר ירושלים|ביתר ירושלים|הפועל תל אביב|מכבי נתניה|בני סכנין|מכבי בני ריינה|עירוני טבריה|הפועל חיפה|הפועל ירושלים|מכבי פתח תקווה|הפועל פתח תקווה|מ.ס אשדוד|מועדון ספורט אשדוד|עירוני קריית שמונה|קריית שמונה|הפועל חדרה|הפועל רעננה|הפועל רמת גן|בני יהודה|הפועל עכו|הפועל כפר סבא|נוף הגליל|אום אל פאחם|כפר קאסם|נס ציונה',
+)
+
+# Top-70 men's national teams by current FIFA ranking source + Israel.
+# This lets reports about national teams/country squads pass even when no club is named.
+ALLOWED_NATIONAL_TEAM_PATTERNS = (
+    r"\b(?:France|Spain|Argentina|England|Portugal|Brazil|Netherlands|Morocco|Belgium|Germany|Croatia|Italy|Colombia|Senegal|Mexico|USA|United States|Uruguay|Japan|Switzerland|Denmark|Iran|Türkiye|Turkey|Ecuador|Austria|South Korea|Korea Republic|Nigeria|Australia|Algeria|Egypt|Canada|Norway|Ukraine|Panama|Côte d'Ivoire|Ivory Coast|Poland|Russia|Wales|Sweden|Serbia|Paraguay|Czechia|Czech Republic|Hungary|Scotland|Tunisia|Cameroon|DR Congo|Greece|Slovakia|Venezuela|Uzbekistan|Costa Rica|Mali|Peru|Chile|Qatar|Romania|Iraq|Slovenia|Ireland|South Africa|Saudi Arabia|Burkina Faso|Jordan|Albania|Bosnia and Herzegovina|Bosnia & Herzegovina|Honduras|North Macedonia|United Arab Emirates|UAE|Cape Verde|Northern Ireland|Israel)\b",
+    r"\b(?:national team|men's national team|senior national team|squad|call(?:ed)? up|international duty|World Cup|FIFA World Cup|EURO|Euros|Euro 202[0-9]|Copa America|AFCON|Asian Cup|CONCACAF Gold Cup|Nations League)\b",
+    r"נבחרת|הנבחרת|סגל|זימון|זומן|זומנו|מוקדמות|מונדיאל|גביע העולם|יורו|קופה אמריקה|אליפות אפריקה|גביע אסיה|ליגת האומות",
+    r"צרפת|ספרד|ארגנטינה|אנגליה|פורטוגל|ברזיל|הולנד|מרוקו|בלגיה|גרמניה|קרואטיה|איטליה|קולומביה|סנגל|מקסיקו|ארצות הברית|אורוגוואי|אורוגואי|יפן|שווייץ|שוויץ|דנמרק|איראן|טורקיה|אקוודור|אוסטריה|דרום קוריאה|ניגריה|אוסטרליה|אלג'יריה|מצרים|קנדה|נורבגיה|אוקראינה|פנמה|חוף השנהב|פולין|רוסיה|וויילס|ויילס|שבדיה|סרביה|פרגוואי|צ'כיה|הונגריה|סקוטלנד|תוניסיה|קמרון|קונגו|יוון|סלובקיה|ונצואלה|אוזבקיסטן|קוסטה ריקה|מאלי|פרו|צ'ילה|קטאר|רומניה|עיראק|סלובניה|אירלנד|דרום אפריקה|ערב הסעודית|בורקינה פאסו|ירדן|אלבניה|בוסניה|הונדורס|צפון מקדוניה|איחוד האמירויות|כף ורדה|צפון אירלנד|ישראל",
+)
+
+NATIONAL_TEAM_CONTEXT_PATTERNS = (
+    r"\b(?:national team|men's national team|senior national team|squad|called up|call-up|call up|international duty|World Cup|FIFA World Cup|EURO|Euros|Copa America|AFCON|Asian Cup|Nations League|qualifiers?)\b",
+    r"נבחרת|הנבחרת|סגל|זימון|זומן|זומנו|מוקדמות|מונדיאל|גביע העולם|יורו|קופה אמריקה|אליפות אפריקה|גביע אסיה|ליגת האומות",
+)
+
+
+OTHER_SPORT_BLOCK_PATTERNS = (
+    r"\b(?:NBA|WNBA|NFL|MLB|NHL|UFC|MMA|Formula 1|F1|tennis|basketball|baseball|hockey|handball|volleyball|rugby|cricket|golf|boxing|cycling|MotoGP|Olympics)\b",
+    r"כדורסל|NBA|WNBA|פוטבול אמריקאי|בייסבול|הוקי|טניס|פורמולה|פורמולה 1|UFC|MMA|אגרוף|רוגבי|כדוריד|כדורעף|קריקט|גולף|אופניים|אולימפי|אולימפיאדה",
+)
+
+FOOTBALL_CONTEXT_ALLOW_PATTERNS = (
+    r"\b(?:football|soccer|club|manager|head coach|coach|player|goalkeeper|defender|midfielder|winger|striker|forward|transfer|loan|signing|contract|match|squad|injury)\b",
+    r"כדורגל|מועדון|מאמן|שחקן|שוער|בלם|מגן|קשר|כנף|חלוץ|העברה|השאלה|חתימה|חוזה|סגל|משחק|פציעה",
+)
+
+
+def post_filter_text(post: Post) -> str:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or "", post.quoted_author or "", post.link or ""]))
+    raw_text = normalize_country_flags(raw_text) if "normalize_country_flags" in globals() else raw_text
+    raw_text = remove_external_links(raw_text) if "remove_external_links" in globals() else raw_text
+    return raw_text
+
+
+def contains_allowed_national_team(post: Post) -> bool:
+    cleaned = post_filter_text(post)
+    return _matches_any(ALLOWED_NATIONAL_TEAM_PATTERNS, cleaned) and _matches_any(NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
+
+
+def contains_allowed_club_or_israeli_league(post: Post) -> bool:
+    cleaned = post_filter_text(post)
+    return (
+        _matches_any(ALLOWED_CLUB_PATTERNS, cleaned)
+        or _matches_any(ISRAELI_LEAGUE_PATTERNS, cleaned)
+        or contains_allowed_national_team(post)
+    )
+
+
+def is_other_sport_post(post: Post) -> bool:
+    cleaned = post_filter_text(post)
+    if not _matches_any(OTHER_SPORT_BLOCK_PATTERNS, cleaned):
+        return False
+    # Do not block if the same text is clearly football and has an allowed club.
+    # This prevents false blocks from generic words, but blocks NBA/NFL/etc. noise.
+    return not (_matches_any(FOOTBALL_CONTEXT_ALLOW_PATTERNS, cleaned) and contains_allowed_club_or_israeli_league(post))
 
 
 # ====== FOOTBALL SMART RELEVANCE FILTER ======
@@ -3608,6 +3872,60 @@ def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
+def should_use_ai_affiliation_fallback(post: Post) -> bool:
+    """Use one Gemini request only for rare name-only football reports.
+
+    This is for reports that mention a player/coach name and news mechanics but no club
+    was detected locally. Gemini may allow only if the person is currently tied to, or
+    was very recently tied to, one of the user's allowed big clubs or a top-70 national team.
+    """
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if len(cleaned) < 25 or len(cleaned) > 900:
+        return False
+    if _matches_any(OTHER_SPORT_BLOCK_PATTERNS, cleaned) or _matches_any(WOMEN_SPORT_BLOCK_PATTERNS, cleaned):
+        return False
+    has_news = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned) or _matches_any(COACH_IMPORTANT_PATTERNS, cleaned) or _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
+    has_name_shape = bool(re.search(r"\b[A-Z][A-Za-zÀ-ÿ'’.-]{2,}(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]{2,}){1,3}\b", cleaned))
+    return bool(has_news and has_name_shape and has_gemini_key_available())
+
+
+def ai_affiliation_fallback_allows(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    prompt = (
+        "Return ONLY YES or NO. This is a men's football Telegram filter.\n"
+        "Allow YES only if the report is real men's football news and the main person/team is clearly connected to one of these allowed clubs, an Israeli-league club, Israel national team, or a current FIFA top-70 men's national team.\n"
+        "Connection can be current club/national team, confirmed destination, or very recent former club if the report is directly about transfer/contract/injury/squad/coach news.\n"
+        "Return NO for women's football, basketball/NBA/WNBA/other sports, generic quotes, vague admiration, or if you are not sure.\n"
+        "Allowed clubs include Bayern, Dortmund, Leverkusen, Frankfurt, Leipzig, Stuttgart, PSG, Marseille, Lyon, Lille, Lens, Monaco, Real Madrid, Barcelona, Atletico, Sevilla, Villarreal, Athletic Bilbao, Betis, Valencia, Real Sociedad, Man United, Man City, Liverpool, Chelsea, Arsenal, Tottenham, Newcastle, Aston Villa, West Ham, Everton, Brighton, Juventus, AC Milan, Inter, Roma, Napoli, Lazio, Atalanta, Fiorentina, Porto, Benfica, Sporting, Ajax, PSV, Flamengo, Palmeiras, Sao Paulo, Boca Juniors, River Plate, Al Nassr, Al Hilal, Al Ahli, Galatasaray, Fenerbahce, Inter Miami, Club Brugge, Red Star, Botafogo.\n\n"
+        f"Post:\n{cleaned}"
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.0, "maxOutputTokens": 8}}
+    for _index, key in gemini_available_keys_for_operation():
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FAST_MODEL}:generateContent?key={urllib.parse.quote(key)}"
+        try:
+            data = http_post_json(url, payload, timeout=18, max_attempts=1, respect_retry_after=False)
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            answer = "".join(part.get("text", "") for part in parts).strip().upper()
+            return answer.startswith("YES")
+        except Exception as exc:
+            try:
+                cool_down_gemini_key(key, exc)
+            except Exception:
+                pass
+            return False
+    return False
+
+
+def contains_final_only_allowed_club(post: Post) -> bool:
+    text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    return _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, clean_for_ai_translation(text))
+
+
+def contains_final_or_near_final_signal(post: Post) -> bool:
+    text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    return _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, clean_for_ai_translation(text))
+
+
 def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     """Return (allowed, reason, score, signals) for football relevance.
 
@@ -3621,7 +3939,13 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     cleaned = clean_for_ai_translation(raw_text)
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
+    if not contains_allowed_club_or_israeli_league(post):
+        if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
+            return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
+    if is_other_sport_post(post):
+        return False, "other_sport", 0, ["other_sport"]
 
+    has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
     has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
     has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
@@ -3638,6 +3962,14 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_serious_injury = _matches_any(SERIOUS_INJURY_PATTERNS, cleaned)
     has_injury_or_fitness_update = _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
     has_major_national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
+    has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
+    has_final_or_near_final = _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
+
+    # For the user's lower-priority club group, block pure rumours/loose interest.
+    # Keep normal rules if a major club is also part of the same report, or when the
+    # post is really about a national team / country squad.
+    if has_final_only_club and not has_final_or_near_final and not (has_big_rumor_club or has_big_club_context or has_major_national_context):
+        return False, "final_only_club_not_final_or_near_final", 0, ["final_only_club", "not_final"]
 
     score = 0
     signals: list[str] = []
@@ -3647,6 +3979,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         score += points
         signals.append(signal)
 
+    if has_allowed_interest_club:
+        add(20, "allowed_club_or_israeli_league")
     if has_big_rumor_club:
         add(70, "big_club")
     if has_top5_or_promoted_club:
@@ -3669,6 +4003,10 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         add(30, "injury_or_fitness_update")
     if has_major_national_context:
         add(25, "major_national_context")
+    if has_final_only_club:
+        add(5, "final_only_club")
+    if has_final_or_near_final:
+        add(45, "final_or_near_final")
     if has_weak_interest:
         add(-10, "weak_interest")
     if has_vague_player_idea:
@@ -3711,6 +4049,14 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
             return False, "vague_big_club_player_idea_without_real_rumour", score, signals
         if has_weak_interest or has_transfer_or_future or has_coach_news:
             return True, "big_club_rumour_or_transfer_context", score, signals
+
+    # Strict allow-list clubs: if the post mentions one of the user's clubs, continue only
+    # when the text has real news mechanics. This also catches abbreviations such as BVB/MUFC.
+    if has_allowed_interest_club:
+        if has_transfer_or_future or has_coach_news or has_injury_or_fitness_update:
+            return True, "allowed_club_news_context", score, signals
+        if has_weak_interest and (has_transfer_or_future or has_big_club_context):
+            return True, "allowed_club_weak_transfer_context", score, signals
 
     # Top-5 / promoted clubs are relevant, but they need a real transfer/future/contract/coach link.
     # This blocks regular post-match interviews and generic admiration.
@@ -3758,6 +4104,11 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "old_post"
     if is_women_or_wnba_post(post):
         return "women_or_wnba"
+    if is_other_sport_post(post):
+        return "other_sport"
+    if not contains_allowed_club_or_israeli_league(post):
+        if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
+            return "not_connected_to_allowed_club"
     if is_link_only_or_details_post(post):
         return "link_or_details_only"
     if is_podcast_or_longform_post(post):
