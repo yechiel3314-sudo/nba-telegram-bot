@@ -48,10 +48,35 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_IDS = [
-    "-1002272784260",
-]
+# Railway variables - keep these names exactly as they already exist in the server.
+# Do not hardcode Telegram tokens in the source code.
+def required_env_any(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    raise RuntimeError("Missing required Railway variable. Add one of: " + ", ".join(names))
+
+
+def required_env_list_any(*names: str) -> list[str]:
+    raw_value = required_env_any(*names)
+    values = [item.strip() for item in re.split(r"[,\n]+", raw_value) if item.strip()]
+    if not values:
+        raise RuntimeError("Telegram target chat variable exists but is empty: " + ", ".join(names))
+    return values
+
+
+TELEGRAM_BOT_TOKEN = required_env_any(
+    "NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
+    "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE",
+    "TELEGRAM_BOT_TOKEN",
+)
+TELEGRAM_CHAT_IDS = required_env_list_any(
+    "NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE",
+    "NETO_SPORT_FOOTBALL_NEWS_TELEGRAM_TARGET_CHAT_IDS",
+    "TELEGRAM_CHAT_IDS",
+    "TELEGRAM_CHAT_ID",
+)
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -91,6 +116,8 @@ X_ACCOUNTS = [
     "DiMarzio",
     "JacobsBen",
     "NicoSchira",
+    "ffpolo",
+    "AranchaMOBILE",
 ]
 
 PRIORITY_X_ACCOUNTS = {
@@ -99,6 +126,8 @@ PRIORITY_X_ACCOUNTS = {
     "DiMarzio",
     "JacobsBen",
     "NicoSchira",
+    "ffpolo",
+    "AranchaMOBILE",
 }
 
 ACCOUNT_DISPLAY_NAMES = {
@@ -151,7 +180,11 @@ NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
-CONTROL_CHAT_ID = "-1003924267158"
+CONTROL_CHAT_ID = required_env_any(
+    "NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE",
+    "NETO_SPORT_FOOTBALL_NEWS_TELEGRAM_CONTROL_CHAT_ID",
+    "CONTROL_CHAT_ID",
+)
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
@@ -4443,9 +4476,9 @@ def save_state(state: dict[str, list[str]]) -> None:
 
 def validate_settings() -> None:
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
-        raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
+        raise ValueError("Missing Telegram bot token. Set NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE in Railway Variables.")
     if not TELEGRAM_CHAT_IDS:
-        raise ValueError("Put at least one Telegram group chat ID in TELEGRAM_CHAT_IDS")
+        raise ValueError("Missing Telegram target chat IDs. Set NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE in Railway Variables.")
     if not X_ACCOUNTS:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
