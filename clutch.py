@@ -10,8 +10,17 @@ from urllib3.util.retry import Retry
 # ==============================
 # הגדרות טלגרם
 # ==============================
-TELEGRAM_TOKEN = "8996455073:AAHXYXjy2T12CzBi-IqramkUSWQ4rDSI6ss"
-CHAT_ID = "-1003808107418"
+import os
+
+TELEGRAM_TOKEN = os.environ.get(
+    "NBA_LIVE_TELEGRAM_BOT_TOKEN_PRIVATE",
+    ""
+).strip()
+
+CHAT_ID = os.environ.get(
+    "NBA_LIVE_TELEGRAM_CHAT_ID_PRIVATE",
+    ""
+).strip()
 
 # ==============================
 # ESPN NBA SCOREBOARD
