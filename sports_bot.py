@@ -71,16 +71,14 @@ def env_list(name: str, default: list[str] | None = None) -> list[str]:
     return [item.strip() for item in re.split(r"[,\n\s]+", value) if item.strip()]
 
 
-TELEGRAM_BOT_TOKEN = (
-    os.environ.get("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE")
-    or os.environ.get("NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE")
-    or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-).strip()
+TELEGRAM_BOT_TOKEN = _first_existing_env(
+    "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE",
+    "NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
+)
 
-TELEGRAM_CHAT_ID = (
-    os.environ.get("NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE")
-    or os.environ.get("TELEGRAM_CHAT_ID", "")
-).strip()
+# NBA target channel/group id is separate from football.
+TELEGRAM_CHAT_ID = _required_env("NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE")
+TELEGRAM_CHAT_IDS = [TELEGRAM_CHAT_ID]
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
