@@ -103,6 +103,8 @@ X_ACCOUNTS = [
     "DiMarzio",
     "JacobsBen",
     "NicoSchira",
+    "ffpolo",
+    "AranchaMOBILE",
 ]
 
 PRIORITY_X_ACCOUNTS = {
@@ -111,6 +113,8 @@ PRIORITY_X_ACCOUNTS = {
     "DiMarzio",
     "JacobsBen",
     "NicoSchira",
+    "ffpolo",
+    "AranchaMOBILE",
 }
 
 ACCOUNT_DISPLAY_NAMES = {
