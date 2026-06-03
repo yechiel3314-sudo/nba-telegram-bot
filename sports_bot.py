@@ -47,18 +47,11 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-# Security: never hardcode Telegram tokens or chat IDs in the source code.
-# This NBA forwarder uses the same Telegram bot token as the football bot,
-# but sends to a separate NBA target chat/channel.
-TELEGRAM_BOT_TOKEN = (
-    os.environ.get("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE")
-    or os.environ.get("NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE")
-    or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-).strip()
-TELEGRAM_CHAT_ID = (
-    os.environ.get("NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE")
-    or os.environ.get("TELEGRAM_CHAT_ID", "")
-).strip()
+TELEGRAM_BOT_TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN",
+    "8795392686:AAFElKo3sML_dqA9YaVz2iArTUoYGcGgBuI",
+)
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1003918247986")
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -127,7 +120,6 @@ MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
 MIN_SECONDS_BETWEEN_TELEGRAM_POSTS = 3
-BOT_HEARTBEAT_LOG_EVERY_SECONDS = int(os.environ.get("NETO_SPORT_NBA_NEWS_HEARTBEAT_LOG_EVERY_SECONDS", "300"))
 MAX_POST_AGE_SECONDS = 30 * 60
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
@@ -155,7 +147,7 @@ CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
 CONTROL_SEND_PANEL_ON_STARTUP = False
 MAX_PARALLEL_POST_SENDS = 3
 MAX_IMAGES_PER_POST = 4
-MAX_VIDEO_BYTES = 50 * 1024 * 1024
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 SEND_VIDEO_FILES = True
 STATE_FILE = "nba_x_to_telegram_state.json"
 AI_DECISION_CACHE_FILE = os.environ.get("AI_DECISION_CACHE_FILE", "nba_ai_decision_cache.json")
@@ -1012,6 +1004,20 @@ STAT_REPLACEMENTS = {
     "apps": "הופעות",
 }
 
+# Keep NBA branding exact. Some translators may turn NBA into NBC / Hebrew NBC variants.
+HEBREW_FINAL_FIXES.update(
+    {
+        "NBC": "NBA",
+        "N.B.C": "NBA",
+        "אן בי סי": "NBA",
+        "אן.בי.סי": "NBA",
+        "אנ בי סי": "NBA",
+        "אנ.בי.סי": "NBA",
+        "נ.ב.סי": "NBA",
+        "אן-בי-סי": "NBA",
+    }
+)
+
 LATIN_KEEP = {"NBA", "WNBA", "NBA Today", "VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
 
 HEBREW_LETTER = {
@@ -1156,10 +1162,14 @@ def sendable_video_url(post: Post) -> str:
         size = remote_file_size(url)
         if size is not None and size <= MAX_VIDEO_BYTES:
             return url
+        if size is not None and size > MAX_VIDEO_BYTES:
+            logging.info("וידיאו גדול מדי לשליחה (%sMB > %sMB), יישלח קישור לפוסט במקום קובץ.", round(size / 1024 / 1024, 1), round(MAX_VIDEO_BYTES / 1024 / 1024))
     for url in fetch_external_video_urls(post):
         size = remote_file_size(url)
         if size is not None and size <= MAX_VIDEO_BYTES:
             return url
+        if size is not None and size > MAX_VIDEO_BYTES:
+            logging.info("וידיאו חיצוני גדול מדי לשליחה (%sMB > %sMB), יישלח קישור לפוסט במקום קובץ.", round(size / 1024 / 1024, 1), round(MAX_VIDEO_BYTES / 1024 / 1024))
     return ""
 
 
@@ -1954,6 +1964,109 @@ def is_non_news_social_post(post: Post) -> bool:
         return True
 
     return False
+
+
+# ====== NBA RELEVANCE / NON-NEWS SAFETY GATES ======
+# These rules are deterministic and run before Gemini/video work.
+# Goal: keep all NBA teams, but block unrelated / social / idea-only content.
+
+NBA_TEAM_CONTEXT_PATTERNS = tuple(
+    rf"(?<![A-Za-zא-ת]){re.escape(name)}(?![A-Za-zא-ת])"
+    for name in TEAM_REPLACEMENTS.keys()
+)
+
+NBA_CORE_CONTEXT_PATTERNS = (
+    r"\b(?:NBA|National Basketball Association|basketball|hoops?|court|season|regular season|postseason|playoffs?|finals?|conference finals?|draft|free agency|trade deadline|salary cap|luxury tax|apron)\b",
+    r"\b(?:MVP|All-Star|Rookie of the Year|Defensive Player|Sixth Man|Most Improved|Summer League|G League)\b",
+    r"\b(?:points?|pts|rebounds?|reb|assists?|ast|steals?|blocks?|mins?|minutes|triple-double|double-double)\b",
+    r"NBA|אן\s*בי\s*איי|אן-בי-איי|כדורסל|ליגה|פלייאוף|פלייאופים|גמר|גמר האזור|דראפט|שוק השחקנים|טרייד|תקרת השכר|מס המותרות|אפרון|נקודות|ריבאונדים|אסיסטים|חסימות|חטיפות",
+)
+
+NBA_NEWS_ACTION_PATTERNS = (
+    r"\b(?:breaking|exclusive|official|sources?|league sources|report|reported|expected|set to|finalizing|agreed|agreement)\b",
+    r"\b(?:trade|traded|trade request|sign(?:s|ed|ing)?|contract|extension|max contract|rookie scale extension|free agent|free agency|waived|buyout|option|guaranteed|non-guaranteed)\b",
+    r"\b(?:injury|injured|injury report|ruled out|questionable|probable|doubtful|available|out indefinitely|day-to-day|minutes restriction|surgery|rehab|recovery|returning|cleared)\b",
+    r"\b(?:draft|pick|first-round|second-round|hire|hired|fire|fired|coach|head coach|assistant coach|general manager|gm|front office|president of basketball operations|suspended|fine|investigation)\b",
+    r"דיווח דרמטי|בלעדי|רשמי|לפי מקורות|מקורות בליגה|דיווח|צפוי|סיכם|סיכום|טרייד|עבר בטרייד|ביקש טרייד|חתם|יחתום|חוזה|הארכת חוזה|מקסימום|שחקן חופשי|שוק השחקנים|שוחרר|בייאאוט|אופציה|מובטח|לא מובטח",
+    r"פציעה|נפצע|דוח פציעות|לא ישחק|בספק|ככל הנראה ישחק|בספק גדול|זמין|בחוץ לתקופה|ניתוח|שיקום|החלמה|חוזר|כשיר|הגבלת דקות",
+    r"דראפט|בחירה|סיבוב ראשון|סיבוב שני|מונה|פוטר|מאמן|ג'נרל מנג'ר|GM|הנהלה|נשיא פעולות הכדורסל|הושעה|קנס|חקירה",
+)
+
+NBA_IDEA_ONLY_PATTERNS = (
+    r"\b(?:idea|ideas|concept|mock trade|trade idea|trade ideas|proposed trade|proposal|hypothetical|what if|could|should|would|might|may|potential fit|possible fit|dream target|target list|wish list|best destinations|landing spots|prediction|rankings?|tier list|rumor mill)\b",
+    r"\b(?:is this a good idea|should .* trade|could .* trade|would you|who says no|what should|imagine)\b",
+    r"רעיון|רעיונות|הצעה דמיונית|טרייד מוצע|טרייד אפשרי|היפותטי|מה אם|יכול להיות|יכולה להיות|עשוי|עשויה|אולי|פוטנציאלי|יעד חלומי|רשימת יעדים|תחזית|דירוג|מי אומר לא|האם כדאי|דמיינו",
+)
+
+NBA_SOCIAL_NOISE_PATTERNS = (
+    r"\b(?:arrivals?|fit check|tunnel fit|walk-in|photo dump|wallpaper|edit|meme|memes|caption this|reaction|reacts?|birthday|happy birthday|congrats|congratulations|respect|legend|goat talk|throwback|on this day|highlights?|top plays?|dunk of the night|plays of the night|workout clips?|practice clips?|mixtape)\b",
+    r"הגעות|לבוש|מנהרה|תמונות|רקע|עריכה|מם|ממים|תגובה|יום הולדת|מזל טוב|כבוד|אגדה|נוסטלגיה|היום לפני|היילייטס|מהלכים|דאנק הלילה|קליפ אימון|קליפים מאימון|מיקסטייפ",
+)
+
+FOOTBALL_SOCCER_CONTEXT_PATTERNS = (
+    r"\b(?:football|soccer|Premier League|La Liga|Serie A|Bundesliga|Ligue 1|Champions League|Europa League|goalkeeper|striker|winger|midfielder|left back|right back|centre back|club sources)\b",
+    r"פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1|ליגת האלופות|הליגה האירופית|כדורגל|שוער|חלוץ|כנף|קשר|מגן|בלם",
+)
+
+
+def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
+    return any(re.search(pattern, text or "", re.IGNORECASE) for pattern in patterns)
+
+
+def nba_cleaned_text(post: Post) -> str:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = clean_for_ai_translation(raw_text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def has_nba_context(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    if not cleaned:
+        return False
+    if _matches_any(NBA_CORE_CONTEXT_PATTERNS, cleaned):
+        return True
+    if _matches_any(NBA_TEAM_CONTEXT_PATTERNS, cleaned):
+        return True
+    # Known NBA accounts are usually NBA context, but still not enough to allow pure social noise.
+    if post.username in PRIORITY_X_ACCOUNTS and not _matches_any(FOOTBALL_SOCCER_CONTEXT_PATTERNS, cleaned):
+        return True
+    return False
+
+
+def has_nba_news_action(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    return _matches_any(NBA_NEWS_ACTION_PATTERNS, cleaned)
+
+
+def is_nba_idea_only_post(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    if not cleaned:
+        return False
+    if not _matches_any(NBA_IDEA_ONLY_PATTERNS, cleaned):
+        return False
+    # If there is a real news action, keep it. We block ideas only when they are not sourced/advanced news.
+    return not has_nba_news_action(post)
+
+
+def is_clear_non_nba_post(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    if not cleaned:
+        return True
+    # Football/soccer content should not leak into the NBA channel unless it clearly also has NBA context.
+    if _matches_any(FOOTBALL_SOCCER_CONTEXT_PATTERNS, cleaned) and not _matches_any(NBA_CORE_CONTEXT_PATTERNS + NBA_TEAM_CONTEXT_PATTERNS, cleaned):
+        return True
+    return not has_nba_context(post)
+
+
+def is_nba_social_noise_post(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    if not cleaned:
+        return True
+    if has_nba_news_action(post):
+        return False
+    if is_interesting_quote_post(cleaned):
+        return False
+    return _matches_any(NBA_SOCIAL_NOISE_PATTERNS, cleaned)
 
 
 # ====== SMART FILTERS: FLAGS, WOMEN/WNBA, DUPLICATE NEWS ======
@@ -3475,6 +3588,12 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "link_or_details_only"
     if is_podcast_or_longform_post(post):
         return "podcast_or_longform"
+    if is_clear_non_nba_post(post):
+        return "not_nba_related"
+    if is_nba_idea_only_post(post):
+        return "nba_idea_only"
+    if is_nba_social_noise_post(post):
+        return "nba_social_noise"
     if is_non_news_social_post(post):
         return "non_news_social"
     return ""
@@ -3654,15 +3773,9 @@ def save_state(state: dict[str, list[str]]) -> None:
 
 def validate_settings() -> None:
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
-        raise ValueError(
-            "Missing Telegram token. Set NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE "
-            "or NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE in Railway Variables."
-        )
+        raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_ID:
-        raise ValueError(
-            "Missing NBA Telegram target chat ID. Set NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE "
-            "in Railway Variables."
-        )
+        raise ValueError("Put your Telegram group chat ID in TELEGRAM_CHAT_ID")
     if not X_ACCOUNTS:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
@@ -3835,15 +3948,8 @@ def main() -> None:
 
     startup_cycle = True
     skipped_for_shabbat = False
-    last_heartbeat_log_ts = 0.0
     while True:
         cycle_started = time.time()
-        if (
-            BOT_HEARTBEAT_LOG_EVERY_SECONDS > 0
-            and cycle_started - last_heartbeat_log_ts >= BOT_HEARTBEAT_LOG_EVERY_SECONDS
-        ):
-            logging.info("✅ בוט ה-NBA עדיין עובד")
-            last_heartbeat_log_ts = cycle_started
         try:
             if is_shabbat_now():
                 if not skipped_for_shabbat:
