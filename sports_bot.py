@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Single-file X/Twitter to Telegram football news forwarder.
+Single-file X/Twitter to Telegram NBA news forwarder.
 
 Run:
-  python3 football_x_to_telegram.py
+  python3 x_to_telegram_single.py
 
 What this version does:
 - Scans all accounts in parallel every 30 seconds.
@@ -30,7 +30,6 @@ import os
 import re
 import sys
 import time
-import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,33 +47,11 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-
-def first_env(*names: str) -> str:
-    """Return the first non-empty environment variable value.
-
-    Railway already has long private variable names. Keep supporting those exact
-    names and also support the short generic names as a fallback, so the bot
-    will not crash just because one naming style is used.
-    """
-    for name in names:
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    return ""
-
-
-def env_list(name: str, default: list[str] | None = None) -> list[str]:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return list(default or [])
-    # Supports comma/newline/space separated chat IDs from Railway.
-    return [item.strip() for item in re.split(r"[,\n\s]+", value) if item.strip()]
-
 def _required_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
-    if value:
-        return value
-    raise RuntimeError(f"Missing required Railway variable: {name}")
+    if not value:
+        raise ValueError(f"Missing required Railway variable: {name}")
+    return value
 
 
 def _first_existing_env(*names: str) -> str:
@@ -82,28 +59,30 @@ def _first_existing_env(*names: str) -> str:
         value = os.environ.get(name, "").strip()
         if value:
             return value
-    raise RuntimeError("Missing required Railway variable. Add one of: " + ", ".join(names))
+    raise ValueError("Missing Telegram bot token. Set NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE or NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE in Railway Variables.")
 
 
+# Same Telegram bot token can be shared with the football bot. Do not hardcode tokens in GitHub.
 TELEGRAM_BOT_TOKEN = _first_existing_env(
     "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE",
     "NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
 )
 
+# NBA target channel/group id is separate from football.
 TELEGRAM_CHAT_ID = _required_env("NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE")
-TELEGRAM_CHAT_IDS = [TELEGRAM_CHAT_ID]
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
 # Or several keys separated by commas:
 # GEMINI_API_KEYS=key1,key2,key3
+GEMINI_MAX_API_KEYS = 3
 GEMINI_API_KEYS = [
     key.strip()
     for key in (
         os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
     ).split(",")
     if key.strip()
-]
+][:GEMINI_MAX_API_KEYS]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
@@ -121,53 +100,31 @@ GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", 
 # How many keys may be tried with a real Gemini network request per single AI operation.
 # Keep this low to avoid burning quota during outages.
 GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_LOCAL_KEY_SWEEP_SIZE)))
-# Credit-safe mode: do NOT spend Gemini on uncertain affiliation/filter checks.
-# Gemini is used only after all local deterministic filters already approved a post for publishing.
-AI_AFFILIATION_FALLBACK_ENABLED = os.environ.get("AI_AFFILIATION_FALLBACK_ENABLED", "0") == "1"
 
 X_ACCOUNTS = [
-    "FabrizioRomano",
-    "David_Ornstein",
-    "DiMarzio",
-    "JacobsBen",
-    "NicoSchira",
+    "NBA",
+    "ShamsCharania",
+    "highkin",
+    "ChrisBHaynes",
+    "UnderdogNBA",
+    "TheDunkCentral",
+    "LegionHoops",
+    "NBACentral",
+    "ClutchPoints",
 ]
 
-PRIORITY_X_ACCOUNTS = {
-    "FabrizioRomano",
-    "David_Ornstein",
-    "DiMarzio",
-    "JacobsBen",
-    "NicoSchira",
-}
+PRIORITY_X_ACCOUNTS = set(X_ACCOUNTS)
 
 ACCOUNT_DISPLAY_NAMES = {
-    "FabrizioRomano": "פבריציו רומאנו",
-    "David_Ornstein": "דיוויד אורנשטיין",
-    "DiMarzio": "ג'אנלוקה די מארציו",
-    "JacobsBen": "בן ג'ייקובס",
-    "NicoSchira": "ניקולה סקירה",
-    "lauriewhitwell": "לורי וויטוול - מנצ'סטר יונייטד",
-    "SamLee": "סם לי - מנצ'סטר סיטי",
-    "_pauljoyce": "פול ג'ויס - ליברפול",
-    "Matt_Law_DT": "מאט לאו - צ'לסי",
-    "SimonJones_DM": "סיימון ג'ונס - אנגליה",
-    "MatteMoretto": "מתאו מורטו - ספרד",
-    "ffpolo": "פרננדו פולו - ברצלונה",
-    "gerardromero": "ג'ראד רומרו - ברצלונה",
-    "AranchaMOBILE": "ארנצ'ה רודריגס - ריאל מדריד",
-    "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
-    "AlfredoPedulla": "אלפרדו פדולה - איטליה",
-    "Plettigoal": "פלוריאן פלטנברג - גרמניה",
-    "cfbayern": "כריסטיאן פאלק - גרמניה",
-    "FabriceHawkins": "פבריס הוקינס - צרפת",
-    "Tanziloic": "לואיק טנזי - צרפת",
-    "MonfortCarlos": "קרלוס מונפור - ברצלונה",
-    "Barca_Buzz": "בארסה באז - ברצלונה",
-    "MadridXtra": "מדריד אקסטרה - ריאל מדריד",
-    "iMiaSanMia": "מיה סן מיה - באיירן",
-    "Santi_J_FM": "סנטי אאונה - פריז סן ז'רמן",
-    "AndyMitten": "אנדי מיטן - מנצ'סטר יונייטד",
+    "NBA": "NBA",
+    "ShamsCharania": "שאמס צ'ראניה",
+    "highkin": "שון הייקין - פורטלנד",
+    "ChrisBHaynes": "כריס היינס",
+    "UnderdogNBA": "אנדרדוג NBA",
+    "TheDunkCentral": "דאנק סנטרל",
+    "LegionHoops": "לגיון הופס",
+    "NBACentral": "NBA סנטרל",
+    "ClutchPoints": "קלאץ' פוינטס",
 }
 
 TARGET_LANGUAGE = "he"
@@ -176,33 +133,22 @@ HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
 FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
-MAX_PARALLEL_ACCOUNT_CHECKS = 40
+MAX_PARALLEL_ACCOUNT_CHECKS = 28
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
-MAX_POST_AGE_SECONDS = 30 * 60
+MIN_SECONDS_BETWEEN_TELEGRAM_POSTS = 3
+MAX_POST_AGE_SECONDS = 60 * 60
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
 NIGHT_CHECK_EVERY_SECONDS = 20
-NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 16
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 8
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
-CONTROL_CHAT_ID = first_env(
-    "NETO_SPORT_NBA_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE",
-    "NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE",
-    "CONTROL_CHAT_ID",
-    "-1003924267158",
-)
-CONTROL_STATE_FILE = os.environ.get("CONTROL_STATE_FILE", "nba_control_state.json")
-CONTROL_POLL_SECONDS = 2
-CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
-CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
-CONTROL_CREATE_PANEL_IF_MISSING = os.environ.get("CONTROL_CREATE_PANEL_IF_MISSING", "0") == "1"
-CONTROL_DELETE_WEBHOOK_ON_STARTUP = os.environ.get("CONTROL_DELETE_WEBHOOK_ON_STARTUP", "1") == "1"
 SHABBAT_MODE_ENABLED = True
 SHABBAT_TIMEZONE = "Asia/Jerusalem"
 SHABBAT_HEBCAL_GEOID = "281184"  # Jerusalem
@@ -210,17 +156,21 @@ SHABBAT_HAVDALAH_MINUTES = 50
 SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
-SHABBAT_CACHE_FILE = os.environ.get("SHABBAT_CACHE_FILE", "nba_shabbat_times_cache.json")
-MAX_PARALLEL_POST_SENDS = 12
+SHABBAT_CACHE_FILE = "nba_shabbat_times_cache.json"
+# NBA bot stays independent: no Telegram control panel / no shared control state.
+CONTROL_CHAT_ID = ""
+CONTROL_STATE_FILE = ""
+CONTROL_POLL_SECONDS = 2
+CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
+CONTROL_SEND_PANEL_ON_STARTUP = False
+MAX_PARALLEL_POST_SENDS = 3
 MAX_IMAGES_PER_POST = 4
-MAX_VIDEO_BYTES = 50 * 1024 * 1024
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 SEND_VIDEO_FILES = True
-STATE_FILE = os.environ.get("STATE_FILE", "nba_x_to_telegram_state.json")
+STATE_FILE = "nba_x_to_telegram_state.json"
 AI_DECISION_CACHE_FILE = os.environ.get("AI_DECISION_CACHE_FILE", "nba_ai_decision_cache.json")
-TRANSLATION_CACHE_FILE = os.environ.get("TRANSLATION_CACHE_FILE", "nba_translation_cache.json")
+TRANSLATION_CACHE_FILE = "nba_translation_cache.json"
 RTL_MARK = "\u200f"
-SIGNATURE_LINK = "https://t.me/neto_sport"
-SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://rsshub.app/twitter/user/{username}",
@@ -253,124 +203,6 @@ URL_RE = re.compile(
 )
 
 EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]")
-TAG_FLAG_RE = re.compile(r"\U0001F3F4[\U000E0061-\U000E007A]+\U000E007F")
-
-COUNTRY_CODE_FLAGS = {
-    "AR": "\U0001F1E6\U0001F1F7",
-    "AT": "\U0001F1E6\U0001F1F9",
-    "BE": "\U0001F1E7\U0001F1EA",
-    "BR": "\U0001F1E7\U0001F1F7",
-    "CH": "\U0001F1E8\U0001F1ED",
-    "CL": "\U0001F1E8\U0001F1F1",
-    "CM": "\U0001F1E8\U0001F1F2",
-    "CO": "\U0001F1E8\U0001F1F4",
-    "DE": "\U0001F1E9\U0001F1EA",
-    "DK": "\U0001F1E9\U0001F1F0",
-    "EC": "\U0001F1EA\U0001F1E8",
-    "ES": "\U0001F1EA\U0001F1F8",
-    "FR": "\U0001F1EB\U0001F1F7",
-    "GB": "\U0001F1EC\U0001F1E7",
-    "GE": "\U0001F1EC\U0001F1EA",
-    "GH": "\U0001F1EC\U0001F1ED",
-    "HR": "\U0001F1ED\U0001F1F7",
-    "IL": "\U0001F1EE\U0001F1F1",
-    "IT": "\U0001F1EE\U0001F1F9",
-    "MA": "\U0001F1F2\U0001F1E6",
-    "MX": "\U0001F1F2\U0001F1FD",
-    "NG": "\U0001F1F3\U0001F1EC",
-    "NL": "\U0001F1F3\U0001F1F1",
-    "PT": "\U0001F1F5\U0001F1F9",
-    "RS": "\U0001F1F7\U0001F1F8",
-    "SN": "\U0001F1F8\U0001F1F3",
-    "TR": "\U0001F1F9\U0001F1F7",
-    "US": "\U0001F1FA\U0001F1F8",
-    "UY": "\U0001F1FA\U0001F1FE",
-}
-
-
-COUNTRY_FLAG_ALIAS_PATTERNS = {
-    # Gemini sometimes keeps ISO country codes as Hebrew/phonetic letters instead of emoji.
-    # This list catches normal, spaced and translated-looking country-code leftovers.
-    # The flag emoji itself is preserved; only the extra letters are converted/removed.
-    "TR": (r"(?<![א-תA-Za-z])טי\s*[-.־]?\s*אר(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])טי\s*[-.־]?\s*ר(?![א-תA-Za-z])"),
-    "GE": (r"(?<![א-תA-Za-z])ג׳?י\s*[-.־]?\s*אי(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])גי\s*[-.־]?\s*אי(?![א-תA-Za-z])"),
-    "IT": (r"(?<![א-תA-Za-z])אי\s*[-.־]?\s*טי(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])איי\s*[-.־]?\s*טי(?![א-תA-Za-z])"),
-    "ES": (r"(?<![א-תA-Za-z])אי\s*[-.־]?\s*אס(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])איי\s*[-.־]?\s*אס(?![א-תA-Za-z])"),
-    "FR": (r"(?<![א-תA-Za-z])אף\s*[-.־]?\s*אר(?![א-תA-Za-z])",),
-    "DE": (r"(?<![א-תA-Za-z])די\s*[-.־]?\s*אי(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])דה\s*[-.־]?\s*אי(?![א-תA-Za-z])"),
-    "PT": (r"(?<![א-תA-Za-z])פי\s*[-.־]?\s*טי(?![א-תA-Za-z])",),
-    "NL": (r"(?<![א-תA-Za-z])אן\s*[-.־]?\s*אל(?![א-תA-Za-z])", r"(?<![א-תA-Za-z])אנ\s*[-.־]?\s*אל(?![א-תA-Za-z])"),
-    "BE": (r"(?<![א-תA-Za-z])בי\s*[-.־]?\s*אי(?![א-תA-Za-z])",),
-    "BR": (r"(?<![א-תA-Za-z])בי\s*[-.־]?\s*אר(?![א-תA-Za-z])",),
-    "AR": (r"(?<![א-תA-Za-z])איי?\s*[-.־]?\s*אר(?![א-תA-Za-z])",),
-    "GB": (r"(?<![א-תA-Za-z])ג׳?י\s*[-.־]?\s*בי(?![א-תA-Za-z])",),
-    "US": (r"(?<![א-תA-Za-z])יו\s*[-.־]?\s*אס(?![א-תA-Za-z])",),
-    "MA": (r"(?<![א-תA-Za-z])אם\s*[-.־]?\s*איי?(?![א-תA-Za-z])",),
-    "SN": (r"(?<![א-תA-Za-z])אס\s*[-.־]?\s*אן(?![א-תA-Za-z])",),
-    "NG": (r"(?<![א-תA-Za-z])אן\s*[-.־]?\s*ג׳?י(?![א-תA-Za-z])",),
-}
-
-
-def normalize_country_flags(text: str) -> str:
-    """Convert standalone ISO country codes like TR/GE/FR into flag emojis.
-
-    RSS mirrors and Gemini sometimes leave only the two-letter country marker
-    instead of the flag. This runs before translation and again after translation,
-    including support for hidden RTL marks and spaced codes like T R / T-R / T.R.
-    """
-    text = unicodedata.normalize("NFKC", text or "")
-    # NFKC converts styled/full-width Latin letters such as 𝐓𝐑 / ＴＲ into normal TR,
-    # so the next regexes can remove/convert them while keeping the flag emoji.
-    invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
-    separator = r"[\s\u00a0._/\-־]*"
-
-    for code, flag in COUNTRY_CODE_FLAGS.items():
-        first, second = re.escape(code[0]), re.escape(code[1])
-        text = re.sub(
-            rf"(?<![A-Za-z]){invisible}{first}{invisible}{separator}{invisible}{second}{invisible}(?![A-Za-z])",
-            flag,
-            text,
-        )
-        # Remove duplicate leftovers around the flag, for example: TR 🇹🇷 or 🇹🇷 TR.
-        text = re.sub(
-            rf"(?<![A-Za-z]){invisible}{first}{invisible}{separator}{invisible}{second}{invisible}\s*{re.escape(flag)}",
-            flag,
-            text,
-        )
-        text = re.sub(
-            rf"{re.escape(flag)}\s*{invisible}{first}{invisible}{separator}{invisible}{second}{invisible}(?![A-Za-z])",
-            flag,
-            text,
-        )
-        text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
-
-    for code, patterns in COUNTRY_FLAG_ALIAS_PATTERNS.items():
-        flag = COUNTRY_CODE_FLAGS.get(code)
-        if not flag:
-            continue
-        for pattern in patterns:
-            text = re.sub(pattern, flag, text, flags=re.IGNORECASE)
-        text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
-
-    return text
-
-
-def country_flags_in_text(text: str) -> list[str]:
-    normalized = normalize_country_flags(text or "")
-    flags: list[str] = []
-    for flag in COUNTRY_CODE_FLAGS.values():
-        if flag in normalized and flag not in flags:
-            flags.append(flag)
-    return flags
-
-
-def preserve_original_country_flags(original: str, translated: str) -> str:
-    translated = normalize_country_flags(translated or "")
-    missing = [flag for flag in country_flags_in_text(original) if flag not in translated]
-    if missing:
-        translated = f"{' '.join(missing)} {translated}".strip()
-    return normalize_country_flags(translated)
-
 
 PODCAST_BLOCK_PATTERNS = (
     r"\bpodcast\b",
@@ -415,6 +247,26 @@ PODCAST_DOMAINS = (
 # ====== TRANSLATION DICTIONARIES ======
 
 HANDLE_REPLACEMENTS = {
+    "NBA": "NBA",
+    "WNBA": "WNBA",
+    "ShamsCharania": "שאמס צ'ראניה",
+    "Shams Charania": "שאמס צ'ראניה",
+    "Shams": "שאמס",
+    "highkin": "שון הייקין",
+    "Sean Highkin": "שון הייקין",
+    "TheSteinLine": "מארק סטיין",
+    "wojespn": "אדריאן ווג'נרובסקי",
+    "espn_macmahon": "טים מקמהון",
+    "BobbyMarks42": "בובי מרקס",
+    "ChrisBHaynes": "כריס היינס",
+    "UnderdogNBA": "אנדרדוג NBA",
+    "TheDunkCentral": "דאנק סנטרל",
+    "LegionHoops": "לגיון הופס",
+    "NBACentral": "NBA סנטרל",
+    "ClutchPoints": "קלאץ' פוינטס",
+    "espn": "ESPN",
+    "ESPNNBA": "ESPN NBA",
+    "espn_macmahon": "טים מקמהון",
     "FabrizioRomano": "פבריציו רומאנו",
     "David_Ornstein": "דיוויד אורנשטיין",
     "DiMarzio": "ג'אנלוקה די מארציו",
@@ -431,6 +283,7 @@ HANDLE_REPLACEMENTS = {
     "AranchaMOBILE": "ארנצ'ה רודריגז",
     "JLSanchez78": "חוסה לואיס סאנצ'ס",
     "AlfredoPedulla": "אלפרדו פדולה",
+    "86_longo": "דניאלה לונגו",
     "Plettigoal": "פלוריאן פלטנברג",
     "cfbayern": "כריסטיאן פאלק",
     "FabriceHawkins": "פבריס הוקינס",
@@ -451,56 +304,150 @@ HANDLE_REPLACEMENTS = {
     "PipersierraR": "פיפה סיירה",
     "CLMerlo": "ססאר לואיס מרלו",
     "mundodeportivo": "מונדו דפורטיבו",
+    "JijantesFC": "ג'יגאנטס",
     "RMCsport": "RMC ספורט",
     "lequipe": "לאקיפ",
     "ActuFoot_": "אקטו פוט",
+    "MadridXtra": "מדריד אקסטרה",
+    "ManagingBarca": "מנג'ינג בארסה",
     "Barca_Buzz": "בארסה באז",
     "iMiaSanMia": "מיה סן מיה",
-    "Santi_J_FM": "סנטי אאונה",
-    "AndyMitten": "אנדי מיטן",
 }
 
 HANDLE_REPLACEMENTS.update(
     {
-        "MadridXtra": "מדריד אקסטרה",
+        "okcthunder": "אוקלהומה סיטי ת'אנדר",
+        "OKCThunder": "אוקלהומה סיטי ת'אנדר",
+        "okc thunder": "אוקלהומה סיטי ת'אנדר",
+        "Pacers": "אינדיאנה פייסרס",
+        "nyknicks": "ניו יורק ניקס",
+        "celtics": "בוסטון סלטיקס",
+        "warriors": "גולדן סטייט ווריירס",
+        "lakers": "לוס אנג'לס לייקרס",
+        "timberwolves": "מינסוטה טימברוולבס",
+        "nuggets": "דנבר נאגטס",
+        "dallasmavs": "דאלאס מאבריקס",
+        "sixers": "פילדלפיה 76",
+        "MiamiHEAT": "מיאמי היט",
+        "Bucks": "מילווקי באקס",
+        "Suns": "פיניקס סאנס",
+        "LAClippers": "לוס אנג'לס קליפרס",
+        "memgrizz": "ממפיס גריזליס",
+        "PelicansNBA": "ניו אורלינס פליקנס",
+        "spurs": "סן אנטוניו ספרס",
+        "HoustonRockets": "יוסטון רוקטס",
+        "trailblazers": "פורטלנד טרייל בלייזרס",
+        "utahjazz": "יוטה ג'אז",
+        "OrlandoMagic": "אורלנדו מג'יק",
+        "ATLHawks": "אטלנטה הוקס",
+        "hornets": "שארלוט הורנטס",
+        "Raptors": "טורונטו ראפטורס",
+        "DetroitPistons": "דטרויט פיסטונס",
+        "WashWizards": "וושינגטון וויזארדס",
+        "cavs": "קליבלנד קאבלירס",
+        "SacramentoKings": "סקרמנטו קינגס",
+        "BrooklynNets": "ברוקלין נטס",
+        "chicagobulls": "שיקגו בולס",
     }
 )
 
 SELF_QUOTE_ALIASES = {
-    "FabrizioRomano": ["Fabrizio Romano", "פבריציו רומאנו"],
-    "David_Ornstein": ["David Ornstein", "דיוויד אורנשטיין"],
-    "DiMarzio": ["Gianluca Di Marzio", "Gianluca DiMarzio", "ג'אנלוקה די מארציו", "גיאנלוקה די מארציו"],
-    "JacobsBen": ["Ben Jacobs", "בן ג'ייקובס", "בן גייקובס", "בן יעקבס"],
-    "NicoSchira": ["Nicolò Schira", "Nicolo Schira", "Nico Schira", "ניקולה סקירה", "ניקולו סקירה", "ניקולה שירה", "ניקולו שירה", "ניקולה סקירה - כללי"],
-    "lauriewhitwell": ["Laurie Whitwell", "לורי וויטוול"],
-    "SamLee": ["Sam Lee", "סם לי"],
-    "_pauljoyce": ["Paul Joyce", "פול ג'ויס"],
-    "Matt_Law_DT": ["Matt Law", "מאט לאו"],
-    "SimonJones_DM": ["Simon Jones", "סיימון ג'ונס"],
-    "MatteMoretto": ["Matteo Moretto", "Matte Moretto", "מתאו מורטו", "מתאו מורטו - ספרד"],
-    "ffpolo": ["Fernando Polo", "פרננדו פולו"],
-    "gerardromero": ["Gerard Romero", "ג'ראד רומרו", "חרארד רומרו", "ז'ראר רומרו"],
-    "AranchaMOBILE": ["Arancha Rodríguez", "Arancha Rodriguez", "ארנצ'ה רודריגס", "ארנצ'ה רודריגז"],
-    "JLSanchez78": ["José Luis Sánchez", "Jose Luis Sanchez", "חוסה לואיס סאנצ'ס"],
-    "AlfredoPedulla": ["Alfredo Pedullà", "Alfredo Pedulla", "אלפרדו פדולה", "אלפרהדו פדולה"],
-    "Plettigoal": ["Florian Plettenberg", "Florian Pletti", "פלוריאן פלטנברג", "פלוריאן פחלטנברג"],
-    "cfbayern": ["Christian Falk", "כריסטיאן פאלק"],
-    "FabriceHawkins": ["Fabrice Hawkins", "פבריס הוקינס"],
-    "Tanziloic": ["Loïc Tanzi", "Loic Tanzi", "לואיק טנזי"],
-    "MonfortCarlos": ["Carlos Monfort", "קרלוס מונפור"],
-    "Barca_Buzz": ["Barca Buzz", "Barça Buzz", "בארסה באז"],
-    "iMiaSanMia": ["Mia San Mia", "מיה סן מיה"],
-    "Santi_J_FM": ["Santi Aouna", "סנטי אאונה"],
-    "AndyMitten": ["Andy Mitten", "אנדי מיטן"],
+    "NBA": ["NBA", "NBA Today", "אן בי איי"],
+    "ShamsCharania": ["Shams Charania", "Shams", "שאמס צ'ראניה", "שאמס צראניה", "שאמש צ'ראניה"],
+    "highkin": ["Sean Highkin", "Highkin", "שון הייקין", "שון הייקין - פורטלנד"],
+    "ChrisBHaynes": ["Chris Haynes", "כריס היינס"],
+    "UnderdogNBA": ["Underdog NBA", "אנדרדוג NBA"],
+    "TheDunkCentral": ["Dunk Central", "The Dunk Central", "דאנק סנטרל"],
+    "LegionHoops": ["Legion Hoops", "לגיון הופס"],
+    "NBACentral": ["NBA Central", "NBA סנטרל"],
+    "ClutchPoints": ["ClutchPoints", "Clutch Points", "קלאץ' פוינטס"],
 }
 
-SELF_QUOTE_ALIASES.update(
-    {
-        "MadridXtra": ["Madrid Xtra", "MadridXtra", "מדריד אקסטרה"],
-    }
-)
-
-FOOTBALL_TERMS = {
+BASKETBALL_TERMS = {
+    "league sources tell": "לפי מקורות בליגה",
+    "sources tell": "לפי מקורות",
+    "sources say": "לפי מקורות",
+    "per sources": "לפי מקורות",
+    "breaking": "דיווח דרמטי",
+    "free agent": "שחקן חופשי",
+    "free agency": "שוק השחקנים החופשיים",
+    "trade deadline": "דדליין הטריידים",
+    "trade": "טרייד",
+    "traded": "עבר בטרייד",
+    "has been traded": "עבר בטרייד",
+    "is being traded": "עובר בטרייד",
+    "has requested a trade": "ביקש טרייד",
+    "sign-and-trade": "חתימה והעברה",
+    "first-round pick": "בחירת סיבוב ראשון",
+    "second-round pick": "בחירת סיבוב שני",
+    "draft pick": "בחירת דראפט",
+    "NBA Draft": "דראפט ה-NBA",
+    "two-way contract": "חוזה דו-כיווני",
+    "two-way": "דו-כיווני",
+    "training camp": "מחנה האימונים",
+    "regular season": "העונה הסדירה",
+    "postseason": "הפלייאוף",
+    "playoffs": "הפלייאוף",
+    "all arrivals for game": "כל ההגעות למשחק",
+    "all arrivals": "כל ההגעות",
+    "arrivals": "הגעות",
+    "Game 7": "משחק 7",
+    "Game": "משחק",
+    "NBA Conference Finals": "גמר האזור ב-NBA",
+    "Finals": "הגמר",
+    "conference finals": "גמר האזור",
+    "game winner": "סל ניצחון",
+    "career-high": "שיא קריירה",
+    "season-high": "שיא עונתי",
+    "home court": "הבית",
+    "on the season": "העונה",
+    "behind big performances from": "בזכות הופעות גדולות של",
+    "went off": "התפוצץ",
+    "extension": "הארכת חוזה",
+    "max contract": "חוזה מקסימום",
+    "rookie scale extension": "הארכת חוזה רוקי",
+    "waived": "שוחרר",
+    "buyout": "בייאאוט",
+    "injury report": "דוח פציעות",
+    "questionable": "בספק",
+    "probable": "ככל הנראה ישחק",
+    "ruled out": "לא ישחק",
+    "questionable to return": "בספק לחזור",
+    "doubtful": "בספק גדול",
+    "day-to-day": "יום-יומי",
+    "minutes restriction": "הגבלת דקות",
+    "starting lineup": "החמישייה הפותחת",
+    "depth chart": "רוטציה",
+    "front office": "הנהלת הקבוצה",
+    "head coach": "המאמן הראשי",
+    "assistant coach": "עוזר המאמן",
+    "general manager": "הג'נרל מנג'ר",
+    "president of basketball operations": "נשיא פעולות הכדורסל",
+    "basketball operations": "פעולות הכדורסל",
+    "salary cap": "תקרת השכר",
+    "luxury tax": "מס המותרות",
+    "tax apron": "אפרון המס",
+    "second apron": "האפרון השני",
+    "player option": "אופציית שחקן",
+    "team option": "אופציית קבוצה",
+    "non-guaranteed": "לא מובטח",
+    "guaranteed": "מובטח",
+    "hard cap": "תקרה קשיחה",
+    "double-double": "דאבל-דאבל",
+    "triple-double": "טריפל-דאבל",
+    "clutch": "קלאץ'",
+    "buzzer-beater": "סל עם הבאזר",
+    "shot clock": "שעון הזריקות",
+    "overtime": "הארכה",
+    "OT": "הארכה",
+    "MVP": "MVP",
+    "points": "נקודות",
+    "rebounds": "ריבאונדים",
+    "assists": "אסיסטים",
+    "steals": "חטיפות",
+    "blocks": "חסימות",
+    "mins": "דקות",
+    "minutes": "דקות",
     "here we go": "הנה זה קורה",
     "breaking": "דיווח דרמטי",
     "exclusive": "בלעדי",
@@ -583,7 +530,154 @@ FOOTBALL_TERMS = {
     "Ligue 1": "ליגה 1",
 }
 
+for football_only_term in (
+    "here we go",
+    "club sources",
+    "deal agreed",
+    "agreement reached",
+    "verbal agreement",
+    "full agreement",
+    "medical tests",
+    "medical booked",
+    "loan deal",
+    "loan move",
+    "permanent move",
+    "option to buy",
+    "obligation to buy",
+    "release clause",
+    "sell-on clause",
+    "fixed fee",
+    "transfer fee",
+    "free transfer",
+    "advanced talks",
+    "talks ongoing",
+    "negotiations ongoing",
+    "deal off",
+    "set to join",
+    "set to sign",
+    "close to joining",
+    "close to signing",
+    "joins",
+    "signs for",
+    "will sign",
+    "has signed",
+    "bid submitted",
+    "formal bid",
+    "bid rejected",
+    "bid accepted",
+    "official soon",
+    "done deal",
+    "sporting director",
+    "goalkeeper",
+    "centre back",
+    "center back",
+    "left back",
+    "right back",
+    "full back",
+    "midfielder",
+    "defensive midfielder",
+    "attacking midfielder",
+    "winger",
+    "striker",
+    "starting XI",
+    "clean sheet",
+    "stoppage time",
+    "penalty shootout",
+    "Champions League",
+    "Europa League",
+    "Conference League",
+    "Premier League",
+    "La Liga",
+    "Serie A",
+    "Bundesliga",
+    "Ligue 1",
+):
+    BASKETBALL_TERMS.pop(football_only_term, None)
+
 TEAM_REPLACEMENTS = {
+    "Atlanta Hawks": "אטלנטה הוקס",
+    "Boston Celtics": "בוסטון סלטיקס",
+    "Brooklyn Nets": "ברוקלין נטס",
+    "BrooklynNets": "ברוקלין נטס",
+    "Charlotte Hornets": "שארלוט הורנטס",
+    "Chicago Bulls": "שיקגו בולס",
+    "Cleveland Cavaliers": "קליבלנד קאבלירס",
+    "Dallas Mavericks": "דאלאס מאבריקס",
+    "Denver Nuggets": "דנבר נאגטס",
+    "Detroit Pistons": "דטרויט פיסטונס",
+    "Golden State Warriors": "גולדן סטייט ווריורס",
+    "GoldenStateWarriors": "גולדן סטייט ווריורס",
+    "Houston Rockets": "יוסטון רוקטס",
+    "Indiana Pacers": "אינדיאנה פייסרס",
+    "LA Clippers": "לוס אנג'לס קליפרס",
+    "Los Angeles Clippers": "לוס אנג'לס קליפרס",
+    "Los Angeles Lakers": "לוס אנג'לס לייקרס",
+    "Memphis Grizzlies": "ממפיס גריזליס",
+    "Miami Heat": "מיאמי היט",
+    "Milwaukee Bucks": "מילווקי באקס",
+    "Minnesota Timberwolves": "מינסוטה טימברוולבס",
+    "New Orleans Pelicans": "ניו אורלינס פליקנס",
+    "New York Knicks": "ניו יורק ניקס",
+    "Oklahoma City Thunder": "אוקלהומה סיטי ת'אנדר",
+    "Orlando Magic": "אורלנדו מג'יק",
+    "Philadelphia 76ers": "פילדלפיה 76'רס",
+    "Phoenix Suns": "פיניקס סאנס",
+    "Portland Trail Blazers": "פורטלנד טרייל בלייזרס",
+    "Sacramento Kings": "סקרמנטו קינגס",
+    "San Antonio Spurs": "סן אנטוניו ספרס",
+    "Toronto Raptors": "טורונטו ראפטורס",
+    "Utah Jazz": "יוטה ג'אז",
+    "Washington Wizards": "וושינגטון וויזארדס",
+    "Warriors": "ווריורס",
+    "Nets": "נטס",
+    "Hawks": "הוקס",
+    "Celtics": "סלטיקס",
+    "Hornets": "הורנטס",
+    "Bulls": "בולס",
+    "Cavaliers": "קאבלירס",
+    "Cavs": "קאבס",
+    "Mavericks": "מאבריקס",
+    "Mavs": "מאבריקס",
+    "Nuggets": "נאגטס",
+    "Pistons": "פיסטונס",
+    "Rockets": "רוקטס",
+    "Pacers": "פייסרס",
+    "Clippers": "קליפרס",
+    "Lakers": "לייקרס",
+    "Grizzlies": "גריזליס",
+    "Heat": "היט",
+    "Bucks": "באקס",
+    "Timberwolves": "טימברוולבס",
+    "Lynx": "לינקס",
+    "minnesotalynx": "מינסוטה לינקס",
+    "Pelicans": "פליקנס",
+    "Knicks": "ניקס",
+    "Thunder": "ת'אנדר",
+    "Magic": "מג'יק",
+    "76ers": "76'רס",
+    "Sixers": "סיקסרס",
+    "Suns": "סאנס",
+    "Blazers": "בלייזרס",
+    "Trail Blazers": "טרייל בלייזרס",
+    "Kings": "קינגס",
+    "Spurs": "ספרס",
+    "Raptors": "ראפטורס",
+    "Jazz": "ג'אז",
+    "Wizards": "וויזארדס",
+    "הלוחמים": "הווריורס",
+    "לוחמים": "ווריורס",
+    "הרשתות": "הנטס",
+    "רשתות": "נטס",
+    "השמשות": "הסאנס",
+    "שמשות": "סאנס",
+    "קסם": "מג'יק",
+    "הקסם": "המג'יק",
+    "חלוצים": "בלייזרס",
+    "שבילים": "בלייזרס",
+    "קוצצים": "קליפרס",
+    "הקוצצים": "הקליפרס",
+    "אשפים": "וויזארדס",
+    "אשף": "וויזארדס",
     "Manchester United": "מנצ'סטר יונייטד",
     "Man United": "מנצ'סטר יונייטד",
     "Man Utd": "מנצ'סטר יונייטד",
@@ -665,79 +759,6 @@ TEAM_REPLACEMENTS = {
     "FCB": "ברצלונה",
 }
 
-
-
-# Extra club abbreviations / aliases. These help both filtering and Hebrew output.
-# Important: FCB can mean Barcelona or Bayern, so it is handled mainly by the allow-list matcher,
-# while more explicit forms such as FC Bayern / Barça are preferred for translation.
-TEAM_REPLACEMENTS.update(
-    {
-        "MUFC": "מנצ'סטר יונייטד",
-        "MCFC": "מנצ'סטר סיטי",
-        "LFC": "ליברפול",
-        "CFC": "צ'לסי",
-        "AFC": "ארסנל",
-        "THFC": "טוטנהאם",
-        "NUFC": "ניוקאסל",
-        "AVFC": "אסטון וילה",
-        "WHUFC": "ווסטהאם",
-        "BHAFC": "ברייטון",
-        "EFC": "אברטון",
-        "BVB": "בורוסיה דורטמונד",
-        "B04": "באייר לברקוזן",
-        "RBL": "רד בול לייפציג",
-        "SGE": "איינטרכט פרנקפורט",
-        "FC Bayern": "באיירן מינכן",
-        "FCBayern": "באיירן מינכן",
-        "RMA": "ריאל מדריד",
-        "Atleti": "אתלטיקו מדריד",
-        "ATM": "אתלטיקו מדריד",
-        "Athletic Bilbao": "אתלטיק בילבאו",
-        "Real Sociedad": "ריאל סוסיאדד",
-        "La Real": "ריאל סוסיאדד",
-        "Villarreal CF": "ויאריאל",
-        "ACM": "מילאן",
-        "A.C. Milan": "מילאן",
-        "Internazionale": "אינטר",
-        "Inter Miami CF": "אינטר מיאמי",
-        "OM": "מארסיי",
-        "Olympique Marseille": "מארסיי",
-        "Olympique Lyon": "ליון",
-        "OL": "ליון",
-        "LOSC": "ליל",
-        "RC Lens": "לאנס",
-        "RCL": "לאנס",
-        "AS Monaco": "מונאקו",
-        "ASM": "מונאקו",
-        "SL Benfica": "בנפיקה",
-        "Benfica Lisbon": "בנפיקה ליסבון",
-        "Sporting CP": "ספורטינג ליסבון",
-        "Sporting Lisbon": "ספורטינג ליסבון",
-        "PSV Eindhoven": "פ.ס.וו איינדהובן",
-        "PSV": "פ.ס.וו",
-        "CR Flamengo": "פלמנגו",
-        "Flamengo": "פלמנגו",
-        "Palmeiras": "פלמייראס",
-        "Sao Paulo": "סאו פאולו",
-        "São Paulo": "סאו פאולו",
-        "Boca Juniors": "בוקה ג'וניורס",
-        "River Plate": "ריבר פלייט",
-        "Al Nassr": "אל-נאסר",
-        "Al-Nassr": "אל-נאסר",
-        "Al Hilal": "אל-הילאל",
-        "Al-Hilal": "אל-הילאל",
-        "Al Ahli": "אל-אהלי",
-        "Al-Ahli": "אל-אהלי",
-        "Galatasaray": "גלאטסראיי",
-        "Fenerbahce": "פנרבחצ'ה",
-        "Fenerbahçe": "פנרבחצ'ה",
-        "Club Brugge": "קלאב ברוז'",
-        "Red Star Belgrade": "הכוכב האדום",
-        "Crvena Zvezda": "הכוכב האדום",
-        "Botafogo": "בוטאפוגו",
-    }
-)
-
 ENTITY_CONFLICT_GROUPS = [
     {
         "Real Madrid": "ריאל מדריד",
@@ -794,8 +815,6 @@ PLAYER_REPLACEMENTS = {
     "Bernardo Silva": "ברנרדו סילבה",
     "Julian Alvarez": "חוליאן אלבארס",
     "Julián Álvarez": "חוליאן אלבארס",
-    "Ousmane Dembele": "אוסמן דמבלה",
-    "Ousmane Dembélé": "אוסמן דמבלה",
     "Jose Mourinho": "ז'וזה מוריניו",
     "José Mourinho": "ז'וזה מוריניו",
     "Gabriel Jesus": "גבריאל ז'סוס",
@@ -803,9 +822,101 @@ PLAYER_REPLACEMENTS = {
     "Antonio Conte": "אנטוניו קונטה",
     "Mauricio Pochettino": "מאוריסיו פוצ'טינו",
     "Pep Guardiola": "פפ גווארדיולה",
-    "Khvicha Kvaratskhelia": "חביצ'ה קווארצחליה",
-    "Kvaratskhelia": "קווארצחליה",
+    "Jared McCain": "ג'ארד מקיין",
 }
+
+for football_only_player in (
+    "Marcus Rashford",
+    "Anthony Gordon",
+    "Florian Wirtz",
+    "Viktor Gyokeres",
+    "Victor Osimhen",
+    "Kylian Mbappe",
+    "Kylian Mbappé",
+    "Vinicius Junior",
+    "Vinícius Júnior",
+    "Erling Haaland",
+    "Mohamed Salah",
+    "Trent Alexander-Arnold",
+    "Alexander Isak",
+    "Bruno Fernandes",
+    "Lamine Yamal",
+    "Nico Williams",
+    "Rodrygo",
+    "Jude Bellingham",
+    "Harry Kane",
+    "Lautaro Martinez",
+    "Lautaro Martínez",
+    "Rafael Leao",
+    "Rafael Leão",
+    "Xavi Simons",
+    "Bernardo Silva",
+    "Julian Alvarez",
+    "Julián Álvarez",
+    "Jose Mourinho",
+    "José Mourinho",
+    "Gabriel Jesus",
+    "Massimiliano Allegri",
+    "Antonio Conte",
+    "Mauricio Pochettino",
+    "Pep Guardiola",
+):
+    PLAYER_REPLACEMENTS.pop(football_only_player, None)
+
+PLAYER_REPLACEMENTS.update(
+    {
+        "Jared McCain": "ג'ארד מקיין",
+        "Shai Gilgeous-Alexander": "שיי גילג'ס-אלכסנדר",
+        "Shai Gilgeous Alexander": "שיי גילג'ס-אלכסנדר",
+        "SGA": "שיי גילג'ס-אלכסנדר",
+        "Nikola Jokic": "ניקולה יוקיץ'",
+        "Nikola Jokić": "ניקולה יוקיץ'",
+        "Luka Doncic": "לוקה דונצ'יץ'",
+        "Luka Dončić": "לוקה דונצ'יץ'",
+        "Giannis Antetokounmpo": "יאניס אנטטוקומפו",
+        "Jayson Tatum": "ג'ייסון טייטום",
+        "Jaylen Brown": "ג'יילן בראון",
+        "Tyrese Haliburton": "טייריס הליברטון",
+        "Jalen Brunson": "ג'יילן ברונסון",
+        "Anthony Edwards": "אנתוני אדוארדס",
+        "LeBron James": "לברון ג'יימס",
+        "Stephen Curry": "סטף קרי",
+        "Steph Curry": "סטף קרי",
+        "Kevin Durant": "קווין דוראנט",
+        "Victor Wembanyama": "ויקטור וומבניאמה",
+        "Chet Holmgren": "צ'ט הולמגרן",
+        "Jalen Williams": "ג'יילן וויליאמס",
+        "Pascal Siakam": "פסקל סיאקם",
+        "Karl-Anthony Towns": "קארל-אנתוני טאונס",
+        "Karl Anthony Towns": "קארל-אנתוני טאונס",
+        "Rudy Gobert": "רודי גובר",
+        "James Harden": "ג'יימס הארדן",
+        "Kawhi Leonard": "קוואי לנארד",
+        "Damian Lillard": "דמיאן לילארד",
+        "Joel Embiid": "ג'ואל אמביד",
+        "Tyrese Maxey": "טייריס מקסי",
+        "Devin Booker": "דווין בוקר",
+        "Donovan Mitchell": "דונובן מיטשל",
+        "Ja Morant": "ג'ה מוראנט",
+        "Zion Williamson": "זאיון וויליאמסון",
+        "Jimmy Butler": "ג'ימי באטלר",
+        "Bam Adebayo": "באם אדבאיו",
+        "Trae Young": "טריי יאנג",
+        "LaMelo Ball": "לאמלו בול",
+        "Paolo Banchero": "פאולו באנקרו",
+        "Franz Wagner": "פרנץ ואגנר",
+        "Cade Cunningham": "קייד קנינגהם",
+        "Evan Mobley": "אוון מובלי",
+        "Darius Garland": "דריוס גארלנד",
+        "Mikal Bridges": "מיקאל ברידג'ס",
+        "OG Anunoby": "או.ג'י אנונובי",
+        "Josh Hart": "ג'וש הארט",
+        "Myles Turner": "מיילס טרנר",
+        "Bennedict Mathurin": "בנדיקט מת'ורין",
+        "Caitlin Clark": "קייטלין קלארק",
+        "Angel Reese": "אנג'ל ריס",
+    }
+)
 
 HEBREW_FINAL_FIXES = {
     "צ'לסי בוחנת את האפשרות למנות את צ'אבי אלונסו למאמנה הבא של ריאל סוסיאדד": "צ'לסי בוחנת את האפשרות למנות את צ'אבי אלונסו למאמנה הבא",
@@ -824,13 +935,8 @@ HEBREW_FINAL_FIXES = {
     "ג׳וליאן אלווארז": "חוליאן אלבארס",
     "ג'וליאן אלוורז": "חוליאן אלבארס",
     "ג׳וליאן אלוורז": "חוליאן אלבארס",
-    "אוסמאנה דהמבéלé": "אוסמן דמבלה",
-    "אוסמאנה דהמבלה": "אוסמן דמבלה",
-    "אוסמן דמבל": "אוסמן דמבלה",
-    "אוסמן דמבלהה": "אוסמן דמבלה",
-    "דהמבéלé": "דמבלה",
-    "דהמבלה": "דמבלה",
-    "דהמבלהה": "דמבלה",
+    "ברנארדו סילבה": "ברנרדו סילבה",
+    "ברנרדו סילבא": "ברנרדו סילבה",
     "זוזה מורינייו": "ז'וזה מוריניו",
     "זוזה מוריניו": "ז'וזה מוריניו",
     "ז׳וזה מורינייו": "ז'וזה מוריניו",
@@ -840,11 +946,20 @@ HEBREW_FINAL_FIXES = {
     "ז׳וזה מאוריניו": "ז'וזה מוריניו",
     "מאוריניו": "מוריניו",
     "חוזה מוריניו": "ז'וזה מוריניו",
-    "ברנארדו סילבה": "ברנרדו סילבה",
-    "ברנרדו סילבא": "ברנרדו סילבה",
+    "אוסמן דמבלהה": "אוסמן דמבלה",
+    "דהמבלהה": "דמבלה",
     "חרארד רומרו": "ג'ראד רומרו",
     "ז'ראר רומרו": "ג'ראד רומרו",
-    "GE": "🇬🇪",
+    "שאמש": "שאמס",
+    "שאמש צ'ראניה": "שאמס צ'ראניה",
+    "שאמש צ׳ראניה": "שאמס צ׳ראניה",
+    "נהא טודיי": "NBA Today",
+    "נבא טודיי": "NBA Today",
+    "נבה טודיי": "NBA Today",
+    "נ.ב.א טודיי": "NBA Today",
+    "אנ.בי.איי טודיי": "NBA Today",
+    "אן-בי-איי טודיי": "NBA Today",
+    "אן בי איי טודיי": "NBA Today",
     "כאן אנחנו הולכים": "הנה זה קורה",
     "הנה אנחנו הולכים": "הנה זה קורה",
     "לפי הבנתי": "לפי המידע",
@@ -892,21 +1007,13 @@ HEBREW_FINAL_FIXES.update(
     }
 )
 
-HEBREW_FINAL_FIXES.update(
-    {
-        "\u05d7\u05d1\u05e6'\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
-        "\u05d7\u05d1\u05d9\u05e6\u05d9\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
-        "\u05d7\u05d1\u05d9\u05e6\u05f3\u05d4": "\u05d7\u05d1\u05d9\u05e6'\u05d4 \u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
-        "\u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05f3\u05d7\u05dc\u05d9\u05d4": "\u05e7\u05d5\u05d5\u05d0\u05e8\u05e6\u05d7\u05dc\u05d9\u05d4",
-        "GE": "\U0001F1EC\U0001F1EA",
-    }
-)
-
 STAT_REPLACEMENTS = {
     "goals": "שערים",
     "goal": "שער",
     "assists": "בישולים",
     "assist": "בישול",
+    "blocks": "חסימות",
+    "block": "חסימה",
     "appearances": "הופעות",
     "appearance": "הופעה",
     "matches": "משחקים",
@@ -915,7 +1022,21 @@ STAT_REPLACEMENTS = {
     "apps": "הופעות",
 }
 
-LATIN_KEEP = {"VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
+# Keep NBA branding exact. Some translators may turn NBA into NBC / Hebrew NBC variants.
+HEBREW_FINAL_FIXES.update(
+    {
+        "NBC": "NBA",
+        "N.B.C": "NBA",
+        "אן בי סי": "NBA",
+        "אן.בי.סי": "NBA",
+        "אנ בי סי": "NBA",
+        "אנ.בי.סי": "NBA",
+        "נ.ב.סי": "NBA",
+        "אן-בי-סי": "NBA",
+    }
+)
+
+LATIN_KEEP = {"NBA", "WNBA", "NBA Today", "VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
 
 HEBREW_LETTER = {
     "a": "א", "b": "ב", "c": "ק", "d": "ד", "e": "ה", "f": "פ",
@@ -1059,10 +1180,14 @@ def sendable_video_url(post: Post) -> str:
         size = remote_file_size(url)
         if size is not None and size <= MAX_VIDEO_BYTES:
             return url
+        if size is not None and size > MAX_VIDEO_BYTES:
+            logging.info("וידיאו גדול מדי לשליחה (%sMB > %sMB), יישלח קישור לפוסט במקום קובץ.", round(size / 1024 / 1024, 1), round(MAX_VIDEO_BYTES / 1024 / 1024))
     for url in fetch_external_video_urls(post):
         size = remote_file_size(url)
         if size is not None and size <= MAX_VIDEO_BYTES:
             return url
+        if size is not None and size > MAX_VIDEO_BYTES:
+            logging.info("וידיאו חיצוני גדול מדי לשליחה (%sMB > %sMB), יישלח קישור לפוסט במקום קובץ.", round(size / 1024 / 1024, 1), round(MAX_VIDEO_BYTES / 1024 / 1024))
     return ""
 
 
@@ -1445,32 +1570,26 @@ def is_control_paused() -> bool:
 
 def control_reply_markup(paused: bool) -> dict[str, Any]:
     if paused:
-        return {"inline_keyboard": [[{"text": "להפעיל את הבוט", "callback_data": "football_bot_on"}]]}
-    return {"inline_keyboard": [[{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}]]}
+        return {"inline_keyboard": [[{"text": "להפעיל את בוט ה-NBA", "callback_data": "nba_bot_on"}]]}
+    return {"inline_keyboard": [[{"text": "לכבות את בוט ה-NBA", "callback_data": "nba_bot_off"}]]}
 
 
-def send_control_panel(paused: bool, action_done: str = "", force_new: bool = False) -> None:
+def send_control_panel(paused: bool, action_done: str = "") -> None:
     if not CONTROL_CHAT_ID:
         return
     status = "כבוי" if paused else "פעיל"
-    text = action_done or f"לוח שליטה בבוט הכדורגל. מצב נוכחי: {status}."
+    text = action_done or f"לוח שליטה בבוט ה-NBA. מצב נוכחי: {status}."
     state = load_control_state()
     message_id = state.get("control_message_id")
-    payload = {
-        "chat_id": CONTROL_CHAT_ID,
-        "text": text,
-        "reply_markup": control_reply_markup(paused),
-    }
-    # Startup should create a fresh control panel every run, like the old behavior.
-    # Button clicks still try to edit the active panel to avoid unnecessary spam.
-    if message_id and not force_new:
+    payload = {"chat_id": CONTROL_CHAT_ID, "text": text, "reply_markup": control_reply_markup(paused)}
+    if message_id:
         try:
             telegram_api("editMessageText", {**payload, "message_id": int(message_id)})
             return
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
                 return
-            logging.warning("Control panel edit failed, sending one new panel: %s", exc)
+            logging.warning("NBA control panel edit failed, sending one new panel: %s", exc)
     response = telegram_api("sendMessage", payload)
     new_message_id = response.get("result", {}).get("message_id")
     if new_message_id:
@@ -1492,22 +1611,20 @@ def process_control_update(update: dict[str, Any]) -> None:
     if message.get("message_id"):
         save_control_state(control_message_id=message.get("message_id"))
     data = str(callback.get("data", ""))
-    if CONTROL_CHAT_ID and chat_id != CONTROL_CHAT_ID:
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
         if callback_id:
             answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
         return
-    if data == "football_bot_off":
+    if data == "nba_bot_off":
         save_control_state(True)
-        logging.info("Control panel: bot paused by button click.")
         if callback_id:
-            answer_control_callback(callback_id, "הבוט כובה")
-        send_control_panel(True, "הפעולה בוצעה בהצלחה: הבוט כובה.")
-    elif data == "football_bot_on":
+            answer_control_callback(callback_id, "בוט ה-NBA כובה")
+        send_control_panel(True, "הפעולה בוצעה בהצלחה: בוט ה-NBA כובה.")
+    elif data == "nba_bot_on":
         save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
-        logging.info("Control panel: bot resumed by button click.")
         if callback_id:
-            answer_control_callback(callback_id, "הבוט הופעל")
-        send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
+            answer_control_callback(callback_id, "בוט ה-NBA הופעל")
+        send_control_panel(False, "הפעולה בוצעה בהצלחה: בוט ה-NBA הופעל.")
 
 
 def is_getupdates_conflict(error: Exception) -> bool:
@@ -1515,80 +1632,31 @@ def is_getupdates_conflict(error: Exception) -> bool:
     return "409" in error_text and "getupdates" in error_text
 
 
-def control_saved_offset() -> int:
-    try:
-        return max(0, int(load_control_state().get("control_update_offset", 0)))
-    except Exception:
-        return 0
-
-
-def delete_control_webhook_if_needed() -> None:
-    # getUpdates will not receive button clicks if a Telegram webhook is still attached.
-    # This call does not send messages and does not use Gemini/AI credits.
-    if not CONTROL_DELETE_WEBHOOK_ON_STARTUP:
-        return
-    try:
-        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
-        logging.debug("Control panel: webhook cleared, polling callbacks is active.")
-    except Exception as exc:
-        logging.debug("Control panel: could not clear webhook before polling: %s", exc)
-
-
-def ensure_control_panel_once_if_requested() -> None:
-    # Default is false, so the old button can keep working without sending a new one.
-    # Set CONTROL_CREATE_PANEL_IF_MISSING=1 only if you want the bot to create one panel when no saved id exists.
-    if not CONTROL_CREATE_PANEL_IF_MISSING:
-        return
-    state = load_control_state()
-    if state.get("control_message_id"):
-        return
-    send_control_panel(is_control_paused())
-
-
 def control_loop() -> None:
     if not CONTROL_CHAT_ID:
         return
-    delete_control_webhook_if_needed()
-    offset = control_saved_offset()
-    last_conflict_cleanup = 0.0
+    offset = 0
     if CONTROL_SEND_PANEL_ON_STARTUP:
         try:
-            send_control_panel(is_control_paused(), force_new=True)
+            send_control_panel(is_control_paused())
         except Exception as exc:
-            logging.debug("Control panel startup failed: %s", exc)
+            logging.warning("NBA control panel startup failed: %s", exc)
     else:
-        try:
-            ensure_control_panel_once_if_requested()
-        except Exception as exc:
-            logging.debug("Control panel create-if-missing failed: %s", exc)
-        logging.debug("Control panel startup send is disabled; existing button callbacks will still work.")
+        logging.info("NBA control panel startup send is disabled; existing button callbacks will still work.")
     while True:
         try:
             response = telegram_api(
                 "getUpdates",
-                {
-                    "offset": offset,
-                    "timeout": 20,
-                    "allowed_updates": ["callback_query"],
-                },
+                {"offset": offset, "timeout": 20, "allowed_updates": ["callback_query"]},
             )
             for update in response.get("result", []):
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
-                save_control_state(control_update_offset=offset)
                 process_control_update(update)
         except Exception as exc:
             if is_getupdates_conflict(exc):
-                logging.debug("Control panel getUpdates conflict; trying webhook cleanup.")
-                now = time.time()
-                if now - last_conflict_cleanup > 30:
-                    last_conflict_cleanup = now
-                    try:
-                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
-                    except Exception as cleanup_exc:
-                        logging.warning("Control panel conflict cleanup failed: %s", cleanup_exc)
-                time.sleep(CONTROL_POLL_SECONDS)
-                continue
-            logging.warning("Control panel polling failed: %s", exc)
+                logging.warning("כפתורי השליטה בבוט ה-NBA כבויים בעותק הזה: טלגרם מזהה עוד עותק שמאזין לכפתורים. הסריקה והשליחה ממשיכות כרגיל.")
+                return
+            logging.warning("NBA control panel polling failed: %s", exc)
             time.sleep(CONTROL_POLL_SECONDS)
 
 
@@ -1768,18 +1836,19 @@ def is_link_only_or_details_post(post: Post) -> bool:
     return False
 
 
+
 def is_interesting_quote_post(cleaned: str) -> bool:
     senior_voice = re.search(
-        r"\b(president|chairman|owner|ceo|director|sporting director|manager|coach|agent)\b|"
-        r"נשיא|יו\"ר|בעלים|מנכ\"ל|מנהל מקצועי|מאמן|סוכן",
+        r"\b(commissioner|owner|governor|ceo|president|general manager|gm|head coach|coach|agent|executive)\b|"
+        r"קומישינר|בעלים|מנכ\"ל|נשיא|ג'נרל מנג'ר|GM|מאמן|סוכן|בכיר|הנהלה",
         cleaned,
         re.IGNORECASE,
     )
     important_subject = re.search(
-        r"\b(Vinicius|Mbappe|Bellingham|Yamal|Salah|Haaland|Real Madrid|Barcelona|Man United|Manchester United|"
-        r"contract|renewal|future|stay|leave|transfer|sign|club|fans)\b|"
-        r"ויניסיוס|אמבפה|בלינגהאם|ימאל|סלאח|הולאנד|ריאל מדריד|ברצלונה|מנצ'סטר יונייטד|"
-        r"חוזה|חידוש|עתיד|יישאר|יעזוב|העברה|חתימה|מועדון|אוהדים|שחקן",
+        r"\b(LeBron|Curry|Durant|Giannis|Jokic|Jokić|Doncic|Dončić|Tatum|Butler|Embiid|Wembanyama|Shai|SGA|"
+        r"trade|contract|extension|free agent|free agency|future|injury|suspension|draft|pick|coach|gm|front office|NBA)\b|"
+        r"לברון|קרי|דוראנט|יאניס|יוקיץ|דונצ'יץ|טייטום|באטלר|אמביד|וומבניאמה|שיי|"
+        r"טרייד|חוזה|הארכת חוזה|שחקן חופשי|עתיד|פציעה|השעיה|דראפט|בחירה|מאמן|הנהלה|NBA",
         cleaned,
         re.IGNORECASE,
     )
@@ -1789,14 +1858,14 @@ def is_interesting_quote_post(cleaned: str) -> bool:
 
 def is_stats_only_post(cleaned: str) -> bool:
     has_stats = re.search(
-        r"\b(stats|statistics|goals|assists|appearances|apps|minutes|rebounds|blocks|steals|points|per game)\b|"
-        r"סטטיסטיקה|שערים|בישולים|הופעות|דקות|נקודות|ריבאונדים|חסימות|חטיפות",
+        r"\b(stats|statistics|points|pts|rebounds|reb|assists|ast|blocks|steals|minutes|mins|per game|triple-double|double-double)\b|"
+        r"סטטיסטיקה|נקודות|ריבאונדים|אסיסטים|חסימות|חטיפות|דקות|טריפל דאבל|דאבל דאבל",
         cleaned,
         re.IGNORECASE,
     )
     has_news_context = re.search(
-        r"\bbreaking|exclusive|official|contract|renewal|transfer|deal|sign|bid|injury|record\b|"
-        r"רשמי|בלעדי|חוזה|חידוש|העברה|עסקה|חתם|הצעה|פציעה|שיא",
+        r"\b(breaking|exclusive|official|trade|traded|contract|extension|signs?|waived|buyout|injury|ruled out|draft|record|suspended)\b|"
+        r"דיווח דרמטי|בלעדי|רשמי|טרייד|עבר בטרייד|חוזה|הארכת חוזה|חתם|שוחרר|בייאאוט|פציעה|לא ישחק|דראפט|שיא|הושעה",
         cleaned,
         re.IGNORECASE,
     )
@@ -1810,60 +1879,6 @@ def filtered_post_text_preview(post: Post, limit: int = 260) -> str:
     return trim(cleaned, limit) if cleaned else "(טקסט ריק)"
 
 
-
-# Early quote/interview rescue: keeps newsworthy "X said/told" reports when they
-# clearly include a top-5-league/big club plus transfer/future intent. This fixes
-# cases like a family/agent/player quote about wanting/being able to move to Napoli.
-EARLY_MAJOR_CLUB_CONTEXT_PATTERNS = (
-    r"\b(?:Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Newcastle|Aston Villa|West Ham|Brighton|Everton|Leicester|Crystal Palace|Wolves|Fulham|Bournemouth|Brentford|Nottingham Forest|Leeds|Sunderland|Burnley)\b",
-    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Sevilla|Valencia|Villarreal|Real Sociedad|Athletic Club|Athletic Bilbao|Real Betis|Girona|Celta Vigo|Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Espanyol|Levante|Leganes|Granada|Las Palmas|Valladolid)\b",
-    r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Lazio|Atalanta|Fiorentina|Torino|Bologna|Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Verona|Parma|Pisa|Cremonese)\b",
-    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|RB Leipzig|Leipzig|Eintracht Frankfurt|Mainz|Freiburg|Augsburg|Wolfsburg|Union Berlin|Hoffenheim|Werder Bremen|Hamburg|Koln|Köln|St Pauli|Heidenheim|Bochum)\b",
-    r"\b(?:PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille|Nice|Rennes|Lens|Strasbourg|Brest|Nantes|Toulouse|Montpellier|Reims|Metz|Auxerre|Angers|Lorient|Paris FC)\b",
-    r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה|ווסטהאם|ברייטון|אברטון|לסטר|קריסטל פאלאס|וולבס|פולהאם|בורנמות|ברנטפורד|נוטינגהאם|לידס|סנדרלנד|ברנלי",
-    r"יובנטוס|אינטר|מילאן|נאפולי|רומא|לאציו|אטאלנטה|פיורנטינה|טורינו|בולוניה|גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|ורונה|פארמה|פיזה|קרמונזה",
-    r"באיירן|דורטמונד|לברקוזן|לייפציג|פרנקפורט|מיינץ|פרייבורג|אוגסבורג|וולפסבורג|אוניון ברלין|הופנהיים|ורדר ברמן|המבורג|קלן|סט פאולי|בוכום",
-    r"פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל|ניס|רן|לאנס|שטרסבורג|ברסט|נאנט|טולוז|מונפלייה|ריימס|מץ|אוקזר|אנז'ה|לוריין",
-)
-
-# A quote/interview is rescued only when it has a REAL transfer/contract mechanism.
-# Do NOT rescue ordinary post-match interviews, admiration, vague interest, or "player ideas".
-EARLY_TRANSFER_FUTURE_NEWS_PATTERNS = (
-    r"\b(?:wants? to join|would like to join|dreams? of joining|keen to join|open to joining|ready to join|could join|could return|wants? to return|would return|return to|back to|wants? to leave|leave|leaving|transfer|move|sign|joining|proposal|offer|bid|talks|negotiations|release clause|loan|option to buy|buy option|purchase option|agreement|medical|contract|deal)\b",
-    r'רוצה\s+לעבור|רוצה\s+להצטרף|מעוניין\s+לעבור|מעוניין\s+להצטרף|חולם\s+לעבור|חולם\s+להצטרף|יכול\s+לעבור|יכול\s+להצטרף|יכול\s+לחזור|רוצה\s+לחזור|עשוי\s+לחזור|חזרה\s+ל|לחזור\s+ל|יעזוב|לעזוב|מעבר|העברה|חתימה|הצעה|שיחות|מו"מ|סעיף\s+שחרור|השאלה|אופציית\s+רכישה|אופציית\s+הקנייה|לא\s+הפעיל(?:ה|ו)?\s+את\s+אופציית\s+הרכישה|סיכום|בדיקות\s+רפואיות|חוזה|עסקה',
-)
-
-POST_MATCH_INTERVIEW_NOISE_PATTERNS = (
-    r"\b(?:post[- ]match|after the game|after the match|following the game|following the match|press conference|mixed zone|interview)\b",
-    r"אחרי\s+המשחק|לאחר\s+המשחק|בסיום\s+המשחק|מסיבת\s+עיתונאים|ראיון|בראיון|דיבר\s+אחרי|נשאל\s+אחרי",
-)
-
-def has_real_transfer_context(cleaned: str) -> bool:
-    if not cleaned:
-        return False
-    return any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in EARLY_TRANSFER_FUTURE_NEWS_PATTERNS)
-
-def is_post_match_interview_noise(cleaned: str) -> bool:
-    if not cleaned:
-        return False
-    has_interview_noise = any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in POST_MATCH_INTERVIEW_NOISE_PATTERNS)
-    return bool(has_interview_noise and not has_real_transfer_context(cleaned))
-
-def is_newsworthy_quote_or_interview_report(cleaned: str) -> bool:
-    """Do not treat every quote/interview as social noise.
-
-    If a top-5/big club is in the same report and the quote contains a clear
-    transfer/future/return/interest signal, it is a news report and should pass
-    to the football relevance filter.
-    """
-    if not cleaned:
-        return False
-    has_major_club = any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in EARLY_MAJOR_CLUB_CONTEXT_PATTERNS)
-    has_future_transfer_signal = has_real_transfer_context(cleaned)
-    if has_major_club and has_future_transfer_signal:
-        return True
-    return False
-
 def is_non_news_social_post(post: Post) -> bool:
     raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     cleaned = clean_for_ai_translation(raw_text)
@@ -1871,49 +1886,48 @@ def is_non_news_social_post(post: Post) -> bool:
     if not cleaned:
         return True
 
-    # Ordinary interviews/quotes after matches stay blocked unless they contain
-    # a concrete transfer/contract mechanism such as bid, offer, loan, option,
-    # clause, agreement, medical, wants to join/return/leave, etc.
-    if is_post_match_interview_noise(cleaned):
-        return True
-
-    if is_newsworthy_quote_or_interview_report(cleaned):
-        return False
-
     news_patterns = (
         r"\bbreaking\b",
         r"\bexclusive\b",
-        r"\bdeal\b",
-        r"\bagreement\b",
-        r"\bsigns?\b",
-        r"\bjoins?\b",
-        r"\bmedical\b",
-        r"\bcontract\b",
-        r"\bbid\b",
-        r"\bclause\b",
-        r"\bloan\b",
-        r"\btransfer\b",
-        r"\breturn(?:s|ed|ing)?\s+to\b",
-        r"\bwants?\s+to\s+(?:join|return|leave)\b",
-        r"\bcould\s+(?:join|return|leave)\b",
-        r"\bfuture\b",
-        r"\bappointed\b",
-        r"\bsacked\b",
-        r"\binjury\b",
-        r"\bsuspended\b",
-        r"\bconfirmed\b",
         r"\bofficial\b",
-        r"\bcalled\s+up\b",
-        r"\bsquad\b",
-        r"\bnational\s+team\b",
-        r"הושג|סוכם|חתם|יחתום|מצטרף|יעבור|העברה|השאלה|חוזה|רשמי|בלעדי|פציעה|מונה|פוטר|יכול לחזור|רוצה לחזור|לחזור ל|עתידו",
+        r"\bsources?\b",
+        r"\bleague sources\b",
+        r"\btrade(?:d|s)?\b",
+        r"\bsign(?:s|ed|ing)?\b",
+        r"\bcontract\b",
+        r"\bextension\b",
+        r"\bfree agent\b",
+        r"\bfree agency\b",
+        r"\bwaived\b",
+        r"\bbuyout\b",
+        r"\binjury\b",
+        r"\binjury report\b",
+        r"\bruled out\b",
+        r"\bquestionable\b",
+        r"\bprobable\b",
+        r"\bdoubtful\b",
+        r"\bsuspended\b",
+        r"\bdraft\b",
+        r"\bpick\b",
+        r"\bhires?\b",
+        r"\bfires?\b",
+        r"\bcoach\b",
+        r"\bgeneral manager\b",
+        r"\bfront office\b",
+        r"\bdeadline\b",
+        r"\bstarting lineup\b",
+        r"\bavailable\b",
+        r"דיווח דרמטי|בלעדי|רשמי|לפי מקורות|מקורות בליגה|טרייד|עבר בטרייד|חתם|יחתום|חוזה|הארכת חוזה|"
+        r"שחקן חופשי|שוק השחקנים החופשיים|שוחרר|בייאאוט|פציעה|דוח פציעות|לא ישחק|בספק|ככל הנראה ישחק|"
+        r"הושעה|דראפט|בחירה|מונה|פוטר|מאמן|ג'נרל מנג'ר|הנהלה|דדליין|חמישייה|זמין",
     )
     if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in news_patterns):
         return False
     if is_interesting_quote_post(cleaned):
         return False
+    # Stats posts are allowed when they pass the other NBA relevance filters.
     if is_stats_only_post(cleaned):
-        return True
+        return False
     if re.search(r"[\"“”׳״].{4,}[\"“”׳״]", cleaned):
         return True
 
@@ -1929,32 +1943,164 @@ def is_non_news_social_post(post: Post) -> bool:
         r"\bsays?\b",
         r"\basked\b",
         r"\bspeaking\b",
-        r"\bon\s+[A-Z][A-Za-zÀ-ÿ'’-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’-]+){0,3}\s*:",
         r"\bcongrat",
+        r"\bcongrats\b",
+        r"\bhappy birthday\b",
+        r"\bbirthday\b",
         r"\brespect\b",
         r"\bclass\b",
         r"\blegend\b",
-        r"\bunderstand me\b",
-        r"\byou cannot understand\b",
-        r"vous ne pouvez pas comprendre",
-        r"אי אפשר להבין|לא יכול להבין|סטורי|אינסטגרם|ברכה|מחווה|תגובה|ציטוט|מסר|אגדה|כבוד|בראיון|אמר|אומר|נשאל|דיבר על|מדבר על",
+        r"\bgoat\b",
+        r"\barrivals?\b",
+        r"\bfit check\b",
+        r"\btunnel fit\b",
+        r"\bwalk-in\b",
+        r"\bhighlights?\b",
+        r"\btop plays?\b",
+        r"\bplays of the night\b",
+        r"\bphoto dump\b",
+        r"\bwallpaper\b",
+        r"\bedit\b",
+        r"\bmeme\b",
+        r"\bpractice clips?\b",
+        r"\bworkout clips?\b",
+        r"\bmixtape\b",
+        r"\bthrowback\b",
+        r"\bon this day\b",
+        r"סטורי|אינסטגרם|תגובה|ציטוט|כיתוב|מסר|ראיון|אמר|אומר|נשאל|דיבר על|מדבר על|"
+        r"ברכה|מזל טוב|יום הולדת|אגדה|כבוד|מחווה|הגעה|הגעות|לבוש|מנהרה|היילייטס|מהלכים|תמונה|רקע|מם|אימון|קליפ|מיקסטייפ|נוסטלגיה|היום לפני",
     )
     if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in social_patterns):
-        # A social/quote/interview format is allowed through only when it is
-        # clearly about transfers/contracts. Otherwise it is ordinary interview noise.
-        return not has_real_transfer_context(cleaned)
+        return True
 
+    # פוסטים קצרים עם תמונה בלבד הם בדרך כלל תמונת אווירה / הגעה למשחק ולא עדכון חדשותי.
     words = re.findall(r"[A-Za-zא-ת0-9]+", cleaned)
     if post.image_urls and len(words) <= 14 and not post.video_urls:
+        return True
+
+    # ציוצי תוצאה/הייפ קצרים בלי הקשר חדשותי — לא שולחים.
+    if len(words) <= 10 and re.search(r"\b(win|wins|lost|final|tonight|wow|crazy|insane)\b|ניצחה|הפסידה|סיום|הלילה|מטורף|וואו", lowered, re.IGNORECASE):
         return True
 
     return False
 
 
+# ====== NBA RELEVANCE / NON-NEWS SAFETY GATES ======
+# These rules are deterministic and run before Gemini/video work.
+# Goal: keep all NBA teams, but block unrelated / social / idea-only content.
+
+NBA_TEAM_CONTEXT_PATTERNS = tuple(
+    rf"(?<![A-Za-zא-ת]){re.escape(name)}(?![A-Za-zא-ת])"
+    for name in TEAM_REPLACEMENTS.keys()
+)
+
+NBA_CORE_CONTEXT_PATTERNS = (
+    r"\b(?:NBA|National Basketball Association|basketball|hoops?|court|season|regular season|postseason|playoffs?|finals?|conference finals?|draft|free agency|trade deadline|salary cap|luxury tax|apron)\b",
+    r"\b(?:MVP|All-Star|Rookie of the Year|Defensive Player|Sixth Man|Most Improved|Summer League|G League)\b",
+    r"\b(?:points?|pts|rebounds?|reb|assists?|ast|steals?|blocks?|mins?|minutes|triple-double|double-double)\b",
+    r"NBA|אן\s*בי\s*איי|אן-בי-איי|כדורסל|ליגה|פלייאוף|פלייאופים|גמר|גמר האזור|דראפט|שוק השחקנים|טרייד|תקרת השכר|מס המותרות|אפרון|נקודות|ריבאונדים|אסיסטים|חסימות|חטיפות",
+)
+
+NBA_NEWS_ACTION_PATTERNS = (
+    r"\b(?:breaking|exclusive|official|sources?|league sources|report|reported|expected|set to|finalizing|agreed|agreement)\b",
+    r"\b(?:trade|traded|trade request|sign(?:s|ed|ing)?|contract|extension|max contract|rookie scale extension|free agent|free agency|waived|buyout|option|guaranteed|non-guaranteed)\b",
+    r"\b(?:injury|injured|injury report|ruled out|questionable|probable|doubtful|available|out indefinitely|day-to-day|minutes restriction|surgery|rehab|recovery|returning|cleared)\b",
+    r"\b(?:draft|pick|first-round|second-round|hire|hired|fire|fired|coach|head coach|assistant coach|general manager|gm|front office|president of basketball operations|suspended|fine|investigation)\b",
+    r"דיווח דרמטי|בלעדי|רשמי|לפי מקורות|מקורות בליגה|דיווח|צפוי|סיכם|סיכום|טרייד|עבר בטרייד|ביקש טרייד|חתם|יחתום|חוזה|הארכת חוזה|מקסימום|שחקן חופשי|שוק השחקנים|שוחרר|בייאאוט|אופציה|מובטח|לא מובטח",
+    r"פציעה|נפצע|דוח פציעות|לא ישחק|בספק|ככל הנראה ישחק|בספק גדול|זמין|בחוץ לתקופה|ניתוח|שיקום|החלמה|חוזר|כשיר|הגבלת דקות",
+    r"דראפט|בחירה|סיבוב ראשון|סיבוב שני|מונה|פוטר|מאמן|ג'נרל מנג'ר|GM|הנהלה|נשיא פעולות הכדורסל|הושעה|קנס|חקירה",
+)
+
+NBA_IDEA_ONLY_PATTERNS = (
+    r"\b(?:idea|ideas|concept|mock trade|trade idea|trade ideas|proposed trade|proposal|hypothetical|what if|could|should|would|might|may|potential fit|possible fit|dream target|target list|wish list|best destinations|landing spots|prediction|rankings?|tier list|rumor mill)\b",
+    r"\b(?:is this a good idea|should .* trade|could .* trade|would you|who says no|what should|imagine)\b",
+    r"רעיון|רעיונות|הצעה דמיונית|טרייד מוצע|טרייד אפשרי|היפותטי|מה אם|יכול להיות|יכולה להיות|עשוי|עשויה|אולי|פוטנציאלי|יעד חלומי|רשימת יעדים|תחזית|דירוג|מי אומר לא|האם כדאי|דמיינו",
+)
+
+NBA_SOCIAL_NOISE_PATTERNS = (
+    r"\b(?:arrivals?|fit check|tunnel fit|walk-in|photo dump|wallpaper|edit|meme|memes|caption this|reaction|reacts?|birthday|happy birthday|congrats|congratulations|respect|legend|goat talk|throwback|on this day|highlights?|top plays?|dunk of the night|plays of the night|workout clips?|practice clips?|mixtape)\b",
+    r"הגעות|לבוש|מנהרה|תמונות|רקע|עריכה|מם|ממים|תגובה|יום הולדת|מזל טוב|כבוד|אגדה|נוסטלגיה|היום לפני|היילייטס|מהלכים|דאנק הלילה|קליפ אימון|קליפים מאימון|מיקסטייפ",
+)
+
+FOOTBALL_SOCCER_CONTEXT_PATTERNS = (
+    r"\b(?:football|soccer|Premier League|La Liga|Serie A|Bundesliga|Ligue 1|Champions League|Europa League|goalkeeper|striker|winger|midfielder|left back|right back|centre back|club sources)\b",
+    r"פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1|ליגת האלופות|הליגה האירופית|כדורגל|שוער|חלוץ|כנף|קשר|מגן|בלם",
+)
+
+
+def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
+    return any(re.search(pattern, text or "", re.IGNORECASE) for pattern in patterns)
+
+
+def is_always_send_nba_source(post: Post) -> bool:
+    """Sources whose NBA reports should pass the local relevance filters.
+
+    Shams Charania is treated as an automatic NBA news source per channel policy.
+    The normal duplicate-by-post-id protection still applies, and posts older than
+    MAX_POST_AGE_SECONDS are still skipped.
+    """
+    return post.username == "ShamsCharania"
+
+
+def nba_cleaned_text(post: Post) -> str:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = clean_for_ai_translation(raw_text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def has_nba_context(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    if not cleaned:
+        return False
+    if _matches_any(NBA_CORE_CONTEXT_PATTERNS, cleaned):
+        return True
+    if _matches_any(NBA_TEAM_CONTEXT_PATTERNS, cleaned):
+        return True
+    # Known NBA accounts are usually NBA context, but still not enough to allow pure social noise.
+    if post.username in PRIORITY_X_ACCOUNTS and not _matches_any(FOOTBALL_SOCCER_CONTEXT_PATTERNS, cleaned):
+        return True
+    return False
+
+
+def has_nba_news_action(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    return _matches_any(NBA_NEWS_ACTION_PATTERNS, cleaned)
+
+
+def is_nba_idea_only_post(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    if not cleaned:
+        return False
+    if not _matches_any(NBA_IDEA_ONLY_PATTERNS, cleaned):
+        return False
+    # If there is a real news action, keep it. We block ideas only when they are not sourced/advanced news.
+    return not has_nba_news_action(post)
+
+
+def is_clear_non_nba_post(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    if not cleaned:
+        return True
+    # Football/soccer content should not leak into the NBA channel unless it clearly also has NBA context.
+    if _matches_any(FOOTBALL_SOCCER_CONTEXT_PATTERNS, cleaned) and not _matches_any(NBA_CORE_CONTEXT_PATTERNS + NBA_TEAM_CONTEXT_PATTERNS, cleaned):
+        return True
+    return not has_nba_context(post)
+
+
+def is_nba_social_noise_post(post: Post) -> bool:
+    cleaned = nba_cleaned_text(post)
+    if not cleaned:
+        return True
+    if has_nba_news_action(post):
+        return False
+    if is_interesting_quote_post(cleaned):
+        return False
+    return _matches_any(NBA_SOCIAL_NOISE_PATTERNS, cleaned)
+
 
 # ====== SMART FILTERS: FLAGS, WOMEN/WNBA, DUPLICATE NEWS ======
 RECENT_NEWS_STATE_KEY = "__recent_news_events__"
-RECENT_NEWS_WINDOW_SECONDS = 8 * 60 * 60
+RECENT_NEWS_WINDOW_SECONDS = 2 * 60 * 60
 
 SOURCE_PRIORITY = {
     "FabrizioRomano": 100,
@@ -2017,14 +2163,8 @@ NEWS_DUP_ACTION_WORDS = {
 
 
 def strip_country_code_leftovers_near_flags(text: str) -> str:
-    """Keep the flag emoji and remove duplicated ISO/transliterated country-code leftovers.
-
-    Gemini sometimes turns a flag/ISO marker into Hebrew phonetics such as
-    "טי אר" next to 🇹🇷. This keeps the emoji and removes the junk letters.
-    """
-    text = unicodedata.normalize("NFKC", text or "")
-    # NFKC converts styled/full-width Latin letters such as 𝐓𝐑 / ＴＲ into normal TR,
-    # so the next regexes can remove/convert them while keeping the flag emoji.
+    """Keep the flag emoji and remove its duplicated ISO letters around it."""
+    text = text or ""
     invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
     separator = r"[\s\u00a0._/\-־]*"
     if "COUNTRY_CODE_FLAGS" not in globals():
@@ -2035,38 +2175,6 @@ def strip_country_code_leftovers_near_flags(text: str) -> str:
         text = re.sub(rf"(?<![A-Za-z]){code_pattern}\s*{re.escape(flag)}", flag, text)
         text = re.sub(rf"{re.escape(flag)}\s*{code_pattern}(?![A-Za-z])", flag, text)
         text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
-
-    # Hebrew phonetic leftovers for common two-letter country codes after translation.
-    # These are removed only near the matching flag so normal Hebrew words are not touched.
-    phonetic_near_flag = {
-        "TR": (r"טי\s*[-.־]?\s*אר", r"טי\s*[-.־]?\s*ר"),
-        "GE": (r"ג׳?י\s*[-.־]?\s*אי", r"גי\s*[-.־]?\s*אי"),
-        "FR": (r"אף\s*[-.־]?\s*אר", r"אפ\s*[-.־]?\s*אר"),
-        "IT": (r"איי\s*[-.־]?\s*טי", r"אי\s*[-.־]?\s*טי"),
-        "ES": (r"אי\s*[-.־]?\s*אס", r"איי\s*[-.־]?\s*אס"),
-        "DE": (r"די\s*[-.־]?\s*אי",),
-        "BR": (r"בי\s*[-.־]?\s*אר",),
-        "AR": (r"איי\s*[-.־]?\s*אר", r"אי\s*[-.־]?\s*אר"),
-        "PT": (r"פי\s*[-.־]?\s*טי",),
-        "NL": (r"אן\s*[-.־]?\s*אל",),
-        "BE": (r"בי\s*[-.־]?\s*אי",),
-        "GB": (r"ג׳?י\s*[-.־]?\s*בי", r"גי\s*[-.־]?\s*בי"),
-        "US": (r"יו\s*[-.־]?\s*אס",),
-        "UY": (r"יו\s*[-.־]?\s*וואי",),
-        "CO": (r"סי\s*[-.־]?\s*או",),
-        "MX": (r"אם\s*[-.־]?\s*אקס",),
-        "MA": (r"אם\s*[-.־]?\s*איי", r"אם\s*[-.־]?\s*אי"),
-        "SN": (r"אס\s*[-.־]?\s*אן",),
-        "NG": (r"אן\s*[-.־]?\s*ג׳?י",),
-        "JP": (r"ג׳?יי\s*[-.־]?\s*פי",),
-    }
-    for code, patterns in phonetic_near_flag.items():
-        flag = COUNTRY_CODE_FLAGS.get(code)
-        if not flag:
-            continue
-        for pattern in patterns:
-            text = re.sub(rf"(?<![א-תA-Za-z]){pattern}(?![א-תA-Za-z])\s*{re.escape(flag)}", flag, text, flags=re.IGNORECASE)
-            text = re.sub(rf"{re.escape(flag)}\s*(?<![א-תA-Za-z]){pattern}(?![א-תA-Za-z])", flag, text, flags=re.IGNORECASE)
     return text
 
 
@@ -2752,6 +2860,7 @@ def remove_credit_handles(text: str) -> str:
     text = text or ""
     text = re.sub(r"(?im)^\s*(?:presented|sponsored|brought to you)\s+by\s+.+$", "", text)
     text = re.sub(r"(?iu)\s+(?:presented|sponsored|brought to you)\s+by\s+[A-Za-z0-9 ._-]+[.!?]?\s*$", "", text)
+    text = re.sub(r"(?iu)\s+NBA\s+(?:presented|sponsored)\s+by\s+[A-Za-z0-9 ._-]+[.!?]?\s*$", "", text)
     text = re.sub(r"(?iu)\s+(?:מוצג על ידי|בחסות|פרזנטד ביי)\s+[A-Za-zא-ת0-9 ._-]+[.!?]?\s*$", "", text)
     text = re.sub(
         r"(?<!\w)@[A-Za-z0-9_]*(?:FC|CF|TV|News|Sport|Sports|Calcio|Official|Media)[A-Za-z0-9_]*\b",
@@ -2843,37 +2952,10 @@ def remove_israel_time_additions(text: str) -> str:
     text = re.sub(r"\s*,?\s*(?:בשעה\s*)?\d{1,2}:\d{2}\s*שעון ישראל", "", text)
     text = re.sub(r"\s*שעון ישראל", "", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
-    return text.strip()
-
-
-def final_visual_cleanup(text: str) -> str:
-    text = normalize_country_flags(text or "")
-    invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
-    georgia_flag = "\U0001F1EC\U0001F1EA"
-    for code, flag in COUNTRY_CODE_FLAGS.items():
-        text = re.sub(rf"(?<![A-Za-z]){invisible}{code[0]}{invisible}[\s._-]*{invisible}{code[1]}{invisible}(?![A-Za-z])", flag, text)
-    text = re.sub(rf"(?<![A-Za-z]){invisible}G{invisible}[\s._-]*{invisible}E{invisible}(?![A-Za-z])", georgia_flag, text)
-    text = re.sub(rf"(?i)(?:\bGeorgia\b|\bGeorgian\b|גאורגיה|גיאורגיה|גרוזיה)\s*(?:flag|דגל)?\s*[:：-]?\s*{invisible}GE{invisible}\b", georgia_flag, text)
-    text = re.sub(rf"{georgia_flag}(?:\s*GE\b)+", georgia_flag, text)
-    text = re.sub(rf"(?:\bGE\s*)+{georgia_flag}", georgia_flag, text)
-    text = re.sub(rf"{georgia_flag}(?:\s*{georgia_flag})+", georgia_flag, text)
-    text = re.sub(rf"{georgia_flag}(?:\s*[\U0001F535\U0001F534\u26aa\u26ab]){{1,6}}", georgia_flag, text)
-    text = re.sub(rf"(?:[\U0001F535\U0001F534\u26aa\u26ab]\s*){{1,6}}{georgia_flag}", georgia_flag, text)
-    text = re.sub(r"\U0001F3F4(?![\U000E0061-\U000E007A])\ufe0f?", "", text)
-    text = re.sub(r"\b(?:חבצ'ה|חביציה|חביצ׳ה|חביצה)\b", "חביצ'ה קווארצחליה", text)
-    text = re.sub(r"\b(?:קווארה|קווארא|קווארצ׳חליה|קווארצחלייה)\b", "קווארצחליה", text)
-    link_markers = r"(?:\U0001F447|\u2b07\ufe0f?|\U0001F53D|\u2198\ufe0f?|\u2935\ufe0f?|\u2193)"
-    text = re.sub(rf"(?m)^\s*(?:{link_markers}\s*)+$", "", text)
-    text = re.sub(rf"\s*(?:{link_markers}\s*)+(?=$|\n)", "", text)
-    text = re.sub(rf"(?m)^\s*(?:{link_markers}\s*)+", "", text)
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    text = re.sub(r" *\n+ *", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
     return strip_country_code_leftovers_near_flags(text).strip()
 
 
 def clean_before_translation(text: str) -> str:
-    text = normalize_country_flags(text)
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
     text = apply_handle_replacements(text)
@@ -2888,7 +2970,6 @@ def clean_before_translation(text: str) -> str:
 
 
 def clean_for_ai_translation(text: str) -> str:
-    text = normalize_country_flags(text)
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
     text = convert_hashtags_to_text(text)
@@ -2901,16 +2982,7 @@ def clean_for_ai_translation(text: str) -> str:
 
 def extract_emojis(text: str, limit: int = 6) -> list[str]:
     emojis: list[str] = []
-    text = text or ""
-    for emoji in TAG_FLAG_RE.findall(text):
-        if emoji not in emojis:
-            emojis.append(emoji)
-        if len(emojis) >= limit:
-            return emojis
-    text_without_tag_flags = TAG_FLAG_RE.sub("", text)
-    for emoji in EMOJI_RE.findall(text_without_tag_flags):
-        if emoji == "\U0001F3F4":
-            continue
+    for emoji in EMOJI_RE.findall(text or ""):
         if emoji not in emojis:
             emojis.append(emoji)
         if len(emojis) >= limit:
@@ -2959,8 +3031,9 @@ GEMINI_DISABLED_UNTIL = 0.0
 GEMINI_COOLDOWN_IS_QUOTA = False
 GEMINI_KEY_COOLDOWNS: dict[str, float] = {}
 GEMINI_NEXT_KEY_INDEX = 0
-GEMINI_KEY_LOCK = Lock()
 GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
+TELEGRAM_SEND_LOCK = Lock()
+LAST_TELEGRAM_POST_SENT_AT = 0.0
 
 
 def translation_cache_key(text: str) -> str:
@@ -2990,12 +3063,9 @@ def gemini_key_label(index: int) -> str:
 
 
 def gemini_key_order() -> list[tuple[int, str]]:
-    global GEMINI_NEXT_KEY_INDEX
     if not GEMINI_API_KEYS:
         return []
-    with GEMINI_KEY_LOCK:
-        start = GEMINI_NEXT_KEY_INDEX % len(GEMINI_API_KEYS)
-        GEMINI_NEXT_KEY_INDEX = (GEMINI_NEXT_KEY_INDEX + 1) % len(GEMINI_API_KEYS)
+    start = GEMINI_NEXT_KEY_INDEX % len(GEMINI_API_KEYS)
     now = time.time()
     ordered = [(index, GEMINI_API_KEYS[index]) for index in range(len(GEMINI_API_KEYS))]
     rotated = ordered[start:] + ordered[:start]
@@ -3083,6 +3153,7 @@ def mymemory_translate(text: str) -> str:
 
 
 def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_requests: int = 1) -> str:
+    global GEMINI_NEXT_KEY_INDEX
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
     if respect_global_cooldown and time.time() < GEMINI_DISABLED_UNTIL:
@@ -3092,42 +3163,29 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
     glossary = relevant_name_glossary(text)
     glossary_block = f"\nKnown names glossary. Use these exact Hebrew names when relevant:\n{glossary}\n" if glossary else ""
     prompt = (
-        "You are a senior Hebrew sports-news editor.\n"
-        "Rewrite this X/Twitter football post as a polished Hebrew Telegram news update.\n"
+        "You are a senior Hebrew basketball-news editor.\n"
+        "Rewrite this X/Twitter NBA / basketball post as a polished Hebrew Telegram news update.\n"
         "Use the full context and meaning. Do not translate word by word and do not preserve awkward original order.\n"
         "Rules:\n"
         "- Return only the final Hebrew post text, ready to publish.\n"
-        "- First decide if this is a real MEN'S football news update connected to one of the allowed clubs or to an Israeli-league club. If not, return an empty string.\n"
-        "- Send only reports with concrete news: transfer, contract, injury, squad, appointment, dismissal, official announcement, negotiation, bid, match-relevant update, or a verified factual development.\n"
-        "- If it is only a social/atmosphere post, quote, interview sentence, player/coach reaction, meme, congratulation, reaction, Instagram/story screenshot, personal message, vague caption, tribute, joke, opinion or image with no concrete news update, return an empty string.\n"
-        "- Interview quotes such as 'X on Y: ...', 'X said...', 'X told...' are usually not news.\n"
-        "- Keep an interview/quote only when it is genuinely newsworthy or highly relevant: club president/owner/coach/agent speaking about a star player, contract renewal, future at the club, transfer, injury, official decision, squad call-up, bid, club direction or a major sporting development.\n"
-        "- Remove ordinary statistics-only posts unless they contain a real record, official achievement or current news angle.\n"
-        "- Block women's football, women's leagues/teams, WNBA/NBA/NFL/UFC/tennis/basketball and every sport that is not men's football.\n"
         "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
         "- Remove all URLs, website domains and link text.\n"
-        "- For @handles: if it is a real player, club, journalist or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
-        "- For hashtags: turn meaningful football hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
-        "- Before returning, verify every player, coach and club name against football context. Fix malformed transliterations and accents. Do not invent names.\n"
-        "- For famous players with nicknames or partial names, expand to the correct common full Hebrew name when the identity is clear. Example: Khvicha/Kvaratskhelia should be חביצ'ה קווארצחליה, not a shortened broken name.\n"
+        "- For @handles: if it is a real player, team, reporter or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
+        "- For hashtags: turn meaningful basketball hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
+        "- Before returning, verify every player, coach and team name against basketball context. Fix malformed transliterations and accents. Do not invent names.\n"
         "- If a name is uncertain, keep the clean original name instead of producing broken Hebrew.\n"
-        "- Never replace a club/team with a different club/team that is not explicitly in the original post. If Real Madrid appears, do not change it to Real Sociedad; if a club is not named, do not invent one.\n"
-        "- Preserve the original news facts exactly: clubs, teams, player names, destinations, scores, dates and competitions must match the source post.\n"
-        "- Preserve tense and time exactly. Do not turn past into future, future into past, or change any year/date/time such as 2026 into another year.\n"
-        "- Treat facts as locked data: names, clubs, years, numbers, scorelines and dates may be translated but never corrected, guessed or rewritten into different facts.\n"
-        "- If the post mentions a role such as 'next manager/coach' without naming the club in that phrase, do not add a club name by assumption.\n"
-        "- Convert important club/player @handles into natural Hebrew names. Remove handles only when they are just credits or promotion.\n"
+        "- Never replace a club/team with a different club/team that is not explicitly in the original post. If a team is not named, do not invent one.\n"
+        "- Preserve the original news facts exactly: teams, players, destinations, scores, dates and competitions must match the source post.\n"
+        "- If the post mentions a role or move without naming the team in that phrase, do not add a team name by assumption.\n"
+        "- Convert important team @handles such as @okcthunder into the team name in Hebrew. Remove handles only when they are just credits or promotion.\n"
         "- Remove sponsor lines such as 'presented by', 'sponsored by', broadcasts, TV/network credits and app promotions.\n"
         "- Do not convert times to Israel time and never add the words 'שעון ישראל'. Keep original time-zone wording only if it is essential.\n"
         "- If the post is mostly a video caption, write one clean Hebrew sentence that explains the actual clip.\n"
-        "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
         "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
-        "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
-        "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
-        "- If a two-letter country code is used as a flag marker, output the correct flag emoji instead of the letters. Preserve real flag emojis from the source and never replace a flag with a generic black flag.\n"
-        "- Remove down arrows or pointing-down emojis when they only pointed to a removed link or quoted post.\n"
+        "- Keep useful numbers, stats, years, dates, emojis and line breaks.\n"
         "- Never leave raw @handles, random English words, malformed names, underscores, brackets or weird symbols at the end.\n"
+        "- Use common Hebrew basketball terms: טרייד, בחירת דראפט, שחקן חופשי, פלייאוף, ריבאונדים, אסיסטים.\n"
         "- If the post contains only a vague teaser/link/promo and no real news, return an empty string.\n"
         "- Do not explain anything.\n"
         f"{glossary_block}\n"
@@ -3217,15 +3275,15 @@ def final_hebrew_polish(text: str) -> str:
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
     text = convert_hashtags_to_text(text)
-    for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, FOOTBALL_TERMS, HEBREW_FINAL_FIXES):
+    for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, BASKETBALL_TERMS, HEBREW_FINAL_FIXES):
         text = apply_phrase_replacements(text, replacements)
-    text = normalize_country_flags(text)
     for english, hebrew in STAT_REPLACEMENTS.items():
         text = re.sub(rf"\b(\d+)\s*{re.escape(english)}\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
         text = re.sub(rf"\b{re.escape(english)}\s*(\d+)\b", rf"\1 {hebrew}", text, flags=re.IGNORECASE)
     text = transliterate_latin_names(text)
-    text = strip_country_code_leftovers_near_flags(text)
     text = remove_external_links(text)
+    text = re.sub(r"\b(\d+(?:\.\d+)?)\s+רחובות\b", r"\1 חסימות", text)
+    text = re.sub(r"\bרחובות\s+(\d+(?:\.\d+)?)\b", r"\1 חסימות", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"([א-ת])\s+-\s+([א-ת])", r"\1-\2", text)
     text = re.sub(r"\b(\d+)\s*-\s*(\d+)\b", r"\1-\2", text)
@@ -3235,7 +3293,6 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_untranslated_tail_tokens(text)
     text = remove_junk_tail_lines(text)
     text = remove_israel_time_additions(text)
-    text = final_visual_cleanup(text)
     return text.strip()
 
 
@@ -3254,20 +3311,6 @@ def translation_contradicts_source(original: str, translated: str) -> bool:
         wrong_in_translation = wrong_he in translated_norm or wrong_en.lower() in translated_norm.lower()
         if source_in_original and not wrong_in_original and wrong_in_translation:
             return True
-    return False
-
-
-def translation_changes_locked_numbers(original: str, translated: str) -> bool:
-    original_years = set(re.findall(r"\b(?:19|20)\d{2}\b", original or ""))
-    translated_years = set(re.findall(r"\b(?:19|20)\d{2}\b", translated or ""))
-    if translated_years - original_years:
-        return True
-
-    original_scores = set(re.findall(r"\b\d+\s*[-:]\s*\d+\b", original or ""))
-    translated_scores = set(re.findall(r"\b\d+\s*[-:]\s*\d+\b", translated or ""))
-    if translated_scores - original_scores:
-        return True
-
     return False
 
 
@@ -3299,15 +3342,15 @@ def translate_text(text: str) -> str:
     cleaned = clean_before_translation(text)
     if not ai_text and not cleaned:
         return ""
-    prepared = apply_phrase_replacements(cleaned, FOOTBALL_TERMS)
+    prepared = apply_phrase_replacements(cleaned, BASKETBALL_TERMS)
     prepared = apply_phrase_replacements(prepared, TEAM_REPLACEMENTS)
     prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
     gemini_key = translation_cache_key(ai_text or prepared)
     fallback_key = hashlib.sha256(f"fallback\n{prepared}".encode("utf-8")).hexdigest()
     if GEMINI_API_KEYS and gemini_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key])))
+        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key])
     if not GEMINI_API_KEYS and fallback_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
+        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
 
     if GEMINI_API_KEYS and ai_text:
         if not has_gemini_key_available():
@@ -3330,11 +3373,9 @@ def translate_text(text: str) -> str:
                     allowed_real_requests = max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS - real_requests_used)
                     polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False, max_real_requests=allowed_real_requests))
                     real_requests_used += allowed_real_requests
-                polished = final_visual_cleanup(preserve_original_country_flags(ai_text, preserve_original_emojis(ai_text, polished)))
+                polished = preserve_original_emojis(ai_text, polished)
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
-                if translation_changes_locked_numbers(ai_text, polished):
-                    raise RuntimeError("Gemini translation changed locked numbers or years")
                 if polished:
                     TRANSLATION_CACHE[gemini_key] = polished
                     return polished
@@ -3353,7 +3394,7 @@ def translate_text(text: str) -> str:
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
     if fallback_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
+        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
 
     if not GEMINI_API_KEYS:
         logging.error("⛔ אין מפתח ג'מיני מוגדר. הפוסט לא יישלח בלי תרגום ג'מיני.")
@@ -3366,7 +3407,7 @@ def translate_text(text: str) -> str:
                 if latin_ratio(translated) > 0.45:
                     translated = translate_in_sentences(source_text)
                 polished = final_hebrew_polish(translated)
-                polished = final_visual_cleanup(preserve_original_country_flags(source_text, preserve_original_emojis(source_text, polished)))
+                polished = preserve_original_emojis(source_text, polished)
                 if polished and latin_ratio(polished) <= 0.30:
                     TRANSLATION_CACHE[fallback_key] = polished
                     return polished
@@ -3374,7 +3415,7 @@ def translate_text(text: str) -> str:
                 continue
 
     fallback = final_hebrew_polish(prepared)
-    fallback = final_visual_cleanup(preserve_original_emojis(ai_text or text, fallback))
+    fallback = preserve_original_emojis(ai_text or text, fallback)
     TRANSLATION_CACHE[fallback_key] = fallback
     return fallback
 
@@ -3402,6 +3443,7 @@ def normalize_identity(text: str) -> str:
     text = clean_before_translation(text)
     text = apply_phrase_replacements(text, HANDLE_REPLACEMENTS)
     text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
+    text = re.sub(r"שאמש", "שאמס", text)
     text = re.sub(r"[^A-Za-z0-9א-ת]+", "", text).lower()
     return text
 
@@ -3461,32 +3503,11 @@ def translate_quoted_author(text: str) -> str:
     return translated or cleaned
 
 
-
-# ====== PLAYER ROLE/POSITION SAFETY FIXES ======
-# Gemini/free translators sometimes infer a wrong position from a generic word
-# such as “forward”. These deterministic fixes run after translation and before
-# sending. Keep this list small and high-confidence.
-PLAYER_POSITION_FIXES = (
-    (r"חלוץ\s+(?:איברהימה\s+)?קונאטה", "בלם איברהימה קונאטה"),
-    (r"(?:איברהימה\s+)?קונאטה,?\s+החלוץ", "איברהימה קונאטה, הבלם"),
-    (r"(?:איברהימה\s+)?קונאטה\s+החלוץ", "איברהימה קונאטה הבלם"),
-    (r"forward\s+Ibrahima\s+Konat[ée]", "centre-back Ibrahima Konaté"),
-)
-
-
-def fix_known_player_positions(text: str) -> str:
-    value = text or ""
-    for pattern, replacement in PLAYER_POSITION_FIXES:
-        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
-    return value
-
 def tidy_translated_text(text: str) -> str:
-    text = final_hebrew_polish(normalize_country_flags(html.unescape(text or "").strip()))
-    text = fix_known_player_positions(text)
+    text = final_hebrew_polish(html.unescape(text or "").strip())
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = remove_junk_tail_lines(text)
-    text = final_visual_cleanup(text)
     return text.strip()
 
 
@@ -3500,75 +3521,23 @@ def rtl(text: str) -> str:
     return "\n".join(f"{RTL_MARK}{line}" if line.strip() else line for line in text.splitlines())
 
 
-def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-    if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("Missing Telegram bot token. Expected NETO_SPORT_NBA_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE or TELEGRAM_BOT_TOKEN")
-    response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload, **kwargs)
+def telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload)
     if not response.get("ok"):
         raise RuntimeError(f"Telegram error: {response}")
     return response
 
 
-def telegram_broadcast(method: str, payload: dict[str, Any]) -> None:
-    sent_count = 0
-    errors: list[str] = []
-    for chat_id in TELEGRAM_CHAT_IDS:
-        chat_payload = dict(payload)
-        chat_payload["chat_id"] = chat_id
-        try:
-            telegram_api(method, chat_payload)
-            sent_count += 1
-            logging.info("טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
-        except Exception as exc:
-            errors.append(f"{chat_id}: {exc}")
-            logging.error("טלגרם: %s נכשל לערוץ %s, ממשיך לערוצים האחרים: %s", method, chat_id, exc)
-    if sent_count == 0:
-        raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
-
-
-def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], fallback_text: str) -> None:
-    sent_count = 0
-    errors: list[str] = []
-    for chat_id in TELEGRAM_CHAT_IDS:
-        chat_payload = dict(payload)
-        chat_payload["chat_id"] = chat_id
-        try:
-            telegram_api(method, chat_payload)
-            sent_count += 1
-            logging.info("טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
-            continue
-        except Exception as exc:
-            errors.append(f"{chat_id} {method}: {exc}")
-            logging.error("טלגרם: %s נכשל לערוץ %s. מנסה לשלוח טקסט רגיל לאותו ערוץ: %s", method, chat_id, exc)
-
-        try:
-            telegram_api(
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": trim(fallback_text, 4096),
-                    "disable_web_page_preview": True,
-                    "parse_mode": "HTML",
-                },
-            )
-            sent_count += 1
-            logging.info("טלגרם: fallback טקסט נשלח בהצלחה לערוץ %s", chat_id)
-        except Exception as fallback_exc:
-            errors.append(f"{chat_id} fallback: {fallback_exc}")
-            logging.error(
-                "טלגרם: גם fallback טקסט נכשל לערוץ %s. אם זה הערוץ %s, צריך לבדוק שהבוט אדמין עם הרשאה לפרסם הודעות: %s",
-                chat_id,
-                chat_id,
-                fallback_exc,
-            )
-            if "need administrator rights" in str(fallback_exc):
-                logging.error(
-                    "בדיקת הרשאות: טלגרם אומר שהבוט לא יכול לפרסם בערוץ %s. צריך לפתוח בערוץ: Administrators -> הבוט -> להפעיל Post Messages/פרסום הודעות.",
-                    chat_id,
-                )
-
-    if sent_count == 0:
-        raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
+def wait_for_telegram_spacing() -> None:
+    global LAST_TELEGRAM_POST_SENT_AT
+    if MIN_SECONDS_BETWEEN_TELEGRAM_POSTS <= 0:
+        return
+    with TELEGRAM_SEND_LOCK:
+        now = time.time()
+        wait_seconds = LAST_TELEGRAM_POST_SENT_AT + MIN_SECONDS_BETWEEN_TELEGRAM_POSTS - now
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        LAST_TELEGRAM_POST_SENT_AT = time.time()
 
 
 def trim(text: str, limit: int) -> str:
@@ -3603,9 +3572,14 @@ def build_message(
     safe_body = html.escape(rtl(translated or "עדכון חדש"))
     safe_quoted_author = html.escape(rtl(quoted_author_translated))
     safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
-    video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
+    safe_link = html.escape(post.link)
+    video_label = (
+        f'<a href="{safe_link}">{html.escape(rtl("📹 וידיאו מצורף"))}</a>'
+        if post.link
+        else f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
+    )
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
-    signature = f'<a href="{html.escape(SIGNATURE_LINK)}">{html.escape(rtl(SIGNATURE_TEXT))}</a>'
+    post_link_label = f'<a href="{safe_link}">{html.escape(rtl("קישור לפוסט"))}</a>' if post.link else ""
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
 
@@ -3621,515 +3595,12 @@ def build_message(
         if include_video_link and post.link and post.quoted_has_video:
             parts.extend(["", video_label])
 
-    parts.extend(["", signature])
+    if post_link_label:
+        parts.extend(["", post_link_label])
 
     return "\n".join(parts)
 
 
-
-
-
-# ====== STRICT ALLOWED CLUB FILTER ======
-# The bot may publish ONLY posts connected to these clubs or to Israeli-league clubs.
-# If an allowed club is mentioned anywhere in the main or quoted text, the post can continue
-# to the normal news-quality filter. If no allowed club appears, it is blocked before Gemini.
-ALLOWED_CLUB_PATTERNS = (
-    # Germany
-    r"\b(?:Bayern Munich|FC Bayern|FCBayern|Bayern|FCB|Borussia Dortmund|Dortmund|BVB|Bayer Leverkusen|Leverkusen|B04|Eintracht Frankfurt|Frankfurt|SGE|RB Leipzig|Red Bull Leipzig|Leipzig|RBL|Stuttgart|VfB Stuttgart)\b",
-    r"באיירן(?: מינכן)?|בורוסיה דורטמונד|דורטמונד|באייר לברקוזן|לברקוזן|איינטרכט פרנקפורט|פרנקפורט|רד בול לייפציג|לייפציג|שטוטגרט",
-    # France
-    r"\b(?:Paris Saint-Germain|Paris Saint Germain|PSG|Marseille|Olympique Marseille|OM|Lyon|Olympique Lyon|OL|Lille|LOSC|Lens|RC Lens|RCL|Monaco|AS Monaco|ASM)\b",
-    r"פריז סן[- ]?ז'רמן|פ\.ס\.ז|פ.ס.ז|מארסיי|מרסיי|אולימפיק מארסיי|ליון|אולימפיק ליון|ליל|לאנס|מונאקו",
-    # Spain
-    r"\b(?:Real Madrid|RMA|Barcelona|Barca|Barça|FC Barcelona|Atletico Madrid|Atlético Madrid|Atleti|ATM|Sevilla|Villarreal|Athletic Bilbao|Athletic Club|Real Betis|Betis|Valencia|Real Sociedad|La Real)\b",
-    r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|סביליה|ויאריאל|אתלטיק בילבאו|בטיס|ריאל בטיס|ולנסיה|ריאל סוסיאדד",
-    # England
-    r"\b(?:Manchester United|Man United|Man Utd|MUFC|Manchester City|Man City|MCFC|Liverpool|LFC|Chelsea|CFC|Arsenal|AFC|Tottenham|Spurs|THFC|Newcastle United|Newcastle|NUFC|Aston Villa|AVFC|West Ham|West Ham United|WHUFC|Everton|EFC|Brighton|BHAFC)\b",
-    r"מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|צ'לסי|ארסנל|טוטנהאם|ספרס|ניוקאסל(?: יונייטד)?|אסטון וילה|ווסטהאם|אברטון|ברייטון",
-    # Italy
-    r"\b(?:Juventus|Juve|AC Milan|A\.C\. Milan|ACM|Milan|Inter Milan|Internazionale|Inter|Roma|Napoli|Lazio|Atalanta|Fiorentina)\b",
-    r"יובנטוס|מילאן|איי סי מילאן|אינטר(?: מילאנו)?|רומא|נאפולי|לאציו|אטאלנטה|אטלנטה|פיורנטינה",
-    # Portugal / Netherlands / Belgium / Serbia
-    r"\b(?:Porto|FC Porto|Benfica|SL Benfica|Benfica Lisbon|Sporting CP|Sporting Lisbon|Ajax|PSV|PSV Eindhoven|Club Brugge|Red Star Belgrade|Crvena Zvezda)\b",
-    r"פורטו|בנפיקה(?: ליסבון)?|ספורטינג(?: ליסבון)?|אייאקס|פ\.ס\.וו|פ.ס.וו|פסוו|קלאב ברוז'|קלאב ברוז|הכוכב האדום",
-    # South America / Saudi / Turkey / USA
-    r"\b(?:Flamengo|CR Flamengo|Palmeiras|Sao Paulo|São Paulo|Boca Juniors|River Plate|Botafogo|Al Nassr|Al-Nassr|Al Hilal|Al-Hilal|Al Ahli|Al-Ahli|Galatasaray|Fenerbahce|Fenerbahçe|Inter Miami|Inter Miami CF)\b",
-    r"פלמנגו|פלמייראס|סאו פאולו|בוקה ג'וניורס|ריבר פלייט|בוטאפוגו|אל[- ]?נאסר|אל[- ]?הילאל|אל[- ]?אהלי|גלאטסראיי|פנרבחצ'ה|אינטר מיאמי",
-)
-
-# These allowed clubs are lower-priority for the channel: publish them only when
-# the report is final or almost final. If one of the bigger clubs also appears in
-# the same report, the bigger-club rule can still allow it.
-FINAL_ONLY_ALLOWED_CLUB_PATTERNS = (
-    # England
-    r"\b(?:Tottenham|Spurs|THFC|Newcastle United|Newcastle|NUFC|Aston Villa|AVFC|West Ham|West Ham United|WHUFC|Everton|EFC|Brighton|BHAFC)\b",
-    r"טוטנהאם|ספרס|ניוקאסל(?: יונייטד)?|אסטון וילה|ווסטהאם|אברטון|ברייטון",
-    # Spain
-    r"\b(?:Sevilla|Villarreal|Athletic Bilbao|Athletic Club|Real Betis|Betis|Valencia|Real Sociedad|La Real)\b",
-    r"סביליה|ויאריאל|אתלטיק בילבאו|בטיס|ריאל בטיס|ולנסיה|ריאל סוסיאדד",
-    # Italy
-    r"\b(?:Roma|Napoli|Lazio|Atalanta|Fiorentina)\b",
-    r"רומא|נאפולי|לאציו|אטאלנטה|אטלנטה|פיורנטינה",
-    # Germany
-    r"\b(?:Bayer Leverkusen|Leverkusen|B04|Eintracht Frankfurt|Frankfurt|SGE|RB Leipzig|Red Bull Leipzig|Leipzig|RBL|Stuttgart|VfB Stuttgart)\b",
-    r"באייר לברקוזן|לברקוזן|איינטרכט פרנקפורט|פרנקפורט|רד בול לייפציג|לייפציג|שטוטגרט",
-    # France
-    r"\b(?:Marseille|Olympique Marseille|OM|Lyon|Olympique Lyon|OL|Lille|LOSC|Lens|RC Lens|RCL|Monaco|AS Monaco|ASM)\b",
-    r"מארסיי|מרסיי|אולימפיק מארסיי|ליון|אולימפיק ליון|ליל|לאנס|מונאקו",
-    # Rest of Europe
-    r"\b(?:Porto|FC Porto|Benfica|SL Benfica|Benfica Lisbon|Sporting CP|Sporting Lisbon|Ajax|PSV|PSV Eindhoven|Galatasaray|Fenerbahce|Fenerbahçe|Club Brugge|Red Star Belgrade|Crvena Zvezda)\b",
-    r"פורטו|בנפיקה(?: ליסבון)?|ספורטינג(?: ליסבון)?|אייאקס|פ\.ס\.וו|פ.ס.וו|פסוו|גלאטסראיי|פנרבחצ'ה|קלאב ברוז'|קלאב ברוז|הכוכב האדום",
-    # South America
-    r"\b(?:Flamengo|CR Flamengo|Palmeiras|Sao Paulo|São Paulo|Boca Juniors)\b",
-    r"פלמנגו|פלמייראס|סאו פאולו|בוקה ג'וניורס",
-)
-
-FINAL_OR_NEAR_FINAL_PATTERNS = (
-    r"\b(?:official|confirmed|announced|announcement|club statement|signed|has signed|will sign|set to sign|set to join|here we go|done deal|deal done|deal agreed|agreement reached|full agreement|verbal agreement|agreed in principle|medical booked|medical tests|medical|documents signed|contracts signed|completed|sealed|final details|final stages|final steps|closing stages|one step away|imminent|expected to be completed|approved|green light|accepted bid|bid accepted)\b",
-    r"רשמי|אושר|אישר|אישרה|הודיע|הודיעה|הודעה רשמית|חתם|חתמה|יחתום|תחתום|צפוי לחתום|צפויה לחתום|צפוי להצטרף|צפויה להצטרף|הנה זה קורה|עסקה סגורה|העסקה סגורה|העסקה הושלמה|העסקה סוכמה|סוכמה העסקה|סיכום מלא|הושג סיכום|סיכום בעל פה|סוכמו התנאים|בדיקות רפואיות|נקבעו בדיקות|מסמכים נחתמו|חוזים נחתמו|הושלם|הושלמה|נסגר|נסגרה|פרטים אחרונים|בשלבים האחרונים|צעד אחד מסגירה|קרוב לסגירה|קרובה לסגירה|מיידי|צפוי להיסגר|אור ירוק|הצעה התקבלה|ההצעה התקבלה",
-)
-
-ISRAELI_LEAGUE_PATTERNS = (
-    r"\b(?:Israeli Premier League|Ligat HaAl|Ligat Ha'al|Israel Premier League|Israel league|Israeli league|Liga Leumit|Israel State Cup|Toto Cup)\b",
-    r"ליגת העל|ליגת ווינר|ליגה לאומית|הליגה הישראלית|גביע המדינה|גביע הטוטו|כדורגל ישראלי",
-    r"\b(?:Maccabi Tel Aviv|Maccabi Haifa|Hapoel Be'er Sheva|Hapoel Beer Sheva|Beitar Jerusalem|Beitar|Hapoel Tel Aviv|Maccabi Netanya|Bnei Sakhnin|Maccabi Bnei Reineh|Ironi Tiberias|Hapoel Haifa|Hapoel Jerusalem|Maccabi Petah Tikva|Hapoel Petah Tikva|MS Ashdod|Ashdod|Ironi Kiryat Shmona|Hapoel Hadera|Hapoel Raanana|Hapoel Ramat Gan|Bnei Yehuda|Hapoel Acre|Hapoel Kfar Saba|Hapoel Nof HaGalil|Hapoel Umm al-Fahm|Kafr Qasim|Sektzia Nes Tziona)\b",
-    r'מכבי תל אביב|מכבי חיפה|הפועל באר שבע|בית"ר ירושלים|ביתר ירושלים|הפועל תל אביב|מכבי נתניה|בני סכנין|מכבי בני ריינה|עירוני טבריה|הפועל חיפה|הפועל ירושלים|מכבי פתח תקווה|הפועל פתח תקווה|מ.ס אשדוד|מועדון ספורט אשדוד|עירוני קריית שמונה|קריית שמונה|הפועל חדרה|הפועל רעננה|הפועל רמת גן|בני יהודה|הפועל עכו|הפועל כפר סבא|נוף הגליל|אום אל פאחם|כפר קאסם|נס ציונה',
-)
-
-# Top-70 men's national teams by current FIFA ranking source + Israel.
-# This lets reports about national teams/country squads pass even when no club is named.
-ALLOWED_NATIONAL_TEAM_PATTERNS = (
-    r"\b(?:France|Spain|Argentina|England|Portugal|Brazil|Netherlands|Morocco|Belgium|Germany|Croatia|Italy|Colombia|Senegal|Mexico|USA|United States|Uruguay|Japan|Switzerland|Denmark|Iran|Türkiye|Turkey|Ecuador|Austria|South Korea|Korea Republic|Nigeria|Australia|Algeria|Egypt|Canada|Norway|Ukraine|Panama|Côte d'Ivoire|Ivory Coast|Poland|Russia|Wales|Sweden|Serbia|Paraguay|Czechia|Czech Republic|Hungary|Scotland|Tunisia|Cameroon|DR Congo|Greece|Slovakia|Venezuela|Uzbekistan|Costa Rica|Mali|Peru|Chile|Qatar|Romania|Iraq|Slovenia|Ireland|South Africa|Saudi Arabia|Burkina Faso|Jordan|Albania|Bosnia and Herzegovina|Bosnia & Herzegovina|Honduras|North Macedonia|United Arab Emirates|UAE|Cape Verde|Northern Ireland|Israel)\b",
-    r"\b(?:national team|men's national team|senior national team|squad|call(?:ed)? up|international duty|World Cup|FIFA World Cup|EURO|Euros|Euro 202[0-9]|Copa America|AFCON|Asian Cup|CONCACAF Gold Cup|Nations League)\b",
-    r"נבחרת|הנבחרת|סגל|זימון|זומן|זומנו|מוקדמות|מונדיאל|גביע העולם|יורו|קופה אמריקה|אליפות אפריקה|גביע אסיה|ליגת האומות",
-    r"צרפת|ספרד|ארגנטינה|אנגליה|פורטוגל|ברזיל|הולנד|מרוקו|בלגיה|גרמניה|קרואטיה|איטליה|קולומביה|סנגל|מקסיקו|ארצות הברית|אורוגוואי|אורוגואי|יפן|שווייץ|שוויץ|דנמרק|איראן|טורקיה|אקוודור|אוסטריה|דרום קוריאה|ניגריה|אוסטרליה|אלג'יריה|מצרים|קנדה|נורבגיה|אוקראינה|פנמה|חוף השנהב|פולין|רוסיה|וויילס|ויילס|שבדיה|סרביה|פרגוואי|צ'כיה|הונגריה|סקוטלנד|תוניסיה|קמרון|קונגו|יוון|סלובקיה|ונצואלה|אוזבקיסטן|קוסטה ריקה|מאלי|פרו|צ'ילה|קטאר|רומניה|עיראק|סלובניה|אירלנד|דרום אפריקה|ערב הסעודית|בורקינה פאסו|ירדן|אלבניה|בוסניה|הונדורס|צפון מקדוניה|איחוד האמירויות|כף ורדה|צפון אירלנד|ישראל",
-)
-
-NATIONAL_TEAM_CONTEXT_PATTERNS = (
-    r"\b(?:national team|men's national team|senior national team|squad|called up|call-up|call up|international duty|World Cup|FIFA World Cup|EURO|Euros|Copa America|AFCON|Asian Cup|Nations League|qualifiers?)\b",
-    r"נבחרת|הנבחרת|סגל|זימון|זומן|זומנו|מוקדמות|מונדיאל|גביע העולם|יורו|קופה אמריקה|אליפות אפריקה|גביע אסיה|ליגת האומות",
-)
-
-
-OTHER_SPORT_BLOCK_PATTERNS = (
-    r"\b(?:NBA|WNBA|NFL|MLB|NHL|UFC|MMA|Formula 1|F1|tennis|basketball|baseball|hockey|handball|volleyball|rugby|cricket|golf|boxing|cycling|MotoGP|Olympics)\b",
-    r"כדורסל|NBA|WNBA|פוטבול אמריקאי|בייסבול|הוקי|טניס|פורמולה|פורמולה 1|UFC|MMA|אגרוף|רוגבי|כדוריד|כדורעף|קריקט|גולף|אופניים|אולימפי|אולימפיאדה",
-)
-
-FOOTBALL_CONTEXT_ALLOW_PATTERNS = (
-    r"\b(?:football|soccer|club|manager|head coach|coach|player|goalkeeper|defender|midfielder|winger|striker|forward|transfer|loan|signing|contract|match|squad|injury)\b",
-    r"כדורגל|מועדון|מאמן|שחקן|שוער|בלם|מגן|קשר|כנף|חלוץ|העברה|השאלה|חתימה|חוזה|סגל|משחק|פציעה",
-)
-
-
-def post_filter_text(post: Post) -> str:
-    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or "", post.quoted_author or "", post.link or ""]))
-    raw_text = normalize_country_flags(raw_text) if "normalize_country_flags" in globals() else raw_text
-    raw_text = remove_external_links(raw_text) if "remove_external_links" in globals() else raw_text
-    return raw_text
-
-
-def contains_allowed_national_team(post: Post) -> bool:
-    cleaned = post_filter_text(post)
-    return _matches_any(ALLOWED_NATIONAL_TEAM_PATTERNS, cleaned) and _matches_any(NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
-
-
-def contains_allowed_club_or_israeli_league(post: Post) -> bool:
-    cleaned = post_filter_text(post)
-    return (
-        _matches_any(ALLOWED_CLUB_PATTERNS, cleaned)
-        or _matches_any(ISRAELI_LEAGUE_PATTERNS, cleaned)
-        or contains_allowed_national_team(post)
-    )
-
-
-def is_other_sport_post(post: Post) -> bool:
-    cleaned = post_filter_text(post)
-    if not _matches_any(OTHER_SPORT_BLOCK_PATTERNS, cleaned):
-        return False
-    # Do not block if the same text is clearly football and has an allowed club.
-    # This prevents false blocks from generic words, but blocks NBA/NFL/etc. noise.
-    return not (_matches_any(FOOTBALL_CONTEXT_ALLOW_PATTERNS, cleaned) and contains_allowed_club_or_israeli_league(post))
-
-
-# ====== FOOTBALL SMART RELEVANCE FILTER ======
-# Network-free editor gate. It runs before Gemini/video/Telegram and blocks low-value
-# football noise without relying on a manually-maintained player list.
-# Core rule: judge by club relevance + report strength + role type, not by player names.
-
-POPULAR_OR_RECENT_UCL_CLUB_PATTERNS = (
-    # All current/recent top-5 league clubs and clubs promoted/back to a top league are treated like popular clubs.
-    # This prevents important reports from Premier League / La Liga / Serie A / Bundesliga / Ligue 1 sides being blocked as "small".
-    r"\b(?:Brighton|Bournemouth|Brentford|Fulham|Wolves|Everton|West Ham|Crystal Palace|Nottingham Forest|Leeds|Sunderland|Leicester|Southampton|Burnley|Sheffield United|Ipswich|Luton|Aston Villa|Newcastle)\b",
-    r"\b(?:Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Bologna|Torino|Monza|Verona|Parma|Sampdoria|Pisa|Cremonese|Salernitana)\b",
-    r"\b(?:Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Alavés|Celta Vigo|Espanyol|Levante|Leganes|Leganés|Granada|Las Palmas|Valladolid|Girona)\b",
-    r"\b(?:Nantes|Toulouse|Montpellier|Reims|Metz|Nice|Rennes|Strasbourg|Lens|Brest|Auxerre|Angers|Lorient|Paris FC|Saint-Étienne|Saint Etienne)\b",
-    r"\b(?:Bochum|Augsburg|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Hamburg|Koln|Köln|Darmstadt|Holstein Kiel)\b",
-    r"ברייטון|בורנמות|ברנטפורד|פולהאם|וולבס|אברטון|ווסטהאם|קריסטל פאלאס|נוטינגהאם|לידס|סנדרלנד|לסטר|סאות'המפטון|ברנלי|אסטון וילה|ניוקאסל",
-    r"גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|בולוניה|טורינו|מונצה|ורונה|פארמה|סמפדוריה|פיזה|קרמונזה",
-    r"חטאפה|אוססונה|מיורקה|ראיו|אלאבס|סלטה|אספניול|לבאנטה|לגאנס|גרנאדה|לאס פאלמאס|ויאדוליד|ג'ירונה",
-    r"נאנט|טולוז|מונפלייה|ריימס|מץ|ניס|רן|שטרסבורג|לאנס|ברסט|אוקזר|אנז'ה|לוריין|פאריס FC|סנט אטיין",
-    r"בוכום|אוגסבורג|מיינץ|פרייבורג|היידנהיים|סט פאולי|ורדר ברמן|וולפסבורג|אוניון ברלין|הופנהיים|המבורג|קלן|דרמשטאדט|הולשטיין קיל",
-    r"\b(?:promoted|promotion|newly promoted|back in|back to|return to|returns to)\s+(?:the\s+)?(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\b",
-    r"\b(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\s+(?:newcomers|side|club|team)\b",
-    r"עלתה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)|חזרה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)",
-    # England / global Premier League brands
-    r"\b(?:Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Newcastle|Aston Villa)\b",
-    # Spain
-    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid)\b",
-    # Germany / France
-    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|RB Leipzig|Leipzig|PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille)\b",
-    # Italy / Portugal / Netherlands
-    r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Atalanta|Lazio|Benfica|Porto|Sporting CP|Sporting Lisbon|Ajax|PSV|Feyenoord)\b",
-    # Globally relevant non-European / high-traffic clubs
-    r"\b(?:Al Hilal|Al-Hilal|Al Ittihad|Al-Ittihad|Al Nassr|Al-Nassr|Inter Miami)\b",
-    # Hebrew equivalents
-    r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה",
-    r"באיירן|דורטמונד|לברקוזן|לייפציג|פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל",
-    r"יובנטוס|אינטר|מילאן|נאפולי|רומא|אטאלנטה|לאציו|בנפיקה|פורטו|ספורטינג|אייאקס|פ.ס.וו|פיינורד",
-    r"אל[- ]?הילאל|אל[- ]?איתיחאד|אל[- ]?נאסר|אינטר מיאמי",
-)
-
-
-# For backroom/admin appointments, user wants ONLY the absolute biggest clubs:
-# Barcelona/Barça and Real Madrid. Other clubs remain popular for player/coach/transfer news,
-# but NOT for sporting/technical director or similar appointments.
-ELITE_ADMIN_CLUB_PATTERNS = (
-    r"\b(?:Real Madrid|Barcelona|Barca|Barça)\b",
-    r"ריאל מדריד|ברצלונה|בארסה",
-)
-
-# Smaller/mid-table clubs are NOT blocked automatically. They only get filtered when
-# the report is weak, administrative, or has no connection to a popular club.
-LOW_INTEREST_CLUB_PATTERNS = (
-    # Do NOT put top-5-league clubs here. They are handled as popular clubs above.
-    # Keep this list only for genuinely small/non-top-5/non-UCL contexts if you add any later.
-    r"\b(?:FC Vaduz|Vaduz|Dudelange|Lincoln Red Imps|Flora Tallinn|Klaksvik|KÍ Klaksvík|Ballkani)\b",
-    r"ואדוץ|דודלאנג'|לינקולן רד אימפס|פלורה טאלין|קלאקסוויק|בלקאני",
-)
-
-# Non-playing staff roles. These are usually not urgent unless attached to a major club.
-ADMIN_OR_BACKROOM_ROLE_PATTERNS = (
-    r"\b(?:sporting director|sports director|technical director|technical manager|director of football|football director|head of recruitment|chief scout|recruitment director|technical area|technical chief|director deportivo|direttore sportivo|directeur sportif|academy director|youth director|club secretary|consultant|advisor|scout|head scout|data director|performance director|executive director|CEO|chairman|president)\b",
-    r"מנהל\s+(?:ספורטיבי|מקצועי|טכני|אקדמיה|נוער|גיוס|סקאוטינג|נתונים|ביצועים)|המנהל\s+(?:הספורטיבי|המקצועי|הטכני)|ראש\s+(?:מערך\s+)?(?:הסקאוטינג|גיוס|אקדמיה)|סקאוט|יועץ|מזכיר\s+המועדון|מנהל\s+הכדורגל|יו\"ר|נשיא|מנכ\"ל",
-)
-
-WEAK_INTEREST_PATTERNS = (
-    r"\b(?:interest|interested|monitoring|tracking|keeping tabs|admire|considering|could|might|eyeing|linked with|on the list|shortlist|inquired|enquired|exploring|watching|following)\b",
-    r"מתעניין|מתעניינת|הביע(?:ו)? עניין|עוקב(?:ת|ים)?|שוקל(?:ת|ים)?|עשוי|יכולה|מקושר|ברשימה|ברשימת המועמדים|בירר(?:ה|ו)?|בודק(?:ת|ים)?|נמצא במעקב",
-)
-
-# Weak/quote reports around big clubs should pass only when the text itself is
-# connected to transfer/future mechanics. This keeps items like "his son says
-# he can return to Napoli after the option was not activated", but blocks vague
-# player ideas/lists/admiration with no concrete transfer angle.
-TRANSFER_LINKED_WEAK_PATTERNS = (
-    r"\b(?:wants? to join|would like to join|keen to join|open to joining|dreams? of joining|wants? to return|could return|can return|expected to return|set to return|return to|back to|wants? to leave|could leave|future|transfer|move|signing|sign|join|loan|option to buy|buy option|purchase option|clause|release clause|bid|offer|proposal|talks|negotiations|agreement|medical|deal)\b",
-    r"רוצה\s+לעבור|רוצה\s+להצטרף|מעוניין\s+לעבור|מעוניין\s+להצטרף|חולם\s+לעבור|חולם\s+להצטרף|רוצה\s+לחזור|יכול\s+לחזור|יכולה\s+לחזור|צפוי\s+לחזור|עשוי\s+לחזור|חזרה\s+ל|לחזור\s+ל|רוצה\s+לעזוב|יכול\s+לעזוב|עתידו|עתיד\s+ב|מעבר|העברה|חתימה|יחתום|יצטרף|השאלה|אופציית\s+רכישה|אופציית\s+הקנייה|לא\s+הפעיל(?:ה|ו)?\s+את\s+אופציית\s+הרכישה|סעיף\s+שחרור|הצעה|שיחות|מו\"מ|סיכום|בדיקות\s+רפואיות|עסקה",
-)
-
-VAGUE_PLAYER_IDEA_PATTERNS = (
-    r"\b(?:idea|option|profile|candidate|shortlist|on the list|monitoring|tracking|watching|following|admire|appreciate|considering|exploring)\b",
-    r"רעיון|אופציה|פרופיל|מועמד|ברשימה|ברשימת\s+המועמדים|עוקב(?:ת|ים)?|נמצא\s+במעקב|מעריכ(?:ה|ים)|שוקל(?:ת|ים)?|בודק(?:ת|ים)?",
-)
-
-STRONG_PLAYER_MOVE_PATTERNS = (
-    r"\b(?:official|confirmed|here we go|deal agreed|agreement reached|full agreement|verbal agreement|set to sign|set to join|close to signing|close to joining|medical|medical tests|contract signed|signs|joins|completed|done deal|bid accepted|release clause activated|loan agreed|permanent transfer|free agent)\b",
-    r"רשמי|אושר|הנה זה קורה|העסקה סוכמה|הושג סיכום|סיכום מלא|סיכום בעל פה|צפוי לחתום|צפוי להצטרף|קרוב לחתימה|קרוב להצטרף|בדיקות רפואיות|החוזה נחתם|חתם|יחתום|מצטרף|עסקה סגורה|ההצעה התקבלה|סעיף שחרור|שחקן חופשי|העברה קבועה|השאלה סוכמה",
-)
-
-COACH_IMPORTANT_PATTERNS = (
-    r"\b(?:head coach|manager|coach|appointed|set to be appointed|sacked|fired|dismissed|resigned|leaves role|new manager|new head coach)\b",
-    r"מאמן|מאמן ראשי|מונה|ימונה|צפוי להתמנות|פוטר|התפטר|עזב את תפקידו|מאמן חדש",
-)
-
-BIG_CLUB_CONTEXT_PATTERNS = (
-    # A small club can still be relevant if the player is described through a big club.
-    r"\b(?:former|ex|outgoing|current)\s+(?:Real Madrid|Barcelona|Barca|Barça|Liverpool|Manchester United|Man United|Manchester City|Man City|Arsenal|Chelsea|Tottenham|Bayern|PSG|Juventus|Inter|Milan|Napoli|Roma)\b",
-    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Liverpool|Manchester United|Man United|Manchester City|Man City|Arsenal|Chelsea|Tottenham|Bayern|PSG|Juventus|Inter|Milan|Napoli|Roma)\s+(?:defender|centre-back|center-back|midfielder|forward|striker|winger|goalkeeper|player|star)\b",
-    r"(?:שחקן|בלם|קשר|חלוץ|כנף|שוער)\s+(?:ריאל מדריד|ברצלונה|ליברפול|מנצ'סטר יונייטד|מנצ'סטר סיטי|ארסנל|צ'לסי|טוטנהאם|באיירן|פ\.ס\.ז|יובנטוס|אינטר|מילאן|נאפולי|רומא)",
-    r"(?:לשעבר|אקס|שחקן חופשי מ|עוזב את)\s+(?:ריאל מדריד|ברצלונה|ליברפול|מנצ'סטר יונייטד|מנצ'סטר סיטי|ארסנל|צ'לסי|טוטנהאם|באיירן|פ\.ס\.ז|יובנטוס|אינטר|מילאן|נאפולי|רומא)",
-)
-
-
-# Level 1: truly big clubs. For these, even early transfer-rumour language
-# such as interested/monitoring/appreciate is worth sending from the trusted writers.
-# If a report mentions both a big club and a small club, this big-club signal wins.
-BIG_CLUB_RUMOR_PATTERNS = (
-    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma)\b",
-    r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא",
-)
-
-# Transfer/future language broad enough to catch quotes like "his son wants Napoli",
-# but still specific enough to block ordinary post-match interviews.
-TRANSFER_OR_FUTURE_PATTERNS = (
-    r"\b(?:transfer|move|join|joining|sign|signing|leave|leaving|return|back to|future|loan|buy option|option to buy|purchase option|clause|release clause|bid|offer|proposal|talks|negotiations|agreement|medical|deal|contract|free agent|wants? to|would like to|keen to|open to|dreams? of)\b",
-    r"העברה|מעבר|לעבור|להצטרף|חתימה|יחתום|יחתמו|יעזוב|לעזוב|לחזור|חזרה ל|עתידו|עתיד ב|השאלה|אופציית רכישה|אופציית הקנייה|סעיף שחרור|הצעה|שיחות|מו\"מ|משא ומתן|סיכום|בדיקות רפואיות|עסקה|חוזה|שחקן חופשי|רוצה|מעוניין|מעוניינת|חולם|פתוח להצטרף",
-)
-
-# Injury reports are allowed only when they are meaningful, especially around big clubs.
-# Minor "doubt / trained separately / will be assessed" items remain blocked.
-INJURY_PATTERNS = (
-    r"\b(?:injury|injured|surgery|operation|ACL|hamstring|muscle injury|fracture|broken|ruled out|out for|set to miss|will miss|misses|season over|out until|recovery|rehab)\b",
-    r"פציעה|נפצע|פצוע|ניתוח|קרע|רצועה|שריר|שבר|ייעדר|בחוץ ל|יחמיץ|גמר את העונה|סיים את העונה|שיקום|החלמה",
-)
-
-SERIOUS_INJURY_PATTERNS = (
-    r"\b(?:surgery|operation|ACL|fracture|broken|ruled out|out for|set to miss|will miss|season over|out until|months?|weeks?|long-term|major injury)\b",
-    r"ניתוח|קרע|רצועה|שבר|ייעדר|בחוץ ל|יחמיץ|גמר את העונה|סיים את העונה|חודשים|שבועות|פציעה קשה|פציעה משמעותית",
-)
-
-# Broad fitness/recovery/injury-status words. These catch reports that do not say
-# "injury" explicitly, for example: "his recovery is progressing well",
-# "he will be ready for the World Cup", "fit for the opener".
-INJURY_OR_FITNESS_UPDATE_PATTERNS = (
-    r"\b(?:injury|injured|fitness|fit|unfit|available|ready|recovered|recovery|recovering|rehab|returning|return to training|back in training|back with the squad|progressing well|steps up recovery|close to return|expected back|set to return|will be ready|should be fit|match fit|opener|opening game|first game|ruled out|out for|will miss|set to miss|doubt|doubtful|assessment|tests|scan|surgery|operation|ACL|hamstring|muscle|fracture|broken)\b",
-    r"פציעה|פצוע|נפצע|כשיר|כשירות|לא כשיר|זמין|מוכן|יהיה מוכן|אמור להיות כשיר|יהיה כשיר|החלים|החלמה|מחלים|שיקום|חזרה לאימונים|חזר לאימונים|חוזר לאימונים|חזר לסגל|חוזר לסגל|מתקדם יפה|מתקדמת יפה|התקדמות|מתקרב לחזרה|צפוי לחזור|צפויה לחזור|חזרה קרובה|משחק הפתיחה|פתיחת|ייעדר|בחוץ|יחמיץ|בספק|ייבדק|בדיקות|סריקה|ניתוח|קרע|רצועה|שריר|שבר",
-)
-
-MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS = (
-    r"\b(?:World Cup|FIFA World Cup|Euro|EURO|Euros|Copa America|AFCON|Nations League|national team|international duty|Argentina|Brazil|England|France|Spain|Germany|Italy|Portugal|Netherlands|Belgium|Croatia|Uruguay|Colombia|Morocco|Senegal|Nigeria|Japan|USA|Mexico|Luis de la Fuente|De la Fuente)\b",
-    r"מונדיאל|גביע העולם|יורו|קופה אמריקה|אליפות אפריקה|ליגת האומות|נבחרת|נבחרות|ארגנטינה|ברזיל|אנגליה|צרפת|ספרד|גרמניה|איטליה|פורטוגל|הולנד|בלגיה|קרואטיה|אורוגוואי|קולומביה|מרוקו|סנגל|ניגריה|יפן|ארה\"ב|מקסיקו|דה לה פואנטה|לואיס דה לה פואנטה|🇪🇸|🇦🇷|🇧🇷|🇫🇷|🇩🇪|🇮🇹|🇵🇹|🇳🇱|🇧🇪|🇭🇷|🇺🇾|🇨🇴|🇲🇦|🇸🇳|🇳🇬|🇯🇵|🇺🇸|🇲🇽",
-)
-
-PURE_ADMIN_APPOINTMENT_PATTERNS = (
-    r"\b(?:appointed|set to be appointed|will become|new)\b.*\b(?:sporting director|technical director|director of football|chief scout|head of recruitment|advisor|consultant)\b",
-    r"(?:צפוי להתמנות|ימונה|מונה|מנהל חדש|המנהל החדש).{0,80}(?:מנהל\s+(?:טכני|מקצועי|ספורטיבי)|סקאוט|יועץ|ראש\s+גיוס|מנהל\s+הכדורגל)",
-)
-
-MIN_IMPORTANCE_SCORE_TO_SEND = 35
-MIN_IMPORTANCE_SCORE_TO_SEND_WEAK_INTEREST = 45
-
-
-def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
-    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
-
-
-def should_use_ai_affiliation_fallback(post: Post) -> bool:
-    if not AI_AFFILIATION_FALLBACK_ENABLED:
-        return False
-    """Use one Gemini request only for rare name-only football reports.
-
-    This is for reports that mention a player/coach name and news mechanics but no club
-    was detected locally. Gemini may allow only if the person is currently tied to, or
-    was very recently tied to, one of the user's allowed big clubs or a top-70 national team.
-    """
-    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
-    if len(cleaned) < 25 or len(cleaned) > 900:
-        return False
-    if _matches_any(OTHER_SPORT_BLOCK_PATTERNS, cleaned) or _matches_any(WOMEN_SPORT_BLOCK_PATTERNS, cleaned):
-        return False
-    has_news = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned) or _matches_any(COACH_IMPORTANT_PATTERNS, cleaned) or _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
-    has_name_shape = bool(re.search(r"\b[A-Z][A-Za-zÀ-ÿ'’.-]{2,}(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]{2,}){1,3}\b", cleaned))
-    return bool(has_news and has_name_shape and has_gemini_key_available())
-
-
-def ai_affiliation_fallback_allows(post: Post) -> bool:
-    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
-    prompt = (
-        "Return ONLY YES or NO. This is a men's football Telegram filter.\n"
-        "Allow YES only if the report is real men's football news and the main person/team is clearly connected to one of these allowed clubs, an Israeli-league club, Israel national team, or a current FIFA top-70 men's national team.\n"
-        "Connection can be current club/national team, confirmed destination, or very recent former club if the report is directly about transfer/contract/injury/squad/coach news.\n"
-        "Return NO for women's football, basketball/NBA/WNBA/other sports, generic quotes, vague admiration, or if you are not sure.\n"
-        "Allowed clubs include Bayern, Dortmund, Leverkusen, Frankfurt, Leipzig, Stuttgart, PSG, Marseille, Lyon, Lille, Lens, Monaco, Real Madrid, Barcelona, Atletico, Sevilla, Villarreal, Athletic Bilbao, Betis, Valencia, Real Sociedad, Man United, Man City, Liverpool, Chelsea, Arsenal, Tottenham, Newcastle, Aston Villa, West Ham, Everton, Brighton, Juventus, AC Milan, Inter, Roma, Napoli, Lazio, Atalanta, Fiorentina, Porto, Benfica, Sporting, Ajax, PSV, Flamengo, Palmeiras, Sao Paulo, Boca Juniors, River Plate, Al Nassr, Al Hilal, Al Ahli, Galatasaray, Fenerbahce, Inter Miami, Club Brugge, Red Star, Botafogo.\n\n"
-        f"Post:\n{cleaned}"
-    )
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.0, "maxOutputTokens": 8}}
-    for _index, key in gemini_available_keys_for_operation():
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_FAST_MODEL}:generateContent?key={urllib.parse.quote(key)}"
-        try:
-            data = http_post_json(url, payload, timeout=18, max_attempts=1, respect_retry_after=False)
-            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-            answer = "".join(part.get("text", "") for part in parts).strip().upper()
-            return answer.startswith("YES")
-        except Exception as exc:
-            try:
-                cool_down_gemini_key(key, exc)
-            except Exception:
-                pass
-            return False
-    return False
-
-
-def contains_final_only_allowed_club(post: Post) -> bool:
-    text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
-    return _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, clean_for_ai_translation(text))
-
-
-def contains_final_or_near_final_signal(post: Post) -> bool:
-    text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
-    return _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, clean_for_ai_translation(text))
-
-
-def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
-    """Return (allowed, reason, score, signals) for football relevance.
-
-    Updated logic:
-    1) Big clubs: send even early transfer rumours from trusted writers.
-    2) Top-5 league / promoted clubs: send when there is a real transfer/future/contract link.
-    3) Small clubs: send only strong transfer steps or clear big-club connection.
-    Interviews/quotes after matches are blocked unless they contain a real transfer/future link.
-    """
-    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
-    cleaned = clean_for_ai_translation(raw_text)
-    if not cleaned:
-        return False, "empty_after_clean", 0, ["empty"]
-    if not contains_allowed_club_or_israeli_league(post):
-        # Credit-safe default: do not use Gemini to decide relevance.
-        if not AI_AFFILIATION_FALLBACK_ENABLED:
-            return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
-        if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
-            return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
-    if is_other_sport_post(post):
-        return False, "other_sport", 0, ["other_sport"]
-
-    has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
-    has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
-    has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
-    has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
-    has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
-    has_admin_role = _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
-    has_weak_interest = _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
-    has_transfer_or_future = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
-    has_vague_player_idea = _matches_any(VAGUE_PLAYER_IDEA_PATTERNS, cleaned)
-    has_strong_move = _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
-    has_coach_news = _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
-    has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
-    has_pure_admin_appointment = _matches_any(PURE_ADMIN_APPOINTMENT_PATTERNS, cleaned)
-    has_injury = _matches_any(INJURY_PATTERNS, cleaned)
-    has_serious_injury = _matches_any(SERIOUS_INJURY_PATTERNS, cleaned)
-    has_injury_or_fitness_update = _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
-    has_major_national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
-    has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
-    has_final_or_near_final = _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
-
-    # For the user's lower-priority club group, block pure rumours/loose interest.
-    # Keep normal rules if a major club is also part of the same report, or when the
-    # post is really about a national team / country squad.
-    if has_final_only_club and not has_final_or_near_final and not (has_big_rumor_club or has_big_club_context or has_major_national_context):
-        return False, "final_only_club_not_final_or_near_final", 0, ["final_only_club", "not_final"]
-
-    score = 0
-    signals: list[str] = []
-
-    def add(points: int, signal: str) -> None:
-        nonlocal score
-        score += points
-        signals.append(signal)
-
-    if has_allowed_interest_club:
-        add(20, "allowed_club_or_israeli_league")
-    if has_big_rumor_club:
-        add(70, "big_club")
-    if has_top5_or_promoted_club:
-        add(45, "top5_or_promoted_club")
-    if has_elite_admin_club:
-        add(20, "elite_admin_club")
-    if has_big_club_context:
-        add(55, "big_club_context")
-    if has_strong_move:
-        add(45, "strong_transfer_step")
-    if has_transfer_or_future:
-        add(25, "transfer_or_future_link")
-    if has_coach_news:
-        add(25, "coach_news")
-    if has_injury:
-        add(10, "injury")
-    if has_serious_injury:
-        add(25, "serious_injury")
-    if has_injury_or_fitness_update:
-        add(30, "injury_or_fitness_update")
-    if has_major_national_context:
-        add(25, "major_national_context")
-    if has_final_only_club:
-        add(5, "final_only_club")
-    if has_final_or_near_final:
-        add(45, "final_or_near_final")
-    if has_weak_interest:
-        add(-10, "weak_interest")
-    if has_vague_player_idea:
-        add(-20, "vague_player_idea")
-    if has_low_interest_club and not (has_big_rumor_club or has_big_club_context):
-        add(-25, "low_interest_club")
-    if has_admin_role:
-        add(-45, "admin_or_backroom_role")
-    if has_pure_admin_appointment:
-        add(-25, "pure_admin_appointment")
-
-    # Backroom/admin appointments remain restricted: only Barcelona/Barça or Real Madrid.
-    if has_admin_role and not has_elite_admin_club:
-        return False, "admin_or_backroom_only_barca_real_allowed", score, signals
-
-    # Injuries / fitness / recovery: send broadly for popular clubs, top-5 clubs,
-    # and major national-team or World Cup contexts. This intentionally catches
-    # reports that do not say "injury" but discuss recovery/fitness/readiness.
-    if has_injury_or_fitness_update:
-        if has_big_rumor_club:
-            return True, "big_club_injury_or_fitness_update", score, signals
-        if has_top5_or_promoted_club:
-            return True, "top5_injury_or_fitness_update", score, signals
-        if has_major_national_context:
-            return True, "major_national_team_injury_or_fitness_update", score, signals
-        if has_serious_injury:
-            return True, "serious_injury_update", score, signals
-        if not (has_strong_move or has_transfer_or_future or has_coach_news):
-            return False, "minor_or_unclear_injury_not_enough", score, signals
-
-    # Strong transfer steps are always newsworthy from the trusted writers.
-    if has_strong_move:
-        return True, "strong_transfer_step", score, signals
-
-    # Big-club logic: early rumours are allowed, but pure vague player-idea posts still need
-    # either interest language or a transfer/future link. A small club mentioned in the same
-    # post does NOT drag it down; the big-club connection wins.
-    if has_big_rumor_club or has_big_club_context:
-        if has_vague_player_idea and not (has_weak_interest or has_transfer_or_future or has_coach_news):
-            return False, "vague_big_club_player_idea_without_real_rumour", score, signals
-        if has_weak_interest or has_transfer_or_future or has_coach_news:
-            return True, "big_club_rumour_or_transfer_context", score, signals
-
-    # Strict allow-list clubs: if the post mentions one of the user's clubs, continue only
-    # when the text has real news mechanics. This also catches abbreviations such as BVB/MUFC.
-    if has_allowed_interest_club:
-        if has_transfer_or_future or has_coach_news or has_injury_or_fitness_update:
-            return True, "allowed_club_news_context", score, signals
-        if has_weak_interest and (has_transfer_or_future or has_big_club_context):
-            return True, "allowed_club_weak_transfer_context", score, signals
-
-    # Top-5 / promoted clubs are relevant, but they need a real transfer/future/contract/coach link.
-    # This blocks regular post-match interviews and generic admiration.
-    if has_top5_or_promoted_club:
-        if has_transfer_or_future or has_coach_news:
-            return True, "top5_or_promoted_transfer_context", score, signals
-        if has_weak_interest:
-            return False, "top5_weak_interest_without_transfer_link", score, signals
-        return False, "top5_club_but_no_transfer_or_coach_context", score, signals
-
-    # Small clubs: only send concrete transfer steps, coach news, or explicit big-club context.
-    if has_low_interest_club and not (has_strong_move or has_big_club_context or has_coach_news):
-        return False, "small_club_not_important_enough", score, signals
-
-    if has_coach_news and score >= MIN_IMPORTANCE_SCORE_TO_SEND:
-        return True, "coach_news", score, signals
-
-    threshold = MIN_IMPORTANCE_SCORE_TO_SEND_WEAK_INTEREST if has_weak_interest else MIN_IMPORTANCE_SCORE_TO_SEND
-    if score < threshold:
-        return False, f"importance_score_too_low:{score}<{threshold}", score, signals
-
-    return True, "allowed", score, signals
-
-def football_importance_block_reason(post: Post) -> str:
-    allowed, reason, score, signals = football_relevance_decision(post)
-    if allowed:
-        logging.debug(
-            "מסנן חשיבות עבר: score=%s signals=%s @%s %s",
-            score,
-            ",".join(signals),
-            post.username,
-            post.link,
-        )
-        return ""
-    return f"{reason}; score={score}; signals={','.join(signals) or 'none'}"
 
 def pre_send_final_local_block_reason(post: Post) -> str:
     """Last cheap safety gate before any Gemini translation or video lookup.
@@ -4140,194 +3611,23 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     """
     if is_too_old_post(post):
         return "old_post"
+    if is_always_send_nba_source(post):
+        return ""
     if is_women_or_wnba_post(post):
         return "women_or_wnba"
-    if is_other_sport_post(post):
-        return "other_sport"
-    if not contains_allowed_club_or_israeli_league(post):
-        # Credit-safe default: no Gemini/AI lookup is allowed here.
-        # If AI_AFFILIATION_FALLBACK_ENABLED=1 is manually enabled, this may spend one Gemini
-        # request on name-only borderline posts. Default remains 0 to avoid wasted credits.
-        if not AI_AFFILIATION_FALLBACK_ENABLED:
-            return "not_connected_to_allowed_club"
-        if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
-            return "not_connected_to_allowed_club"
     if is_link_only_or_details_post(post):
         return "link_or_details_only"
     if is_podcast_or_longform_post(post):
         return "podcast_or_longform"
+    if is_clear_non_nba_post(post):
+        return "not_nba_related"
+    if is_nba_idea_only_post(post):
+        return "nba_idea_only"
+    if is_nba_social_noise_post(post):
+        return "nba_social_noise"
     if is_non_news_social_post(post):
         return "non_news_social"
-    importance_reason = football_importance_block_reason(post)
-    if importance_reason:
-        return importance_reason
     return ""
-
-
-def _extract_json_object(text: str) -> dict[str, Any]:
-    raw = (text or "").strip()
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
-    try:
-        value = json.loads(raw)
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        pass
-    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-    if not match:
-        return {}
-    try:
-        value = json.loads(match.group(0))
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
-
-
-def fallback_translate_without_gemini(text: str) -> str:
-    """Network/free fallback that never calls Gemini."""
-    ai_text = clean_for_ai_translation(text)
-    cleaned = clean_before_translation(text)
-    if not ai_text and not cleaned:
-        return ""
-    prepared = apply_phrase_replacements(cleaned, FOOTBALL_TERMS)
-    prepared = apply_phrase_replacements(prepared, TEAM_REPLACEMENTS)
-    prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
-    prepared = apply_phrase_replacements(prepared, HANDLE_REPLACEMENTS)
-    fallback_key = hashlib.sha256(f"fallback-no-gemini\n{prepared}".encode("utf-8")).hexdigest()
-    if fallback_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
-    for provider in (google_translate, mymemory_translate):
-        try:
-            translated = provider(prepared or cleaned)
-            if latin_ratio(translated) > 0.45:
-                translated = translate_in_sentences(prepared or cleaned)
-            polished = final_hebrew_polish(translated)
-            polished = final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, polished)))
-            if polished:
-                TRANSLATION_CACHE[fallback_key] = polished
-                return polished
-        except Exception:
-            continue
-    fallback = final_hebrew_polish(prepared or cleaned)
-    fallback = final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, fallback)))
-    TRANSLATION_CACHE[fallback_key] = fallback
-    return fallback
-
-
-def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
-    """Translate main + quoted text in ONE Gemini request, after local approval only."""
-    if not GEMINI_API_KEYS:
-        raise TranslationUnavailable("No Gemini API key configured")
-    if not has_gemini_key_available():
-        raise TranslationUnavailable("Gemini currently unavailable without network check")
-    main_source = clean_for_ai_translation(post.text) or clean_before_translation(post.text)
-    quote_source = clean_for_ai_translation(post.quoted_text) if include_quote and post.quoted_text else ""
-    author_source = clean_before_translation(post.quoted_author) if include_quote and post.quoted_author else ""
-    if not main_source and not quote_source:
-        return "", "", ""
-    cache_material = json.dumps({"m": main_source, "q": quote_source, "a": author_source}, ensure_ascii=False, sort_keys=True)
-    cache_key = "combined-v2:" + hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
-    if cache_key in TRANSLATION_CACHE:
-        cached = _extract_json_object(TRANSLATION_CACHE[cache_key])
-        if cached:
-            return (
-                final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, str(cached.get("main", ""))))),
-                final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, str(cached.get("quote", ""))))),
-                final_hebrew_polish(str(cached.get("quote_author", ""))).strip(),
-            )
-    glossary_text = "\n".join(x for x in [relevant_name_glossary(main_source), relevant_name_glossary(quote_source), relevant_name_glossary(author_source)] if x)
-    glossary_block = f"\nKnown names glossary. Use these exact Hebrew names when relevant:\n{glossary_text}\n" if glossary_text else ""
-    prompt = (
-        "You are a senior Hebrew MEN'S football news translator and name editor.\n"
-        "The post below already passed a strict local publishing filter. Do NOT decide whether to publish. Translate only.\n"
-        "Return ONLY compact valid JSON with exactly these keys: main, quote, quote_author.\n"
-        "Rules:\n"
-        "- Hebrew only, natural Telegram sports-news Hebrew.\n"
-        "- Do not add facts, context, clubs, years, dates, injuries, transfer status, or words that are not directly in the source.\n"
-        "- Preserve every factual item exactly: player/coach names, clubs, national teams, years, dates, numbers, scores, fees, and status.\n"
-        "- If a name is uncertain, keep the clean original Latin name instead of inventing or faking Hebrew.\n"
-        "- Verify names from football context; fix malformed transliterations, but never replace one club/person with a different one.\n"
-        "- Convert known @handles only when they are part of the news; remove source/junk handles and URLs.\n"
-        "- Remove URLs, tracking text, sponsor lines, and useless link prompts.\n"
-        "- Preserve real flag emojis. If country-code letters are used as a flag marker, output the correct flag emoji and remove the letters.\n"
-        "- Remove leftovers such as TR, טי אר, GE, FR, IT, ES, DE when they only duplicate a nearby flag emoji.\n"
-        "- Keep emojis only when useful and already implied by the source.\n"
-        "- Do not write explanations. JSON only.\n"
-        f"{glossary_block}\n"
-        "MAIN_TEXT:\n" + (main_source or "") + "\n\n"
-        "QUOTED_AUTHOR:\n" + (author_source or "") + "\n\n"
-        "QUOTED_TEXT:\n" + (quote_source or "")
-    )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.0, "topP": 0.7, "maxOutputTokens": 900},
-    }
-    last_error: Exception | None = None
-    real_requests_used = 0
-    for index, key in gemini_available_keys_for_operation():
-        if real_requests_used >= 1:
-            break
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
-        )
-        try:
-            with GEMINI_TRANSLATION_SEMAPHORE:
-                real_requests_used += 1
-                data = http_post_json(url, payload, timeout=10, max_attempts=1, respect_retry_after=False)
-            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-            raw = "".join(part.get("text", "") for part in parts).strip()
-            parsed = _extract_json_object(raw)
-            if not parsed:
-                parsed = {"main": raw, "quote": "", "quote_author": ""}
-            main = final_hebrew_polish(str(parsed.get("main", ""))).strip()
-            quote = final_hebrew_polish(str(parsed.get("quote", ""))).strip()
-            quote_author = final_hebrew_polish(str(parsed.get("quote_author", ""))).strip()
-            main = final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, main)))
-            quote = final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, quote))) if quote_source else ""
-            if translation_contradicts_source(main_source + "\n" + quote_source, main + "\n" + quote):
-                raise RuntimeError("Gemini translation contradicted source names")
-            if translation_changes_locked_numbers(main_source + "\n" + quote_source, main + "\n" + quote):
-                raise RuntimeError("Gemini translation changed locked numbers or years")
-            if main or quote:
-                TRANSLATION_CACHE[cache_key] = json.dumps({"main": main, "quote": quote, "quote_author": quote_author}, ensure_ascii=False)
-                GEMINI_KEY_COOLDOWNS.pop(key, None)
-                mark_gemini_available()
-                return main, quote, quote_author
-            raise RuntimeError("Gemini returned empty translation")
-        except Exception as exc:
-            last_error = exc
-            cool_down_gemini_key(key, exc)
-            logging.warning("⚠️ תרגום Gemini יחיד נכשל עם %s; לא מנסה בקשת Gemini נוספת לפוסט הזה כדי לחסוך קרדיטים. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
-            break
-    log_gemini_unavailable(last_error)
-    raise TranslationUnavailable(f"Gemini single translation failed after {real_requests_used} real request(s): {last_error}")
-
-
-def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    """Return publishable translation. Gemini, if used, is exactly one request for main+quote."""
-    include_quote = bool(
-        not is_self_quote(post)
-        and post.quoted_text
-        and (
-            TRANSLATE_QUOTED_POSTS
-            or (
-                TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT
-                and len(clean_before_translation(post.text)) < MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE
-            )
-        )
-    )
-    if GEMINI_API_KEYS:
-        try:
-            main, quote, quote_author = gemini_translate_post_once(post, include_quote)
-            if main or quote:
-                return main, quote, quote_author
-        except Exception as exc:
-            logging.warning("גיבוי ללא Gemini לתרגום אחרי כשל בבקשה יחידה: %s", gemini_error_summary(exc))
-    # Free/no-credit fallback. This keeps the promise: no second Gemini request and no wasted AI filter request.
-    main = fallback_translate_without_gemini(post.text)
-    quote = fallback_translate_without_gemini(post.quoted_text) if include_quote and post.quoted_text else ""
-    quote_author = translate_quoted_author(post.quoted_author) if quote and post.quoted_author else ""
-    return main, quote, quote_author
 
 def send_post(post: Post) -> dict[str, Any]:
     started = time.perf_counter()
@@ -4349,13 +3649,24 @@ def send_post(post: Post) -> dict[str, Any]:
         return timings
 
     translation_started = time.perf_counter()
-    translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
+    translated = translate_text(post.text)
+    if is_self_quote(post):
+        quoted_translated = ""
+        quoted_author_translated = ""
+    else:
+        force_quote_translation = bool(
+            post.quoted_text
+            and TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT
+            and len(clean_before_translation(post.text)) < MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE
+        )
+        quoted_translated = translate_quoted_text(post.quoted_text, force=force_quote_translation) if post.quoted_text else ""
+        quoted_author_translated = translate_quoted_author(post.quoted_author) if quoted_translated and post.quoted_author else ""
     timings["translation_seconds"] = time.perf_counter() - translation_started
 
-    # The post already passed the final local approval gate. If translation is weak/empty,
-    # publish a cleaned fallback instead of spending another Gemini request or silently dropping it.
     if not has_meaningful_text(translated) and not has_meaningful_text(quoted_translated):
-        translated = untranslated_fallback_text(post.text) or filtered_post_text_preview(post) or "עדכון חדש"
+        timings["total_seconds"] = time.perf_counter() - started
+        timings["mode"] = "no_news"
+        return timings
 
     video_started = time.perf_counter()
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
@@ -4372,18 +3683,20 @@ def send_post(post: Post) -> dict[str, Any]:
     images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
     timings["prepare_seconds"] = time.perf_counter() - prepare_started
 
+    wait_for_telegram_spacing()
+
     if video_url:
         try:
             send_started = time.perf_counter()
-            telegram_broadcast_with_text_fallback(
+            telegram_api(
                 "sendVideo",
                 {
+                    "chat_id": TELEGRAM_CHAT_ID,
                     "video": video_url,
                     "caption": trim_keep_ending(message, 1024),
                     "parse_mode": "HTML",
                     "supports_streaming": True,
                 },
-                message,
             )
             timings["send_seconds"] = time.perf_counter() - send_started
             timings["total_seconds"] = time.perf_counter() - started
@@ -4411,7 +3724,7 @@ def send_post(post: Post) -> dict[str, Any]:
             media.append(item)
         try:
             send_started = time.perf_counter()
-            telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message)
+            telegram_api("sendMediaGroup", {"chat_id": TELEGRAM_CHAT_ID, "media": media})
         except Exception as exc:
             logging.warning("Could not send images, falling back to text only: %s", exc)
         else:
@@ -4422,9 +3735,10 @@ def send_post(post: Post) -> dict[str, Any]:
             return timings
 
     send_started = time.perf_counter()
-    telegram_broadcast(
+    telegram_api(
         "sendMessage",
         {
+            "chat_id": TELEGRAM_CHAT_ID,
             "text": trim(message, 4096),
             "disable_web_page_preview": True,
             "parse_mode": "HTML",
@@ -4441,9 +3755,10 @@ def send_video_after_message(video_url: str) -> None:
     if not (SEND_VIDEO_FILES and video_url):
         return
     try:
-        telegram_broadcast(
+        telegram_api(
             "sendVideo",
             {
+                "chat_id": TELEGRAM_CHAT_ID,
                 "video": video_url,
                 "supports_streaming": True,
             },
@@ -4451,9 +3766,10 @@ def send_video_after_message(video_url: str) -> None:
     except Exception as exc:
         logging.warning("Post text was sent, but Telegram could not attach video: %s", exc)
         try:
-            telegram_broadcast(
+            telegram_api(
                 "sendMessage",
                 {
+                    "chat_id": TELEGRAM_CHAT_ID,
                     "text": f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>\n{html.escape(video_url)}",
                     "disable_web_page_preview": False,
                     "parse_mode": "HTML",
@@ -4488,14 +3804,14 @@ def save_state(state: dict[str, list[str]]) -> None:
 
 def validate_settings() -> None:
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
-        raise ValueError("Put your Telegram bot token in NETO_SPORT_NBA_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE or TELEGRAM_BOT_TOKEN")
-    if not TELEGRAM_CHAT_IDS:
-        raise ValueError("Put at least one Telegram group chat ID in TELEGRAM_CHAT_IDS")
+        raise ValueError("Missing Telegram bot token Railway variable")
+    if not TELEGRAM_CHAT_ID:
+        raise ValueError("Missing NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE in Railway Variables")
     if not X_ACCOUNTS:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
 
-def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
+def run_once(state: dict[str, list[str]], startup_cycle: bool = False) -> int:
     cycle_started = time.perf_counter()
     first_run = not any(state.values())
     sent = 0
@@ -4504,6 +3820,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     send_futures = []
     queued_ids: set[str] = set()
     global_candidate_posts: list[tuple[str, Post, float]] = []
+    spam_limit_logged = False
 
     def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
@@ -4543,46 +3860,54 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     state[username] = list(seen)[-500:]
                     continue
 
-                candidate_posts: list[tuple[str, Post, float]] = []
                 posts_to_consider = new_posts[: min(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK, MAX_POSTS_SENT_PER_CYCLE)]
+                candidate_posts: list[tuple[str, Post, float]] = []
                 for post in reversed(posts_to_consider):
-                    if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
-                        seen.update(post.dedupe_ids)
-                        logging.info("דילוג: הבוט הופעל מחדש, ופוסט ישן מ-10 דקות לא נשלח: %s", post.link)
-                        continue
-                    if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
+                    if is_too_old_post(post):
                         seen.update(post.dedupe_ids)
                         logging.info("דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
                         continue
                     if any(post_id in queued_ids for post_id in post.dedupe_ids):
                         logging.info("דילוג: כפילות באותו סבב מ-@%s לא נשלחה: %s", username, post.link)
                         continue
+                    if is_always_send_nba_source(post):
+                        candidate_posts.append((username, post, time.perf_counter() - cycle_started))
+                        continue
                     if is_women_or_wnba_post(post):
+                        logging.info("דילוג מסנן: נשים/WNBA מ-@%s לא נשלח: %s | %s", username, post.link, filtered_post_text_preview(post))
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן: נשים/WNBA מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_link_only_or_details_post(post):
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן: קישור/פרטים בלי דיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_podcast_or_longform_post(post):
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן: פודקאסט/תוכן ארוך מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_non_news_social_post(post):
+                        logging.info("דילוג: פוסט לא חדשותי מ-@%s לא נשלח: %s | %s", username, post.link, filtered_post_text_preview(post))
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן: פוסט לא חדשותי/סטטיסטיקה בלבד מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
-                        logging.info("דילוג: פוסט חברתי/אווירה בלי דיווח חדשותי מ-@%s לא נשלח: %s", username, post.link)
                         continue
-                    importance_reason = football_importance_block_reason(post)
-                    if importance_reason:
+
+                    # Final deterministic relevance gate BEFORE any expensive/billed work.
+                    # This is intentionally before duplicate AI checks and before parallel clustering,
+                    # so Gemini/video/network-heavy logic is used only for posts that are actually
+                    # eligible to be sent. Shams is still allowed by policy inside this gate.
+                    early_block_reason = pre_send_final_local_block_reason(post)
+                    if early_block_reason:
+                        logging.info(
+                            "דילוג מוקדם לפני Gemini/וידיאו: %s מ-@%s לא נשלח ולא בוזבזו קרדיטים: %s | %s",
+                            early_block_reason,
+                            username,
+                            post.link,
+                            filtered_post_text_preview(post),
+                        )
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן חשיבות: %s מ-@%s לא נשלח: %s | טקסט: %s", importance_reason, username, post.link, filtered_post_text_preview(post))
                         continue
+
                     duplicate_event = find_recent_duplicate_event(post, state)
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-8 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        logging.info("דילוג כפילות חכמה: אותו אירוע כבר נשלח בשעתיים האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
@@ -4590,10 +3915,31 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
 
                 state[username] = list(seen)[-500:]
 
-        global_candidate_posts = cluster_parallel_candidates(global_candidate_posts)
+        # Safety filter before same-cycle clustering. cluster_parallel_candidates may use Gemini
+        # for borderline merges, so do not let unpublishable posts reach it.
+        publishable_global_candidates: list[tuple[str, Post, float]] = []
+        for candidate in global_candidate_posts:
+            username, post, _found_seconds = candidate
+            cluster_block_reason = pre_send_final_local_block_reason(post)
+            if cluster_block_reason:
+                mark_candidate_seen(state, candidate)
+                logging.info(
+                    "דילוג לפני מיזוג/Gemini: %s מ-@%s לא נשלח ולא בוזבזו קרדיטים: %s | %s",
+                    cluster_block_reason,
+                    username,
+                    post.link,
+                    filtered_post_text_preview(post),
+                )
+                continue
+            publishable_global_candidates.append(candidate)
+
+        global_candidate_posts = cluster_parallel_candidates(publishable_global_candidates)
 
         for candidate in sort_candidate_posts_for_priority(global_candidate_posts):
             if len(send_futures) >= MAX_POSTS_SENT_PER_CYCLE:
+                if not spam_limit_logged:
+                    logging.info("מנגנון אנטי-הצפה: נשמר קצב רגוע, שאר הפוסטים יישארו לניסיון בסבב הבא.")
+                    spam_limit_logged = True
                 break
             username, post, _ = candidate
             seen = set(state.get(username, []))
@@ -4608,8 +3954,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     filtered_post_text_preview(post),
                 )
                 continue
-            duplicate_event = find_recent_duplicate_event_ai_aware(post, state)
-            if duplicate_event:
+            duplicate_event = find_recent_duplicate_event(post, state)
+            if duplicate_event and not is_always_send_nba_source(post):
                 mark_candidate_seen(state, candidate)
                 logging.info("דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
                 continue
@@ -4653,18 +3999,16 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
-    print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
+    print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
-    if CONTROL_CHAT_ID:
-        Thread(target=control_loop, daemon=True).start()
-
     if SEND_STARTUP_STATUS_MESSAGE:
         try:
-            telegram_broadcast(
+            telegram_api(
                 "sendMessage",
                 {
-                    "text": "בוט הכדורגל הופעל. בודק עדכונים...",
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": "בוט ה-NBA הופעל. בודק עדכונים...",
                     "disable_web_page_preview": True,
                 },
             )
@@ -4673,19 +4017,9 @@ def main() -> None:
 
     startup_cycle = True
     skipped_for_shabbat = False
-    paused_logged = False
     while True:
         cycle_started = time.time()
         try:
-            control_state = load_control_state()
-            if bool(control_state.get("paused", False)):
-                if not paused_logged:
-                    logging.info("בוט הכדורגל כבוי מלוח השליטה. לא סורק ולא שולח.")
-                    paused_logged = True
-                time.sleep(current_check_every_seconds())
-                continue
-            paused_logged = False
-
             if is_shabbat_now():
                 if not skipped_for_shabbat:
                     logging.info("מצב שבת פעיל: הבוט לא סורק, לא שולח ולא שומר מצב")
@@ -4705,12 +4039,9 @@ def main() -> None:
                 time.sleep(current_check_every_seconds())
                 continue
 
-            resume_min_ts = float(control_state.get("resume_min_ts", 0.0) or 0.0)
-            sent = run_once(state, startup_cycle=startup_cycle, min_published_ts=resume_min_ts)
+            sent = run_once(state, startup_cycle=startup_cycle)
             startup_cycle = False
             save_state(state)
-            if resume_min_ts:
-                save_control_state(False, resume_min_ts=0.0)
             save_translation_cache(TRANSLATION_CACHE)
             save_ai_decision_cache()
             if sent:
