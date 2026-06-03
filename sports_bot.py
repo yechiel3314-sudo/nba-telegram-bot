@@ -12,7 +12,7 @@ What this version does:
 - Never sends videos as files. If a post has video, it adds a video link line.
 - Removes all links from the post body. Only the final X post link is kept.
 - Uses Gemini translation if you add GEMINI_API_KEY or GEMINI_API_KEYS.
-- Falls back to free Google Translate + MyMemory if Gemini is unavailable.
+- Uses Gemini only; if Gemini is unavailable, the post is not sent yet.
 
 Important:
 - ChatGPT Plus does not include API usage for a server bot.
@@ -65,6 +65,7 @@ def _first_existing_env(*names: str) -> str:
 # Same Telegram bot token can be shared with the football bot. Do not hardcode tokens in GitHub.
 TELEGRAM_BOT_TOKEN = _first_existing_env(
     "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE",
+    "NETO_SPORT_NBA_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
     "NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
 )
 
@@ -87,8 +88,8 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
-GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "8"))
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "2"))
+GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
@@ -99,7 +100,7 @@ MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR
 GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", "8"))
 # How many keys may be tried with a real Gemini network request per single AI operation.
 # Keep this low to avoid burning quota during outages.
-GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_LOCAL_KEY_SWEEP_SIZE)))
+GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", "1"))
 
 X_ACCOUNTS = [
     "NBA",
@@ -3115,7 +3116,7 @@ def log_gemini_unavailable(error: Exception | None) -> None:
     if GEMINI_FAILURE_LOGGED:
         return
     GEMINI_FAILURE_LOGGED = True
-    logging.warning("⚠️ ג'מיני לא זמין כרגע. אם זו מכסה, הפוסט יישלח בגיבוי; אחרת הבוט ינסה שוב בהמשך. סיבה: %s", gemini_error_summary(error))
+    logging.warning("⚠️ ג'מיני לא זמין כרגע. אם זו מכסה, הפוסט לא יישלח בלי Gemini; אחרת הבוט ינסה שוב בהמשך. סיבה: %s", gemini_error_summary(error))
 
 
 def mark_gemini_available() -> None:
@@ -3393,32 +3394,12 @@ def translate_text(text: str) -> str:
         logging.error("⛔ ג'מיני לא הצליח בתרגום אחרי עד %s בדיקות / עד %s בקשות אמיתיות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS, GEMINI_MAX_REAL_TRANSLATION_REQUESTS)
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
-    if fallback_key in TRANSLATION_CACHE:
-        return preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])
-
     if not GEMINI_API_KEYS:
         logging.error("⛔ אין מפתח ג'מיני מוגדר. הפוסט לא יישלח בלי תרגום ג'מיני.")
         raise TranslationUnavailable("No Gemini API key configured")
 
-    for source_text in (prepared, cleaned):
-        for provider in (google_translate, mymemory_translate):
-            try:
-                translated = provider(source_text)
-                if latin_ratio(translated) > 0.45:
-                    translated = translate_in_sentences(source_text)
-                polished = final_hebrew_polish(translated)
-                polished = preserve_original_emojis(source_text, polished)
-                if polished and latin_ratio(polished) <= 0.30:
-                    TRANSLATION_CACHE[fallback_key] = polished
-                    return polished
-            except Exception:
-                continue
-
-    fallback = final_hebrew_polish(prepared)
-    fallback = preserve_original_emojis(ai_text or text, fallback)
-    TRANSLATION_CACHE[fallback_key] = fallback
-    return fallback
-
+    logging.error("⛔ אין תרגום ג'מיני תקין. לא משתמשים בתרגום חינמי ולא שולחים את הפוסט כרגע.")
+    raise TranslationUnavailable("Gemini-only mode: no valid translation")
 
 def translate_short_label(text: str) -> str:
     text = clean_before_translation(text)
@@ -3429,15 +3410,17 @@ def translate_short_label(text: str) -> str:
     text = apply_phrase_replacements(text, PLAYER_REPLACEMENTS)
     if latin_ratio(text) <= 0.15:
         return final_hebrew_polish(text)
+    if not GEMINI_API_KEYS or not has_gemini_key_available():
+        return ""
     try:
-        translated = gemini_translate(text) if GEMINI_API_KEYS else google_translate(text)
+        translated = gemini_translate(text, max_real_requests=1)
         translated = final_hebrew_polish(translated)
-    except Exception:
-        translated = final_hebrew_polish(text)
+    except Exception as exc:
+        logging.warning("תווית קצרה לא תורגמה כי Gemini נכשל: %s", gemini_error_summary(exc))
+        return ""
     if latin_ratio(translated) > 0.20:
         return ""
     return translated
-
 
 def normalize_identity(text: str) -> str:
     text = clean_before_translation(text)
@@ -4001,7 +3984,7 @@ def main() -> None:
     validate_settings()
     print(f"NBA bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
-    print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
+    print("Gemini translation: " + ("ON - Gemini only" if GEMINI_API_KEYS else "OFF - Gemini key required"), flush=True)
     if SEND_STARTUP_STATUS_MESSAGE:
         try:
             telegram_api(
