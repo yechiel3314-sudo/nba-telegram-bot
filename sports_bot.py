@@ -48,10 +48,45 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_IDS = [
-    "-1002272784260",
-]
+
+def first_env(*names: str) -> str:
+    """Return the first non-empty environment variable value.
+
+    Railway already has long private variable names. Keep supporting those exact
+    names and also support the short generic names as a fallback, so the bot
+    will not crash just because one naming style is used.
+    """
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def env_list(name: str, default: list[str] | None = None) -> list[str]:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return list(default or [])
+    # Supports comma/newline/space separated chat IDs from Railway.
+    return [item.strip() for item in re.split(r"[,\n\s]+", value) if item.strip()]
+
+
+TELEGRAM_BOT_TOKEN = first_env(
+    "NETO_SPORT_NBA_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
+    "NETO_SPORT_NBA_NEWS_BOT_TELEGRAM_TOKEN_PRIVATE",
+    "NETO_SPORT_NBA_NEWS_TELEGRAM_API_TOKEN_PRIVATE",
+    "NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
+    "NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_TOKEN_PRIVATE",
+    "TELEGRAM_BOT_TOKEN",
+)
+
+TELEGRAM_CHAT_IDS = env_list(
+    "NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE",
+    env_list(
+        "NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE",
+        ["-1002272784260"],
+    ),
+)
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -151,8 +186,13 @@ NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
-CONTROL_CHAT_ID = "-1003924267158"
-CONTROL_STATE_FILE = "football_control_state.json"
+CONTROL_CHAT_ID = first_env(
+    "NETO_SPORT_NBA_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE",
+    "NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE",
+    "CONTROL_CHAT_ID",
+    "-1003924267158",
+)
+CONTROL_STATE_FILE = os.environ.get("CONTROL_STATE_FILE", "nba_control_state.json")
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
 CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
@@ -165,14 +205,14 @@ SHABBAT_HAVDALAH_MINUTES = 50
 SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
-SHABBAT_CACHE_FILE = "football_shabbat_times_cache.json"
+SHABBAT_CACHE_FILE = os.environ.get("SHABBAT_CACHE_FILE", "nba_shabbat_times_cache.json")
 MAX_PARALLEL_POST_SENDS = 12
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = True
-STATE_FILE = "football_x_to_telegram_state.json"
-AI_DECISION_CACHE_FILE = os.environ.get("AI_DECISION_CACHE_FILE", "football_ai_decision_cache.json")
-TRANSLATION_CACHE_FILE = "football_translation_cache.json"
+STATE_FILE = os.environ.get("STATE_FILE", "nba_x_to_telegram_state.json")
+AI_DECISION_CACHE_FILE = os.environ.get("AI_DECISION_CACHE_FILE", "nba_ai_decision_cache.json")
+TRANSLATION_CACHE_FILE = os.environ.get("TRANSLATION_CACHE_FILE", "nba_translation_cache.json")
 RTL_MARK = "\u200f"
 SIGNATURE_LINK = "https://t.me/neto_sport"
 SIGNATURE_TEXT = "נטו ספורט.📝"
@@ -3457,7 +3497,7 @@ def rtl(text: str) -> str:
 
 def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     if not TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN environment variable")
+        raise RuntimeError("Missing Telegram bot token. Expected NETO_SPORT_NBA_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE or TELEGRAM_BOT_TOKEN")
     response = http_post_json(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}", payload, **kwargs)
     if not response.get("ok"):
         raise RuntimeError(f"Telegram error: {response}")
@@ -4443,7 +4483,7 @@ def save_state(state: dict[str, list[str]]) -> None:
 
 def validate_settings() -> None:
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
-        raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
+        raise ValueError("Put your Telegram bot token in NETO_SPORT_NBA_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE or TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_IDS:
         raise ValueError("Put at least one Telegram group chat ID in TELEGRAM_CHAT_IDS")
     if not X_ACCOUNTS:
