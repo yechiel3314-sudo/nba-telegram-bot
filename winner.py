@@ -48,25 +48,10 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-# Telegram secrets are intentionally NOT hardcoded in this file.
-# Set these in Railway -> Variables.
-def required_env(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
-
-
-def required_env_list(name: str) -> list[str]:
-    raw_value = required_env(name)
-    values = [item.strip() for item in raw_value.split(",") if item.strip()]
-    if not values:
-        raise RuntimeError(f"Environment variable {name} must contain at least one value")
-    return values
-
-
-TELEGRAM_BOT_TOKEN = required_env("NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE")
-TELEGRAM_CHAT_IDS = required_env_list("NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_IDS = [
+    "-1002272784260",
+]
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -96,6 +81,9 @@ GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", 
 # How many keys may be tried with a real Gemini network request per single AI operation.
 # Keep this low to avoid burning quota during outages.
 GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_LOCAL_KEY_SWEEP_SIZE)))
+# Credit-safe mode: do NOT spend Gemini on uncertain affiliation/filter checks.
+# Gemini is used only after all local deterministic filters already approved a post for publishing.
+AI_AFFILIATION_FALLBACK_ENABLED = os.environ.get("AI_AFFILIATION_FALLBACK_ENABLED", "0") == "1"
 
 X_ACCOUNTS = [
     "FabrizioRomano",
@@ -103,8 +91,6 @@ X_ACCOUNTS = [
     "DiMarzio",
     "JacobsBen",
     "NicoSchira",
-    "ffpolo",
-    "AranchaMOBILE",
 ]
 
 PRIORITY_X_ACCOUNTS = {
@@ -113,8 +99,6 @@ PRIORITY_X_ACCOUNTS = {
     "DiMarzio",
     "JacobsBen",
     "NicoSchira",
-    "ffpolo",
-    "AranchaMOBILE",
 }
 
 ACCOUNT_DISPLAY_NAMES = {
@@ -148,7 +132,6 @@ ACCOUNT_DISPLAY_NAMES = {
 
 TARGET_LANGUAGE = "he"
 CHECK_EVERY_SECONDS = 5
-HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
@@ -168,11 +151,11 @@ NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 SEND_STARTUP_STATUS_MESSAGE = False
-CONTROL_CHAT_ID = required_env("NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE")
+CONTROL_CHAT_ID = "-1003924267158"
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
-CONTROL_SEND_PANEL_ON_STARTUP = True  # שולח כפתורי שליטה חדשים בכל הרצה של הבוט
+CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
 CONTROL_CREATE_PANEL_IF_MISSING = os.environ.get("CONTROL_CREATE_PANEL_IF_MISSING", "0") == "1"
 CONTROL_DELETE_WEBHOOK_ON_STARTUP = os.environ.get("CONTROL_DELETE_WEBHOOK_ON_STARTUP", "1") == "1"
 SHABBAT_MODE_ENABLED = True
@@ -3878,6 +3861,8 @@ def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
 
 
 def should_use_ai_affiliation_fallback(post: Post) -> bool:
+    if not AI_AFFILIATION_FALLBACK_ENABLED:
+        return False
     """Use one Gemini request only for rare name-only football reports.
 
     This is for reports that mention a player/coach name and news mechanics but no club
@@ -3945,6 +3930,9 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
     if not contains_allowed_club_or_israeli_league(post):
+        # Credit-safe default: do not use Gemini to decide relevance.
+        if not AI_AFFILIATION_FALLBACK_ENABLED:
+            return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
         if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
             return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
     if is_other_sport_post(post):
@@ -4112,6 +4100,11 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     if is_other_sport_post(post):
         return "other_sport"
     if not contains_allowed_club_or_israeli_league(post):
+        # Credit-safe default: no Gemini/AI lookup is allowed here.
+        # If AI_AFFILIATION_FALLBACK_ENABLED=1 is manually enabled, this may spend one Gemini
+        # request on name-only borderline posts. Default remains 0 to avoid wasted credits.
+        if not AI_AFFILIATION_FALLBACK_ENABLED:
+            return "not_connected_to_allowed_club"
         if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
             return "not_connected_to_allowed_club"
     if is_link_only_or_details_post(post):
@@ -4124,6 +4117,172 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     if importance_reason:
         return importance_reason
     return ""
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    raw = (text or "").strip()
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if not match:
+        return {}
+    try:
+        value = json.loads(match.group(0))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def fallback_translate_without_gemini(text: str) -> str:
+    """Network/free fallback that never calls Gemini."""
+    ai_text = clean_for_ai_translation(text)
+    cleaned = clean_before_translation(text)
+    if not ai_text and not cleaned:
+        return ""
+    prepared = apply_phrase_replacements(cleaned, FOOTBALL_TERMS)
+    prepared = apply_phrase_replacements(prepared, TEAM_REPLACEMENTS)
+    prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
+    prepared = apply_phrase_replacements(prepared, HANDLE_REPLACEMENTS)
+    fallback_key = hashlib.sha256(f"fallback-no-gemini\n{prepared}".encode("utf-8")).hexdigest()
+    if fallback_key in TRANSLATION_CACHE:
+        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
+    for provider in (google_translate, mymemory_translate):
+        try:
+            translated = provider(prepared or cleaned)
+            if latin_ratio(translated) > 0.45:
+                translated = translate_in_sentences(prepared or cleaned)
+            polished = final_hebrew_polish(translated)
+            polished = final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, polished)))
+            if polished:
+                TRANSLATION_CACHE[fallback_key] = polished
+                return polished
+        except Exception:
+            continue
+    fallback = final_hebrew_polish(prepared or cleaned)
+    fallback = final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, fallback)))
+    TRANSLATION_CACHE[fallback_key] = fallback
+    return fallback
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    """Translate main + quoted text in ONE Gemini request, after local approval only."""
+    if not GEMINI_API_KEYS:
+        raise TranslationUnavailable("No Gemini API key configured")
+    if not has_gemini_key_available():
+        raise TranslationUnavailable("Gemini currently unavailable without network check")
+    main_source = clean_for_ai_translation(post.text) or clean_before_translation(post.text)
+    quote_source = clean_for_ai_translation(post.quoted_text) if include_quote and post.quoted_text else ""
+    author_source = clean_before_translation(post.quoted_author) if include_quote and post.quoted_author else ""
+    if not main_source and not quote_source:
+        return "", "", ""
+    cache_material = json.dumps({"m": main_source, "q": quote_source, "a": author_source}, ensure_ascii=False, sort_keys=True)
+    cache_key = "combined-v2:" + hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+    if cache_key in TRANSLATION_CACHE:
+        cached = _extract_json_object(TRANSLATION_CACHE[cache_key])
+        if cached:
+            return (
+                final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, str(cached.get("main", ""))))),
+                final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, str(cached.get("quote", ""))))),
+                final_hebrew_polish(str(cached.get("quote_author", ""))).strip(),
+            )
+    glossary_text = "\n".join(x for x in [relevant_name_glossary(main_source), relevant_name_glossary(quote_source), relevant_name_glossary(author_source)] if x)
+    glossary_block = f"\nKnown names glossary. Use these exact Hebrew names when relevant:\n{glossary_text}\n" if glossary_text else ""
+    prompt = (
+        "You are a senior Hebrew MEN'S football news translator and name editor.\n"
+        "The post below already passed a strict local publishing filter. Do NOT decide whether to publish. Translate only.\n"
+        "Return ONLY compact valid JSON with exactly these keys: main, quote, quote_author.\n"
+        "Rules:\n"
+        "- Hebrew only, natural Telegram sports-news Hebrew.\n"
+        "- Do not add facts, context, clubs, years, dates, injuries, transfer status, or words that are not directly in the source.\n"
+        "- Preserve every factual item exactly: player/coach names, clubs, national teams, years, dates, numbers, scores, fees, and status.\n"
+        "- If a name is uncertain, keep the clean original Latin name instead of inventing or faking Hebrew.\n"
+        "- Verify names from football context; fix malformed transliterations, but never replace one club/person with a different one.\n"
+        "- Convert known @handles only when they are part of the news; remove source/junk handles and URLs.\n"
+        "- Remove URLs, tracking text, sponsor lines, and useless link prompts.\n"
+        "- Preserve real flag emojis. If country-code letters are used as a flag marker, output the correct flag emoji and remove the letters.\n"
+        "- Remove leftovers such as TR, טי אר, GE, FR, IT, ES, DE when they only duplicate a nearby flag emoji.\n"
+        "- Keep emojis only when useful and already implied by the source.\n"
+        "- Do not write explanations. JSON only.\n"
+        f"{glossary_block}\n"
+        "MAIN_TEXT:\n" + (main_source or "") + "\n\n"
+        "QUOTED_AUTHOR:\n" + (author_source or "") + "\n\n"
+        "QUOTED_TEXT:\n" + (quote_source or "")
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.0, "topP": 0.7, "maxOutputTokens": 900},
+    }
+    last_error: Exception | None = None
+    real_requests_used = 0
+    for index, key in gemini_available_keys_for_operation():
+        if real_requests_used >= 1:
+            break
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
+        )
+        try:
+            with GEMINI_TRANSLATION_SEMAPHORE:
+                real_requests_used += 1
+                data = http_post_json(url, payload, timeout=10, max_attempts=1, respect_retry_after=False)
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            raw = "".join(part.get("text", "") for part in parts).strip()
+            parsed = _extract_json_object(raw)
+            if not parsed:
+                parsed = {"main": raw, "quote": "", "quote_author": ""}
+            main = final_hebrew_polish(str(parsed.get("main", ""))).strip()
+            quote = final_hebrew_polish(str(parsed.get("quote", ""))).strip()
+            quote_author = final_hebrew_polish(str(parsed.get("quote_author", ""))).strip()
+            main = final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, main)))
+            quote = final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, quote))) if quote_source else ""
+            if translation_contradicts_source(main_source + "\n" + quote_source, main + "\n" + quote):
+                raise RuntimeError("Gemini translation contradicted source names")
+            if translation_changes_locked_numbers(main_source + "\n" + quote_source, main + "\n" + quote):
+                raise RuntimeError("Gemini translation changed locked numbers or years")
+            if main or quote:
+                TRANSLATION_CACHE[cache_key] = json.dumps({"main": main, "quote": quote, "quote_author": quote_author}, ensure_ascii=False)
+                GEMINI_KEY_COOLDOWNS.pop(key, None)
+                mark_gemini_available()
+                return main, quote, quote_author
+            raise RuntimeError("Gemini returned empty translation")
+        except Exception as exc:
+            last_error = exc
+            cool_down_gemini_key(key, exc)
+            logging.warning("⚠️ תרגום Gemini יחיד נכשל עם %s; לא מנסה בקשת Gemini נוספת לפוסט הזה כדי לחסוך קרדיטים. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
+            break
+    log_gemini_unavailable(last_error)
+    raise TranslationUnavailable(f"Gemini single translation failed after {real_requests_used} real request(s): {last_error}")
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    """Return publishable translation. Gemini, if used, is exactly one request for main+quote."""
+    include_quote = bool(
+        not is_self_quote(post)
+        and post.quoted_text
+        and (
+            TRANSLATE_QUOTED_POSTS
+            or (
+                TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT
+                and len(clean_before_translation(post.text)) < MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE
+            )
+        )
+    )
+    if GEMINI_API_KEYS:
+        try:
+            main, quote, quote_author = gemini_translate_post_once(post, include_quote)
+            if main or quote:
+                return main, quote, quote_author
+        except Exception as exc:
+            logging.warning("גיבוי ללא Gemini לתרגום אחרי כשל בבקשה יחידה: %s", gemini_error_summary(exc))
+    # Free/no-credit fallback. This keeps the promise: no second Gemini request and no wasted AI filter request.
+    main = fallback_translate_without_gemini(post.text)
+    quote = fallback_translate_without_gemini(post.quoted_text) if include_quote and post.quoted_text else ""
+    quote_author = translate_quoted_author(post.quoted_author) if quote and post.quoted_author else ""
+    return main, quote, quote_author
 
 def send_post(post: Post) -> dict[str, Any]:
     started = time.perf_counter()
@@ -4145,24 +4304,13 @@ def send_post(post: Post) -> dict[str, Any]:
         return timings
 
     translation_started = time.perf_counter()
-    translated = translate_text(post.text)
-    if is_self_quote(post):
-        quoted_translated = ""
-        quoted_author_translated = ""
-    else:
-        force_quote_translation = bool(
-            post.quoted_text
-            and TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT
-            and len(clean_before_translation(post.text)) < MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE
-        )
-        quoted_translated = translate_quoted_text(post.quoted_text, force=force_quote_translation) if post.quoted_text else ""
-        quoted_author_translated = translate_quoted_author(post.quoted_author) if quoted_translated and post.quoted_author else ""
+    translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
     timings["translation_seconds"] = time.perf_counter() - translation_started
 
+    # The post already passed the final local approval gate. If translation is weak/empty,
+    # publish a cleaned fallback instead of spending another Gemini request or silently dropping it.
     if not has_meaningful_text(translated) and not has_meaningful_text(quoted_translated):
-        timings["total_seconds"] = time.perf_counter() - started
-        timings["mode"] = "no_news"
-        return timings
+        translated = untranslated_fallback_text(post.text) or filtered_post_text_preview(post) or "עדכון חדש"
 
     video_started = time.perf_counter()
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
@@ -4389,7 +4537,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     duplicate_event = find_recent_duplicate_event(post, state)
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג כפילות חכמה: אותו אירוע כבר נשלח בשעתיים האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        logging.info("דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-8 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
@@ -4481,12 +4629,8 @@ def main() -> None:
     startup_cycle = True
     skipped_for_shabbat = False
     paused_logged = False
-    last_heartbeat_log_ts = 0.0
     while True:
         cycle_started = time.time()
-        if cycle_started - last_heartbeat_log_ts >= HEARTBEAT_LOG_SECONDS:
-            logging.info("✅ בוט הכדורגל עדיין עובד")
-            last_heartbeat_log_ts = cycle_started
         try:
             control_state = load_control_state()
             if bool(control_state.get("paused", False)):
