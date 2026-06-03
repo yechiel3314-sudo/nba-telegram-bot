@@ -70,13 +70,26 @@ def env_list(name: str, default: list[str] | None = None) -> list[str]:
     # Supports comma/newline/space separated chat IDs from Railway.
     return [item.strip() for item in re.split(r"[,\n\s]+", value) if item.strip()]
 
+def _required_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    raise RuntimeError(f"Missing required Railway variable: {name}")
+
+
+def _first_existing_env(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    raise RuntimeError("Missing required Railway variable. Add one of: " + ", ".join(names))
+
 
 TELEGRAM_BOT_TOKEN = _first_existing_env(
     "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE",
     "NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
 )
 
-# NBA target channel/group id is separate from football.
 TELEGRAM_CHAT_ID = _required_env("NETO_SPORT_NBA_NEWS_TARGET_TELEGRAM_CHAT_ID_PRIVATE")
 TELEGRAM_CHAT_IDS = [TELEGRAM_CHAT_ID]
 
