@@ -48,8 +48,8 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-# Railway variables - keep these names exactly as they already exist in the server.
-# Do not hardcode Telegram tokens in the source code.
+# Telegram secrets are intentionally NOT hardcoded in this file.
+# Set these in Railway -> Variables.
 def required_env_any(*names: str) -> str:
     for name in names:
         value = os.environ.get(name, "").strip()
@@ -66,9 +66,12 @@ def required_env_list_any(*names: str) -> list[str]:
     return values
 
 
-TELEGRAM_BOT_TOKEN = required_env_any("NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE")
+# Same main bot token can be shared by several Neto Sport bots/services.
+TELEGRAM_BOT_TOKEN = required_env_any(
+    "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_API_TOKEN_PRIVATE",
+    "NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE",
+)
 TELEGRAM_CHAT_IDS = required_env_list_any("NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE")
-CONTROL_CHAT_ID = required_env_any("NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE")
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
@@ -85,8 +88,8 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
-GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "8"))
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "2"))
+GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
@@ -153,6 +156,7 @@ ACCOUNT_DISPLAY_NAMES = {
 
 TARGET_LANGUAGE = "he"
 CHECK_EVERY_SECONDS = 5
+HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
@@ -180,7 +184,7 @@ CONTROL_CHAT_ID = required_env_any(
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
-CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "0") == "1"
+CONTROL_SEND_PANEL_ON_STARTUP = True  # שולח כפתורי שליטה חדשים בכל הרצה של הבוט
 CONTROL_CREATE_PANEL_IF_MISSING = os.environ.get("CONTROL_CREATE_PANEL_IF_MISSING", "0") == "1"
 CONTROL_DELETE_WEBHOOK_ON_STARTUP = os.environ.get("CONTROL_DELETE_WEBHOOK_ON_STARTUP", "1") == "1"
 SHABBAT_MODE_ENABLED = True
@@ -3025,7 +3029,7 @@ def log_gemini_unavailable(error: Exception | None) -> None:
     if GEMINI_FAILURE_LOGGED:
         return
     GEMINI_FAILURE_LOGGED = True
-    logging.warning("⚠️ ג'מיני לא זמין כרגע. אם זו מכסה, הפוסט יישלח בגיבוי; אחרת הבוט ינסה שוב בהמשך. סיבה: %s", gemini_error_summary(error))
+    logging.warning("⚠️ ג'מיני לא זמין כרגע. הבוט לא ישלח פוסטים בלי תרגום Gemini תקין. סיבה: %s", gemini_error_summary(error))
 
 
 def mark_gemini_available() -> None:
@@ -3332,31 +3336,9 @@ def translate_text(text: str) -> str:
         logging.error("⛔ ג'מיני לא הצליח בתרגום אחרי עד %s בדיקות / עד %s בקשות אמיתיות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS, GEMINI_MAX_REAL_TRANSLATION_REQUESTS)
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
-    if fallback_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
-
-    if not GEMINI_API_KEYS:
-        logging.error("⛔ אין מפתח ג'מיני מוגדר. הפוסט לא יישלח בלי תרגום ג'מיני.")
-        raise TranslationUnavailable("No Gemini API key configured")
-
-    for source_text in (prepared, cleaned):
-        for provider in (google_translate, mymemory_translate):
-            try:
-                translated = provider(source_text)
-                if latin_ratio(translated) > 0.45:
-                    translated = translate_in_sentences(source_text)
-                polished = final_hebrew_polish(translated)
-                polished = final_visual_cleanup(preserve_original_country_flags(source_text, preserve_original_emojis(source_text, polished)))
-                if polished and latin_ratio(polished) <= 0.30:
-                    TRANSLATION_CACHE[fallback_key] = polished
-                    return polished
-            except Exception:
-                continue
-
-    fallback = final_hebrew_polish(prepared)
-    fallback = final_visual_cleanup(preserve_original_emojis(ai_text or text, fallback))
-    TRANSLATION_CACHE[fallback_key] = fallback
-    return fallback
+    # No free translation fallback by design. Publishing translations must use Gemini only.
+    logging.error("⛔ אין תרגום Gemini תקין. הפוסט לא יישלח ולא יעבור לתרגום חינמי.")
+    raise TranslationUnavailable("Gemini-only translation unavailable")
 
 
 def translate_short_label(text: str) -> str:
@@ -3696,6 +3678,17 @@ OTHER_SPORT_BLOCK_PATTERNS = (
     r"כדורסל|NBA|WNBA|פוטבול אמריקאי|בייסבול|הוקי|טניס|פורמולה|פורמולה 1|UFC|MMA|אגרוף|רוגבי|כדוריד|כדורעף|קריקט|גולף|אופניים|אולימפי|אולימפיאדה",
 )
 
+YOUTH_ACADEMY_BLOCK_PATTERNS = (
+    r"\b(?:academy|youth team|youth sides?|youth football|U-?15|U-?16|U-?17|U-?18|U-?19|U-?20|U-?21|U-?23|under[- ]?(?:15|16|17|18|19|20|21|23)|juvenil|primavera|reserve team|reserves|B team|underage)\b",
+    r"מחלקת נוער|קבוצת נוער|נוער|נערים|נערים א|נערים ב|ילדים|אקדמיה|קבוצת מילואים|מילואים|עד גיל\s*(?:15|16|17|18|19|20|21|23)|U ?(?:15|16|17|18|19|20|21|23)",
+)
+
+
+def is_youth_or_academy_post(post: Post) -> bool:
+    cleaned = post_filter_text(post)
+    return _matches_any(YOUTH_ACADEMY_BLOCK_PATTERNS, cleaned)
+
+
 FOOTBALL_CONTEXT_ALLOW_PATTERNS = (
     r"\b(?:football|soccer|club|manager|head coach|coach|player|goalkeeper|defender|midfielder|winger|striker|forward|transfer|loan|signing|contract|match|squad|injury)\b",
     r"כדורגל|מועדון|מאמן|שחקן|שוער|בלם|מגן|קשר|כנף|חלוץ|העברה|השאלה|חתימה|חוזה|סגל|משחק|פציעה",
@@ -3886,8 +3879,6 @@ def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
 
 
 def should_use_ai_affiliation_fallback(post: Post) -> bool:
-    if not AI_AFFILIATION_FALLBACK_ENABLED:
-        return False
     """Use one Gemini request only for rare name-only football reports.
 
     This is for reports that mention a player/coach name and news mechanics but no club
@@ -3955,13 +3946,12 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
     if not contains_allowed_club_or_israeli_league(post):
-        # Credit-safe default: do not use Gemini to decide relevance.
-        if not AI_AFFILIATION_FALLBACK_ENABLED:
-            return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
         if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
             return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
     if is_other_sport_post(post):
         return False, "other_sport", 0, ["other_sport"]
+    if is_youth_or_academy_post(post):
+        return False, "youth_or_academy", 0, ["youth_or_academy"]
 
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
@@ -4124,12 +4114,9 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "women_or_wnba"
     if is_other_sport_post(post):
         return "other_sport"
+    if is_youth_or_academy_post(post):
+        return "youth_or_academy"
     if not contains_allowed_club_or_israeli_league(post):
-        # Credit-safe default: no Gemini/AI lookup is allowed here.
-        # If AI_AFFILIATION_FALLBACK_ENABLED=1 is manually enabled, this may spend one Gemini
-        # request on name-only borderline posts. Default remains 0 to avoid wasted credits.
-        if not AI_AFFILIATION_FALLBACK_ENABLED:
-            return "not_connected_to_allowed_club"
         if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
             return "not_connected_to_allowed_club"
     if is_link_only_or_details_post(post):
@@ -4143,54 +4130,22 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return importance_reason
     return ""
 
-
 def _extract_json_object(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
     try:
-        value = json.loads(raw)
-        return value if isinstance(value, dict) else {}
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
     except Exception:
         pass
     match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
     if not match:
         return {}
     try:
-        value = json.loads(match.group(0))
-        return value if isinstance(value, dict) else {}
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
-
-
-def fallback_translate_without_gemini(text: str) -> str:
-    """Network/free fallback that never calls Gemini."""
-    ai_text = clean_for_ai_translation(text)
-    cleaned = clean_before_translation(text)
-    if not ai_text and not cleaned:
-        return ""
-    prepared = apply_phrase_replacements(cleaned, FOOTBALL_TERMS)
-    prepared = apply_phrase_replacements(prepared, TEAM_REPLACEMENTS)
-    prepared = apply_phrase_replacements(prepared, PLAYER_REPLACEMENTS)
-    prepared = apply_phrase_replacements(prepared, HANDLE_REPLACEMENTS)
-    fallback_key = hashlib.sha256(f"fallback-no-gemini\n{prepared}".encode("utf-8")).hexdigest()
-    if fallback_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
-    for provider in (google_translate, mymemory_translate):
-        try:
-            translated = provider(prepared or cleaned)
-            if latin_ratio(translated) > 0.45:
-                translated = translate_in_sentences(prepared or cleaned)
-            polished = final_hebrew_polish(translated)
-            polished = final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, polished)))
-            if polished:
-                TRANSLATION_CACHE[fallback_key] = polished
-                return polished
-        except Exception:
-            continue
-    fallback = final_hebrew_polish(prepared or cleaned)
-    fallback = final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, fallback)))
-    TRANSLATION_CACHE[fallback_key] = fallback
-    return fallback
 
 
 def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
@@ -4205,13 +4160,13 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     if not main_source and not quote_source:
         return "", "", ""
     cache_material = json.dumps({"m": main_source, "q": quote_source, "a": author_source}, ensure_ascii=False, sort_keys=True)
-    cache_key = "combined-v2:" + hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+    cache_key = "combined-gemini-only-v3:" + hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
     if cache_key in TRANSLATION_CACHE:
         cached = _extract_json_object(TRANSLATION_CACHE[cache_key])
         if cached:
             return (
                 final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, str(cached.get("main", ""))))),
-                final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, str(cached.get("quote", ""))))),
+                final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, str(cached.get("quote", ""))))) if quote_source else "",
                 final_hebrew_polish(str(cached.get("quote_author", ""))).strip(),
             )
     glossary_text = "\n".join(x for x in [relevant_name_glossary(main_source), relevant_name_glossary(quote_source), relevant_name_glossary(author_source)] if x)
@@ -4224,7 +4179,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- Hebrew only, natural Telegram sports-news Hebrew.\n"
         "- Do not add facts, context, clubs, years, dates, injuries, transfer status, or words that are not directly in the source.\n"
         "- Preserve every factual item exactly: player/coach names, clubs, national teams, years, dates, numbers, scores, fees, and status.\n"
-        "- If a name is uncertain, keep the clean original Latin name instead of inventing or faking Hebrew.\n"
+        "- If a name is uncertain, keep the clean original Latin name instead of inventing Hebrew.\n"
         "- Verify names from football context; fix malformed transliterations, but never replace one club/person with a different one.\n"
         "- Convert known @handles only when they are part of the news; remove source/junk handles and URLs.\n"
         "- Remove URLs, tracking text, sponsor lines, and useless link prompts.\n"
@@ -4284,7 +4239,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
 
 
 def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    """Return publishable translation. Gemini, if used, is exactly one request for main+quote."""
+    """Return publishable translation. Gemini only, exactly one request for main+quote."""
     include_quote = bool(
         not is_self_quote(post)
         and post.quoted_text
@@ -4296,18 +4251,11 @@ def translate_post_for_send(post: Post) -> tuple[str, str, str]:
             )
         )
     )
-    if GEMINI_API_KEYS:
-        try:
-            main, quote, quote_author = gemini_translate_post_once(post, include_quote)
-            if main or quote:
-                return main, quote, quote_author
-        except Exception as exc:
-            logging.warning("גיבוי ללא Gemini לתרגום אחרי כשל בבקשה יחידה: %s", gemini_error_summary(exc))
-    # Free/no-credit fallback. This keeps the promise: no second Gemini request and no wasted AI filter request.
-    main = fallback_translate_without_gemini(post.text)
-    quote = fallback_translate_without_gemini(post.quoted_text) if include_quote and post.quoted_text else ""
-    quote_author = translate_quoted_author(post.quoted_author) if quote and post.quoted_author else ""
+    main, quote, quote_author = gemini_translate_post_once(post, include_quote)
+    if not (has_meaningful_text(main) or has_meaningful_text(quote)):
+        raise TranslationUnavailable("Gemini returned no meaningful translation")
     return main, quote, quote_author
+
 
 def send_post(post: Post) -> dict[str, Any]:
     started = time.perf_counter()
@@ -4329,13 +4277,20 @@ def send_post(post: Post) -> dict[str, Any]:
         return timings
 
     translation_started = time.perf_counter()
-    translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
+    try:
+        translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
+    except TranslationUnavailable as exc:
+        timings["translation_seconds"] = time.perf_counter() - translation_started
+        timings["total_seconds"] = time.perf_counter() - started
+        timings["mode"] = "translation_unavailable"
+        logging.warning(
+            "⏳ פוסט עבר סינון אבל לא נשלח כי אין תרגום Gemini תקין בבקשה אחת: @%s %s | %s",
+            post.username,
+            post.link,
+            exc,
+        )
+        return timings
     timings["translation_seconds"] = time.perf_counter() - translation_started
-
-    # The post already passed the final local approval gate. If translation is weak/empty,
-    # publish a cleaned fallback instead of spending another Gemini request or silently dropping it.
-    if not has_meaningful_text(translated) and not has_meaningful_text(quoted_translated):
-        translated = untranslated_fallback_text(post.text) or filtered_post_text_preview(post) or "עדכון חדש"
 
     video_started = time.perf_counter()
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
@@ -4468,9 +4423,9 @@ def save_state(state: dict[str, list[str]]) -> None:
 
 def validate_settings() -> None:
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
-        raise ValueError("Missing Telegram bot token. Set NETO_SPORT_FOOTBALL_NEWS_BOT_TELEGRAM_API_TOKEN_PRIVATE in Railway Variables.")
+        raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_IDS:
-        raise ValueError("Missing Telegram target chat IDs. Set NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE in Railway Variables.")
+        raise ValueError("Put at least one Telegram group chat ID in TELEGRAM_CHAT_IDS")
     if not X_ACCOUNTS:
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
@@ -4562,7 +4517,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     duplicate_event = find_recent_duplicate_event(post, state)
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-8 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        logging.info("דילוג כפילות חכמה: אותו אירוע כבר נשלח בשעתיים האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
@@ -4635,7 +4590,7 @@ def main() -> None:
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
-    print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - using free fallback"), flush=True)
+    print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
     if CONTROL_CHAT_ID:
         Thread(target=control_loop, daemon=True).start()
 
@@ -4654,8 +4609,12 @@ def main() -> None:
     startup_cycle = True
     skipped_for_shabbat = False
     paused_logged = False
+    last_heartbeat_log_ts = 0.0
     while True:
         cycle_started = time.time()
+        if cycle_started - last_heartbeat_log_ts >= HEARTBEAT_LOG_SECONDS:
+            logging.info("✅ בוט הכדורגל עדיין עובד")
+            last_heartbeat_log_ts = cycle_started
         try:
             control_state = load_control_state()
             if bool(control_state.get("paused", False)):
