@@ -130,7 +130,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "David_Ornstein": "דיוויד אורנשטיין",
     "DiMarzio": "ג'אנלוקה די מארציו",
     "JacobsBen": "בן ג'ייקובס",
-    "NicoSchira": "ניקולה סקירה",
+    "NicoSchira": "ניקולו שירה",
     "lauriewhitwell": "לורי וויטוול - מנצ'סטר יונייטד",
     "SamLee": "סם לי - מנצ'סטר סיטי",
     "_pauljoyce": "פול ג'ויס - ליברפול",
