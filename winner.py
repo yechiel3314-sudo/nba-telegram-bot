@@ -3972,6 +3972,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
     if not contains_allowed_club_or_israeli_league(post):
+        logging.info(f"📋 פוסט של {post.username} נפסל בסינון האיכות: לא קשור לקבוצה מותרת.")
         if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
             return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
     if is_other_sport_post(post):
@@ -4671,6 +4672,7 @@ def main() -> None:
                 continue
 
             resume_min_ts = float(control_state.get("resume_min_ts", 0.0) or 0.0)
+            print("=== הבוט מתחיל סבב סריקה חדש בשרת ===", flush=True)
             sent = run_once(state, startup_cycle=startup_cycle, min_published_ts=resume_min_ts)
             startup_cycle = False
             save_state(state)
