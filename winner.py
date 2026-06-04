@@ -1398,7 +1398,7 @@ def current_max_parallel_post_sends() -> int:
 
 
 def fetch_all_accounts() -> dict[str, list[Post]]:
-    results: dict[str, list[Post]] = {username: [] for username in X_ACCOUNTS}
+    results: dict[str, list[Post]] = {username: [] for username in X_}
     workers = min(current_max_parallel_account_checks(), max(1, len(X_ACCOUNTS)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_map = {executor.submit(fetch_posts_safely, username): username for username in ordered_accounts()}
