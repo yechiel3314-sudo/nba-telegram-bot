@@ -2048,7 +2048,9 @@ def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
     LOGGED_SKIP_KEYS.add(key)
     if len(LOGGED_SKIP_KEYS) > 2000:
         LOGGED_SKIP_KEYS.clear()
-    logging.info(message, *args)
+    age_seconds = max(0.0, time.time() - post.published_ts) if getattr(post, "published_ts", 0.0) else 0.0
+    source_name = getattr(post, "source_name", "unknown") or "unknown"
+    logging.info(message + " | מקור RSS: %s | גיל: %.0fs", *args, source_name, age_seconds)
 
 NEWS_DUP_STOPWORDS = {
     "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "from", "as", "by", "at", "is", "are", "was", "were", "be", "been", "being",
@@ -3277,6 +3279,7 @@ def transliterate_latin_names(text: str) -> str:
 def final_hebrew_polish(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
+    text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
     text = convert_hashtags_to_text(text)
@@ -3298,6 +3301,8 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_untranslated_tail_tokens(text)
     text = remove_junk_tail_lines(text)
     text = remove_israel_time_additions(text)
+    text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
+    text = re.sub(r"(?im)^בלעדי\s*[-:–—]\s*", "בלעדי: ", text)
     text = final_visual_cleanup(text)
     return text.strip()
 
@@ -4366,7 +4371,9 @@ def send_post(post: Post) -> dict[str, Any]:
         timings["translation_seconds"] = time.perf_counter() - translation_started
         timings["total_seconds"] = time.perf_counter() - started
         timings["mode"] = "translation_unavailable"
-        logging.warning(
+        log_skip_once(
+            "translation_unavailable",
+            post,
             "⏳ פוסט עבר סינון אבל לא נשלח כי אין תרגום Gemini תקין בבקשה אחת: @%s %s | %s",
             post.username,
             post.link,
@@ -4647,9 +4654,11 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 seen.update(post_ids)
                 state[username] = list(seen)[-500:]
                 sent += 1
-                logging.info("✅ נשלח פוסט מ-@%s | מקור: %s", username, result.get("source_name", "unknown"))
                 logging.info(
-                    "זמנים: גיל %.0fs | מציאה %.2fs | בינה %.2fs | וידיאו %.2fs | הכנה %.2fs | שליחה %.2fs | סה״כ %.2fs",
+                    "✅ נשלח פוסט מ-@%s | מצב: %s | מקור RSS: %s | גיל %.0fs | מציאה %.2fs | תרגום/Gemini %.2fs | וידיאו %.2fs | הכנה %.2fs | שליחה %.2fs | סה״כ %.2fs",
+                    username,
+                    result.get("mode", "unknown"),
+                    result.get("source_name", "unknown"),
                     result.get("post_age_seconds", 0.0),
                     result.get("found_seconds", 0.0),
                     result.get("translation_seconds", 0.0),
@@ -4662,9 +4671,19 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 seen = set(state.get(username, []))
                 seen.update(post_ids)
                 state[username] = list(seen)[-500:]
-                logging.info("דילוג: ג'מיני זיהה שאין עדכון חדשותי, הפוסט סומן כנראה: %s", link)
+                logging.info(
+                    "דילוג: ג'מיני זיהה שאין עדכון חדשותי, הפוסט סומן כנראה: %s | מקור RSS: %s",
+                    link,
+                    result.get("source_name", "unknown"),
+                )
             else:
-                logging.warning("⏳ פוסט מ-@%s לא נשלח ולכן לא סומן כנראה, יישאר לניסיון הבא: %s", username, link)
+                logging.warning(
+                    "⏳ פוסט מ-@%s לא נשלח ולכן לא סומן כנראה, יישאר לניסיון הבא: %s | מקור RSS: %s | מצב: %s",
+                    username,
+                    link,
+                    result.get("source_name", "unknown"),
+                    result.get("mode", "unknown"),
+                )
     finally:
         send_executor.shutdown(wait=True, cancel_futures=False)
 
@@ -4695,12 +4714,8 @@ def main() -> None:
     startup_cycle = True
     skipped_for_shabbat = False
     paused_logged = False
-    last_heartbeat_log_ts = 0.0
     while True:
         cycle_started = time.time()
-        if cycle_started - last_heartbeat_log_ts >= HEARTBEAT_LOG_SECONDS:
-            logging.info("✅ בוט הכדורגל עדיין עובד")
-            last_heartbeat_log_ts = cycle_started
         try:
             control_state = load_control_state()
             if bool(control_state.get("paused", False)):
@@ -4731,7 +4746,6 @@ def main() -> None:
                 continue
 
             resume_min_ts = float(control_state.get("resume_min_ts", 0.0) or 0.0)
-            print("=== הבוט מתחיל סבב סריקה חדש בשרת ===", flush=True)
             sent = run_once(state, startup_cycle=startup_cycle, min_published_ts=resume_min_ts)
             startup_cycle = False
             save_state(state)
