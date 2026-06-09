@@ -6,13 +6,13 @@ Run:
   python3 football_x_to_telegram.py
 
 What this version does:
-- Scans all accounts in parallel every 30 seconds.
+- Scans all accounts in parallel with a server-credit-saving cadence.
 - Checks several public RSS mirrors for each account and merges the results.
 - Sends photos together with the Telegram message caption.
-- Never sends videos as files. If a post has video, it adds a video link line.
+- Does not upload videos by default, to avoid extra video lookup requests.
 - Removes all links from the post body. Only the final X post link is kept.
 - Uses Gemini translation if you add GEMINI_API_KEY or GEMINI_API_KEYS.
-- Falls back to free Google Translate + MyMemory if Gemini is unavailable.
+- If Gemini translation is unavailable, the post is not sent.
 
 Important:
 - ChatGPT Plus does not include API usage for a server bot.
@@ -94,7 +94,7 @@ GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8")
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 TRANSLATE_QUOTED_POSTS = os.environ.get("TRANSLATE_QUOTED_POSTS", "0") == "1"
-TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "1") != "0"
+TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "0") != "0"
 MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE", "45"))
 # How many keys may be checked locally for cooldown/availability. This is free.
 GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", "8"))
@@ -155,14 +155,14 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 5
+CHECK_EVERY_SECONDS = 15
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
-FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
+FEED_COLLECTION_TIMEOUT_SECONDS = 2.0
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 5
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
 MAX_POST_AGE_SECONDS = 30 * 60
@@ -198,7 +198,7 @@ SHABBAT_CACHE_FILE = "football_shabbat_times_cache.json"
 MAX_PARALLEL_POST_SENDS = 12
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
-SEND_VIDEO_FILES = True
+SEND_VIDEO_FILES = os.environ.get("SEND_VIDEO_FILES", "0") == "1"
 STATE_FILE = "football_x_to_telegram_state.json"
 AI_DECISION_CACHE_FILE = os.environ.get("AI_DECISION_CACHE_FILE", "football_ai_decision_cache.json")
 TRANSLATION_CACHE_FILE = "football_translation_cache.json"
@@ -222,6 +222,7 @@ FEED_TEMPLATES = [
     "https://nitter.tiekoetter.com/{username}/rss",
     "https://nitter.oksocial.net/{username}/rss",
 ]
+MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m3u8", ".webm", ".avi", ".mkv")
@@ -310,6 +311,9 @@ def normalize_country_flags(text: str) -> str:
 
     for code, flag in COUNTRY_CODE_FLAGS.items():
         first, second = re.escape(code[0]), re.escape(code[1])
+        first_regional = chr(0x1F1E6 + ord(code[0]) - ord("A"))
+        second_regional = chr(0x1F1E6 + ord(code[1]) - ord("A"))
+        text = re.sub(rf"{re.escape(first_regional)}\s+{re.escape(second_regional)}", flag, text)
         text = re.sub(
             rf"(?<![A-Za-z]){invisible}{first}{invisible}{separator}{invisible}{second}{invisible}(?![A-Za-z])",
             flag,
@@ -326,6 +330,7 @@ def normalize_country_flags(text: str) -> str:
             flag,
             text,
         )
+        text = re.sub(rf"{re.escape(flag)}\s*([🚨⚠️🔴🟡🟢]+)\s*{re.escape(flag)}", rf"{flag} \1", text)
         text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
 
     for code, patterns in COUNTRY_FLAG_ALIAS_PATTERNS.items():
@@ -393,6 +398,16 @@ PODCAST_BLOCK_PATTERNS = (
     r"on\s+the\s+pod(?:cast)?\b",
     r"new\s+pod(?:cast)?\b",
     r"pod(?:cast)?\s+episode",
+    r"\bin\s+case\s+you\s+missed\b",
+    r"\bICYMI\b",
+    r"\bexclusive\s+with\b",
+    r"\binterview\s+with\b",
+    r"\bfull\s+interview\b",
+    r"\bahead\s+of\s+(?:the\s+)?(?:world\s+cup|euro|euros|copa\s+america|afcon)\s+campaign\b",
+    r"\blive\s+(?:show|stream|broadcast|watchalong)\b",
+    r"\bwatch\s+live\b",
+    r"\bbroadcast\b",
+    r"\bstreaming\b",
 )
 
 PODCAST_DOMAINS = (
@@ -421,7 +436,7 @@ HANDLE_REPLACEMENTS = {
     "David_Ornstein": "דיוויד אורנשטיין",
     "DiMarzio": "ג'אנלוקה די מארציו",
     "JacobsBen": "בן ג'ייקובס",
-    "NicoSchira": "ניקולה סקירה",
+    "NicoSchira": "ניקולו שירה",
     "lauriewhitwell": "לורי וויטוול",
     "SamLee": "סם לי",
     "_pauljoyce": "פול ג'ויס",
@@ -640,6 +655,8 @@ TEAM_REPLACEMENTS = {
     "Atalanta": "אטאלנטה",
     "Fiorentina": "פיורנטינה",
     "Torino": "טורינו",
+    "Como": "קומו",
+    "COMO": "קומו",
     "Bayern Munich": "באיירן מינכן",
     "Bayern": "באיירן",
     "Borussia Dortmund": "בורוסיה דורטמונד",
@@ -818,10 +835,14 @@ HEBREW_FINAL_FIXES = {
     "לקיפה": "לאקיפ",
     "ל'אקיפה": "לאקיפ",
     "ל'אקיפ": "לאקיפ",
-    "ניקולה שירה": "ניקולה סקירה",
-    "ניקולו שירה": "ניקולה סקירה",
-    "ניקולו סקירה": "ניקולה סקירה",
-    "ניקולבה סקירה": "ניקולה סקירה",
+    "ניקולה שירה": "ניקולו שירה",
+    "ניקולו שירה": "ניקולו שירה",
+    "ניקולו סקירה": "ניקולו שירה",
+    "ניקולה סקירה": "ניקולו שירה",
+    "ניקולבה סקירה": "ניקולו שירה",
+    "ק.ו.מ.": "קומו",
+    "ק ו מ": "קומו",
+    "ק. ו. מ.": "קומו",
     "ג'וליאן אלווארז": "חוליאן אלבארס",
     "ג׳וליאן אלווארז": "חוליאן אלבארס",
     "ג'וליאן אלוורז": "חוליאן אלבארס",
@@ -1340,8 +1361,9 @@ def fetch_feed(username: str, template: str) -> list[Post]:
 
 def fetch_posts(username: str) -> list[Post]:
     all_posts: dict[str, Post] = {}
-    executor = ThreadPoolExecutor(max_workers=MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)
-    futures = [executor.submit(fetch_feed, username, template) for template in FEED_TEMPLATES]
+    feed_templates = FEED_TEMPLATES[: max(1, min(len(FEED_TEMPLATES), MAX_FEED_TEMPLATES_PER_ACCOUNT))]
+    executor = ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT, len(feed_templates)))
+    futures = [executor.submit(fetch_feed, username, template) for template in feed_templates]
     try:
         for future in as_completed(futures, timeout=FEED_COLLECTION_TIMEOUT_SECONDS):
             try:
@@ -1968,15 +1990,12 @@ RECENT_NEWS_WINDOW_SECONDS = 8 * 60 * 60
 
 SOURCE_PRIORITY = {
     "FabrizioRomano": 100,
-    "ShamsCharania": 100,
     "David_Ornstein": 95,
     "DiMarzio": 90,
     "JacobsBen": 80,
-    "NicoSchira": 75,
-    "TheDunkCentral": 70,
-    "NBACentral": 70,
-    "LegionHoops": 65,
-    "UnderdogNBA": 60,
+    "ffpolo": 70,
+    "AranchaMOBILE": 70,
+    "NicoSchira": 10,
 }
 
 WOMEN_SPORT_BLOCK_PATTERNS = (
@@ -2012,6 +2031,25 @@ WOMEN_SPORT_BLOCK_PATTERNS = (
     r"WNBA",
 )
 
+MEDICAL_STAFF_BLOCK_PATTERNS = (
+    r"\b(?:appoint|appoints?|appointed|hires?|hired|names?|named|set to appoint|will appoint|joins?|joining|new|replacement for|replaces?)\b.{0,120}\b(?:doctor|club doctor|team doctor|physio|physios|physiotherapist|physiotherapists|medical staff|head of medical|medical department|medical team|chief medical officer|sports medicine)\b",
+    r"\b(?:doctor|club doctor|team doctor|physio|physios|physiotherapist|physiotherapists|medical staff|head of medical|medical department|medical team|chief medical officer|sports medicine)\b.{0,120}\b(?:appoints?|appointed|hires?|hired|joins?|joining|new|replacement|replaces?|leaves?|left)\b",
+    r"(?:ממנה|מינתה|מונה|ימונה|מינוי|מצרפת|מצטרף|מצטרפים|חדש|חדשה|מחליף|מחליפה|עזב|עזבה).{0,120}(?:דוקטור|רופא(?:\s+המועדון|\s+הקבוצה)?|צוות\s+רפואי|מחלקה\s+רפואית|פיזיותרפיסט(?:ים)?|פיזיו(?:תרפיסטים)?|ראש\s+המערך\s+הרפואי|מנהל\s+רפואי)",
+    r"(?:דוקטור|רופא(?:\s+המועדון|\s+הקבוצה)?|צוות\s+רפואי|מחלקה\s+רפואית|פיזיותרפיסט(?:ים)?|פיזיו(?:תרפיסטים)?|ראש\s+המערך\s+הרפואי|מנהל\s+רפואי).{0,120}(?:ממנה|מינתה|מונה|ימונה|מינוי|מצרפת|מצטרף|מצטרפים|חדש|חדשה|מחליף|מחליפה|עזב|עזבה)",
+)
+
+LOGGED_SKIP_KEYS: set[str] = set()
+
+
+def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
+    key = hashlib.sha1(f"{reason}|{post.link or post.post_id}".encode("utf-8", errors="ignore")).hexdigest()
+    if key in LOGGED_SKIP_KEYS:
+        return
+    LOGGED_SKIP_KEYS.add(key)
+    if len(LOGGED_SKIP_KEYS) > 2000:
+        LOGGED_SKIP_KEYS.clear()
+    logging.info(message, *args)
+
 NEWS_DUP_STOPWORDS = {
     "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "from", "as", "by", "at", "is", "are", "was", "were", "be", "been", "being",
     "this", "that", "these", "those", "it", "he", "she", "they", "we", "you", "his", "her", "their", "our", "your",
@@ -2041,9 +2079,13 @@ def strip_country_code_leftovers_near_flags(text: str) -> str:
         return text
     for code, flag in COUNTRY_CODE_FLAGS.items():
         first, second = re.escape(code[0]), re.escape(code[1])
+        first_regional = chr(0x1F1E6 + ord(code[0]) - ord("A"))
+        second_regional = chr(0x1F1E6 + ord(code[1]) - ord("A"))
+        text = re.sub(rf"{re.escape(first_regional)}\s+{re.escape(second_regional)}", flag, text)
         code_pattern = rf"{invisible}{first}{invisible}{separator}{invisible}{second}{invisible}"
         text = re.sub(rf"(?<![A-Za-z]){code_pattern}\s*{re.escape(flag)}", flag, text)
         text = re.sub(rf"{re.escape(flag)}\s*{code_pattern}(?![A-Za-z])", flag, text)
+        text = re.sub(rf"{re.escape(flag)}\s*([🚨⚠️🔴🟡🟢]+)\s*{re.escape(flag)}", rf"{flag} \1", text)
         text = re.sub(rf"{re.escape(flag)}(?:\s*{re.escape(flag)})+", flag, text)
 
     # Hebrew phonetic leftovers for common two-letter country codes after translation.
@@ -2084,6 +2126,12 @@ def is_women_or_wnba_post(post: Post) -> bool:
     raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     cleaned = remove_external_links(raw_text)
     return any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in WOMEN_SPORT_BLOCK_PATTERNS)
+
+
+def is_medical_staff_post(post: Post) -> bool:
+    raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = remove_external_links(raw_text)
+    return any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in MEDICAL_STAFF_BLOCK_PATTERNS)
 
 
 def _news_duplicate_clean_text(post: Post) -> str:
@@ -2145,10 +2193,15 @@ def _event_similarity(current: dict[str, Any], previous: dict[str, Any]) -> floa
     current_actions = set(current.get("actions", []))
     previous_actions = set(previous.get("actions", []))
     action_overlap = len(current_actions & previous_actions)
+    current_numbers = {token for token in current_tokens if re.fullmatch(r"\d+", token)}
+    previous_numbers = {token for token in previous_tokens if re.fullmatch(r"\d+", token)}
+    number_overlap = len(current_numbers & previous_numbers)
     sequence_score = SequenceMatcher(None, " ".join(sorted(current_tokens)), " ".join(sorted(previous_tokens))).ratio()
     score = max(token_jaccard, sequence_score * 0.75)
-    if entity_overlap >= 2 and (action_overlap >= 1 or token_jaccard >= 0.28):
+    if entity_overlap >= 2 and (action_overlap >= 1 or number_overlap >= 1 or token_jaccard >= 0.24):
         score = max(score, 0.82)
+    if entity_overlap >= 2 and number_overlap >= 1 and token_jaccard >= 0.16:
+        score = max(score, 0.86)
     elif entity_overlap >= 3 and token_jaccard >= 0.22:
         score = max(score, 0.78)
     return score
@@ -2173,7 +2226,7 @@ def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, 
         previous = item.get("signature", {}) if isinstance(item, dict) else {}
         if not isinstance(previous, dict):
             continue
-        if _event_similarity(current, previous) >= 0.78:
+        if _event_similarity(current, previous) >= 0.74:
             return item
     return None
 
@@ -2206,7 +2259,7 @@ def sort_candidate_posts_for_priority(candidates: list[tuple[str, Post, float]])
 # ====== SMART AI DUPLICATE CHECK ======
 # The cheap token/entity check runs first. Gemini is used only for borderline cases,
 # and only for posts that already passed all filters and are about to be sent.
-ENABLE_AI_DUPLICATE_CHECK = os.environ.get("ENABLE_AI_DUPLICATE_CHECK", "1") != "0"
+ENABLE_AI_DUPLICATE_CHECK = os.environ.get("ENABLE_AI_DUPLICATE_CHECK", "0") != "0"
 AI_DUPLICATE_MIN_SIMILARITY = float(os.environ.get("AI_DUPLICATE_MIN_SIMILARITY", "0.52"))
 AI_DUPLICATE_AUTO_SKIP_SIMILARITY = float(os.environ.get("AI_DUPLICATE_AUTO_SKIP_SIMILARITY", "0.90"))
 AI_DUPLICATE_ADVANCED_SOURCES = {"FabrizioRomano", "David_Ornstein", "ShamsCharania"}
@@ -2531,7 +2584,7 @@ def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> d
 # It solves the "many accounts posted the same thing at the same second" problem:
 # candidates from the same run are clustered, then either merged into one smart update
 # or kept separate if Gemini says one of them is a real advancement.
-ENABLE_AI_PARALLEL_MERGE = os.environ.get("ENABLE_AI_PARALLEL_MERGE", "1") != "0"
+ENABLE_AI_PARALLEL_MERGE = os.environ.get("ENABLE_AI_PARALLEL_MERGE", "0") != "0"
 PARALLEL_MERGE_WINDOW_SECONDS = int(os.environ.get("PARALLEL_MERGE_WINDOW_SECONDS", "180"))
 PARALLEL_MERGE_MIN_SIMILARITY = float(os.environ.get("PARALLEL_MERGE_MIN_SIMILARITY", "0.52"))
 PARALLEL_MERGE_AUTO_SIMILARITY = float(os.environ.get("PARALLEL_MERGE_AUTO_SIMILARITY", "0.86"))
@@ -3316,7 +3369,7 @@ def translate_text(text: str) -> str:
     fallback_key = hashlib.sha256(f"fallback\n{prepared}".encode("utf-8")).hexdigest()
     if GEMINI_API_KEYS and gemini_key in TRANSLATION_CACHE:
         return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key])))
-    if not GEMINI_API_KEYS and fallback_key in TRANSLATION_CACHE:
+    if False and fallback_key in TRANSLATION_CACHE:
         return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
 
     if GEMINI_API_KEYS and ai_text:
@@ -3362,8 +3415,7 @@ def translate_text(text: str) -> str:
         logging.error("⛔ ג'מיני לא הצליח בתרגום אחרי עד %s בדיקות / עד %s בקשות אמיתיות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS, GEMINI_MAX_REAL_TRANSLATION_REQUESTS)
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
-    # No free translation fallback by design. Publishing translations must use Gemini only.
-    logging.error("⛔ אין תרגום Gemini תקין. הפוסט לא יישלח ולא יעבור לתרגום חינמי.")
+    logging.error("No valid Gemini translation. Post will not be sent.")
     raise TranslationUnavailable("Gemini-only translation unavailable")
 
 
@@ -3972,7 +4024,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
     if not contains_allowed_club_or_israeli_league(post):
-        logging.info(f"📋 פוסט של {post.username} נפסל בסינון האיכות: לא קשור לקבוצה מותרת.")
+        logging.debug("פוסט של %s נפסל בסינון האיכות: לא קשור לקבוצה מותרת.", post.username)
         if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
             return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
     if is_other_sport_post(post):
@@ -4139,6 +4191,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "old_post"
     if is_women_or_wnba_post(post):
         return "women_or_wnba"
+    if is_medical_staff_post(post):
+        return "medical_staff"
     if is_other_sport_post(post):
         return "other_sport"
     if is_youth_or_academy_post(post):
@@ -4266,7 +4320,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
 
 
 def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    """Return publishable translation. Gemini only, exactly one request for main+quote."""
+    """Return publishable translation. If Gemini is unavailable, do not send."""
     include_quote = bool(
         not is_self_quote(post)
         and post.quoted_text
@@ -4294,7 +4348,9 @@ def send_post(post: Post) -> dict[str, Any]:
     if block_reason:
         timings["total_seconds"] = time.perf_counter() - started
         timings["mode"] = f"pre_send_blocked:{block_reason}"
-        logging.info(
+        log_skip_once(
+            "pre_send:" + block_reason,
+            post,
             "דילוג לפני בינה/וידיאו: %s מ-@%s לא נשלח ולא בוצעה בדיקת וידיאו/Gemini: %s | %s",
             block_reason,
             post.username,
@@ -4510,41 +4566,42 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 for post in reversed(posts_to_consider):
                     if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג: הבוט הופעל מחדש, ופוסט ישן מ-10 דקות לא נשלח: %s", post.link)
                         continue
                     if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
                         continue
                     if any(post_id in queued_ids for post_id in post.dedupe_ids):
-                        logging.info("דילוג: כפילות באותו סבב מ-@%s לא נשלחה: %s", username, post.link)
+                        log_skip_once("queued_duplicate", post, "דילוג: כפילות באותו סבב מ-@%s לא נשלחה: %s", username, post.link)
                         continue
                     if is_women_or_wnba_post(post):
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן: נשים/WNBA מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        log_skip_once("women_or_wnba", post, "דילוג מסנן: נשים/WNBA מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_medical_staff_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("medical_staff", post, "דילוג מסנן: צוות רפואי/דוקטור/פיזיותרפיסט מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_link_only_or_details_post(post):
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן: קישור/פרטים בלי דיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        log_skip_once("link_only", post, "דילוג מסנן: קישור/פרטים בלי דיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_podcast_or_longform_post(post):
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן: פודקאסט/תוכן ארוך מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        log_skip_once("podcast_or_longform", post, "דילוג מסנן: פודקאסט/תוכן ארוך מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_non_news_social_post(post):
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן: פוסט לא חדשותי/סטטיסטיקה בלבד מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
-                        logging.info("דילוג: פוסט חברתי/אווירה בלי דיווח חדשותי מ-@%s לא נשלח: %s", username, post.link)
+                        log_skip_once("non_news_social", post, "דילוג מסנן: פוסט לא חדשותי/סטטיסטיקה בלבד מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     importance_reason = football_importance_block_reason(post)
                     if importance_reason:
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג מסנן חשיבות: %s מ-@%s לא נשלח: %s | טקסט: %s", importance_reason, username, post.link, filtered_post_text_preview(post))
+                        log_skip_once("importance:" + importance_reason, post, "דילוג מסנן חשיבות: %s מ-@%s לא נשלח: %s | טקסט: %s", importance_reason, username, post.link, filtered_post_text_preview(post))
                         continue
                     duplicate_event = find_recent_duplicate_event(post, state)
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
-                        logging.info("דילוג כפילות חכמה: אותו אירוע כבר נשלח בשעתיים האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח בשעתיים האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
@@ -4562,7 +4619,9 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             final_block_reason = pre_send_final_local_block_reason(post)
             if final_block_reason:
                 mark_candidate_seen(state, candidate)
-                logging.info(
+                log_skip_once(
+                    "final:" + final_block_reason,
+                    post,
                     "דילוג סופי לפני שליחה: %s מ-@%s לא נשלח, לפני Gemini/וידיאו: %s | %s",
                     final_block_reason,
                     username,
@@ -4573,7 +4632,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             duplicate_event = find_recent_duplicate_event_ai_aware(post, state)
             if duplicate_event:
                 mark_candidate_seen(state, candidate)
-                logging.info("דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
+                log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
                 continue
             remember_recent_news_event(post, state)
             send_futures.append(send_executor.submit(send_task, candidate))
