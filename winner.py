@@ -207,6 +207,7 @@ SIGNATURE_LINK = "https://t.me/neto_sport"
 SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
+    "https://nitter.net/{username}/rss",
     "https://rsshub.app/twitter/user/{username}",
     "https://rsshub.rssforever.com/twitter/user/{username}",
     "https://xcancel.com/{username}/rss",
@@ -216,7 +217,6 @@ FEED_TEMPLATES = [
     "https://nitter.dashy.a3x.dn.nyx.im/{username}/rss",
     "https://nitter.pek.li/{username}/rss",
     "https://nitter.aishiteiru.moe/{username}/rss",
-    "https://nitter.net/{username}/rss",
     "https://nitter.poast.org/{username}/rss",
     "https://nitter.privacydev.net/{username}/rss",
     "https://nitter.tiekoetter.com/{username}/rss",
