@@ -160,9 +160,9 @@ HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 2
-FEED_COLLECTION_TIMEOUT_SECONDS = 2.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 5
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
 MAX_POST_AGE_SECONDS = 30 * 60
@@ -175,6 +175,7 @@ NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 16
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
+SEND_FABRIZIO_LAST_POST_ON_STARTUP = os.environ.get("SEND_FABRIZIO_LAST_POST_ON_STARTUP", "1") == "1"
 SEND_STARTUP_STATUS_MESSAGE = False
 CONTROL_CHAT_ID = required_env_any(
     "NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE",
@@ -222,7 +223,8 @@ FEED_TEMPLATES = [
     "https://nitter.tiekoetter.com/{username}/rss",
     "https://nitter.oksocial.net/{username}/rss",
 ]
-MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
+MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "0"))
+LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m3u8", ".webm", ".avi", ".mkv")
@@ -1359,26 +1361,64 @@ def fetch_feed(username: str, template: str) -> list[Post]:
     return parse_posts(username, http_get_feed(url), feed_source_name(template))
 
 
+def active_feed_templates() -> list[str]:
+    if MAX_FEED_TEMPLATES_PER_ACCOUNT <= 0:
+        return FEED_TEMPLATES
+    return FEED_TEMPLATES[: max(1, min(len(FEED_TEMPLATES), MAX_FEED_TEMPLATES_PER_ACCOUNT))]
+
+
+def log_feed_issue_once(username: str, message: str, *args: Any) -> None:
+    key = hashlib.sha1(f"{username}|{message}".encode("utf-8", errors="ignore")).hexdigest()
+    if key in LOGGED_FEED_ISSUE_KEYS:
+        return
+    LOGGED_FEED_ISSUE_KEYS.add(key)
+    if len(LOGGED_FEED_ISSUE_KEYS) > 1000:
+        LOGGED_FEED_ISSUE_KEYS.clear()
+    logging.warning(message, *args)
+
+
 def fetch_posts(username: str) -> list[Post]:
     all_posts: dict[str, Post] = {}
-    feed_templates = FEED_TEMPLATES[: max(1, min(len(FEED_TEMPLATES), MAX_FEED_TEMPLATES_PER_ACCOUNT))]
+    feed_templates = active_feed_templates()
+    feed_errors: list[str] = []
+    timed_out_sources: list[str] = []
     executor = ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT, len(feed_templates)))
-    futures = [executor.submit(fetch_feed, username, template) for template in feed_templates]
+    futures = {executor.submit(fetch_feed, username, template): template for template in feed_templates}
     try:
         for future in as_completed(futures, timeout=FEED_COLLECTION_TIMEOUT_SECONDS):
+            template = futures[future]
+            source_name = feed_source_name(template)
             try:
                 for post in future.result():
                     all_posts.setdefault(post.post_id, post)
-            except Exception:
+            except Exception as exc:
+                feed_errors.append(f"{source_name}: {type(exc).__name__}")
                 continue
     except FuturesTimeoutError:
-        pass
+        timed_out_sources = [feed_source_name(template) for future, template in futures.items() if not future.done()]
     finally:
         for future in futures:
             future.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
     posts = list(all_posts.values())
     posts.sort(key=lambda post: post.published_ts, reverse=True)
+    if not posts:
+        checked_sources = ", ".join(feed_source_name(template) for template in feed_templates)
+        issue_parts = []
+        if feed_errors:
+            issue_parts.append("errors: " + "; ".join(feed_errors[:8]))
+        if timed_out_sources:
+            issue_parts.append("timeouts: " + ", ".join(timed_out_sources[:8]))
+        issue_text = " | ".join(issue_parts) or "no items returned"
+        log_feed_issue_once(
+            username,
+            "RSS: no posts found for @%s after checking %s sources in %.1fs. Sources: %s | %s",
+            username,
+            len(feed_templates),
+            FEED_COLLECTION_TIMEOUT_SECONDS,
+            checked_sources,
+            issue_text,
+        )
     return posts
 
 
@@ -4558,7 +4598,20 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     continue
 
                 new_posts = [post for post in posts if not any(post_id in seen for post_id in post.dedupe_ids)]
-                if startup_cycle and SEND_LAST_POST_ON_EVERY_START:
+                send_fabrizio_startup_check = (
+                    startup_cycle
+                    and SEND_FABRIZIO_LAST_POST_ON_STARTUP
+                    and username == "FabrizioRomano"
+                    and bool(posts)
+                )
+                if send_fabrizio_startup_check:
+                    new_posts = posts[:1]
+                    logging.info(
+                        "Startup verification: trying latest @FabrizioRomano post through RSS, filters, Gemini translation and Telegram send. RSS source: %s | link: %s",
+                        posts[0].source_name,
+                        posts[0].link,
+                    )
+                elif startup_cycle and SEND_LAST_POST_ON_EVERY_START:
                     new_posts = posts[:1]
                 elif first_run and SEND_LAST_POST_ON_FIRST_RUN:
                     new_posts = posts[:1]
@@ -4574,7 +4627,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
                         seen.update(post.dedupe_ids)
                         continue
-                    if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
+                    if is_too_old_post(post) and not (startup_cycle and (SEND_LAST_POST_ON_EVERY_START or send_fabrizio_startup_check)):
                         seen.update(post.dedupe_ids)
                         continue
                     if any(post_id in queued_ids for post_id in post.dedupe_ids):
