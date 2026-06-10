@@ -159,10 +159,10 @@ CHECK_EVERY_SECONDS = 15
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = 6
+FEED_REQUEST_TIMEOUT_SECONDS = 4
 FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
-FEED_COLLECTION_TIMEOUT_SECONDS = 6.5
-MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "1"))
+FEED_COLLECTION_TIMEOUT_SECONDS = 4.5
+MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
@@ -172,7 +172,7 @@ NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
 NIGHT_CHECK_EVERY_SECONDS = 20
-NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS", "1"))
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
@@ -1307,7 +1307,7 @@ def feed_source_name(template: str) -> str:
 
 
 def parse_posts(username: str, xml_bytes: bytes, source_name: str) -> list[Post]:
-    root = ET.fromstring(xml_bytes)
+    root = ET.fromstring(xml_bytes.lstrip())
     items = [element for element in root.iter() if strip_namespace(element.tag) in ("item", "entry")]
     posts: list[Post] = []
     for item in items:
@@ -3362,9 +3362,24 @@ def transliterate_latin_names(text: str) -> str:
     return re.sub(r"\b[A-Z][A-Za-zÀ-ÿ'’-]*(?:[\s_-]+[A-Z][A-Za-zÀ-ÿ'’-]*)*\b", repl, text)
 
 
+def normalize_exclusive_label(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        prefix = (match.group(1) or "").rstrip()
+        return f"{prefix} בלעדי: " if prefix else "בלעדי: "
+
+    pattern = (
+        r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)"
+        r"(?:אקסקלוסיבי|אקסקלוסיב|אקסלוסיב|exclusive|excl)\s*[-:–—]?\s*"
+    )
+    text = re.sub(pattern, repl, text)
+    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)בלעדי\s*[-:–—]\s*", repl, text)
+    return text
+
+
 def final_hebrew_polish(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
+    text = normalize_exclusive_label(text)
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
@@ -3387,6 +3402,7 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_untranslated_tail_tokens(text)
     text = remove_junk_tail_lines(text)
     text = remove_israel_time_additions(text)
+    text = normalize_exclusive_label(text)
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
     text = re.sub(r"(?im)^בלעדי\s*[-:–—]\s*", "בלעדי: ", text)
     text = final_visual_cleanup(text)
