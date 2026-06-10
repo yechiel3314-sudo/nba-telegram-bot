@@ -159,8 +159,8 @@ CHECK_EVERY_SECONDS = 15
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = 2
-FEED_COLLECTION_TIMEOUT_SECONDS = 2.5
+FEED_REQUEST_TIMEOUT_SECONDS = 6
+FEED_COLLECTION_TIMEOUT_SECONDS = 6.5
 MAX_PARALLEL_ACCOUNT_CHECKS = 40
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
@@ -224,6 +224,7 @@ FEED_TEMPLATES = [
     "https://nitter.oksocial.net/{username}/rss",
 ]
 MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "0"))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
@@ -1377,11 +1378,12 @@ def log_feed_issue_once(username: str, message: str, *args: Any) -> None:
     logging.warning(message, *args)
 
 
-def fetch_posts(username: str) -> list[Post]:
+def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
     all_posts: dict[str, Post] = {}
-    feed_templates = active_feed_templates()
     feed_errors: list[str] = []
     timed_out_sources: list[str] = []
+    if not feed_templates:
+        return [], [], []
     executor = ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT, len(feed_templates)))
     futures = {executor.submit(fetch_feed, username, template): template for template in feed_templates}
     try:
@@ -1402,13 +1404,41 @@ def fetch_posts(username: str) -> list[Post]:
         executor.shutdown(wait=False, cancel_futures=True)
     posts = list(all_posts.values())
     posts.sort(key=lambda post: post.published_ts, reverse=True)
+    return posts, feed_errors, timed_out_sources
+
+
+def fetch_posts(username: str) -> list[Post]:
+    feed_templates = active_feed_templates()
+    primary_count = max(1, min(len(feed_templates), RSS_PRIMARY_SOURCE_COUNT))
+    primary_templates = feed_templates[:primary_count]
+    fallback_templates = feed_templates[primary_count:]
+    posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(username, primary_templates)
+    if posts:
+        return posts
+
+    fallback_errors: list[str] = []
+    fallback_timeouts: list[str] = []
+    if fallback_templates:
+        fallback_posts, fallback_errors, fallback_timeouts = collect_posts_from_feed_templates(username, fallback_templates)
+        if fallback_posts:
+            logging.info(
+                "RSS fallback used for @%s: primary sources returned no posts, fallback found %s posts. Primary: %s | fallback source: %s",
+                username,
+                len(fallback_posts),
+                ", ".join(feed_source_name(template) for template in primary_templates),
+                fallback_posts[0].source_name,
+            )
+            return fallback_posts
+
     if not posts:
         checked_sources = ", ".join(feed_source_name(template) for template in feed_templates)
+        all_errors = feed_errors + fallback_errors
+        all_timeouts = timed_out_sources + fallback_timeouts
         issue_parts = []
-        if feed_errors:
-            issue_parts.append("errors: " + "; ".join(feed_errors[:8]))
-        if timed_out_sources:
-            issue_parts.append("timeouts: " + ", ".join(timed_out_sources[:8]))
+        if all_errors:
+            issue_parts.append("errors: " + "; ".join(all_errors[:8]))
+        if all_timeouts:
+            issue_parts.append("timeouts: " + ", ".join(all_timeouts[:8]))
         issue_text = " | ".join(issue_parts) or "no items returned"
         log_feed_issue_once(
             username,
