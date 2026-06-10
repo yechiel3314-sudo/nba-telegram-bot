@@ -160,8 +160,9 @@ HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 6
+FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
 FEED_COLLECTION_TIMEOUT_SECONDS = 6.5
-MAX_PARALLEL_ACCOUNT_CHECKS = 40
+MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "4"))
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
@@ -171,11 +172,19 @@ NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
 NIGHT_CHECK_EVERY_SECONDS = 20
-NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 16
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS", "4"))
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
-SEND_FABRIZIO_LAST_POST_ON_STARTUP = os.environ.get("SEND_FABRIZIO_LAST_POST_ON_STARTUP", "1") == "1"
+FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP = (
+    os.environ.get(
+        "FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP",
+        os.environ.get("SEND_FABRIZIO_LAST_MATCHING_POST_ON_STARTUP", "1"),
+    )
+    == "1"
+)
+FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP = os.environ.get("FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP", "0") == "1"
+FORCED_FABRIZIO_STARTUP_STATE_KEY = "__forced_fabrizio_startup_posts__"
 SEND_STARTUP_STATUS_MESSAGE = False
 CONTROL_CHAT_ID = required_env_any(
     "NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID_PRIVATE",
@@ -209,22 +218,12 @@ SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://nitter.net/{username}/rss",
-    "https://rsshub.app/twitter/user/{username}",
-    "https://rsshub.rssforever.com/twitter/user/{username}",
     "https://xcancel.com/{username}/rss",
-    "https://twiiit.com/{username}/rss",
-    "https://lightbrd.com/{username}/rss",
-    "https://twitt.re/{username}/rss",
-    "https://nitter.dashy.a3x.dn.nyx.im/{username}/rss",
-    "https://nitter.pek.li/{username}/rss",
-    "https://nitter.aishiteiru.moe/{username}/rss",
-    "https://nitter.poast.org/{username}/rss",
-    "https://nitter.privacydev.net/{username}/rss",
-    "https://nitter.tiekoetter.com/{username}/rss",
-    "https://nitter.oksocial.net/{username}/rss",
 ]
 MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "0"))
-RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "2"))
+RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "0") == "1"
+RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "0"))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
@@ -1014,8 +1013,16 @@ def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> byte
             "Accept": "application/rss+xml, application/xml, text/xml, */*",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, FEED_HTTP_RETRIES) + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:
+            last_error = exc
+            if attempt < max(1, FEED_HTTP_RETRIES):
+                time.sleep(0.4)
+    raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
 
 
 def http_post_json(
@@ -1411,7 +1418,9 @@ def fetch_posts(username: str) -> list[Post]:
     feed_templates = active_feed_templates()
     primary_count = max(1, min(len(feed_templates), RSS_PRIMARY_SOURCE_COUNT))
     primary_templates = feed_templates[:primary_count]
-    fallback_templates = feed_templates[primary_count:]
+    fallback_templates = feed_templates[primary_count:] if RSS_ENABLE_FALLBACK else []
+    if RSS_FALLBACK_SOURCE_COUNT > 0:
+        fallback_templates = fallback_templates[:RSS_FALLBACK_SOURCE_COUNT]
     posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(username, primary_templates)
     if posts:
         return posts
@@ -1431,7 +1440,8 @@ def fetch_posts(username: str) -> list[Post]:
             return fallback_posts
 
     if not posts:
-        checked_sources = ", ".join(feed_source_name(template) for template in feed_templates)
+        checked_templates = primary_templates + fallback_templates
+        checked_sources = ", ".join(feed_source_name(template) for template in checked_templates)
         all_errors = feed_errors + fallback_errors
         all_timeouts = timed_out_sources + fallback_timeouts
         issue_parts = []
@@ -1444,7 +1454,7 @@ def fetch_posts(username: str) -> list[Post]:
             username,
             "RSS: no posts found for @%s after checking %s sources in %.1fs. Sources: %s | %s",
             username,
-            len(feed_templates),
+            len(checked_templates),
             FEED_COLLECTION_TIMEOUT_SECONDS,
             checked_sources,
             issue_text,
@@ -4419,7 +4429,11 @@ def send_post(post: Post) -> dict[str, Any]:
 
     # Final network-free approval gate. No Gemini request, video HEAD/GET,
     # external video API, or Telegram upload is allowed before this passes.
-    block_reason = pre_send_final_local_block_reason(post)
+    if getattr(post, "force_startup_send", False):
+        logging.info("Startup verification force mode: skipping local filters for latest @%s post. Gemini/translation and Telegram send still run.", post.username)
+        block_reason = ""
+    else:
+        block_reason = pre_send_final_local_block_reason(post)
     if block_reason:
         timings["total_seconds"] = time.perf_counter() - started
         timings["mode"] = f"pre_send_blocked:{block_reason}"
@@ -4607,6 +4621,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             result["found_seconds"] = found_seconds
             result["post_age_seconds"] = max(0.0, time.time() - post.published_ts) if post.published_ts else 0.0
             result["source_name"] = post.source_name
+            result["force_startup_send"] = bool(getattr(post, "force_startup_send", False))
             return username, post.dedupe_ids, post.link, True, result
         except Exception as exc:
             logging.error("Failed sending %s: %s", post.link, exc)
@@ -4628,19 +4643,32 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     continue
 
                 new_posts = [post for post in posts if not any(post_id in seen for post_id in post.dedupe_ids)]
-                send_fabrizio_startup_check = (
+                force_fabrizio_startup_check = (
                     startup_cycle
-                    and SEND_FABRIZIO_LAST_POST_ON_STARTUP
+                    and FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP
                     and username == "FabrizioRomano"
                     and bool(posts)
                 )
-                if send_fabrizio_startup_check:
-                    new_posts = posts[:1]
-                    logging.info(
-                        "Startup verification: trying latest @FabrizioRomano post through RSS, filters, Gemini translation and Telegram send. RSS source: %s | link: %s",
-                        posts[0].source_name,
-                        posts[0].link,
-                    )
+                if force_fabrizio_startup_check:
+                    forced_already_sent = set(state.get(FORCED_FABRIZIO_STARTUP_STATE_KEY, []))
+                    latest_post = posts[0]
+                    if (
+                        not FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP
+                        and any(post_id in forced_already_sent for post_id in latest_post.dedupe_ids)
+                    ):
+                        new_posts = []
+                        logging.info(
+                            "Startup verification: latest @FabrizioRomano post was already force-sent before, skipping this startup. Set FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP=1 to send it every restart. Link: %s",
+                            latest_post.link,
+                        )
+                    else:
+                        setattr(latest_post, "force_startup_send", True)
+                        new_posts = [latest_post]
+                        logging.info(
+                            "Startup verification: force-sending latest @FabrizioRomano post through RSS, Gemini translation and Telegram send. Local filters are skipped for this check only. RSS source: %s | link: %s",
+                            posts[0].source_name,
+                            posts[0].link,
+                        )
                 elif startup_cycle and SEND_LAST_POST_ON_EVERY_START:
                     new_posts = posts[:1]
                 elif first_run and SEND_LAST_POST_ON_FIRST_RUN:
@@ -4657,7 +4685,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
                         seen.update(post.dedupe_ids)
                         continue
-                    if is_too_old_post(post) and not (startup_cycle and (SEND_LAST_POST_ON_EVERY_START or send_fabrizio_startup_check)):
+                    if getattr(post, "force_startup_send", False):
+                        candidate_posts.append((username, post, time.perf_counter() - cycle_started))
+                        continue
+                    if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
                         continue
                     if any(post_id in queued_ids for post_id in post.dedupe_ids):
@@ -4706,7 +4737,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 break
             username, post, _ = candidate
             seen = set(state.get(username, []))
-            final_block_reason = pre_send_final_local_block_reason(post)
+            final_block_reason = "" if getattr(post, "force_startup_send", False) else pre_send_final_local_block_reason(post)
             if final_block_reason:
                 mark_candidate_seen(state, candidate)
                 log_skip_once(
@@ -4719,7 +4750,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     filtered_post_text_preview(post),
                 )
                 continue
-            duplicate_event = find_recent_duplicate_event_ai_aware(post, state)
+            duplicate_event = None if getattr(post, "force_startup_send", False) else find_recent_duplicate_event_ai_aware(post, state)
             if duplicate_event:
                 mark_candidate_seen(state, candidate)
                 log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
@@ -4736,6 +4767,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 seen = set(state.get(username, []))
                 seen.update(post_ids)
                 state[username] = list(seen)[-500:]
+                if result.get("force_startup_send"):
+                    forced_seen = set(state.get(FORCED_FABRIZIO_STARTUP_STATE_KEY, []))
+                    forced_seen.update(post_ids)
+                    state[FORCED_FABRIZIO_STARTUP_STATE_KEY] = list(forced_seen)[-100:]
                 sent += 1
                 logging.info(
                     "✅ נשלח פוסט מ-@%s | מצב: %s | מקור RSS: %s | גיל %.0fs | מציאה %.2fs | תרגום/Gemini %.2fs | וידיאו %.2fs | הכנה %.2fs | שליחה %.2fs | סה״כ %.2fs",
