@@ -89,7 +89,15 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = max(
+    9,
+    int(
+        os.environ.get(
+            "GEMINI_MAX_REAL_TRANSLATION_REQUESTS",
+            os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", "9"),
+        )
+    ),
+)
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
@@ -97,10 +105,10 @@ TRANSLATE_QUOTED_POSTS = os.environ.get("TRANSLATE_QUOTED_POSTS", "0") == "1"
 TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "0") != "0"
 MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE", "45"))
 # How many keys may be checked locally for cooldown/availability. This is free.
-GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", "8"))
+GEMINI_LOCAL_KEY_SWEEP_SIZE = max(9, int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", "9")))
 # How many keys may be tried with a real Gemini network request per single AI operation.
 # Keep this low to avoid burning quota during outages.
-GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_LOCAL_KEY_SWEEP_SIZE)))
+GEMINI_MAX_KEYS_PER_OPERATION = max(9, int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_LOCAL_KEY_SWEEP_SIZE))))
 # Credit-safe mode: do NOT spend Gemini on uncertain affiliation/filter checks.
 # Gemini is used only after all local deterministic filters already approved a post for publishing.
 AI_AFFILIATION_FALLBACK_ENABLED = os.environ.get("AI_AFFILIATION_FALLBACK_ENABLED", "0") == "1"
@@ -2192,6 +2200,9 @@ def is_non_news_social_post(post: Post) -> bool:
 # ====== SMART FILTERS: FLAGS, WOMEN/WNBA, DUPLICATE NEWS ======
 RECENT_NEWS_STATE_KEY = "__recent_news_events__"
 RECENT_NEWS_WINDOW_SECONDS = 8 * 60 * 60
+TRANSLATION_RETRY_STATE_KEY = "__translation_retry_posts__"
+TRANSLATION_RETRY_WINDOW_SECONDS = int(os.environ.get("TRANSLATION_RETRY_WINDOW_SECONDS", str(15 * 60)))
+TRANSLATION_RETRY_INTERVAL_SECONDS = int(os.environ.get("TRANSLATION_RETRY_INTERVAL_SECONDS", str(2 * 60)))
 
 SOURCE_PRIORITY = {
     "FabrizioRomano": 100,
@@ -3046,6 +3057,75 @@ def mark_candidate_seen(state: dict[str, Any], candidate: tuple[str, Post, float
         seen.update(post.dedupe_ids)
         state[target] = list(seen)[-500:]
 
+
+def translation_retry_key(post: Post) -> str:
+    base = "|".join([post.username, post.link or "", post.post_id or "", *(post.dedupe_ids or [])])
+    return hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def cleanup_translation_retry_state(state: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+    now = now or time.time()
+    raw = state.get(TRANSLATION_RETRY_STATE_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    cleaned: dict[str, Any] = {}
+    for key, item in raw.items():
+        if not isinstance(item, dict):
+            continue
+        first_ts = float(item.get("first_ts", 0.0) or 0.0)
+        if first_ts and now - first_ts <= TRANSLATION_RETRY_WINDOW_SECONDS + 60:
+            cleaned[str(key)] = item
+    state[TRANSLATION_RETRY_STATE_KEY] = cleaned
+    return cleaned
+
+
+def translation_retry_status(post: Post, state: dict[str, Any], now: float | None = None) -> tuple[str, dict[str, Any] | None]:
+    now = now or time.time()
+    retries = cleanup_translation_retry_state(state, now)
+    item = retries.get(translation_retry_key(post))
+    if not isinstance(item, dict):
+        return "ready", None
+    first_ts = float(item.get("first_ts", now) or now)
+    next_ts = float(item.get("next_ts", 0.0) or 0.0)
+    if now - first_ts > TRANSLATION_RETRY_WINDOW_SECONDS:
+        return "expired", item
+    if next_ts > now:
+        return "wait", item
+    return "ready", item
+
+
+def remember_translation_retry(post: Post, state: dict[str, Any], reason: str = "") -> None:
+    now = time.time()
+    retries = cleanup_translation_retry_state(state, now)
+    key = translation_retry_key(post)
+    item = retries.get(key) if isinstance(retries.get(key), dict) else {}
+    first_ts = float(item.get("first_ts", now) or now)
+    attempts = int(item.get("attempts", 0) or 0) + 1
+    retries[key] = {
+        "first_ts": first_ts,
+        "next_ts": now + TRANSLATION_RETRY_INTERVAL_SECONDS,
+        "attempts": attempts,
+        "username": post.username,
+        "link": post.link,
+        "reason": str(reason)[:300],
+    }
+    state[TRANSLATION_RETRY_STATE_KEY] = retries
+    logging.warning(
+        "תרגום לא זמין: הפוסט מ-@%s לא סומן כנראה ולא נכנס לכפילויות. ניסיון %s, ניסיון הבא בעוד %s שניות, עד %s דקות: %s | סיבה: %s",
+        post.username,
+        attempts,
+        TRANSLATION_RETRY_INTERVAL_SECONDS,
+        max(1, TRANSLATION_RETRY_WINDOW_SECONDS // 60),
+        post.link,
+        reason,
+    )
+
+
+def clear_translation_retry(post: Post, state: dict[str, Any]) -> None:
+    retries = cleanup_translation_retry_state(state)
+    retries.pop(translation_retry_key(post), None)
+    state[TRANSLATION_RETRY_STATE_KEY] = retries
+
 def apply_phrase_replacements(text: str, replacements: dict[str, str]) -> str:
     for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         if re.fullmatch(r"[A-Za-z0-9 ._'’:-]+", source):
@@ -3546,8 +3626,17 @@ def normalize_exclusive_label(text: str) -> str:
 
 
 def normalize_breaking_label(text: str) -> str:
-    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)שובר\s+שוויון\s*[-:–—]?\s*", r"\1דיווח דרמטי: ", text or "")
-    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)חדשות\s+מרעישות\s*[-:–—]?\s*", r"\1דיווח דרמטי: ", text)
+    label = (
+        r"שובר\s+שוויון|"
+        r"חדשות\s+מרעישות|"
+        r"חדשות\s+מתפרצות|"
+        r"ידיעה\s+מתפרצת|"
+        r"מבזק|"
+        r"ברייקינג|"
+        r"breaking"
+    )
+    text = re.sub(rf"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)(?:{label})\s*[-:–—]?\s*", r"\1דיווח דרמטי: ", text or "")
+    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)דיווח\s+דרמטי\s*[-:–—]\s*", r"\1דיווח דרמטי: ", text)
     return text
 
 
@@ -4577,7 +4666,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     last_error: Exception | None = None
     real_requests_used = 0
     for index, key in gemini_available_keys_for_operation():
-        if real_requests_used >= 1:
+        if real_requests_used >= max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS):
             break
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -4610,8 +4699,21 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         except Exception as exc:
             last_error = exc
             cool_down_gemini_key(key, exc)
-            logging.warning("⚠️ תרגום Gemini יחיד נכשל עם %s; לא מנסה בקשת Gemini נוספת לפוסט הזה כדי לחסוך קרדיטים. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
-            break
+            remaining = max(0, max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS) - real_requests_used)
+            if remaining:
+                logging.warning(
+                    "⚠️ תרגום Gemini נכשל עם %s; עובר למפתח הבא. נשארו עד %s ניסיונות מפתח לפוסט הזה. סיבה: %s",
+                    gemini_key_label(index),
+                    remaining,
+                    gemini_error_summary(exc),
+                )
+            else:
+                logging.warning(
+                    "⚠️ תרגום Gemini נכשל עם %s ואין עוד ניסיונות מפתח לפוסט הזה. סיבה: %s",
+                    gemini_key_label(index),
+                    gemini_error_summary(exc),
+                )
+            continue
     log_gemini_unavailable(last_error)
     raise TranslationUnavailable(f"Gemini single translation failed after {real_requests_used} real request(s): {last_error}")
 
@@ -4667,6 +4769,7 @@ def send_post(post: Post) -> dict[str, Any]:
         timings["translation_seconds"] = time.perf_counter() - translation_started
         timings["total_seconds"] = time.perf_counter() - started
         timings["mode"] = "translation_unavailable"
+        timings["translation_error"] = str(exc)
         log_skip_once(
             "translation_unavailable",
             post,
@@ -4827,7 +4930,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     queued_ids: set[str] = set()
     global_candidate_posts: list[tuple[str, Post, float]] = []
 
-    def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
+    def send_task(item: tuple[str, Post, float]) -> tuple[str, Post, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
         try:
             result = send_post(post)
@@ -4835,10 +4938,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             result["post_age_seconds"] = max(0.0, time.time() - post.published_ts) if post.published_ts else 0.0
             result["source_name"] = post.source_name
             result["force_startup_send"] = bool(getattr(post, "force_startup_send", False))
-            return username, post.dedupe_ids, post.link, True, result
+            return username, post, post.dedupe_ids, post.link, True, result
         except Exception as exc:
             logging.error("Failed sending %s: %s", post.link, exc)
-            return username, post.dedupe_ids, post.link, False, {}
+            return username, post, post.dedupe_ids, post.link, False, {}
 
     try:
         with ThreadPoolExecutor(max_workers=fetch_workers) as fetch_executor:
@@ -4963,20 +5066,47 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     filtered_post_text_preview(post),
                 )
                 continue
+            retry_state, retry_item = translation_retry_status(post, state)
+            if retry_state == "wait":
+                next_ts = float((retry_item or {}).get("next_ts", 0.0) or 0.0)
+                wait_seconds = max(1, int(next_ts - time.time()))
+                if isinstance(retry_item, dict) and retry_item.get("wait_logged_for_next_ts") != next_ts:
+                    retry_item["wait_logged_for_next_ts"] = next_ts
+                    state[TRANSLATION_RETRY_STATE_KEY][translation_retry_key(post)] = retry_item
+                    logging.info(
+                        "ממתין לניסיון תרגום חוזר: @%s לא נשלח עדיין. ניסיון הבא בעוד %s שניות: %s",
+                        username,
+                        wait_seconds,
+                        post.link,
+                    )
+                continue
+            if retry_state == "expired":
+                mark_candidate_seen(state, candidate)
+                clear_translation_retry(post, state)
+                log_skip_once(
+                    "translation_retry_expired",
+                    post,
+                    "דילוג תרגום סופי: במשך %s דקות לא התקבל תרגום תקין מ-Gemini, הפוסט סומן כנראה כדי לא לנסות לנצח: @%s %s",
+                    max(1, TRANSLATION_RETRY_WINDOW_SECONDS // 60),
+                    username,
+                    post.link,
+                )
+                continue
             duplicate_event = None if getattr(post, "force_startup_send", False) else find_recent_duplicate_event_ai_aware(post, state)
             if duplicate_event:
                 mark_candidate_seen(state, candidate)
                 log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
                 continue
-            remember_recent_news_event(post, state)
             send_futures.append(send_executor.submit(send_task, candidate))
             queued_ids.update(post.dedupe_ids)
 
         for future in as_completed(send_futures):
-            username, post_ids, link, ok, result = future.result()
+            username, post, post_ids, link, ok, result = future.result()
             if not ok:
                 continue
             if result.get("sent"):
+                clear_translation_retry(post, state)
+                remember_recent_news_event(post, state)
                 seen = set(state.get(username, []))
                 seen.update(post_ids)
                 state[username] = list(seen)[-500:]
@@ -4999,6 +5129,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     result.get("total_seconds", 0.0),
                 )
             elif result.get("mode") == "no_news":
+                clear_translation_retry(post, state)
                 seen = set(state.get(username, []))
                 seen.update(post_ids)
                 state[username] = list(seen)[-500:]
@@ -5007,6 +5138,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     link,
                     result.get("source_name", "unknown"),
                 )
+            elif result.get("mode") == "translation_unavailable":
+                remember_translation_retry(post, state, str(result.get("translation_error", "translation_unavailable")))
             else:
                 logging.warning(
                     "⏳ פוסט מ-@%s לא נשלח ולכן לא סומן כנראה, יישאר לניסיון הבא: %s | מקור RSS: %s | מצב: %s",
