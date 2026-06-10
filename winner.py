@@ -108,16 +108,31 @@ def parse_secret_list(raw_value: str) -> list[str]:
 
 def load_gemini_api_keys() -> list[str]:
     keys: list[str] = []
-    for env_name in (
+    primary_env_names = (
         "GEMINI_API_KEYS",
         "GEMINI_API_KEY",
         "GEMINI_KEYS",
         "GOOGLE_API_KEY",
         "GOOGLE_GENERATIVE_AI_API_KEY",
-    ):
+    )
+
+    # 1) Exact names. This is the normal Railway setup.
+    for env_name in primary_env_names:
         for key in parse_secret_list(os.environ.get(env_name, "")):
             if key not in keys:
                 keys.append(key)
+
+    # 2) Safety fallback: if Railway/project has a slightly different Gemini key
+    # variable name, load it without printing any secret value.
+    # Example names this catches: GEMINI_API_KEYS_PRIVATE, MY_GEMINI_KEYS, etc.
+    if not keys:
+        for env_name, env_value in os.environ.items():
+            upper_name = env_name.upper()
+            if "GEMINI" in upper_name and ("KEY" in upper_name or "TOKEN" in upper_name):
+                for key in parse_secret_list(env_value):
+                    if key not in keys:
+                        keys.append(key)
+
     return keys
 
 
@@ -5216,6 +5231,10 @@ def main() -> None:
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
+    gemini_env_names = sorted(name for name in os.environ if "GEMINI" in name.upper())
+    gemini_exact_length = len(os.environ.get("GEMINI_API_KEYS", ""))
+    print("Runtime file: " + os.path.basename(__file__), flush=True)
+    print("Gemini env debug: names=" + str(gemini_env_names) + " | GEMINI_API_KEYS length=" + str(gemini_exact_length), flush=True)
     print("Gemini translation: " + (f"ON - {len(GEMINI_API_KEYS)} key(s) loaded" if GEMINI_API_KEYS else "OFF - no Gemini keys loaded; posts will not be sent without Gemini"), flush=True)
     if CONTROL_CHAT_ID:
         Thread(target=control_loop, daemon=True).start()
