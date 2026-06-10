@@ -162,8 +162,8 @@ REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = 6
 FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
 FEED_COLLECTION_TIMEOUT_SECONDS = 6.5
-MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "4"))
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 8
+MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "1"))
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
 MAX_POST_AGE_SECONDS = 30 * 60
@@ -172,7 +172,7 @@ NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
 NIGHT_CHECK_EVERY_SECONDS = 20
-NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS", "4"))
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS", "1"))
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
@@ -221,9 +221,9 @@ FEED_TEMPLATES = [
     "https://xcancel.com/{username}/rss",
 ]
 MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "0"))
-RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "2"))
-RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "0") == "1"
-RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "0"))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
+RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
+RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "1"))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
@@ -1375,13 +1375,13 @@ def active_feed_templates() -> list[str]:
     return FEED_TEMPLATES[: max(1, min(len(FEED_TEMPLATES), MAX_FEED_TEMPLATES_PER_ACCOUNT))]
 
 
-def log_feed_issue_once(username: str, message: str, *args: Any) -> None:
-    key = hashlib.sha1(f"{username}|{message}".encode("utf-8", errors="ignore")).hexdigest()
-    if key in LOGGED_FEED_ISSUE_KEYS:
-        return
-    LOGGED_FEED_ISSUE_KEYS.add(key)
-    if len(LOGGED_FEED_ISSUE_KEYS) > 1000:
-        LOGGED_FEED_ISSUE_KEYS.clear()
+def short_error(exc: Exception, limit: int = 180) -> str:
+    text = str(exc) or repr(exc)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def log_feed_issue(username: str, message: str, *args: Any) -> None:
     logging.warning(message, *args)
 
 
@@ -1401,7 +1401,7 @@ def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) 
                 for post in future.result():
                     all_posts.setdefault(post.post_id, post)
             except Exception as exc:
-                feed_errors.append(f"{source_name}: {type(exc).__name__}")
+                feed_errors.append(f"{source_name}: {type(exc).__name__}: {short_error(exc)}")
                 continue
     except FuturesTimeoutError:
         timed_out_sources = [feed_source_name(template) for future, template in futures.items() if not future.done()]
@@ -1430,12 +1430,18 @@ def fetch_posts(username: str) -> list[Post]:
     if fallback_templates:
         fallback_posts, fallback_errors, fallback_timeouts = collect_posts_from_feed_templates(username, fallback_templates)
         if fallback_posts:
-            logging.info(
-                "RSS fallback used for @%s: primary sources returned no posts, fallback found %s posts. Primary: %s | fallback source: %s",
+            primary_issue_parts = []
+            if feed_errors:
+                primary_issue_parts.append("errors: " + "; ".join(feed_errors[:4]))
+            if timed_out_sources:
+                primary_issue_parts.append("timeouts: " + ", ".join(timed_out_sources[:4]))
+            logging.warning(
+                "RSS fallback used for @%s: primary source had a problem, fallback found %s posts. Primary: %s | fallback source: %s | primary issue: %s",
                 username,
                 len(fallback_posts),
                 ", ".join(feed_source_name(template) for template in primary_templates),
                 fallback_posts[0].source_name,
+                " | ".join(primary_issue_parts) or "no items returned",
             )
             return fallback_posts
 
@@ -1450,7 +1456,7 @@ def fetch_posts(username: str) -> list[Post]:
         if all_timeouts:
             issue_parts.append("timeouts: " + ", ".join(all_timeouts[:8]))
         issue_text = " | ".join(issue_parts) or "no items returned"
-        log_feed_issue_once(
+        log_feed_issue(
             username,
             "RSS: no posts found for @%s after checking %s sources in %.1fs. Sources: %s | %s",
             username,
