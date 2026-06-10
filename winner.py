@@ -115,6 +115,26 @@ X_ACCOUNTS = [
     "AranchaMOBILE",
 ]
 
+OPTIONAL_CONTROLLED_ACCOUNTS = [
+    "Plettigoal",
+    "MatteMoretto",
+    "FabriceHawkins",
+    "gerardromero",
+    "MonfortCarlos",
+    "JLSanchez78",
+    "jfelixdiaz",
+]
+
+OPTIONAL_CONTROLLED_ACCOUNT_LABELS = {
+    "Plettigoal": "פלוריאן פלטנברג",
+    "MatteMoretto": "מתאו מורטו",
+    "FabriceHawkins": "פבריס הוקינס",
+    "gerardromero": "ג'ראד רומרו",
+    "MonfortCarlos": "קרלוס מונפור",
+    "JLSanchez78": "חוסה לואיס סאנצ'ס",
+    "jfelixdiaz": "חוסה פליקס דיאס",
+}
+
 PRIORITY_X_ACCOUNTS = {
     "FabrizioRomano",
     "David_Ornstein",
@@ -147,6 +167,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "FabriceHawkins": "פבריס הוקינס - צרפת",
     "Tanziloic": "לואיק טנזי - צרפת",
     "MonfortCarlos": "קרלוס מונפור - ברצלונה",
+    "jfelixdiaz": "חוסה פליקס דיאס",
     "Barca_Buzz": "בארסה באז - ברצלונה",
     "MadridXtra": "מדריד אקסטרה - ריאל מדריד",
     "iMiaSanMia": "מיה סן מיה - באיירן",
@@ -455,6 +476,7 @@ HANDLE_REPLACEMENTS = {
     "FabriceHawkins": "פבריס הוקינס",
     "Tanziloic": "לואיק טנזי",
     "MonfortCarlos": "קרלוס מונפור",
+    "jfelixdiaz": "חוסה פליקס דיאס",
     "SkySports": "סקיי ספורטס",
     "SkySportsNews": "סקיי ספורטס ניוז",
     "TheAthletic": "דה אתלטיק",
@@ -1479,8 +1501,9 @@ def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
 
 
 def ordered_accounts() -> list[str]:
-    priority = [username for username in X_ACCOUNTS if username in PRIORITY_X_ACCOUNTS]
-    regular = [username for username in X_ACCOUNTS if username not in PRIORITY_X_ACCOUNTS]
+    accounts = active_x_accounts()
+    priority = [username for username in accounts if username in PRIORITY_X_ACCOUNTS]
+    regular = [username for username in accounts if username not in PRIORITY_X_ACCOUNTS]
     return priority + regular
 
 
@@ -1506,8 +1529,9 @@ def current_max_parallel_post_sends() -> int:
 
 
 def fetch_all_accounts() -> dict[str, list[Post]]:
-    results: dict[str, list[Post]] = {username: [] for username in X_}
-    workers = min(current_max_parallel_account_checks(), max(1, len(X_ACCOUNTS)))
+    accounts = active_x_accounts()
+    results: dict[str, list[Post]] = {username: [] for username in accounts}
+    workers = min(current_max_parallel_account_checks(), max(1, len(accounts)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_map = {executor.submit(fetch_posts_safely, username): username for username in ordered_accounts()}
         for future in as_completed(future_map):
@@ -1538,6 +1562,23 @@ def load_control_state() -> dict[str, Any]:
         return {"paused": False}
 
 
+def enabled_optional_accounts_from_state(state: dict[str, Any] | None = None) -> list[str]:
+    state = state or load_control_state()
+    raw_accounts = state.get("enabled_optional_accounts", [])
+    if not isinstance(raw_accounts, list):
+        raw_accounts = []
+    allowed = set(OPTIONAL_CONTROLLED_ACCOUNTS)
+    return [username for username in OPTIONAL_CONTROLLED_ACCOUNTS if username in allowed and username in raw_accounts]
+
+
+def active_x_accounts() -> list[str]:
+    accounts = list(X_ACCOUNTS)
+    for username in enabled_optional_accounts_from_state():
+        if username not in accounts:
+            accounts.append(username)
+    return accounts
+
+
 def save_control_state(paused: bool | None = None, **updates: Any) -> None:
     state = load_control_state()
     if paused is not None:
@@ -1554,9 +1595,18 @@ def is_control_paused() -> bool:
 
 
 def control_reply_markup(paused: bool) -> dict[str, Any]:
+    state = load_control_state()
+    enabled_optional = set(enabled_optional_accounts_from_state(state))
+    keyboard: list[list[dict[str, str]]] = []
     if paused:
-        return {"inline_keyboard": [[{"text": "להפעיל את הבוט", "callback_data": "football_bot_on"}]]}
-    return {"inline_keyboard": [[{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}]]}
+        keyboard.append([{"text": "להפעיל את הבוט", "callback_data": "football_bot_on"}])
+    else:
+        keyboard.append([{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}])
+    for username in OPTIONAL_CONTROLLED_ACCOUNTS:
+        label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
+        status = "פעיל" if username in enabled_optional else "כבוי"
+        keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_account:{username}"}])
+    return {"inline_keyboard": keyboard}
 
 
 def send_control_panel(paused: bool, action_done: str = "", force_new: bool = False) -> None:
@@ -1618,6 +1668,27 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "הבוט הופעל")
         send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
+    elif data.startswith("football_account:"):
+        username = data.split(":", 1)[1]
+        if username not in OPTIONAL_CONTROLLED_ACCOUNTS:
+            if callback_id:
+                answer_control_callback(callback_id, "כתב לא מוכר")
+            return
+        state = load_control_state()
+        enabled = set(enabled_optional_accounts_from_state(state))
+        label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
+        if username in enabled:
+            enabled.remove(username)
+            action_text = f"{label} כובה"
+            logging.info("Control panel: optional account disabled: @%s", username)
+        else:
+            enabled.add(username)
+            action_text = f"{label} הופעל"
+            logging.info("Control panel: optional account enabled: @%s", username)
+        save_control_state(enabled_optional_accounts=[account for account in OPTIONAL_CONTROLLED_ACCOUNTS if account in enabled])
+        if callback_id:
+            answer_control_callback(callback_id, action_text)
+        send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.")
 
 
 def is_getupdates_conflict(error: Exception) -> bool:
@@ -4622,7 +4693,7 @@ def validate_settings() -> None:
         raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_IDS:
         raise ValueError("Put at least one Telegram group chat ID in TELEGRAM_CHAT_IDS")
-    if not X_ACCOUNTS:
+    if not active_x_accounts():
         raise ValueError("Add at least one X/Twitter account to X_ACCOUNTS")
 
 
@@ -4630,7 +4701,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     cycle_started = time.perf_counter()
     first_run = not any(state.values())
     sent = 0
-    fetch_workers = min(current_max_parallel_account_checks(), max(1, len(X_ACCOUNTS)))
+    accounts = active_x_accounts()
+    fetch_workers = min(current_max_parallel_account_checks(), max(1, len(accounts)))
     send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
     queued_ids: set[str] = set()
@@ -4833,7 +4905,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     validate_settings()
-    print(f"Football bot is running. Accounts: {', '.join('@' + account for account in X_ACCOUNTS)}", flush=True)
+    print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
     if CONTROL_CHAT_ID:
@@ -4898,7 +4970,7 @@ def main() -> None:
                 print(f"Sent {sent} new post(s).", flush=True)
             now = time.time()
             if now - last_heartbeat_log >= HEARTBEAT_LOG_SECONDS:
-                logging.info("בוט הכדורגל עדיין עובד. כתבים: %s | בדיקה כל %ss | נשלחו בסבב: %s", len(X_ACCOUNTS), current_check_every_seconds(), sent)
+                logging.info("בוט הכדורגל עדיין עובד. כתבים פעילים: %s | בדיקה כל %ss | נשלחו בסבב: %s", len(active_x_accounts()), current_check_every_seconds(), sent)
                 last_heartbeat_log = now
         except Exception as exc:
             logging.error("Unexpected error. Bot will keep running: %s", exc)
