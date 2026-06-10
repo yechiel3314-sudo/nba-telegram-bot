@@ -135,6 +135,16 @@ OPTIONAL_CONTROLLED_ACCOUNT_LABELS = {
     "jfelixdiaz": "חוסה פליקס דיאס",
 }
 
+CONTROLLED_BASE_ACCOUNT_LABELS = {
+    "FabrizioRomano": "פבריציו רומאנו",
+    "David_Ornstein": "דיוויד אורנשטיין",
+    "DiMarzio": "ג'אנלוקה די מארציו",
+    "JacobsBen": "בן ג'ייקובס",
+    "NicoSchira": "ניקולו שירה",
+    "ffpolo": "פרננדו פולו",
+    "AranchaMOBILE": "ארנצ'ה רודריגס",
+}
+
 PRIORITY_X_ACCOUNTS = {
     "FabrizioRomano",
     "David_Ornstein",
@@ -1571,8 +1581,18 @@ def enabled_optional_accounts_from_state(state: dict[str, Any] | None = None) ->
     return [username for username in OPTIONAL_CONTROLLED_ACCOUNTS if username in allowed and username in raw_accounts]
 
 
+def disabled_base_accounts_from_state(state: dict[str, Any] | None = None) -> list[str]:
+    state = state or load_control_state()
+    raw_accounts = state.get("disabled_base_accounts", [])
+    if not isinstance(raw_accounts, list):
+        raw_accounts = []
+    allowed = set(X_ACCOUNTS)
+    return [username for username in X_ACCOUNTS if username in allowed and username in raw_accounts]
+
+
 def active_x_accounts() -> list[str]:
-    accounts = list(X_ACCOUNTS)
+    disabled_base = set(disabled_base_accounts_from_state())
+    accounts = [username for username in X_ACCOUNTS if username not in disabled_base]
     for username in enabled_optional_accounts_from_state():
         if username not in accounts:
             accounts.append(username)
@@ -1596,12 +1616,17 @@ def is_control_paused() -> bool:
 
 def control_reply_markup(paused: bool) -> dict[str, Any]:
     state = load_control_state()
+    disabled_base = set(disabled_base_accounts_from_state(state))
     enabled_optional = set(enabled_optional_accounts_from_state(state))
     keyboard: list[list[dict[str, str]]] = []
     if paused:
         keyboard.append([{"text": "להפעיל את הבוט", "callback_data": "football_bot_on"}])
     else:
         keyboard.append([{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}])
+    for username in X_ACCOUNTS:
+        label = CONTROLLED_BASE_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
+        status = "כבוי" if username in disabled_base else "פעיל"
+        keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_base_account:{username}"}])
     for username in OPTIONAL_CONTROLLED_ACCOUNTS:
         label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
         status = "פעיל" if username in enabled_optional else "כבוי"
@@ -1680,12 +1705,33 @@ def process_control_update(update: dict[str, Any]) -> None:
         if username in enabled:
             enabled.remove(username)
             action_text = f"{label} כובה"
-            logging.info("Control panel: optional account disabled: @%s", username)
+            logging.info("לוח שליטה: הכתב האופציונלי @%s כובה בכפתור ולא ייסרק.", username)
         else:
             enabled.add(username)
             action_text = f"{label} הופעל"
-            logging.info("Control panel: optional account enabled: @%s", username)
+            logging.info("לוח שליטה: הכתב האופציונלי @%s הופעל בכפתור וייכנס לסריקה.", username)
         save_control_state(enabled_optional_accounts=[account for account in OPTIONAL_CONTROLLED_ACCOUNTS if account in enabled])
+        if callback_id:
+            answer_control_callback(callback_id, action_text)
+        send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.")
+    elif data.startswith("football_base_account:"):
+        username = data.split(":", 1)[1]
+        if username not in X_ACCOUNTS:
+            if callback_id:
+                answer_control_callback(callback_id, "כתב לא מוכר")
+            return
+        state = load_control_state()
+        disabled = set(disabled_base_accounts_from_state(state))
+        label = CONTROLLED_BASE_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
+        if username in disabled:
+            disabled.remove(username)
+            action_text = f"{label} הופעל"
+            logging.info("לוח שליטה: הכתב @%s הופעל מחדש בכפתור.", username)
+        else:
+            disabled.add(username)
+            action_text = f"{label} כובה"
+            logging.info("לוח שליטה: הכתב @%s כובה בכפתור ולא ייסרק עד להפעלה מחדש.", username)
+        save_control_state(disabled_base_accounts=[account for account in X_ACCOUNTS if account in disabled])
         if callback_id:
             answer_control_callback(callback_id, action_text)
         send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.")
@@ -2059,6 +2105,8 @@ def is_non_news_social_post(post: Post) -> bool:
     lowered = cleaned.lower()
     if not cleaned:
         return True
+    if is_clear_player_departure_post(post):
+        return False
 
     # Ordinary interviews/quotes after matches stay blocked unless they contain
     # a concrete transfer/contract mechanism such as bid, offer, loan, option,
@@ -3972,6 +4020,11 @@ def contains_allowed_club_or_israeli_league(post: Post) -> bool:
     )
 
 
+def is_clear_player_departure_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    return contains_allowed_club_or_israeli_league(post) and _matches_any(CLEAR_PLAYER_DEPARTURE_PATTERNS, cleaned)
+
+
 def is_other_sport_post(post: Post) -> bool:
     cleaned = post_filter_text(post)
     if not _matches_any(OTHER_SPORT_BLOCK_PATTERNS, cleaned):
@@ -4065,6 +4118,11 @@ VAGUE_PLAYER_IDEA_PATTERNS = (
 STRONG_PLAYER_MOVE_PATTERNS = (
     r"\b(?:official|confirmed|here we go|deal agreed|agreement reached|full agreement|verbal agreement|set to sign|set to join|close to signing|close to joining|medical|medical tests|contract signed|signs|joins|completed|done deal|bid accepted|release clause activated|loan agreed|permanent transfer|free agent)\b",
     r"רשמי|אושר|הנה זה קורה|העסקה סוכמה|הושג סיכום|סיכום מלא|סיכום בעל פה|צפוי לחתום|צפוי להצטרף|קרוב לחתימה|קרוב להצטרף|בדיקות רפואיות|החוזה נחתם|חתם|יחתום|מצטרף|עסקה סגורה|ההצעה התקבלה|סעיף שחרור|שחקן חופשי|העברה קבועה|השאלה סוכמה",
+)
+
+CLEAR_PLAYER_DEPARTURE_PATTERNS = (
+    r"\b(?:leaves?|leaving|left|departs?|departing|released|out of contract|contract expires?|free agent|free transfer)\b",
+    r"עוזב|עוזבת|עזב|עזבה|יעזוב|תעזוב|שוחרר|שוחררה|משוחרר|מסיים חוזה|סיים חוזה|תום חוזה|שחקן חופשי|העברה חופשית",
 )
 
 COACH_IMPORTANT_PATTERNS = (
@@ -4220,6 +4278,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_transfer_or_future = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
     has_vague_player_idea = _matches_any(VAGUE_PLAYER_IDEA_PATTERNS, cleaned)
     has_strong_move = _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+    has_clear_departure = is_clear_player_departure_post(post)
     has_coach_news = _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
     has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
     has_pure_admin_appointment = _matches_any(PURE_ADMIN_APPOINTMENT_PATTERNS, cleaned)
@@ -4256,6 +4315,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         add(55, "big_club_context")
     if has_strong_move:
         add(45, "strong_transfer_step")
+    if has_clear_departure:
+        add(60, "clear_player_departure")
     if has_transfer_or_future:
         add(25, "transfer_or_future_link")
     if has_coach_news:
@@ -4378,7 +4439,7 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     if not contains_allowed_club_or_israeli_league(post):
         if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
             return "not_connected_to_allowed_club"
-    if is_link_only_or_details_post(post):
+    if is_link_only_or_details_post(post) and not is_clear_player_departure_post(post):
         return "link_or_details_only"
     if is_podcast_or_longform_post(post):
         return "podcast_or_longform"
@@ -4796,7 +4857,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         seen.update(post.dedupe_ids)
                         log_skip_once("medical_staff", post, "דילוג מסנן: צוות רפואי/דוקטור/פיזיותרפיסט מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
-                    if is_link_only_or_details_post(post):
+                    if is_link_only_or_details_post(post) and not is_clear_player_departure_post(post):
                         seen.update(post.dedupe_ids)
                         log_skip_once("link_only", post, "דילוג מסנן: קישור/פרטים בלי דיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
