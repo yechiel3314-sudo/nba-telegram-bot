@@ -191,14 +191,14 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 15
+CHECK_EVERY_SECONDS = int(os.environ.get("CHECK_EVERY_SECONDS", "30"))
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = 4
+FEED_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "6"))
 FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
-FEED_COLLECTION_TIMEOUT_SECONDS = 4.5
-MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
+FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "7.0"))
+MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "2"))
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
@@ -207,7 +207,7 @@ SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
-NIGHT_CHECK_EVERY_SECONDS = 20
+NIGHT_CHECK_EVERY_SECONDS = int(os.environ.get("NIGHT_CHECK_EVERY_SECONDS", "30"))
 NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
@@ -286,14 +286,41 @@ MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCO
 RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", str(len(FEED_TEMPLATES))))
 RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
 RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "0"))
-RSS_SOURCE_FAILURE_THRESHOLD = int(os.environ.get("RSS_SOURCE_FAILURE_THRESHOLD", "2"))
-RSS_SOURCE_BACKOFF_SECONDS = int(os.environ.get("RSS_SOURCE_BACKOFF_SECONDS", "180"))
-RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS = int(os.environ.get("RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS", "90"))
-RSS_LOG_REPEAT_SECONDS = int(os.environ.get("RSS_LOG_REPEAT_SECONDS", "900"))
-RSS_REQUEST_JITTER_SECONDS = float(os.environ.get("RSS_REQUEST_JITTER_SECONDS", "0.15"))
+RSS_SOURCE_FAILURE_THRESHOLD = int(os.environ.get("RSS_SOURCE_FAILURE_THRESHOLD", "1"))
+RSS_SOURCE_BACKOFF_SECONDS = int(os.environ.get("RSS_SOURCE_BACKOFF_SECONDS", "300"))
+RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS = int(os.environ.get("RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS", "180"))
+RSS_SOURCE_HARD_BLOCK_BACKOFF_SECONDS = int(os.environ.get("RSS_SOURCE_HARD_BLOCK_BACKOFF_SECONDS", "900"))
+RSS_LOG_REPEAT_SECONDS = int(os.environ.get("RSS_LOG_REPEAT_SECONDS", "1200"))
+RSS_REQUEST_JITTER_SECONDS = float(os.environ.get("RSS_REQUEST_JITTER_SECONDS", "0.8"))
+RSS_ROTATE_SOURCES_PER_ACCOUNT = os.environ.get("RSS_ROTATE_SOURCES_PER_ACCOUNT", "1") != "0"
 RSS_SOURCE_STATE_LOCK = Lock()
 RSS_SOURCE_STATE: dict[str, dict[str, float]] = {}
 LOGGED_FEED_ISSUE_KEYS: dict[str, float] = {}
+
+RSS_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+]
+RSS_ACCEPT_LANGUAGES = [
+    "en-US,en;q=0.9,he;q=0.8",
+    "en-GB,en;q=0.9,he;q=0.8",
+    "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+]
+
+
+def rss_request_headers() -> dict[str, str]:
+    # Different normal browser-like headers per request. This is not a proxy and does not bypass IP blocks;
+    # it only prevents all requests from looking completely identical.
+    return {
+        "User-Agent": random.choice(RSS_USER_AGENTS),
+        "Accept": "application/rss+xml, application/xml, text/xml, */*;q=0.8",
+        "Accept-Language": random.choice(RSS_ACCEPT_LANGUAGES),
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Connection": "close",
+    }
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m3u8", ".webm", ".avi", ".mkv")
@@ -1076,22 +1103,17 @@ def http_get_once(url: str, timeout: int = 4) -> bytes:
 
 
 def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
-        },
-    )
     last_error: Exception | None = None
     for attempt in range(1, max(1, FEED_HTTP_RETRIES) + 1):
+        request = urllib.request.Request(url, headers=rss_request_headers())
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except Exception as exc:
             last_error = exc
             if attempt < max(1, FEED_HTTP_RETRIES):
-                time.sleep(0.4)
+                # Back off a bit and change headers on the next retry.
+                time.sleep(0.6 * attempt + random.uniform(0, 0.8))
     raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
 
 
@@ -1445,6 +1467,16 @@ def active_feed_templates() -> list[str]:
     return FEED_TEMPLATES[: max(1, min(len(FEED_TEMPLATES), MAX_FEED_TEMPLATES_PER_ACCOUNT))]
 
 
+def rotated_feed_templates_for_account(username: str, templates: list[str]) -> list[str]:
+    if not templates or not RSS_ROTATE_SOURCES_PER_ACCOUNT:
+        return templates
+    # Stable per account, with a slow time bucket, so all accounts do not hit the same RSS host first.
+    bucket = int(time.time() // max(60, CHECK_EVERY_SECONDS * 4))
+    digest = hashlib.sha256(f"{username}:{bucket}".encode("utf-8")).hexdigest()
+    offset = int(digest[:8], 16) % len(templates)
+    return templates[offset:] + templates[:offset]
+
+
 def short_error(exc: Exception, limit: int = 180) -> str:
     text = str(exc) or repr(exc)
     text = re.sub(r"\s+", " ", text).strip()
@@ -1469,21 +1501,28 @@ def mark_rss_source_success(template: str) -> None:
         RSS_SOURCE_STATE[key] = {"failures": 0.0, "blocked_until": 0.0}
 
 
-def mark_rss_source_failure(template: str, timed_out: bool = False) -> None:
+def mark_rss_source_failure(template: str, timed_out: bool = False, hard_block: bool = False) -> None:
     key = rss_source_key(template)
     now = time.time()
     with RSS_SOURCE_STATE_LOCK:
         state = RSS_SOURCE_STATE.setdefault(key, {"failures": 0.0, "blocked_until": 0.0})
         failures = float(state.get("failures", 0)) + 1
         state["failures"] = failures
-        if timed_out or failures >= RSS_SOURCE_FAILURE_THRESHOLD:
-            backoff = RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS if timed_out else RSS_SOURCE_BACKOFF_SECONDS
-            # Small jitter avoids all accounts hitting the same RSS mirror at the same second.
-            state["blocked_until"] = now + backoff + random.uniform(0, min(30, max(0, backoff * 0.2)))
+        if hard_block:
+            backoff = RSS_SOURCE_HARD_BLOCK_BACKOFF_SECONDS
+        elif timed_out:
+            backoff = RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS
+        elif failures >= RSS_SOURCE_FAILURE_THRESHOLD:
+            backoff = RSS_SOURCE_BACKOFF_SECONDS
+        else:
+            backoff = 0
+        if backoff > 0:
+            # Jitter avoids all accounts hitting the same RSS mirror at the same second after cooldown.
+            state["blocked_until"] = now + backoff + random.uniform(0, min(120, max(0, backoff * 0.25)))
 
 
 def log_feed_issue(username: str, message: str, *args: Any) -> None:
-    # Avoid repeating the same RSS failure for every account every 15 seconds.
+    # Avoid repeating the same RSS failure for every account every cycle.
     key = f"{username}:{message % args if args else message}"
     now = time.time()
     with RSS_SOURCE_STATE_LOCK:
@@ -1520,8 +1559,10 @@ def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) 
                 for post in posts_from_source:
                     all_posts.setdefault(post.post_id, post)
             except Exception as exc:
-                mark_rss_source_failure(template, timed_out=False)
-                feed_errors.append(f"{source_name}: {type(exc).__name__}: {short_error(exc)}")
+                error_text = short_error(exc)
+                hard_block = any(marker in error_text for marker in ("HTTP Error 400", "HTTP Error 403", "HTTP Error 429", "Too Many Requests"))
+                mark_rss_source_failure(template, timed_out=False, hard_block=hard_block)
+                feed_errors.append(f"{source_name}: {type(exc).__name__}: {error_text}")
                 continue
     except FuturesTimeoutError:
         timed_out_sources = [feed_source_name(template) for future, template in futures.items() if not future.done()]
@@ -1538,7 +1579,7 @@ def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) 
 
 
 def fetch_posts(username: str) -> list[Post]:
-    feed_templates = active_feed_templates()
+    feed_templates = rotated_feed_templates_for_account(username, active_feed_templates())
     primary_count = max(1, min(len(feed_templates), RSS_PRIMARY_SOURCE_COUNT))
     primary_templates = feed_templates[:primary_count]
     fallback_templates = feed_templates[primary_count:] if RSS_ENABLE_FALLBACK else []
