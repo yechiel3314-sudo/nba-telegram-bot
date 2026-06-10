@@ -75,16 +75,53 @@ TELEGRAM_BOT_TOKEN = required_env_any(
 TELEGRAM_CHAT_IDS = required_env_list_any("NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE")
 
 # Optional AI translation. Put this in Railway Variables:
-# GEMINI_API_KEY=your_key
-# Or several keys separated by commas:
 # GEMINI_API_KEYS=key1,key2,key3
-GEMINI_API_KEYS = [
-    key.strip()
-    for key in (
-        os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
-    ).split(",")
-    if key.strip()
-]
+# Also supported for backward compatibility: GEMINI_API_KEY / GEMINI_KEYS / GOOGLE_API_KEY
+def parse_secret_list(raw_value: str) -> list[str]:
+    """Read one or many API keys safely from Railway variables.
+
+    Supports comma/newline/semicolon separated values and also copes with
+    accidental wrappers such as quotes, brackets or GEMINI_API_KEYS=... pasted
+    into the value field. This does not print the keys.
+    """
+    raw_value = (raw_value or "").strip().strip("\ufeff")
+    if not raw_value:
+        return []
+    if "=" in raw_value and raw_value.split("=", 1)[0].strip() in {
+        "GEMINI_API_KEYS",
+        "GEMINI_API_KEY",
+        "GEMINI_KEYS",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+    }:
+        raw_value = raw_value.split("=", 1)[1].strip()
+    raw_value = raw_value.strip().strip("'\"").strip()
+    raw_value = raw_value.strip("[](){}")
+    parts = re.split(r"[,;\n\r\t ]+", raw_value)
+    keys: list[str] = []
+    for part in parts:
+        key = part.strip().strip("'\"").strip()
+        if key and key.lower() not in {"none", "null", "false"} and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def load_gemini_api_keys() -> list[str]:
+    keys: list[str] = []
+    for env_name in (
+        "GEMINI_API_KEYS",
+        "GEMINI_API_KEY",
+        "GEMINI_KEYS",
+        "GOOGLE_API_KEY",
+        "GOOGLE_GENERATIVE_AI_API_KEY",
+    ):
+        for key in parse_secret_list(os.environ.get(env_name, "")):
+            if key not in keys:
+                keys.append(key)
+    return keys
+
+
+GEMINI_API_KEYS = load_gemini_api_keys()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
@@ -5179,7 +5216,7 @@ def main() -> None:
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
-    print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
+    print("Gemini translation: " + (f"ON - {len(GEMINI_API_KEYS)} key(s) loaded" if GEMINI_API_KEYS else "OFF - no Gemini keys loaded; posts will not be sent without Gemini"), flush=True)
     if CONTROL_CHAT_ID:
         Thread(target=control_loop, daemon=True).start()
 
