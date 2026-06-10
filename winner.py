@@ -179,7 +179,7 @@ SEND_LAST_POST_ON_EVERY_START = False
 FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP = (
     os.environ.get(
         "FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP",
-        os.environ.get("SEND_FABRIZIO_LAST_MATCHING_POST_ON_STARTUP", "1"),
+        os.environ.get("SEND_FABRIZIO_LAST_MATCHING_POST_ON_STARTUP", "0"),
     )
     == "1"
 )
@@ -4854,6 +4854,7 @@ def main() -> None:
     startup_cycle = True
     skipped_for_shabbat = False
     paused_logged = False
+    last_heartbeat_log = 0.0
     while True:
         cycle_started = time.time()
         try:
@@ -4895,6 +4896,10 @@ def main() -> None:
             save_ai_decision_cache()
             if sent:
                 print(f"Sent {sent} new post(s).", flush=True)
+            now = time.time()
+            if now - last_heartbeat_log >= HEARTBEAT_LOG_SECONDS:
+                logging.info("בוט הכדורגל עדיין עובד. כתבים: %s | בדיקה כל %ss | נשלחו בסבב: %s", len(X_ACCOUNTS), current_check_every_seconds(), sent)
+                last_heartbeat_log = now
         except Exception as exc:
             logging.error("Unexpected error. Bot will keep running: %s", exc)
         elapsed = time.time() - cycle_started
