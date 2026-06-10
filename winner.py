@@ -88,8 +88,11 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
+# Round-robin mode: every post starts with the next Gemini key, and if that key fails
+# the bot continues to the next keys. With 9 keys configured, one post can try up to 9 keys.
+GEMINI_KEY_COUNT = max(1, len(GEMINI_API_KEYS))
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "9"))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", str(GEMINI_KEY_COUNT)))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
@@ -97,10 +100,11 @@ TRANSLATE_QUOTED_POSTS = os.environ.get("TRANSLATE_QUOTED_POSTS", "0") == "1"
 TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "0") != "0"
 MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE", "45"))
 # How many keys may be checked locally for cooldown/availability. This is free.
-GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", "9"))
+# Default: all configured keys.
+GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", str(GEMINI_KEY_COUNT)))
 # How many keys may be tried with a real Gemini network request per single AI operation.
-# Keep this low to avoid burning quota during outages.
-GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_LOCAL_KEY_SWEEP_SIZE)))
+# Default: all configured keys.
+GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_KEY_COUNT)))
 # Credit-safe mode: do NOT spend Gemini on uncertain affiliation/filter checks.
 # Gemini is used only after all local deterministic filters already approved a post for publishing.
 AI_AFFILIATION_FALLBACK_ENABLED = os.environ.get("AI_AFFILIATION_FALLBACK_ENABLED", "0") == "1"
@@ -3324,11 +3328,10 @@ def gemini_key_order() -> list[tuple[int, str]]:
 
 
 def gemini_key_order_limited(max_keys: int | None = None) -> list[tuple[int, str]]:
-    """Return available Gemini keys without doing any network request.
+    """Return Gemini keys in round-robin order without doing any network request.
 
-    This is intentionally only a local availability/cooldown check. It keeps the
-    bot scanning often, but prevents one borderline post from burning all API
-    keys/retries in a single cycle.
+    Every new operation starts with the next key. If the first key fails, callers
+    continue through the remaining keys in order, up to the configured limits.
     """
     keys = gemini_key_order()
     limit = GEMINI_MAX_KEYS_PER_OPERATION if max_keys is None else max_keys
