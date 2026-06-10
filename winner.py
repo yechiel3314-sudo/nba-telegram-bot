@@ -2433,7 +2433,11 @@ def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, 
         previous = item.get("signature", {}) if isinstance(item, dict) else {}
         if not isinstance(previous, dict):
             continue
-        if _event_similarity(current, previous) >= 0.74:
+        score = _event_similarity(current, previous)
+        local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
+        if local in {"ADVANCED_NEW", "DIFFERENT"}:
+            continue
+        if local == "SAME_DUPLICATE" or score >= 0.74:
             return item
     return None
 
@@ -2595,6 +2599,34 @@ def _important_detail_delta(current_tokens: set[str], previous_tokens: set[str])
     return len((current_tokens - previous_tokens) & IMPORTANT_DETAIL_WORDS)
 
 
+GENERIC_DUPLICATE_CONTEXT_TOKENS = {
+    "manchester", "united", "real", "madrid", "barcelona", "barca", "arsenal", "chelsea", "liverpool",
+    "tottenham", "spurs", "city", "inter", "milan", "juventus", "psg", "bayern", "dortmund", "villa",
+    "official", "confirmed", "free", "agent", "players", "player", "club", "clubs", "deal", "transfer",
+    "contract", "years", "year", "today", "expected", "chapter", "new", "since", "after", "joins", "leaves",
+    "רשמי", "רשמית", "שחקן", "שחקנים", "חופשי", "חופשיים", "עוזב", "עוזבים", "עזב", "עזבו", "מועדון",
+    "קבוצה", "העברה", "עסקה", "חוזה", "שנים", "שנה", "היום", "צפוי", "צפויים", "חדש", "חדשה",
+}
+
+
+def _distinctive_duplicate_tokens(tokens: set[str], entities: set[str]) -> set[str]:
+    """Tokens that usually point to the actual player/manager/event, not just the club/context."""
+    combined = set(tokens) | set(entities)
+    distinctive: set[str] = set()
+    for token in combined:
+        lowered = token.lower().strip("-'׳")
+        if len(lowered) < 4:
+            continue
+        if lowered in NEWS_DUP_STOPWORDS or lowered in NEWS_DUP_ACTION_WORDS or lowered in IMPORTANT_DETAIL_WORDS:
+            continue
+        if lowered in GENERIC_DUPLICATE_CONTEXT_TOKENS:
+            continue
+        if re.fullmatch(r"\d+", lowered):
+            continue
+        distinctive.add(lowered)
+    return distinctive
+
+
 def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
     """Fast local decision before Gemini. Returns SAME_DUPLICATE, ADVANCED_NEW, DIFFERENT or BORDERLINE."""
     if not ENABLE_AI_REQUEST_SAVER:
@@ -2615,6 +2647,24 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     current_rank, current_stage = _text_stage_rank(cur_text)
     previous_rank, previous_stage = _text_stage_rank(prev_text)
     detail_delta = _important_detail_delta(cur_tokens, prev_tokens)
+    same_author = current_post.username == str(previous_item.get("username", ""))
+    text_ratio = SequenceMatcher(None, cur_text, prev_text).ratio()
+    cur_distinctive = _distinctive_duplicate_tokens(cur_tokens, cur_entities)
+    prev_distinctive = _distinctive_duplicate_tokens(prev_tokens, prev_entities)
+    distinctive_overlap = len(cur_distinctive & prev_distinctive)
+
+    # Same journalist often posts several separate updates about the same club minutes apart.
+    # For the same source, block only a near-repeat or a post sharing the same distinctive
+    # player/manager/event tokens. Club/context overlap alone is not enough.
+    if same_author:
+        if text_ratio >= 0.94:
+            return "SAME_DUPLICATE"
+        if cur_distinctive and prev_distinctive and distinctive_overlap == 0:
+            return "DIFFERENT"
+        if distinctive_overlap == 0 and score < 0.94:
+            return "DIFFERENT"
+        if score < 0.86 and text_ratio < 0.86:
+            return "DIFFERENT"
 
     # Clearly different: not enough shared entities and not enough text/action overlap.
     if score < AI_DUPLICATE_MIN_SIMILARITY and entity_overlap < 2:
@@ -3495,10 +3545,17 @@ def normalize_exclusive_label(text: str) -> str:
     return text
 
 
+def normalize_breaking_label(text: str) -> str:
+    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)שובר\s+שוויון\s*[-:–—]?\s*", r"\1דיווח דרמטי: ", text or "")
+    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)חדשות\s+מרעישות\s*[-:–—]?\s*", r"\1דיווח דרמטי: ", text)
+    return text
+
+
 def final_hebrew_polish(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
     text = normalize_exclusive_label(text)
+    text = normalize_breaking_label(text)
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
@@ -3522,6 +3579,7 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_junk_tail_lines(text)
     text = remove_israel_time_additions(text)
     text = normalize_exclusive_label(text)
+    text = normalize_breaking_label(text)
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
     text = re.sub(r"(?im)^בלעדי\s*[-:–—]\s*", "בלעדי: ", text)
     text = final_visual_cleanup(text)
