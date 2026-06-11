@@ -27,7 +27,6 @@ import html
 import json
 import logging
 import os
-import random
 import re
 import sys
 import time
@@ -75,77 +74,22 @@ TELEGRAM_BOT_TOKEN = required_env_any(
 TELEGRAM_CHAT_IDS = required_env_list_any("NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEGRAM_CHAT_IDS_PRIVATE")
 
 # Optional AI translation. Put this in Railway Variables:
+# GEMINI_API_KEY=your_key
+# Or several keys separated by commas:
 # GEMINI_API_KEYS=key1,key2,key3
-# Also supported for backward compatibility: GEMINI_API_KEY / GEMINI_KEYS / GOOGLE_API_KEY
-def parse_secret_list(raw_value: str) -> list[str]:
-    """Read one or many API keys safely from Railway variables.
-
-    Supports comma/newline/semicolon separated values and also copes with
-    accidental wrappers such as quotes, brackets or GEMINI_API_KEYS=... pasted
-    into the value field. This does not print the keys.
-    """
-    raw_value = (raw_value or "").strip().strip("\ufeff")
-    if not raw_value:
-        return []
-    if "=" in raw_value and raw_value.split("=", 1)[0].strip() in {
-        "GEMINI_API_KEYS",
-        "GEMINI_API_KEY",
-        "GEMINI_KEYS",
-        "GOOGLE_API_KEY",
-        "GOOGLE_GENERATIVE_AI_API_KEY",
-    }:
-        raw_value = raw_value.split("=", 1)[1].strip()
-    raw_value = raw_value.strip().strip("'\"").strip()
-    raw_value = raw_value.strip("[](){}")
-    parts = re.split(r"[,;\n\r\t ]+", raw_value)
-    keys: list[str] = []
-    for part in parts:
-        key = part.strip().strip("'\"").strip()
-        if key and key.lower() not in {"none", "null", "false"} and key not in keys:
-            keys.append(key)
-    return keys
-
-
-def load_gemini_api_keys() -> list[str]:
-    keys: list[str] = []
-    primary_env_names = (
-        "GEMINI_API_KEYS",
-        "GEMINI_API_KEY",
-        "GEMINI_KEYS",
-        "GOOGLE_API_KEY",
-        "GOOGLE_GENERATIVE_AI_API_KEY",
-    )
-
-    # 1) Exact names. This is the normal Railway setup.
-    for env_name in primary_env_names:
-        for key in parse_secret_list(os.environ.get(env_name, "")):
-            if key not in keys:
-                keys.append(key)
-
-    # 2) Safety fallback: if Railway/project has a slightly different Gemini key
-    # variable name, load it without printing any secret value.
-    # Example names this catches: GEMINI_API_KEYS_PRIVATE, MY_GEMINI_KEYS, etc.
-    if not keys:
-        for env_name, env_value in os.environ.items():
-            upper_name = env_name.upper()
-            if "GEMINI" in upper_name and ("KEY" in upper_name or "TOKEN" in upper_name):
-                for key in parse_secret_list(env_value):
-                    if key not in keys:
-                        keys.append(key)
-
-    return keys
-
-
-GEMINI_API_KEYS = load_gemini_api_keys()
+GEMINI_API_KEYS = [
+    key.strip()
+    for key in (
+        os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
+    ).split(",")
+    if key.strip()
+]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
-# Round-robin mode: every post starts with the next Gemini key, and if that key fails
-# the bot continues to the next keys. With 9 keys configured, one post can try up to 9 keys.
-GEMINI_KEY_COUNT = max(1, len(GEMINI_API_KEYS))
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", str(GEMINI_KEY_COUNT)))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "9"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
@@ -153,11 +97,10 @@ TRANSLATE_QUOTED_POSTS = os.environ.get("TRANSLATE_QUOTED_POSTS", "0") == "1"
 TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "0") != "0"
 MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE", "45"))
 # How many keys may be checked locally for cooldown/availability. This is free.
-# Default: all configured keys.
-GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", str(GEMINI_KEY_COUNT)))
+GEMINI_LOCAL_KEY_SWEEP_SIZE = int(os.environ.get("GEMINI_LOCAL_KEY_SWEEP_SIZE", "9"))
 # How many keys may be tried with a real Gemini network request per single AI operation.
-# Default: all configured keys.
-GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_KEY_COUNT)))
+# Keep this low to avoid burning quota during outages.
+GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATION", str(GEMINI_LOCAL_KEY_SWEEP_SIZE)))
 # Credit-safe mode: do NOT spend Gemini on uncertain affiliation/filter checks.
 # Gemini is used only after all local deterministic filters already approved a post for publishing.
 AI_AFFILIATION_FALLBACK_ENABLED = os.environ.get("AI_AFFILIATION_FALLBACK_ENABLED", "0") == "1"
@@ -243,14 +186,14 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = int(os.environ.get("CHECK_EVERY_SECONDS", "30"))
+CHECK_EVERY_SECONDS = 15
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "6"))
+FEED_REQUEST_TIMEOUT_SECONDS = 4
 FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
-FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "7.0"))
-MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "2"))
+FEED_COLLECTION_TIMEOUT_SECONDS = 4.5
+MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
@@ -259,7 +202,7 @@ SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 7
-NIGHT_CHECK_EVERY_SECONDS = int(os.environ.get("NIGHT_CHECK_EVERY_SECONDS", "30"))
+NIGHT_CHECK_EVERY_SECONDS = 20
 NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
@@ -304,75 +247,17 @@ RTL_MARK = "\u200f"
 SIGNATURE_LINK = "https://t.me/neto_sport"
 SIGNATURE_TEXT = "נטו ספורט.📝"
 
-# RSS sources. Public Nitter/XCancel mirrors can sometimes block, return 400,
-# close connections, or go down. The code below rotates between sources,
-# skips sources that recently failed, and logs repeated RSS failures only once
-# per cooldown window so Railway logs stay clean.
-#
-# Recommended for better stability:
-#   1) Deploy your own RSSHub service.
-#   2) Add Railway variable, for example:
-#      RSSHUB_BASE_URLS=https://your-rsshub.up.railway.app
-#
-# Extra custom templates can be added with RSS_EXTRA_FEED_TEMPLATES separated by commas.
-# Each template must contain {username}. Example:
-#   RSS_EXTRA_FEED_TEMPLATES=https://example.com/{username}/rss
-RSSHUB_BASE_URLS = [
-    value.strip().rstrip("/")
-    for value in os.environ.get("RSSHUB_BASE_URLS", "").split(",")
-    if value.strip()
-]
-RSS_EXTRA_FEED_TEMPLATES = [
-    value.strip()
-    for value in os.environ.get("RSS_EXTRA_FEED_TEMPLATES", "").split(",")
-    if value.strip() and "{username}" in value
-]
 FEED_TEMPLATES = [
-    "https://xcancel.com/{username}/rss",
     "https://nitter.net/{username}/rss",
-    *[f"{base}/twitter/user/{{username}}" for base in RSSHUB_BASE_URLS],
-    *RSS_EXTRA_FEED_TEMPLATES,
+    "https://xcancel.com/{username}/rss",
 ]
 MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "0"))
-# Check all configured sources by default. This is safer when one mirror is blocked.
-RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", str(len(FEED_TEMPLATES))))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
 RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
-RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "0"))
-RSS_SOURCE_FAILURE_THRESHOLD = int(os.environ.get("RSS_SOURCE_FAILURE_THRESHOLD", "1"))
-RSS_SOURCE_BACKOFF_SECONDS = int(os.environ.get("RSS_SOURCE_BACKOFF_SECONDS", "300"))
-RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS = int(os.environ.get("RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS", "180"))
-RSS_SOURCE_HARD_BLOCK_BACKOFF_SECONDS = int(os.environ.get("RSS_SOURCE_HARD_BLOCK_BACKOFF_SECONDS", "900"))
-RSS_LOG_REPEAT_SECONDS = int(os.environ.get("RSS_LOG_REPEAT_SECONDS", "1200"))
-RSS_REQUEST_JITTER_SECONDS = float(os.environ.get("RSS_REQUEST_JITTER_SECONDS", "0.8"))
-RSS_ROTATE_SOURCES_PER_ACCOUNT = os.environ.get("RSS_ROTATE_SOURCES_PER_ACCOUNT", "1") != "0"
-RSS_SOURCE_STATE_LOCK = Lock()
-RSS_SOURCE_STATE: dict[str, dict[str, float]] = {}
-LOGGED_FEED_ISSUE_KEYS: dict[str, float] = {}
-
-RSS_USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-]
-RSS_ACCEPT_LANGUAGES = [
-    "en-US,en;q=0.9,he;q=0.8",
-    "en-GB,en;q=0.9,he;q=0.8",
-    "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-]
-
-
-def rss_request_headers() -> dict[str, str]:
-    # Different normal browser-like headers per request. This is not a proxy and does not bypass IP blocks;
-    # it only prevents all requests from looking completely identical.
-    return {
-        "User-Agent": random.choice(RSS_USER_AGENTS),
-        "Accept": "application/rss+xml, application/xml, text/xml, */*;q=0.8",
-        "Accept-Language": random.choice(RSS_ACCEPT_LANGUAGES),
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        "Connection": "close",
-    }
+RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "1"))
+LOGGED_FEED_ISSUE_KEYS: set[str] = set()
+FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
+FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m3u8", ".webm", ".avi", ".mkv")
@@ -1155,17 +1040,22 @@ def http_get_once(url: str, timeout: int = 4) -> bytes:
 
 
 def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        },
+    )
     last_error: Exception | None = None
     for attempt in range(1, max(1, FEED_HTTP_RETRIES) + 1):
-        request = urllib.request.Request(url, headers=rss_request_headers())
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except Exception as exc:
             last_error = exc
             if attempt < max(1, FEED_HTTP_RETRIES):
-                # Back off a bit and change headers on the next retry.
-                time.sleep(0.6 * attempt + random.uniform(0, 0.8))
+                time.sleep(0.4)
     raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
 
 
@@ -1450,8 +1340,29 @@ def feed_source_name(template: str) -> str:
     return host.removeprefix("www.")
 
 
+def sanitize_rss_xml(xml_bytes: bytes) -> bytes:
+    text = xml_bytes.decode("utf-8", errors="replace").lstrip("\ufeff")
+    first_xml = min((pos for pos in (text.find("<?xml"), text.find("<rss"), text.find("<feed")) if pos >= 0), default=-1)
+    if first_xml > 0:
+        text = text[first_xml:]
+    # Some RSS mirrors occasionally emit XML-invalid control characters.
+    # Removing them is free and avoids a noisy ParseError loop. They can also
+    # leave bare ampersands in tweet text, which breaks XML parsing even though
+    # the rest of the feed is usable.
+    text = re.sub(r"[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]", "", text)
+    text = re.sub(r"&(?!(?:amp|lt|gt|quot|apos|#[0-9]+|#x[0-9A-Fa-f]+);)", "&amp;", text)
+    text = text.lstrip()
+    return text.encode("utf-8")
+
+
 def parse_posts(username: str, xml_bytes: bytes, source_name: str) -> list[Post]:
-    root = ET.fromstring(xml_bytes.lstrip())
+    try:
+        root = ET.fromstring(xml_bytes.lstrip())
+    except ET.ParseError as first_exc:
+        try:
+            root = ET.fromstring(sanitize_rss_xml(xml_bytes))
+        except ET.ParseError as second_exc:
+            raise ET.ParseError(f"RSS XML parse failed after cleanup: {second_exc}; original: {first_exc}") from second_exc
     items = [element for element in root.iter() if strip_namespace(element.tag) in ("item", "entry")]
     posts: list[Post] = []
     for item in items:
@@ -1519,69 +1430,25 @@ def active_feed_templates() -> list[str]:
     return FEED_TEMPLATES[: max(1, min(len(FEED_TEMPLATES), MAX_FEED_TEMPLATES_PER_ACCOUNT))]
 
 
-def rotated_feed_templates_for_account(username: str, templates: list[str]) -> list[str]:
-    if not templates or not RSS_ROTATE_SOURCES_PER_ACCOUNT:
-        return templates
-    # Stable per account, with a slow time bucket, so all accounts do not hit the same RSS host first.
-    bucket = int(time.time() // max(60, CHECK_EVERY_SECONDS * 4))
-    digest = hashlib.sha256(f"{username}:{bucket}".encode("utf-8")).hexdigest()
-    offset = int(digest[:8], 16) % len(templates)
-    return templates[offset:] + templates[:offset]
-
-
 def short_error(exc: Exception, limit: int = 180) -> str:
     text = str(exc) or repr(exc)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
 
 
-def rss_source_key(template: str) -> str:
-    return feed_source_name(template)
-
-
-def rss_source_is_available(template: str) -> bool:
-    key = rss_source_key(template)
-    now = time.time()
-    with RSS_SOURCE_STATE_LOCK:
-        state = RSS_SOURCE_STATE.get(key, {})
-        return now >= float(state.get("blocked_until", 0))
-
-
-def mark_rss_source_success(template: str) -> None:
-    key = rss_source_key(template)
-    with RSS_SOURCE_STATE_LOCK:
-        RSS_SOURCE_STATE[key] = {"failures": 0.0, "blocked_until": 0.0}
-
-
-def mark_rss_source_failure(template: str, timed_out: bool = False, hard_block: bool = False) -> None:
-    key = rss_source_key(template)
-    now = time.time()
-    with RSS_SOURCE_STATE_LOCK:
-        state = RSS_SOURCE_STATE.setdefault(key, {"failures": 0.0, "blocked_until": 0.0})
-        failures = float(state.get("failures", 0)) + 1
-        state["failures"] = failures
-        if hard_block:
-            backoff = RSS_SOURCE_HARD_BLOCK_BACKOFF_SECONDS
-        elif timed_out:
-            backoff = RSS_SOURCE_TIMEOUT_BACKOFF_SECONDS
-        elif failures >= RSS_SOURCE_FAILURE_THRESHOLD:
-            backoff = RSS_SOURCE_BACKOFF_SECONDS
-        else:
-            backoff = 0
-        if backoff > 0:
-            # Jitter avoids all accounts hitting the same RSS mirror at the same second after cooldown.
-            state["blocked_until"] = now + backoff + random.uniform(0, min(120, max(0, backoff * 0.25)))
-
-
 def log_feed_issue(username: str, message: str, *args: Any) -> None:
-    # Avoid repeating the same RSS failure for every account every cycle.
-    key = f"{username}:{message % args if args else message}"
+    formatted = message % args if args else message
+    normalized = re.sub(r"\d+\.\d+s|\d+s|line \d+, column \d+", "", formatted)
+    key = hashlib.sha1(f"{username}|{normalized}".encode("utf-8", errors="ignore")).hexdigest()
     now = time.time()
-    with RSS_SOURCE_STATE_LOCK:
-        last_logged = LOGGED_FEED_ISSUE_KEYS.get(key, 0)
-        if now - last_logged < RSS_LOG_REPEAT_SECONDS:
-            return
-        LOGGED_FEED_ISSUE_KEYS[key] = now
+    last_logged = FEED_ISSUE_LAST_LOGGED_AT.get(key, 0.0)
+    if now - last_logged < FEED_ISSUE_LOG_EVERY_SECONDS:
+        return
+    FEED_ISSUE_LAST_LOGGED_AT[key] = now
+    LOGGED_FEED_ISSUE_KEYS.add(key)
+    if len(FEED_ISSUE_LAST_LOGGED_AT) > 1000:
+        FEED_ISSUE_LAST_LOGGED_AT.clear()
+        LOGGED_FEED_ISSUE_KEYS.clear()
     logging.warning(message, *args)
 
 
@@ -1589,38 +1456,22 @@ def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) 
     all_posts: dict[str, Post] = {}
     feed_errors: list[str] = []
     timed_out_sources: list[str] = []
-    available_templates = [template for template in feed_templates if rss_source_is_available(template)]
-    skipped_templates = [template for template in feed_templates if template not in available_templates]
-    if skipped_templates:
-        feed_errors.append("temporary backoff: " + ", ".join(feed_source_name(template) for template in skipped_templates[:4]))
-    if not available_templates:
-        return [], feed_errors, []
-
-    if RSS_REQUEST_JITTER_SECONDS > 0:
-        time.sleep(random.uniform(0, RSS_REQUEST_JITTER_SECONDS))
-
-    executor = ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT, len(available_templates)))
-    futures = {executor.submit(fetch_feed, username, template): template for template in available_templates}
+    if not feed_templates:
+        return [], [], []
+    executor = ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT, len(feed_templates)))
+    futures = {executor.submit(fetch_feed, username, template): template for template in feed_templates}
     try:
         for future in as_completed(futures, timeout=FEED_COLLECTION_TIMEOUT_SECONDS):
             template = futures[future]
             source_name = feed_source_name(template)
             try:
-                posts_from_source = future.result()
-                mark_rss_source_success(template)
-                for post in posts_from_source:
+                for post in future.result():
                     all_posts.setdefault(post.post_id, post)
             except Exception as exc:
-                error_text = short_error(exc)
-                hard_block = any(marker in error_text for marker in ("HTTP Error 400", "HTTP Error 403", "HTTP Error 429", "Too Many Requests"))
-                mark_rss_source_failure(template, timed_out=False, hard_block=hard_block)
-                feed_errors.append(f"{source_name}: {type(exc).__name__}: {error_text}")
+                feed_errors.append(f"{source_name}: {type(exc).__name__}: {short_error(exc)}")
                 continue
     except FuturesTimeoutError:
         timed_out_sources = [feed_source_name(template) for future, template in futures.items() if not future.done()]
-        for future, template in futures.items():
-            if not future.done():
-                mark_rss_source_failure(template, timed_out=True)
     finally:
         for future in futures:
             future.cancel()
@@ -1631,7 +1482,7 @@ def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) 
 
 
 def fetch_posts(username: str) -> list[Post]:
-    feed_templates = rotated_feed_templates_for_account(username, active_feed_templates())
+    feed_templates = active_feed_templates()
     primary_count = max(1, min(len(feed_templates), RSS_PRIMARY_SOURCE_COUNT))
     primary_templates = feed_templates[:primary_count]
     fallback_templates = feed_templates[primary_count:] if RSS_ENABLE_FALLBACK else []
@@ -3508,10 +3359,11 @@ def gemini_key_order() -> list[tuple[int, str]]:
 
 
 def gemini_key_order_limited(max_keys: int | None = None) -> list[tuple[int, str]]:
-    """Return Gemini keys in round-robin order without doing any network request.
+    """Return available Gemini keys without doing any network request.
 
-    Every new operation starts with the next key. If the first key fails, callers
-    continue through the remaining keys in order, up to the configured limits.
+    This is intentionally only a local availability/cooldown check. It keeps the
+    bot scanning often, but prevents one borderline post from burning all API
+    keys/retries in a single cycle.
     """
     keys = gemini_key_order()
     limit = GEMINI_MAX_KEYS_PER_OPERATION if max_keys is None else max_keys
@@ -5231,11 +5083,7 @@ def main() -> None:
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
-    gemini_env_names = sorted(name for name in os.environ if "GEMINI" in name.upper())
-    gemini_exact_length = len(os.environ.get("GEMINI_API_KEYS", ""))
-    print("Runtime file: " + os.path.basename(__file__), flush=True)
-    print("Gemini env debug: names=" + str(gemini_env_names) + " | GEMINI_API_KEYS length=" + str(gemini_exact_length), flush=True)
-    print("Gemini translation: " + (f"ON - {len(GEMINI_API_KEYS)} key(s) loaded" if GEMINI_API_KEYS else "OFF - no Gemini keys loaded; posts will not be sent without Gemini"), flush=True)
+    print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
     if CONTROL_CHAT_ID:
         Thread(target=control_loop, daemon=True).start()
 
