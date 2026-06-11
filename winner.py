@@ -107,6 +107,18 @@ def configured_gemini_api_keys() -> list[str]:
     keys: list[str] = []
     seen: set[str] = set()
     for raw_value in raw_values:
+        # Strong extraction first: real Google/Gemini API keys normally start
+        # with AIza. This works even if Railway/raw editor added quotes,
+        # spaces, JSON-ish text, labels, or accidental line wrapping.
+        found_pattern_key = False
+        for key in re.findall(r"AIza[0-9A-Za-z_\-]{20,}", raw_value):
+            key = key.strip()
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
+                found_pattern_key = True
+        if found_pattern_key:
+            continue
         for key in re.split(r"[,\n\r;]+", raw_value):
             key = key.strip().strip('"').strip("'")
             if key and key not in seen:
@@ -118,12 +130,20 @@ def configured_gemini_api_keys() -> list[str]:
 GEMINI_API_KEYS = configured_gemini_api_keys()
 
 
+def refresh_gemini_api_keys_from_env() -> None:
+    global GEMINI_API_KEYS
+    GEMINI_API_KEYS = configured_gemini_api_keys()
+
+
 def gemini_env_debug_summary() -> str:
     interesting: list[str] = []
     for name, value in sorted(os.environ.items()):
         upper = name.upper()
         if "GEMINI" in upper or upper in {"GOOGLE_API_KEY", "GOOGLE_API_KEYS"}:
-            interesting.append(f"{name}: length={len(value or '')}")
+            raw = value or ""
+            split_count = len([part for part in re.split(r"[,\n\r;]+", raw) if part.strip().strip('"').strip("'")])
+            pattern_count = len(re.findall(r"AIza[0-9A-Za-z_\-]{20,}", raw))
+            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, AIza_patterns={pattern_count}")
     if not interesting:
         return "לא נמצאו בכלל משתני סביבה עם GEMINI/GOOGLE_API_KEY בזמן הריצה"
     return "; ".join(interesting[:30])
@@ -5139,6 +5159,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+    refresh_gemini_api_keys_from_env()
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
