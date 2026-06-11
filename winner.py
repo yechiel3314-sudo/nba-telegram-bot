@@ -75,15 +75,39 @@ TELEGRAM_CHAT_IDS = required_env_list_any("NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEG
 
 # Optional AI translation. Put this in Railway Variables:
 # GEMINI_API_KEY=your_key
-# Or several keys separated by commas:
+# Or several keys separated by commas/new lines:
 # GEMINI_API_KEYS=key1,key2,key3
-GEMINI_API_KEYS = [
-    key.strip()
-    for key in (
-        os.environ.get("GEMINI_API_KEYS", "") or os.environ.get("GEMINI_API_KEY", "")
-    ).split(",")
-    if key.strip()
-]
+# Or separate variables:
+# GEMINI_API_KEY_1=key1 ... GEMINI_API_KEY_9=key9
+def configured_gemini_api_keys() -> list[str]:
+    raw_values: list[str] = []
+    for name in ("GEMINI_API_KEYS", "GEMINI_API_KEY"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            raw_values.append(value)
+    for index in range(1, 21):
+        for name in (
+            f"GEMINI_API_KEY_{index}",
+            f"GEMINI_API_KEYS_{index}",
+            f"GOOGLE_GEMINI_API_KEY_{index}",
+            f"GOOGLE_API_KEY_{index}",
+        ):
+            value = os.environ.get(name, "").strip()
+            if value:
+                raw_values.append(value)
+
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        for key in re.split(r"[,\n\r;]+", raw_value):
+            key = key.strip().strip('"').strip("'")
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
+    return keys
+
+
+GEMINI_API_KEYS = configured_gemini_api_keys()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
@@ -5097,7 +5121,8 @@ def main() -> None:
     validate_settings()
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
-    print("Gemini translation: " + ("ON" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
+    print("Gemini translation: " + (f"ON - {len(GEMINI_API_KEYS)} key(s) loaded" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
+    logging.info("Gemini: נטענו %s מפתחות API. אם זה 0, שמות המשתנים ב-Railway לא תואמים.", len(GEMINI_API_KEYS))
     if CONTROL_CHAT_ID:
         Thread(target=control_loop, daemon=True).start()
 
