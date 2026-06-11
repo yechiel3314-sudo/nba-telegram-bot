@@ -190,9 +190,9 @@ CHECK_EVERY_SECONDS = 15
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = 4
+FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "5"))
 FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
-FEED_COLLECTION_TIMEOUT_SECONDS = 4.5
+FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "7"))
 MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
@@ -258,6 +258,9 @@ RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "1")
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
+FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "1"))
+FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
+FEED_SOURCE_SEMAPHORES_LOCK = Lock()
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m3u8", ".webm", ".avi", ".mkv")
@@ -1340,6 +1343,15 @@ def feed_source_name(template: str) -> str:
     return host.removeprefix("www.")
 
 
+def feed_source_semaphore(source_name: str) -> BoundedSemaphore:
+    with FEED_SOURCE_SEMAPHORES_LOCK:
+        semaphore = FEED_SOURCE_SEMAPHORES.get(source_name)
+        if semaphore is None:
+            semaphore = BoundedSemaphore(max(1, FEED_SOURCE_MAX_PARALLEL))
+            FEED_SOURCE_SEMAPHORES[source_name] = semaphore
+        return semaphore
+
+
 def sanitize_rss_xml(xml_bytes: bytes) -> bytes:
     text = xml_bytes.decode("utf-8", errors="replace").lstrip("\ufeff")
     first_xml = min((pos for pos in (text.find("<?xml"), text.find("<rss"), text.find("<feed")) if pos >= 0), default=-1)
@@ -1421,7 +1433,9 @@ def parse_posts(username: str, xml_bytes: bytes, source_name: str) -> list[Post]
 
 def fetch_feed(username: str, template: str) -> list[Post]:
     url = template.format(username=urllib.parse.quote(username))
-    return parse_posts(username, http_get_feed(url), feed_source_name(template))
+    source_name = feed_source_name(template)
+    with feed_source_semaphore(source_name):
+        return parse_posts(username, http_get_feed(url), source_name)
 
 
 def active_feed_templates() -> list[str]:
