@@ -111,11 +111,6 @@ def configured_gemini_api_keys() -> list[str]:
         key = candidate.strip().strip('"').strip("'").strip("[]{}()")
         if not key:
             return
-        lowered = key.lower()
-        if lowered in {"none", "null", "false", "true", "key", "keys"}:
-            return
-        if len(key) < 16:
-            return
         if key not in seen:
             seen.add(key)
             keys.append(key)
