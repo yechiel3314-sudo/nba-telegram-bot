@@ -81,7 +81,15 @@ TELEGRAM_CHAT_IDS = required_env_list_any("NETO_SPORT_FOOTBALL_NEWS_TARGET_TELEG
 # GEMINI_API_KEY_1=key1 ... GEMINI_API_KEY_9=key9
 def configured_gemini_api_keys() -> list[str]:
     raw_values: list[str] = []
-    for name in ("GEMINI_API_KEYS", "GEMINI_API_KEY"):
+    for name in (
+        "GEMINI_API_KEYS",
+        "GEMINI_API_KEY",
+        "GEMINI_KEYS",
+        "GOOGLE_GEMINI_API_KEYS",
+        "GOOGLE_GEMINI_API_KEY",
+        "GOOGLE_API_KEYS",
+        "GOOGLE_API_KEY",
+    ):
         value = os.environ.get(name, "").strip()
         if value:
             raw_values.append(value)
@@ -108,6 +116,19 @@ def configured_gemini_api_keys() -> list[str]:
 
 
 GEMINI_API_KEYS = configured_gemini_api_keys()
+
+
+def gemini_env_debug_summary() -> str:
+    interesting: list[str] = []
+    for name, value in sorted(os.environ.items()):
+        upper = name.upper()
+        if "GEMINI" in upper or upper in {"GOOGLE_API_KEY", "GOOGLE_API_KEYS"}:
+            interesting.append(f"{name}: length={len(value or '')}")
+    if not interesting:
+        return "לא נמצאו בכלל משתני סביבה עם GEMINI/GOOGLE_API_KEY בזמן הריצה"
+    return "; ".join(interesting[:30])
+
+
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
@@ -5123,6 +5144,7 @@ def main() -> None:
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + (f"ON - {len(GEMINI_API_KEYS)} key(s) loaded" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
     logging.info("Gemini: נטענו %s מפתחות API. אם זה 0, שמות המשתנים ב-Railway לא תואמים.", len(GEMINI_API_KEYS))
+    logging.info("Gemini env debug בטוח, בלי ערכי מפתחות: %s", gemini_env_debug_summary())
     if CONTROL_CHAT_ID:
         Thread(target=control_loop, daemon=True).start()
 
