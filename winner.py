@@ -258,7 +258,7 @@ ACCOUNT_DISPLAY_NAMES = {
     "AranchaMOBILE": "ארנצ'ה רודריגס - ריאל מדריד",
     "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
     "AlfredoPedulla": "אלפרדו פדולה - איטליה",
-    "Plettigoal": "פלוריאן פלטנברג - גרמניה",
+    "Plettigoal": "פלוריאן פלטנברג",
     "cfbayern": "כריסטיאן פאלק - גרמניה",
     "FabriceHawkins": "פבריס הוקינס - צרפת",
     "Tanziloic": "לואיק טנזי - צרפת",
@@ -648,6 +648,7 @@ SELF_QUOTE_ALIASES.update(
 FOOTBALL_TERMS = {
     "here we go": "הנה זה קורה",
     "breaking": "דיווח דרמטי",
+    "breakthrough": "התפתחות משמעותית",
     "exclusive": "בלעדי",
     "understand": "לפי המידע",
     "sources say": "לפי מקורות",
@@ -678,6 +679,7 @@ FOOTBALL_TERMS = {
     "advanced talks": "שיחות מתקדמות",
     "talks ongoing": "השיחות נמשכות",
     "negotiations ongoing": "המשא ומתן נמשך",
+    "in the running": "בין המועמדים",
     "deal off": "העסקה ירדה מהפרק",
     "green light": "אור ירוק",
     "set to join": "צפוי להצטרף",
@@ -3223,6 +3225,24 @@ def remove_credit_handles(text: str) -> str:
     return text.strip()
 
 
+def remove_junk_topic_tags(text: str) -> str:
+    value = text or ""
+    value = re.sub(
+        r"(?ium)^\s*#?(?:transfers?|transfernews|mercato|calciomercato|market|football|soccer|news|breaking|exclusive|העברות|העברה|חדשות|כדורגל|בלעדי|דיווח)\s*[.!?.,;:]*\s*$",
+        "",
+        value,
+    )
+    value = re.sub(
+        r"(?iu)(?:\s+|^)#(?:transfers?|transfernews|mercato|calciomercato|market|football|soccer|news|breaking|exclusive)\b",
+        " ",
+        value,
+    )
+    value = re.sub(r"(?iu)(?<=[.!?。])\s+(?:העברות|העברה|חדשות|כדורגל)\s*[.!?.,;:]*\s*$", "", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r" *\n+ *", "\n", value)
+    return value.strip()
+
+
 def apply_handle_replacements(text: str) -> str:
     for source, target in sorted(HANDLE_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
         pattern = r"(?<![@A-Za-z0-9_])@?" + re.escape(source.lstrip("@")) + r"(?![A-Za-z0-9_])"
@@ -3336,7 +3356,9 @@ def clean_before_translation(text: str) -> str:
     text = remove_weird_symbols(text)
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
+    text = remove_junk_topic_tags(text)
     text = convert_hashtags_to_text(text)
+    text = remove_junk_topic_tags(text)
     text = re.sub(r"(?<!\w)@([A-Za-z0-9_]+)", r"\1", text)
     text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
     text = text.replace("&amp;", "&")
@@ -3349,7 +3371,9 @@ def clean_for_ai_translation(text: str) -> str:
     text = normalize_country_flags(text)
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
+    text = remove_junk_topic_tags(text)
     text = convert_hashtags_to_text(text)
+    text = remove_junk_topic_tags(text)
     text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
     text = text.replace("&amp;", "&")
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -3954,7 +3978,17 @@ def fix_known_player_positions(text: str) -> str:
 def tidy_translated_text(text: str) -> str:
     text = final_hebrew_polish(normalize_country_flags(html.unescape(text or "").strip()))
     text = fix_known_player_positions(text)
-    text = re.sub(r"(?im)^\s*(וידאו|וידיאו)\s*$", "", text)
+    text = remove_junk_topic_tags(text)
+    text = re.sub(r"(?im)^\s*(וידאו|וידיאו|וידאו מצורף|וידיאו מצורף|📹\s*וידאו מצורף|📹\s*וידיאו מצורף)\s*$", "", text)
+    text = re.sub(
+        r"(?iu)\b(?:נמצא(?:ים|ות)?|נמצאת|נכלל(?:ים|ות)?|נכללת|נותר(?:ים|ות)?|נותרת)\s+בהרצה(?=\s+(?:כ(?:אופצי(?:ה|ות)|מועמד(?:ים|ות)?)|לתפקיד|למשרת|למאמן|לאימון|ברשימת|במרוץ))",
+        lambda match: re.sub(r"\s+בהרצה\b", " בין המועמדים", match.group(0), flags=re.IGNORECASE),
+        text,
+    )
+    text = re.sub(r"(?m)^\s*פריצת דרך\s*:\s*", "התפתחות משמעותית: ", text)
+    text = re.sub(r"(?iu)\bבייר\s*04\s+לברקוזן\b", "באייר לברקוזן", text)
+    text = re.sub(r"(?iu)\bבאייר\s*04\s+לברקוזן\b", "באייר לברקוזן", text)
+    text = re.sub(r"(?iu)\s+לפי\s*[.!?.,;:]*\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = remove_junk_tail_lines(text)
     text = final_visual_cleanup(text)
@@ -4064,7 +4098,7 @@ def build_message(
     translated: str,
     quoted_translated: str = "",
     quoted_author_translated: str = "",
-    include_video_link: bool = True,
+    include_video_link: bool = False,
 ) -> str:
     translated = tidy_translated_text(translated)
     quoted_translated = tidy_translated_text(quoted_translated)
@@ -4074,14 +4108,10 @@ def build_message(
     safe_body = html.escape(rtl(translated or "עדכון חדש"))
     safe_quoted_author = html.escape(rtl(quoted_author_translated))
     safe_quoted_body = html.escape(rtl(f'"{quoted_translated}"')) if quoted_translated else ""
-    video_label = f"<b>{html.escape(rtl('📹 וידיאו מצורף'))}</b>"
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
     signature = f'<a href="{html.escape(SIGNATURE_LINK)}">{html.escape(rtl(SIGNATURE_TEXT))}</a>'
 
     parts = [f"<b>{safe_account}</b>", "", safe_body]
-
-    if include_video_link and post.link and post.primary_has_video:
-        parts.extend(["", "", video_label])
 
     if safe_quoted_body:
         parts.append("")
@@ -4089,9 +4119,6 @@ def build_message(
             parts.append(quote_label)
             parts.append(safe_quoted_author)
         parts.append(safe_quoted_body)
-        if include_video_link and post.link and post.quoted_has_video:
-            parts.extend(["", video_label])
-
     parts.extend(["", signature])
 
     return "\n".join(parts)
@@ -4307,6 +4334,17 @@ LOW_INTEREST_CLUB_PATTERNS = (
     r"ואדוץ|דודלאנג'|לינקולן רד אימפס|פלורה טאלין|קלאקסוויק|בלקאני",
 )
 
+LOW_INTEREST_GERMAN_UPDATE_PATTERNS = (
+    r"\b(?:RB Leipzig|Leipzig|RBL|SV Elversberg|Elversberg|Augsburg|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Hamburg|Koln|Köln|Bochum)\b",
+    r"לייפציג|אלברסברג|אוגסבורג|מיינץ|פרייבורג|היידנהיים|סט פאולי|ורדר ברמן|וולפסבורג|אוניון ברלין|הופנהיים|המבורג|קלן|בוכום",
+)
+
+LOW_INTEREST_GERMAN_DESTINATION_PATTERNS = (
+    r"\b(?:join|joining|sign for|signing for|move to|moving to|loan to|loaned to|headed to|set for)\s+(?:SV\s+)?(?:Elversberg|RB Leipzig|Leipzig|RBL|Augsburg|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Hamburg|Koln|Köln|Bochum)\b",
+    r"\b(?:SV\s+)?(?:Elversberg|RB Leipzig|Leipzig|RBL|Augsburg|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Hamburg|Koln|Köln|Bochum)\b.{0,80}\b(?:on loan|loan deal|permanent transfer|transfer)\b",
+    r"(?:מצטרף|יצטרף|עובר|יעבור|מושאל|יושאל|יחתום|קרוב להצטרף|צפוי להצטרף)\s+ל(?:-|\s)?(?:לייפציג|אלברסברג|אוגסבורג|מיינץ|פרייבורג|היידנהיים|סט פאולי|ורדר ברמן|וולפסבורג|אוניון ברלין|הופנהיים|המבורג|קלן|בוכום)",
+)
+
 # Non-playing staff roles. These are usually not urgent unless attached to a major club.
 ADMIN_OR_BACKROOM_ROLE_PATTERNS = (
     r"\b(?:sporting director|sports director|technical director|technical manager|director of football|football director|head of recruitment|chief scout|recruitment director|technical area|technical chief|director deportivo|direttore sportivo|directeur sportif|academy director|youth director|club secretary|consultant|advisor|scout|head scout|data director|performance director|executive director|CEO|chairman|president)\b",
@@ -4490,6 +4528,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
     has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
+    has_low_interest_german_update = _matches_any(LOW_INTEREST_GERMAN_UPDATE_PATTERNS, cleaned)
+    has_low_interest_german_destination = _matches_any(LOW_INTEREST_GERMAN_DESTINATION_PATTERNS, cleaned)
     has_admin_role = _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
     has_weak_interest = _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
     has_transfer_or_future = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
@@ -4555,6 +4595,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         add(-20, "vague_player_idea")
     if has_low_interest_club and not (has_big_rumor_club or has_big_club_context):
         add(-25, "low_interest_club")
+    if has_low_interest_german_update and not (has_big_rumor_club or has_big_club_context or has_major_national_context):
+        add(-35, "low_interest_german_update")
     if has_admin_role:
         add(-45, "admin_or_backroom_role")
     if has_pure_admin_appointment:
@@ -4563,6 +4605,13 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     # Backroom/admin appointments remain restricted: only Barcelona/Barça or Real Madrid.
     if has_admin_role and not has_elite_admin_club:
         return False, "admin_or_backroom_only_barca_real_allowed", score, signals
+
+    if has_low_interest_german_destination and not has_major_national_context:
+        return False, "low_interest_german_destination", score, signals
+
+    if has_low_interest_german_update and not (has_big_rumor_club or has_big_club_context or has_major_national_context):
+        if not (has_strong_move and has_final_or_near_final):
+            return False, "low_interest_german_update_not_enough", score, signals
 
     # Injuries / fitness / recovery: send broadly for popular clubs, top-5 clubs,
     # and major national-team or World Cup contexts. This intentionally catches
@@ -4872,7 +4921,7 @@ def send_post(post: Post) -> dict[str, Any]:
         translated,
         quoted_translated,
         quoted_author_translated,
-        include_video_link=not bool(video_url),
+        include_video_link=False,
     )
     images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
     timings["prepare_seconds"] = time.perf_counter() - prepare_started
@@ -4896,13 +4945,13 @@ def send_post(post: Post) -> dict[str, Any]:
             timings["mode"] = "וידיאו"
             return timings
         except Exception as exc:
-            logging.warning("Video send failed, falling back to text/link: %s", exc)
+            logging.warning("Video send failed, falling back to clean text only: %s", exc)
             message = build_message(
                 post,
                 translated,
                 quoted_translated,
                 quoted_author_translated,
-                include_video_link=True,
+                include_video_link=False,
             )
             images = []
 
@@ -4955,17 +5004,6 @@ def send_video_after_message(video_url: str) -> None:
         )
     except Exception as exc:
         logging.warning("Post text was sent, but Telegram could not attach video: %s", exc)
-        try:
-            telegram_broadcast(
-                "sendMessage",
-                {
-                    "text": f"<b>{html.escape(rtl('וידיאו מצורף:'))}</b>\n{html.escape(video_url)}",
-                    "disable_web_page_preview": False,
-                    "parse_mode": "HTML",
-                },
-            )
-        except Exception as link_exc:
-            logging.warning("Video fallback link also failed: %s", link_exc)
 
 
 def state_path() -> Path:
