@@ -114,8 +114,6 @@ def configured_gemini_api_keys() -> list[str]:
         lowered = key.lower()
         if lowered in {"none", "null", "false", "true", "key", "keys"}:
             return
-        if any(char.isspace() for char in key):
-            return
         if len(key) < 16:
             return
         if key not in seen:
@@ -123,11 +121,16 @@ def configured_gemini_api_keys() -> list[str]:
             keys.append(key)
 
     for raw_value in raw_values:
-        # Accept both classic Google/Gemini keys and Railway/API tokens that
-        # use prefixes such as AQ. Keep this purely local; it costs no credits.
-        for key in re.findall(r"[A-Za-z0-9][A-Za-z0-9._\-]{15,}", raw_value):
-            add_key(key)
+        # Keep the proven behavior from the working version: comma/new-line
+        # separated values are keys. This supports keys with any English prefix.
         for key in re.split(r"[,\n\r;]+", raw_value):
+            add_key(key)
+    if keys:
+        return keys
+
+    # Fallback only for accidentally pasted JSON/text around the keys.
+    for raw_value in raw_values:
+        for key in re.findall(r"[A-Za-z0-9][A-Za-z0-9._\-]{15,}", raw_value):
             add_key(key)
     return keys
 
@@ -149,7 +152,7 @@ def gemini_env_debug_summary() -> str:
             split_count = len([part for part in re.split(r"[,\n\r;]+", raw) if part.strip().strip('"').strip("'")])
             token_count = len(re.findall(r"[A-Za-z0-9][A-Za-z0-9._\-]{15,}", raw))
             ai_google_count = len(re.findall(r"AIza[0-9A-Za-z_\-]{20,}", raw))
-            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, token_patterns={token_count}, google_key_patterns={ai_google_count}")
+            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, loadable_parts={len(configured_gemini_api_keys())}, token_patterns={token_count}, google_key_patterns={ai_google_count}")
     if not interesting:
         return "לא נמצאו בכלל משתני סביבה עם GEMINI/GOOGLE_API_KEY בזמן הריצה"
     return "; ".join(interesting[:30])
@@ -265,7 +268,7 @@ FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECOND
 FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
 FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "7"))
 MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "2"))
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
 MAX_POSTS_SENT_PER_CYCLE = 4
 MAX_POST_AGE_SECONDS = 30 * 60
@@ -319,11 +322,11 @@ SIGNATURE_LINK = "https://t.me/neto_sport"
 SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
-    "https://rsshub.app/twitter/user/{username}",
-    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://nitter.net/{username}/rss",
     "https://twiiit.com/{username}/rss",
     "https://lightbrd.com/{username}/rss",
-    "https://nitter.net/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
 ]
 MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
 RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "3"))
@@ -332,7 +335,7 @@ RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2")
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
-FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "1"))
+FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
 
