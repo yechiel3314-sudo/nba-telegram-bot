@@ -119,12 +119,29 @@ def configured_gemini_api_keys() -> list[str]:
     return keys
 
 
+def emergency_gemini_api_keys_from_any_env() -> list[str]:
+    keys: list[str] = []
+    seen: set[str] = set()
+    for name, raw_value in os.environ.items():
+        upper = name.upper()
+        if "GEMINI" not in upper and upper not in {"GOOGLE_API_KEY", "GOOGLE_API_KEYS"}:
+            continue
+        for part in re.split(r"[,\n\r;]+", raw_value or ""):
+            key = part.strip().strip('"').strip("'").strip()
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
+    return keys
+
+
 GEMINI_API_KEYS = configured_gemini_api_keys()
 
 
 def refresh_gemini_api_keys_from_env() -> None:
     global GEMINI_API_KEYS
     GEMINI_API_KEYS = configured_gemini_api_keys()
+    if not GEMINI_API_KEYS:
+        GEMINI_API_KEYS = emergency_gemini_api_keys_from_any_env()
 
 
 def gemini_env_parts_count() -> int:
@@ -138,7 +155,8 @@ def gemini_env_parts_count() -> int:
 
 def gemini_env_debug_summary() -> str:
     interesting: list[str] = []
-    loadable_count = len(configured_gemini_api_keys())
+    normal_loadable_count = len(configured_gemini_api_keys())
+    emergency_loadable_count = len(emergency_gemini_api_keys_from_any_env())
     for name, value in sorted(os.environ.items()):
         upper = name.upper()
         if "GEMINI" in upper or upper in {"GOOGLE_API_KEY", "GOOGLE_API_KEYS"}:
@@ -146,7 +164,7 @@ def gemini_env_debug_summary() -> str:
             split_count = len([part for part in re.split(r"[,\n\r;]+", raw) if part.strip().strip('"').strip("'")])
             token_count = len(re.findall(r"[A-Za-z0-9][A-Za-z0-9._\-]{15,}", raw))
             ai_google_count = len(re.findall(r"AIza[0-9A-Za-z_\-]{20,}", raw))
-            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, loadable_parts={loadable_count}, token_patterns={token_count}, google_key_patterns={ai_google_count}")
+            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, normal_loader={normal_loadable_count}, emergency_loader={emergency_loadable_count}, active_keys={len(GEMINI_API_KEYS)}, token_patterns={token_count}, google_key_patterns={ai_google_count}")
     if not interesting:
         return "לא נמצאו בכלל משתני סביבה עם GEMINI/GOOGLE_API_KEY בזמן הריצה"
     return "; ".join(interesting[:30])
@@ -5168,12 +5186,19 @@ def main() -> None:
     refresh_gemini_api_keys_from_env()
     validate_settings()
     env_parts_count = gemini_env_parts_count()
+    normal_loader_count = len(configured_gemini_api_keys())
+    emergency_loader_count = len(emergency_gemini_api_keys_from_any_env())
     logging.info("BOT_BUILD_ID: %s", BOT_BUILD_ID)
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + (f"ON - {len(GEMINI_API_KEYS)} key(s) loaded" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
     logging.info("Gemini: נטענו %s מפתחות API מתוך %s חלקים שנמצאו במשתני הסביבה.", len(GEMINI_API_KEYS), env_parts_count)
     logging.info("Gemini env debug בטוח, בלי ערכי מפתחות: %s", gemini_env_debug_summary())
+    if not normal_loader_count and emergency_loader_count and GEMINI_API_KEYS:
+        logging.warning(
+            "Gemini אבחון: הטעינה הרגילה החזירה 0, אבל טעינת חירום מצאה %s מפתחות והבוט משתמש בהם עכשיו.",
+            emergency_loader_count,
+        )
     if env_parts_count and not GEMINI_API_KEYS:
         logging.error(
             "Gemini אבחון חמור: Railway מכיל %s חלקי מפתחות אבל הקוד טען 0. אם הלוג הזה מופיע עם BOT_BUILD_ID=%s, שלח את שורת הדיבאג; אם BOT_BUILD_ID אחר/חסר, Railway מריץ קוד ישן.",
