@@ -4225,6 +4225,17 @@ def contains_allowed_club_or_israeli_league(post: Post) -> bool:
     )
 
 
+def contains_tracked_club_or_israeli_league(post: Post) -> bool:
+    """User club gate: tier 1, tier 2/final-only, Israeli league or allowed national teams."""
+    cleaned = post_filter_text(post)
+    return (
+        _matches_any(ALLOWED_CLUB_PATTERNS, cleaned)
+        or _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
+        or _matches_any(ISRAELI_LEAGUE_PATTERNS, cleaned)
+        or contains_allowed_national_team(post)
+    )
+
+
 def is_clear_player_departure_post(post: Post) -> bool:
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     return contains_allowed_club_or_israeli_league(post) and _matches_any(CLEAR_PLAYER_DEPARTURE_PATTERNS, cleaned)
@@ -4291,6 +4302,7 @@ ELITE_ADMIN_CLUB_PATTERNS = (
 LOW_INTEREST_CLUB_PATTERNS = (
     # Do NOT put top-5-league clubs here. They are handled as popular clubs above.
     # Keep this list only for genuinely small/non-top-5/non-UCL contexts if you add any later.
+    r"\b(?:Copenhagen|FC Copenhagen|Kobenhavn|Kobenhavn|Al Ettifaq|Al-Ettifaq|Ettifaq|Al Shabab|Al-Shabab|Al Taawoun|Al-Taawoun|Al Fateh|Al-Fateh|Al Riyadh|Al-Riyadh|Damac|Al Khaleej|Al-Khaleej|Al Raed|Al-Raed|Al Okhdood|Al-Okhdood)\b",
     r"\b(?:FC Vaduz|Vaduz|Dudelange|Lincoln Red Imps|Flora Tallinn|Klaksvik|KÍ Klaksvík|Ballkani)\b",
     r"ואדוץ|דודלאנג'|לינקולן רד אימפס|פלורה טאלין|קלאקסוויק|בלקאני",
 )
@@ -4464,17 +4476,17 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     cleaned = clean_for_ai_translation(raw_text)
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
-    if not contains_allowed_club_or_israeli_league(post):
-        logging.debug("פוסט של %s נפסל בסינון האיכות: לא קשור לקבוצה מותרת.", post.username)
-        if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
-            return False, "not_connected_to_allowed_club", 0, ["no_allowed_club"]
+    if not contains_tracked_club_or_israeli_league(post):
+        logging.debug("פוסט של %s נפסל בסינון האיכות: לא קשור לקבוצה ברשימות הדרגים.", post.username)
+        return False, "not_connected_to_tracked_club", 0, ["no_tracked_club"]
     if is_other_sport_post(post):
         return False, "other_sport", 0, ["other_sport"]
     if is_youth_or_academy_post(post):
         return False, "youth_or_academy", 0, ["youth_or_academy"]
 
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
-    has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
+    has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
+    has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and not has_final_only_club
     has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
     has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
@@ -4491,7 +4503,6 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_serious_injury = _matches_any(SERIOUS_INJURY_PATTERNS, cleaned)
     has_injury_or_fitness_update = _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
     has_major_national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
-    has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
     has_final_or_near_final = _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
 
     # For the user's lower-priority club group, block pure rumours/loose interest.
@@ -4568,7 +4579,10 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         if not (has_strong_move or has_transfer_or_future or has_coach_news):
             return False, "minor_or_unclear_injury_not_enough", score, signals
 
-    # Strong transfer steps are always newsworthy from the trusted writers.
+    # Strong transfer steps are newsworthy only when they are not just
+    # low-interest clubs with no big-club/national-team context.
+    if has_strong_move and has_low_interest_club and not (has_big_rumor_club or has_big_club_context or has_top5_or_promoted_club or has_major_national_context):
+        return False, "low_interest_club_strong_move_not_enough", score, signals
     if has_strong_move:
         return True, "strong_transfer_step", score, signals
 
@@ -4641,9 +4655,19 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "other_sport"
     if is_youth_or_academy_post(post):
         return "youth_or_academy"
-    if not contains_allowed_club_or_israeli_league(post):
-        if not (should_use_ai_affiliation_fallback(post) and ai_affiliation_fallback_allows(post)):
-            return "not_connected_to_allowed_club"
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if (
+        _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
+        and not (
+            _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
+            or _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
+            or _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
+            or _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
+        )
+    ):
+        return "low_interest_club_not_allowed"
+    if not contains_tracked_club_or_israeli_league(post):
+        return "not_connected_to_tracked_club"
     if is_link_only_or_details_post(post) and not is_clear_player_departure_post(post):
         return "link_or_details_only"
     if is_podcast_or_longform_post(post):
