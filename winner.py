@@ -106,24 +106,29 @@ def configured_gemini_api_keys() -> list[str]:
 
     keys: list[str] = []
     seen: set[str] = set()
+
+    def add_key(candidate: str) -> None:
+        key = candidate.strip().strip('"').strip("'").strip("[]{}()")
+        if not key:
+            return
+        lowered = key.lower()
+        if lowered in {"none", "null", "false", "true", "key", "keys"}:
+            return
+        if any(char.isspace() for char in key):
+            return
+        if len(key) < 16:
+            return
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+
     for raw_value in raw_values:
-        # Strong extraction first: real Google/Gemini API keys normally start
-        # with AIza. This works even if Railway/raw editor added quotes,
-        # spaces, JSON-ish text, labels, or accidental line wrapping.
-        found_pattern_key = False
-        for key in re.findall(r"AIza[0-9A-Za-z_\-]{20,}", raw_value):
-            key = key.strip()
-            if key and key not in seen:
-                seen.add(key)
-                keys.append(key)
-                found_pattern_key = True
-        if found_pattern_key:
-            continue
+        # Accept both classic Google/Gemini keys and Railway/API tokens that
+        # use prefixes such as AQ. Keep this purely local; it costs no credits.
+        for key in re.findall(r"[A-Za-z0-9][A-Za-z0-9._\-]{15,}", raw_value):
+            add_key(key)
         for key in re.split(r"[,\n\r;]+", raw_value):
-            key = key.strip().strip('"').strip("'")
-            if key and key not in seen:
-                seen.add(key)
-                keys.append(key)
+            add_key(key)
     return keys
 
 
@@ -142,8 +147,9 @@ def gemini_env_debug_summary() -> str:
         if "GEMINI" in upper or upper in {"GOOGLE_API_KEY", "GOOGLE_API_KEYS"}:
             raw = value or ""
             split_count = len([part for part in re.split(r"[,\n\r;]+", raw) if part.strip().strip('"').strip("'")])
-            pattern_count = len(re.findall(r"AIza[0-9A-Za-z_\-]{20,}", raw))
-            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, AIza_patterns={pattern_count}")
+            token_count = len(re.findall(r"[A-Za-z0-9][A-Za-z0-9._\-]{15,}", raw))
+            ai_google_count = len(re.findall(r"AIza[0-9A-Za-z_\-]{20,}", raw))
+            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, token_patterns={token_count}, google_key_patterns={ai_google_count}")
     if not interesting:
         return "לא נמצאו בכלל משתני סביבה עם GEMINI/GOOGLE_API_KEY בזמן הריצה"
     return "; ".join(interesting[:30])
@@ -313,13 +319,16 @@ SIGNATURE_LINK = "https://t.me/neto_sport"
 SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
+    "https://rsshub.app/twitter/user/{username}",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
     "https://nitter.net/{username}/rss",
-    "https://xcancel.com/{username}/rss",
 ]
-MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "0"))
-RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
+MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "3"))
 RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
-RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "1"))
+RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2"))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
