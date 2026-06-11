@@ -48,6 +48,8 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
+BOT_BUILD_ID = "football-rss-gemini-loader-reset-2026-06-11-1805"
+
 # Telegram secrets are intentionally NOT hardcoded in this file.
 # Set these in Railway -> Variables.
 def required_env_any(*names: str) -> str:
@@ -104,29 +106,16 @@ def configured_gemini_api_keys() -> list[str]:
             if value:
                 raw_values.append(value)
 
+    # This intentionally matches the last working loader behavior:
+    # every non-empty comma/new-line/semicolon separated value is a key.
     keys: list[str] = []
     seen: set[str] = set()
-
-    def add_key(candidate: str) -> None:
-        key = candidate.strip().strip('"').strip("'").strip("[]{}()")
-        if not key:
-            return
-        if key not in seen:
-            seen.add(key)
-            keys.append(key)
-
     for raw_value in raw_values:
-        # Keep the proven behavior from the working version: comma/new-line
-        # separated values are keys. This supports keys with any English prefix.
-        for key in re.split(r"[,\n\r;]+", raw_value):
-            add_key(key)
-    if keys:
-        return keys
-
-    # Fallback only for accidentally pasted JSON/text around the keys.
-    for raw_value in raw_values:
-        for key in re.findall(r"[A-Za-z0-9][A-Za-z0-9._\-]{15,}", raw_value):
-            add_key(key)
+        for part in re.split(r"[,\n\r;]+", raw_value):
+            key = part.strip().strip('"').strip("'")
+            if key and key not in seen:
+                seen.add(key)
+                keys.append(key)
     return keys
 
 
@@ -138,8 +127,18 @@ def refresh_gemini_api_keys_from_env() -> None:
     GEMINI_API_KEYS = configured_gemini_api_keys()
 
 
+def gemini_env_parts_count() -> int:
+    count = 0
+    for name, value in os.environ.items():
+        upper = name.upper()
+        if "GEMINI" in upper or upper in {"GOOGLE_API_KEY", "GOOGLE_API_KEYS"}:
+            count += len([part for part in re.split(r"[,\n\r;]+", value or "") if part.strip().strip('"').strip("'")])
+    return count
+
+
 def gemini_env_debug_summary() -> str:
     interesting: list[str] = []
+    loadable_count = len(configured_gemini_api_keys())
     for name, value in sorted(os.environ.items()):
         upper = name.upper()
         if "GEMINI" in upper or upper in {"GOOGLE_API_KEY", "GOOGLE_API_KEYS"}:
@@ -147,7 +146,7 @@ def gemini_env_debug_summary() -> str:
             split_count = len([part for part in re.split(r"[,\n\r;]+", raw) if part.strip().strip('"').strip("'")])
             token_count = len(re.findall(r"[A-Za-z0-9][A-Za-z0-9._\-]{15,}", raw))
             ai_google_count = len(re.findall(r"AIza[0-9A-Za-z_\-]{20,}", raw))
-            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, loadable_parts={len(configured_gemini_api_keys())}, token_patterns={token_count}, google_key_patterns={ai_google_count}")
+            interesting.append(f"{name}: length={len(raw)}, split_parts={split_count}, loadable_parts={loadable_count}, token_patterns={token_count}, google_key_patterns={ai_google_count}")
     if not interesting:
         return "לא נמצאו בכלל משתני סביבה עם GEMINI/GOOGLE_API_KEY בזמן הריצה"
     return "; ".join(interesting[:30])
@@ -5168,11 +5167,21 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     refresh_gemini_api_keys_from_env()
     validate_settings()
+    env_parts_count = gemini_env_parts_count()
+    logging.info("BOT_BUILD_ID: %s", BOT_BUILD_ID)
     print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
     print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
     print("Gemini translation: " + (f"ON - {len(GEMINI_API_KEYS)} key(s) loaded" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
-    logging.info("Gemini: נטענו %s מפתחות API. אם זה 0, שמות המשתנים ב-Railway לא תואמים.", len(GEMINI_API_KEYS))
+    logging.info("Gemini: נטענו %s מפתחות API מתוך %s חלקים שנמצאו במשתני הסביבה.", len(GEMINI_API_KEYS), env_parts_count)
     logging.info("Gemini env debug בטוח, בלי ערכי מפתחות: %s", gemini_env_debug_summary())
+    if env_parts_count and not GEMINI_API_KEYS:
+        logging.error(
+            "Gemini אבחון חמור: Railway מכיל %s חלקי מפתחות אבל הקוד טען 0. אם הלוג הזה מופיע עם BOT_BUILD_ID=%s, שלח את שורת הדיבאג; אם BOT_BUILD_ID אחר/חסר, Railway מריץ קוד ישן.",
+            env_parts_count,
+            BOT_BUILD_ID,
+        )
+    if not env_parts_count:
+        logging.error("Gemini אבחון: לא נמצאו חלקי מפתחות בכלל במשתני הסביבה. בדוק שהשם המדויק הוא GEMINI_API_KEYS ושהוא מחובר לסביבה production.")
     if CONTROL_CHAT_ID:
         Thread(target=control_loop, daemon=True).start()
 
