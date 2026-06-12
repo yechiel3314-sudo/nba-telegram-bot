@@ -355,7 +355,7 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m3u8", ".webm", ".avi", ".mkv")
 
 BARE_EXTERNAL_DOMAIN_RE = re.compile(
-    r"(?<!@)\b(?:[A-Za-z0-9-]+\.)+(?:com|co\.uk|net|org|io|app|fr|it|es|de|co|uk|news|sport|football|tv)(?:/[^\s]*)?",
+    r"(?<!@)\b(?:[A-Za-z0-9-]+\.)+(?:com|co\.uk|net|org|io|app|fr|it|es|de|co|uk|news|sport|football|tv|video)(?:/[^\s]*)?",
     re.IGNORECASE,
 )
 
@@ -366,6 +366,7 @@ URL_RE = re.compile(
 
 EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]")
 TAG_FLAG_RE = re.compile(r"\U0001F3F4[\U000E0061-\U000E007A]+\U000E007F")
+ARABIC_TEXT_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+")
 
 COUNTRY_CODE_FLAGS = {
     "AR": "\U0001F1E6\U0001F1F7",
@@ -608,8 +609,22 @@ HANDLE_REPLACEMENTS = {
 HANDLE_REPLACEMENTS.update(
     {
         "MadridXtra": "מדריד אקסטרה",
+        "ellarguero": "אל לרגרו",
     }
 )
+
+ATTRIBUTION_HANDLE_REPLACEMENTS = {
+    "ellarguero": "אל לרגרו",
+    "ElLarguero": "אל לרגרו",
+    "partidazocope": "פרטידאסו קופה",
+    "COPE": "קופה",
+    "diarioas": "אס",
+    "marca": "מארקה",
+    "relevo": "רלבו",
+    "TheAthleticFC": "דה אתלטיק",
+    "SkySports": "סקיי ספורטס",
+    "SkySportDE": "סקיי ספורט גרמניה",
+}
 
 SELF_QUOTE_ALIASES = {
     "FabrizioRomano": ["Fabrizio Romano", "פבריציו רומאנו"],
@@ -2178,6 +2193,28 @@ def is_stats_only_post(cleaned: str) -> bool:
     return bool(has_stats and not has_news_context)
 
 
+MATCH_RESULT_OR_ENGAGEMENT_PATTERNS = (
+    r"\b(?:wins?|won|beat|beats|defeated|defeats|victory|opening game|opener|matchday|full time|full-time|FT|final score|player of the match|man of the match|MOTM|who was your)\b",
+    r"מנצח(?:ת|ים)?|ניצח(?:ה|ו)?|גבר(?:ה|ו)?|הביס(?:ה|ו)?|תוצאה|משחק הפתיחה|מחזור|שריקת סיום|שחקן המצטיין|השחקן המצטיין|איש המשחק|מי היה",
+)
+
+MATCH_NEWS_RESCUE_PATTERNS = (
+    r"\b(?:injury|injured|suspended|red card ban|ban|appeal|disciplinary|called up|squad|transfer|contract|official|signed|agreement|medical)\b",
+    r"פציעה|נפצע|פצוע|השעיה|מורחק|ערעור|זומן|סגל|העברה|חוזה|רשמי|חתם|סיכום|בדיקות רפואיות",
+)
+
+
+def is_match_result_or_engagement_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    if _matches_any(MATCH_NEWS_RESCUE_PATTERNS, cleaned):
+        return False
+    has_match_result = _matches_any(MATCH_RESULT_OR_ENGAGEMENT_PATTERNS, cleaned)
+    has_score = bool(re.search(r"\b\d+\s*[-:]\s*\d+\b", cleaned))
+    return bool(has_match_result or has_score)
+
+
 def filtered_post_text_preview(post: Post, limit: int = 260) -> str:
     raw_text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     cleaned = clean_for_ai_translation(raw_text)
@@ -2247,6 +2284,9 @@ def is_non_news_social_post(post: Post) -> bool:
         return True
     if is_clear_player_departure_post(post):
         return False
+
+    if is_match_result_or_engagement_post(post):
+        return True
 
     # Ordinary interviews/quotes after matches stay blocked unless they contain
     # a concrete transfer/contract mechanism such as bid, offer, loan, option,
@@ -2406,8 +2446,8 @@ NEWS_DUP_STOPWORDS = {
 
 NEWS_DUP_ACTION_WORDS = {
     "leave", "leaves", "leaving", "left", "exit", "exits", "depart", "departs", "free", "agent", "contract", "extend", "extension", "sign", "signs", "signed", "join", "joins", "joined",
-    "transfer", "trade", "traded", "waive", "waived", "injury", "injured", "out", "sacked", "appointed", "agreed", "agreement", "deal", "announce", "announced", "confirmed",
-    "עוזב", "יעזוב", "עזב", "שוחרר", "חופשי", "חוזה", "חתם", "יחתום", "מצטרף", "עבר", "יעבור", "העברה", "טרייד", "פציעה", "נפצע", "לא", "ישחק", "מונה", "פוטר", "סוכם", "אישרה", "אישר", "הודיעה", "פורסם",
+    "transfer", "trade", "traded", "waive", "waived", "injury", "injured", "out", "miss", "misses", "called", "call", "replace", "replaces", "replacement", "sacked", "appointed", "agreed", "agreement", "deal", "announce", "announced", "confirmed",
+    "עוזב", "יעזוב", "עזב", "שוחרר", "חופשי", "חוזה", "חתם", "יחתום", "מצטרף", "עבר", "יעבור", "העברה", "טרייד", "פציעה", "נפצע", "יחמיץ", "ייעדר", "מחליף", "להחליף", "זומן", "קורא", "לא", "ישחק", "מונה", "פוטר", "סוכם", "אישרה", "אישר", "הודיעה", "פורסם",
 }
 
 
@@ -2749,6 +2789,27 @@ GENERIC_DUPLICATE_CONTEXT_TOKENS = {
 }
 
 
+SQUAD_ABSENCE_CONTEXT_PATTERNS = (
+    r"\b(?:World Cup|FIFA World Cup|national team|squad|called up|call-up|replacement|replace|replaces|miss|misses|injury|injured|out)\b",
+    r"מונדיאל|גביע העולם|נבחרת|סגל|זומן|זימון|קורא|מחליף|להחליף|יחמיץ|ייעדר|פציעה|נפצע|פצוע",
+)
+
+SQUAD_ABSENCE_CONTEXT_TOKENS = {
+    "world", "cup", "fifa", "national", "team", "squad", "called", "call", "replacement", "replace", "replaces",
+    "miss", "misses", "injury", "injured", "out", "brazil", "brasil", "argentina", "france", "spain",
+    "מונדיאל", "גביע", "העולם", "נבחרת", "סגל", "זומן", "זימון", "קורא", "מחליף", "להחליף", "יחמיץ", "ייעדר", "פציעה", "נפצע", "פצוע", "ברזיל", "ארגנטינה",
+}
+
+
+def _is_squad_absence_context(text: str) -> bool:
+    return _matches_any(SQUAD_ABSENCE_CONTEXT_PATTERNS, text)
+
+
+def _squad_absence_subject_overlap(cur_tokens: set[str], prev_tokens: set[str]) -> set[str]:
+    shared = (cur_tokens & prev_tokens) - SQUAD_ABSENCE_CONTEXT_TOKENS - NEWS_DUP_STOPWORDS - NEWS_DUP_ACTION_WORDS
+    return {token for token in shared if len(token) >= 5}
+
+
 def _distinctive_duplicate_tokens(tokens: set[str], entities: set[str]) -> set[str]:
     """Tokens that usually point to the actual player/manager/event, not just the club/context."""
     combined = set(tokens) | set(entities)
@@ -2792,6 +2853,7 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     cur_distinctive = _distinctive_duplicate_tokens(cur_tokens, cur_entities)
     prev_distinctive = _distinctive_duplicate_tokens(prev_tokens, prev_entities)
     distinctive_overlap = len(cur_distinctive & prev_distinctive)
+    squad_absence_overlap = _squad_absence_subject_overlap(cur_tokens, prev_tokens)
 
     # Same journalist often posts several separate updates about the same club minutes apart.
     # For the same source, block only a near-repeat or a post sharing the same distinctive
@@ -2811,6 +2873,9 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
         return "DIFFERENT"
     if entity_overlap == 0 and score < 0.72:
         return "DIFFERENT"
+
+    if squad_absence_overlap and _is_squad_absence_context(cur_text) and _is_squad_absence_context(prev_text):
+        return "SAME_DUPLICATE"
 
     # Material advancement: official/completed/agreed after a lower stage, or important new detail.
     if entity_overlap >= 1 and current_rank >= previous_rank + 20 and current_rank >= 50:
@@ -3213,12 +3278,17 @@ def remove_credit_handles(text: str) -> str:
     text = re.sub(r"(?im)^\s*(?:presented|sponsored|brought to you)\s+by\s+.+$", "", text)
     text = re.sub(r"(?iu)\s+(?:presented|sponsored|brought to you)\s+by\s+[A-Za-z0-9 ._-]+[.!?]?\s*$", "", text)
     text = re.sub(r"(?iu)\s+(?:מוצג על ידי|בחסות|פרזנטד ביי)\s+[A-Za-zא-ת0-9 ._-]+[.!?]?\s*$", "", text)
+    for handle, replacement in sorted(ATTRIBUTION_HANDLE_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
+        text = re.sub(rf"(?i)@{re.escape(handle)}\b", replacement, text)
+    text = re.sub(r"(?iu)\s*,?\s*(?:told|said to|speaking to|via|for)\s+@?[A-Za-z0-9_]{3,40}\s*[.!?]?\s*$", "", text)
+    text = re.sub(r"(?iu)\s*,?\s*(?:אמר|אמרה|אמרו|בראיון|בשיחה|דיבר|דיברה)\s+ל-?@?[A-Za-z0-9_]{3,40}\s*[.!?]?\s*$", "", text)
     text = re.sub(
         r"(?<!\w)@[A-Za-z0-9_]*(?:FC|CF|TV|News|Sport|Sports|Calcio|Official|Media)[A-Za-z0-9_]*\b",
         "",
         text,
         flags=re.IGNORECASE,
     )
+    text = re.sub(r"(?iu)(?:^|\s)@?(?:acmilan|juventusfc|inter|sscnapoli|officialsscnapoli|asroma|officialasroma|realmadrid|fcbarcelona|manutd|mancity|lfc|chelseafc|arsenal|spursofficial|psg_inside|fcbayern)\b(?=\s|$|[.,;:!?])", " ", text)
     text = re.sub(r"(?<!\w)@[A-Za-z0-9_]*[_\d][A-Za-z0-9_]*\b", "", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
@@ -3241,6 +3311,25 @@ def remove_junk_topic_tags(text: str) -> str:
     value = re.sub(r"[ \t]{2,}", " ", value)
     value = re.sub(r" *\n+ *", "\n", value)
     return value.strip()
+
+
+def remove_untranslated_arabic_leftovers(text: str) -> str:
+    lines: list[str] = []
+    for line in (text or "").splitlines():
+        if ARABIC_TEXT_RE.search(line):
+            has_hebrew = bool(re.search(r"[א-ת]", line))
+            arabic_chars = len(ARABIC_TEXT_RE.findall(line))
+            # After Gemini, raw Arabic is usually an untranslated source tag or
+            # a short copied phrase. Keep Hebrew around it, remove the leftover.
+            if not has_hebrew or len(line.strip()) <= 90:
+                line = ARABIC_TEXT_RE.sub("", line)
+            else:
+                line = ARABIC_TEXT_RE.sub("", line)
+        line = re.sub(r"\s+([,.!?;:])", r"\1", line)
+        line = re.sub(r"[ \t]{2,}", " ", line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def apply_handle_replacements(text: str) -> str:
@@ -3979,7 +4068,13 @@ def tidy_translated_text(text: str) -> str:
     text = final_hebrew_polish(normalize_country_flags(html.unescape(text or "").strip()))
     text = fix_known_player_positions(text)
     text = remove_junk_topic_tags(text)
+    text = remove_untranslated_arabic_leftovers(text)
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו|וידאו מצורף|וידיאו מצורף|📹\s*וידאו מצורף|📹\s*וידיאו מצורף)\s*$", "", text)
+    for handle, replacement in sorted(ATTRIBUTION_HANDLE_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
+        text = re.sub(rf"(?i)@{re.escape(handle)}\b", replacement, text)
+    text = re.sub(r"(?iu)\s*,?\s*(?:אמר|אמרה|אמרו|בראיון|בשיחה|דיבר|דיברה)\s+ל-?@?[A-Za-z0-9_]{3,40}\s*[.!?]?\s*$", "", text)
+    text = re.sub(r"(?<!\w)@[A-Za-z0-9_]{3,40}\b", "", text)
+    text = re.sub(r"(?iu)\s+(?:אקמילאנ|איי\s*סי\s*מילאן|ACMilan|acmilan)\s*[.!?.,;:]*\s*$", "", text)
     text = re.sub(
         r"(?iu)\b(?:נמצא(?:ים|ות)?|נמצאת|נכלל(?:ים|ות)?|נכללת|נותר(?:ים|ות)?|נותרת)\s+בהרצה(?=\s+(?:כ(?:אופצי(?:ה|ות)|מועמד(?:ים|ות)?)|לתפקיד|למשרת|למאמן|לאימון|ברשימת|במרוץ))",
         lambda match: re.sub(r"\s+בהרצה\b", " בין המועמדים", match.group(0), flags=re.IGNORECASE),
@@ -3993,6 +4088,16 @@ def tidy_translated_text(text: str) -> str:
     text = remove_junk_tail_lines(text)
     text = final_visual_cleanup(text)
     return text.strip()
+
+
+def polish_team_names_with_original_context(post: Post, text: str) -> str:
+    value = text or ""
+    original = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    original_has_tottenham = bool(re.search(r"\bTottenham(?:\s+Hotspur)?\b|טוטנהאם", original, re.IGNORECASE))
+    original_has_spurs = bool(re.search(r"\bSpurs\b|ספרס", original, re.IGNORECASE))
+    if original_has_tottenham and not original_has_spurs:
+        value = re.sub(r"(?iu)\bה?ספרס\b", "טוטנהאם", value)
+    return value
 
 
 def has_meaningful_text(text: str) -> bool:
@@ -4102,6 +4207,8 @@ def build_message(
 ) -> str:
     translated = tidy_translated_text(translated)
     quoted_translated = tidy_translated_text(quoted_translated)
+    translated = polish_team_names_with_original_context(post, translated)
+    quoted_translated = polish_team_names_with_original_context(post, quoted_translated)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
 
     safe_account = html.escape(rtl(f"{display_name}:"))
@@ -4345,6 +4452,14 @@ LOW_INTEREST_GERMAN_DESTINATION_PATTERNS = (
     r"(?:מצטרף|יצטרף|עובר|יעבור|מושאל|יושאל|יחתום|קרוב להצטרף|צפוי להצטרף)\s+ל(?:-|\s)?(?:לייפציג|אלברסברג|אוגסבורג|מיינץ|פרייבורג|היידנהיים|סט פאולי|ורדר ברמן|וולפסבורג|אוניון ברלין|הופנהיים|המבורג|קלן|בוכום)",
 )
 
+LOW_INTEREST_STAY_RENEWAL_PATTERNS = (
+    r"\b(?:agreement reached|agreed|set to sign|will sign|signs|signed)\b.{0,100}\b(?:new contract|contract extension|renewal)\b.{0,140}\b(?:with|at)\s+(?:Twente|FC Twente|PSV|AZ Alkmaar|Utrecht|Feyenoord|Anderlecht|Genk|Gent|Basel|Young Boys|Salzburg|Celtic|Rangers)\b",
+    r"\b(?:Twente|FC Twente|PSV|AZ Alkmaar|Utrecht|Feyenoord|Anderlecht|Genk|Gent|Basel|Young Boys|Salzburg|Celtic|Rangers)\b.{0,140}\b(?:new contract|contract extension|renewal|decides? to stay|stays?|remain|remains)\b",
+    r"\b(?:Barcelona|Barca|Barça|Real Madrid|PSV|Eintracht|Frankfurt|Manchester United|Man United|Liverpool|Arsenal|Chelsea|Bayern|PSG|Juventus|Milan|Inter)\b.{0,180}\b(?:interested|wanted|keen|monitoring)\b.{0,180}\b(?:decides? to stay|stays?|remain|remains|new contract|contract extension|renewal)\b",
+    r"(?:הושג סיכום|סיכם|סיכמה|יחתום|חתם|חתמה).{0,100}(?:חוזה חדש|הארכת חוזה).{0,140}(?:טוונטה|פ\.ס\.וו|פסוו|אלקמאר|פיינורד|אנדרלכט|גנק|גנט|באזל|יאנג בויז|זלצבורג|סלטיק|ריינג'רס)",
+    r"(?:ברצלונה|בארסה|ריאל מדריד|פ\.ס\.וו|פסוו|איינטרכט|פרנקפורט|מנצ'סטר יונייטד|ליברפול|ארסנל|צ'לסי|באיירן|פ\.ס\.ז|יובנטוס|מילאן|אינטר).{0,180}(?:התעניינה|התעניינו|מעוניינת|מעוניינות).{0,180}(?:נשאר|נשארת|יישאר|תישאר|חוזה חדש|הארכת חוזה)",
+)
+
 # Non-playing staff roles. These are usually not urgent unless attached to a major club.
 ADMIN_OR_BACKROOM_ROLE_PATTERNS = (
     r"\b(?:sporting director|sports director|technical director|technical manager|director of football|football director|head of recruitment|chief scout|recruitment director|technical area|technical chief|director deportivo|direttore sportivo|directeur sportif|academy director|youth director|club secretary|consultant|advisor|scout|head scout|data director|performance director|executive director|CEO|chairman|president)\b",
@@ -4530,6 +4645,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
     has_low_interest_german_update = _matches_any(LOW_INTEREST_GERMAN_UPDATE_PATTERNS, cleaned)
     has_low_interest_german_destination = _matches_any(LOW_INTEREST_GERMAN_DESTINATION_PATTERNS, cleaned)
+    has_low_interest_stay_renewal = _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned)
     has_admin_role = _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
     has_weak_interest = _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
     has_transfer_or_future = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
@@ -4605,6 +4721,9 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     # Backroom/admin appointments remain restricted: only Barcelona/Barça or Real Madrid.
     if has_admin_role and not has_elite_admin_club:
         return False, "admin_or_backroom_only_barca_real_allowed", score, signals
+
+    if has_low_interest_stay_renewal:
+        return False, "low_interest_stay_renewal", score, signals
 
     if has_low_interest_german_destination and not has_major_national_context:
         return False, "low_interest_german_destination", score, signals
@@ -4704,7 +4823,11 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "other_sport"
     if is_youth_or_academy_post(post):
         return "youth_or_academy"
+    if is_match_result_or_engagement_post(post):
+        return "match_result_or_engagement"
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned):
+        return "low_interest_stay_renewal"
     if (
         _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
         and not (
@@ -5157,7 +5280,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     duplicate_event = find_recent_duplicate_event(post, state)
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
-                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח בשעתיים האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-8 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
