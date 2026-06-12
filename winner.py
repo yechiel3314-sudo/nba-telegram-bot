@@ -762,6 +762,8 @@ TEAM_REPLACEMENTS = {
     "Aston Villa": "אסטון וילה",
     "West Ham United": "ווסטהאם",
     "West Ham": "ווסטהאם",
+    "Brighton & Hove Albion": "ברייטון",
+    "Brighton and Hove Albion": "ברייטון",
     "Brighton": "ברייטון",
     "Everton": "אברטון",
     "Leicester City": "לסטר סיטי",
@@ -3313,6 +3315,14 @@ def remove_junk_topic_tags(text: str) -> str:
     return value.strip()
 
 
+def normalize_official_club_names_for_translation(text: str) -> str:
+    value = text or ""
+    value = re.sub(r"(?iu)\bBrighton\s*(?:&|and)\s*Hove\s+Albion\b", "Brighton", value)
+    value = re.sub(r"(?iu)\bברייטון\s+(?:אנד|ו)?\s*הוב\s+אלביון\b", "ברייטון", value)
+    value = re.sub(r"(?iu)\bברייטון\s+אלביון\b", "ברייטון", value)
+    return value
+
+
 def remove_untranslated_arabic_leftovers(text: str) -> str:
     lines: list[str] = []
     for line in (text or "").splitlines():
@@ -3443,6 +3453,7 @@ def clean_before_translation(text: str) -> str:
     text = normalize_country_flags(text)
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
+    text = normalize_official_club_names_for_translation(text)
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
     text = remove_junk_topic_tags(text)
@@ -3460,6 +3471,7 @@ def clean_for_ai_translation(text: str) -> str:
     text = normalize_country_flags(text)
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
+    text = normalize_official_club_names_for_translation(text)
     text = remove_junk_topic_tags(text)
     text = convert_hashtags_to_text(text)
     text = remove_junk_topic_tags(text)
@@ -4075,6 +4087,8 @@ def tidy_translated_text(text: str) -> str:
     text = re.sub(r"(?iu)\s*,?\s*(?:אמר|אמרה|אמרו|בראיון|בשיחה|דיבר|דיברה)\s+ל-?@?[A-Za-z0-9_]{3,40}\s*[.!?]?\s*$", "", text)
     text = re.sub(r"(?<!\w)@[A-Za-z0-9_]{3,40}\b", "", text)
     text = re.sub(r"(?iu)\s+(?:אקמילאנ|איי\s*סי\s*מילאן|ACMilan|acmilan)\s*[.!?.,;:]*\s*$", "", text)
+    text = re.sub(r"(?iu)\bברייטון\s+(?:אנד|ו)?\s*הוב\s+אלביון\b", "ברייטון", text)
+    text = re.sub(r"(?iu)\bברייטון\s+אלביון\b", "ברייטון", text)
     text = re.sub(
         r"(?iu)\b(?:נמצא(?:ים|ות)?|נמצאת|נכלל(?:ים|ות)?|נכללת|נותר(?:ים|ות)?|נותרת)\s+בהרצה(?=\s+(?:כ(?:אופצי(?:ה|ות)|מועמד(?:ים|ות)?)|לתפקיד|למשרת|למאמן|לאימון|ברשימת|במרוץ))",
         lambda match: re.sub(r"\s+בהרצה\b", " בין המועמדים", match.group(0), flags=re.IGNORECASE),
@@ -4460,6 +4474,13 @@ LOW_INTEREST_STAY_RENEWAL_PATTERNS = (
     r"(?:ברצלונה|בארסה|ריאל מדריד|פ\.ס\.וו|פסוו|איינטרכט|פרנקפורט|מנצ'סטר יונייטד|ליברפול|ארסנל|צ'לסי|באיירן|פ\.ס\.ז|יובנטוס|מילאן|אינטר).{0,180}(?:התעניינה|התעניינו|מעוניינת|מעוניינות).{0,180}(?:נשאר|נשארת|יישאר|תישאר|חוזה חדש|הארכת חוזה)",
 )
 
+LOW_INTEREST_NON_EUROPE_CONTRACT_PATTERNS = (
+    r"\b(?:Club Tijuana|Tijuana|Xolos|Santos Laguna|Pachuca|Monterrey|Tigres|Club America|América|Chivas|Pumas)\b.{0,180}\b(?:contract|new contract|signs?|signed|shirt number|number 10|release clause|clause)\b",
+    r"\b(?:contract|new contract|signs?|signed|shirt number|number 10|release clause|clause)\b.{0,180}\b(?:Club Tijuana|Tijuana|Xolos|Santos Laguna|Pachuca|Monterrey|Tigres|Club America|América|Chivas|Pumas)\b",
+    r"(?:קלאב\s+)?טיחואנה.{0,180}(?:חוזה|חתם|חתימה|חולצת\s+מספר|מספר\s+10|סעיף\s+שחרור)",
+    r"(?:חוזה|חתם|חתימה|חולצת\s+מספר|מספר\s+10|סעיף\s+שחרור).{0,180}(?:קלאב\s+)?טיחואנה",
+)
+
 # Non-playing staff roles. These are usually not urgent unless attached to a major club.
 ADMIN_OR_BACKROOM_ROLE_PATTERNS = (
     r"\b(?:sporting director|sports director|technical director|technical manager|director of football|football director|head of recruitment|chief scout|recruitment director|technical area|technical chief|director deportivo|direttore sportivo|directeur sportif|academy director|youth director|club secretary|consultant|advisor|scout|head scout|data director|performance director|executive director|CEO|chairman|president)\b",
@@ -4646,6 +4667,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_low_interest_german_update = _matches_any(LOW_INTEREST_GERMAN_UPDATE_PATTERNS, cleaned)
     has_low_interest_german_destination = _matches_any(LOW_INTEREST_GERMAN_DESTINATION_PATTERNS, cleaned)
     has_low_interest_stay_renewal = _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned)
+    has_low_interest_non_europe_contract = _matches_any(LOW_INTEREST_NON_EUROPE_CONTRACT_PATTERNS, cleaned)
     has_admin_role = _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
     has_weak_interest = _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
     has_transfer_or_future = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
@@ -4724,6 +4746,9 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
 
     if has_low_interest_stay_renewal:
         return False, "low_interest_stay_renewal", score, signals
+
+    if has_low_interest_non_europe_contract and not (has_big_rumor_club or has_big_club_context):
+        return False, "low_interest_non_europe_contract", score, signals
 
     if has_low_interest_german_destination and not has_major_national_context:
         return False, "low_interest_german_destination", score, signals
@@ -4828,6 +4853,11 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned):
         return "low_interest_stay_renewal"
+    if _matches_any(LOW_INTEREST_NON_EUROPE_CONTRACT_PATTERNS, cleaned) and not (
+        _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
+        or _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
+    ):
+        return "low_interest_non_europe_contract"
     if (
         _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
         and not (
