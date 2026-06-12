@@ -1560,7 +1560,9 @@ def short_error(exc: Exception, limit: int = 180) -> str:
 
 def log_feed_issue(username: str, message: str, *args: Any) -> None:
     formatted = message % args if args else message
-    normalized = re.sub(r"\d+\.\d+s|\d+s|line \d+, column \d+", "", formatted)
+    normalized = re.sub(r"https?://\S+|HTTP Error \d+|line \d+, column \d+|\d+\.\d+s|\d+s", "", formatted)
+    normalized = re.sub(r"(?:nitter\.net|twiiit\.com|lightbrd\.com|rsshub\.rssforever\.com|rsshub\.app):[^;|]+", "", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     key = hashlib.sha1(f"{username}|{normalized}".encode("utf-8", errors="ignore")).hexdigest()
     now = time.time()
     last_logged = FEED_ISSUE_LAST_LOGGED_AT.get(key, 0.0)
@@ -1624,14 +1626,14 @@ def fetch_posts(username: str) -> list[Post]:
                 primary_issue_parts.append("errors: " + "; ".join(feed_errors[:4]))
             if timed_out_sources:
                 primary_issue_parts.append("timeouts: " + ", ".join(timed_out_sources[:4]))
-            logging.warning(
-                "RSS fallback used for @%s: primary source had a problem, fallback found %s posts. Primary: %s | fallback source: %s | primary issue: %s",
+            logging.info(
+                "RSS fallback used for @%s: primary source failed, fallback found %s posts via %s",
                 username,
                 len(fallback_posts),
-                ", ".join(feed_source_name(template) for template in primary_templates),
                 fallback_posts[0].source_name,
-                " | ".join(primary_issue_parts) or "no items returned",
             )
+            if primary_issue_parts:
+                logging.debug("RSS fallback details for @%s: %s", username, " | ".join(primary_issue_parts))
             return fallback_posts
 
     if not posts:
@@ -1645,14 +1647,17 @@ def fetch_posts(username: str) -> list[Post]:
         if all_timeouts:
             issue_parts.append("timeouts: " + ", ".join(all_timeouts[:8]))
         issue_text = " | ".join(issue_parts) or "no items returned"
-        log_feed_issue(
+        logging.debug(
+            "RSS details for @%s: checked sources=%s | %s",
             username,
-            "RSS: no posts found for @%s after checking %s sources in %.1fs. Sources: %s | %s",
-            username,
-            len(checked_templates),
-            FEED_COLLECTION_TIMEOUT_SECONDS,
             checked_sources,
             issue_text,
+        )
+        log_feed_issue(
+            username,
+            "RSS: no posts found for @%s after checking %s sources. Will retry quietly.",
+            username,
+            len(checked_templates),
         )
     return posts
 
