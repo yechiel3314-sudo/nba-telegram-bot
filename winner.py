@@ -1560,9 +1560,7 @@ def short_error(exc: Exception, limit: int = 180) -> str:
 
 def log_feed_issue(username: str, message: str, *args: Any) -> None:
     formatted = message % args if args else message
-    normalized = re.sub(r"https?://\S+|HTTP Error \d+|line \d+, column \d+|\d+\.\d+s|\d+s", "", formatted)
-    normalized = re.sub(r"(?:nitter\.net|twiiit\.com|lightbrd\.com|rsshub\.rssforever\.com|rsshub\.app):[^;|]+", "", normalized)
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = re.sub(r"\d+\.\d+s|\d+s|line \d+, column \d+", "", formatted)
     key = hashlib.sha1(f"{username}|{normalized}".encode("utf-8", errors="ignore")).hexdigest()
     now = time.time()
     last_logged = FEED_ISSUE_LAST_LOGGED_AT.get(key, 0.0)
@@ -1655,9 +1653,12 @@ def fetch_posts(username: str) -> list[Post]:
         )
         log_feed_issue(
             username,
-            "RSS: no posts found for @%s after checking %s sources. Will retry quietly.",
+            "RSS: no posts found for @%s after checking %s sources in %.1fs. Sources: %s | %s",
             username,
             len(checked_templates),
+            FEED_COLLECTION_TIMEOUT_SECONDS,
+            checked_sources,
+            issue_text,
         )
     return posts
 
