@@ -2378,7 +2378,7 @@ def is_non_news_social_post(post: Post) -> bool:
 
 # ====== SMART FILTERS: FLAGS, WOMEN/WNBA, DUPLICATE NEWS ======
 RECENT_NEWS_STATE_KEY = "__recent_news_events__"
-RECENT_NEWS_WINDOW_SECONDS = 8 * 60 * 60
+RECENT_NEWS_WINDOW_SECONDS = 24 * 60 * 60
 
 SOURCE_PRIORITY = {
     "FabrizioRomano": 100,
@@ -5315,7 +5315,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     duplicate_event = find_recent_duplicate_event(post, state)
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
-                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-8 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-24 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
