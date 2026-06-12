@@ -4488,8 +4488,20 @@ LOW_INTEREST_NON_EUROPE_CONTRACT_PATTERNS = (
 
 # Non-playing staff roles. These are usually not urgent unless attached to a major club.
 ADMIN_OR_BACKROOM_ROLE_PATTERNS = (
-    r"\b(?:sporting director|sports director|technical director|technical manager|director of football|football director|head of recruitment|chief scout|recruitment director|technical area|technical chief|director deportivo|direttore sportivo|directeur sportif|academy director|youth director|club secretary|consultant|advisor|scout|head scout|data director|performance director|executive director|CEO|chairman|president)\b",
-    r"מנהל\s+(?:ספורטיבי|מקצועי|טכני|אקדמיה|נוער|גיוס|סקאוטינג|נתונים|ביצועים)|המנהל\s+(?:הספורטיבי|המקצועי|הטכני)|ראש\s+(?:מערך\s+)?(?:הסקאוטינג|גיוס|אקדמיה)|סקאוט|יועץ|מזכיר\s+המועדון|מנהל\s+הכדורגל|יו\"ר|נשיא|מנכ\"ל",
+    r"\b(?:sporting director|sports director|technical director|technical manager|director of football|football director|head of recruitment|chief scout|recruitment director|technical area|technical chief|director deportivo|direttore sportivo|directeur sportif|academy director|youth director|club secretary|consultant|advisor|scout|head scout|data director|performance director|executive director|chief operating officer|chief operations officer|operations director|COO|CEO|chairman|president)\b",
+    r"מנהל\s+(?:ספורטיבי|מקצועי|טכני|תפעול|תפעולי|אקדמיה|נוער|גיוס|סקאוטינג|נתונים|ביצועים)|המנהל\s+(?:הספורטיבי|המקצועי|הטכני|התפעולי)|ראש\s+(?:מערך\s+)?(?:הסקאוטינג|גיוס|אקדמיה|תפעול)|סקאוט|יועץ|מזכיר\s+המועדון|מנהל\s+הכדורגל|סמנכ\"ל\s+תפעול|מנהל\s+תפעול\s+ראשי|יו\"ר|נשיא|מנכ\"ל",
+)
+
+KNOWN_ADMIN_PERSON_PATTERNS = (
+    r"\b(?:Damien Comolli|Comolli|Cristiano Giuntoli|Giuntoli|Monchi|Ramon Planes|Ramón Planes|Luis Campos|Campos|Deco|Jordi Cruyff|Mateu Alemany|Alemany|Michael Edwards|Hugo Viana|Txiki Begiristain|Begiristain|Hasan Salihamidzic|Salihamidzic)\b",
+    r"דמיאן\s+קומולי|קומולי|כריסטיאנו\s+ג'ונטולי|ג'ונטולי|מונצ'י|רמון\s+פלאנס|לואיס\s+קמפוס|דקו|ג'ורדי\s+קרויף|מתאו\s+אלמאני|מייקל\s+אדוארדס|הוגו\s+ויאנה|צ'יקי\s+בגיריסטיין|חסן\s+סליהמידז'יץ'",
+)
+
+ADMIN_PERSON_EXIT_OR_STATUS_PATTERNS = (
+    r"\b(?:story|chapter|time|spell|tenure|future)\b.{0,80}\b(?:is over|over|ended|ends|finished|done|leaves?|leaving|steps? down|resigns?|terminated|termination)\b",
+    r"\b(?:leaves?|leaving|steps? down|resigns?|terminated|termination|part ways|departure)\b.{0,80}\b(?:role|position|club|project|chapter|story)\b",
+    r"(?:הסיפור|הפרק|התקופה|הקדנציה|העתיד).{0,80}(?:הסתיים|הסתיימה|נגמר|נגמרה|תם|תמה|עזב|עוזב|יעזוב)",
+    r"(?:עוזב|עזב|יעזוב|התפטר|סיים את דרכו|סיום דרכו|היפרדות|פרידה).{0,80}(?:תפקיד|מועדון|פרויקט|הסיפור|התקופה|הקדנציה)",
 )
 
 WEAK_INTEREST_PATTERNS = (
@@ -4642,6 +4654,10 @@ def contains_final_or_near_final_signal(post: Post) -> bool:
     return _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, clean_for_ai_translation(text))
 
 
+def is_known_admin_person_status_post(cleaned: str) -> bool:
+    return _matches_any(KNOWN_ADMIN_PERSON_PATTERNS, cleaned) and _matches_any(ADMIN_PERSON_EXIT_OR_STATUS_PATTERNS, cleaned)
+
+
 def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     """Return (allowed, reason, score, signals) for football relevance.
 
@@ -4674,6 +4690,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_low_interest_stay_renewal = _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned)
     has_low_interest_non_europe_contract = _matches_any(LOW_INTEREST_NON_EUROPE_CONTRACT_PATTERNS, cleaned)
     has_admin_role = _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
+    has_known_admin_person_status = is_known_admin_person_status_post(cleaned)
     has_weak_interest = _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
     has_transfer_or_future = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) or _matches_any(TRANSFER_LINKED_WEAK_PATTERNS, cleaned)
     has_vague_player_idea = _matches_any(VAGUE_PLAYER_IDEA_PATTERNS, cleaned)
@@ -4740,13 +4757,13 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         add(-25, "low_interest_club")
     if has_low_interest_german_update and not (has_big_rumor_club or has_big_club_context or has_major_national_context):
         add(-35, "low_interest_german_update")
-    if has_admin_role:
+    if has_admin_role or has_known_admin_person_status:
         add(-45, "admin_or_backroom_role")
     if has_pure_admin_appointment:
         add(-25, "pure_admin_appointment")
 
     # Backroom/admin appointments remain restricted: only Barcelona/Barça or Real Madrid.
-    if has_admin_role and not has_elite_admin_club:
+    if (has_admin_role or has_known_admin_person_status) and not has_elite_admin_club:
         return False, "admin_or_backroom_only_barca_real_allowed", score, signals
 
     if has_low_interest_stay_renewal:
@@ -4856,6 +4873,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     if is_match_result_or_engagement_post(post):
         return "match_result_or_engagement"
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if is_known_admin_person_status_post(cleaned) and not _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned):
+        return "admin_or_backroom_only_barca_real_allowed"
     if _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned):
         return "low_interest_stay_renewal"
     if _matches_any(LOW_INTEREST_NON_EUROPE_CONTRACT_PATTERNS, cleaned) and not (
