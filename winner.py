@@ -980,6 +980,19 @@ PLAYER_REPLACEMENTS = {
     "Kvaratskhelia": "קווארצחליה",
 }
 
+PLAYER_REPLACEMENTS.update(
+    {
+        "Ruben Amorim": "רובן אמורים",
+        "Rúben Amorim": "רובן אמורים",
+        "Amorim": "אמורים",
+        "Matthias Jaissle": "מתיאס יאייסלה",
+        "Jaissle": "יאייסלה",
+        "Alvaro Arbeloa": "אלווארו ארבלואה",
+        "Álvaro Arbeloa": "אלווארו ארבלואה",
+        "Arbeloa": "ארבלואה",
+    }
+)
+
 HEBREW_FINAL_FIXES = {
     "צ'לסי בוחנת את האפשרות למנות את צ'אבי אלונסו למאמנה הבא של ריאל סוסיאדד": "צ'לסי בוחנת את האפשרות למנות את צ'אבי אלונסו למאמנה הבא",
     "למאמנה הבא של ריאל סוסיאדד": "למאמנה הבא",
@@ -1907,6 +1920,27 @@ def process_control_update(update: dict[str, Any]) -> None:
         send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.")
 
 
+def process_channel_post_update(update: dict[str, Any]) -> None:
+    message = update.get("channel_post") or {}
+    if not isinstance(message, dict):
+        return
+    chat = message.get("chat", {}) or {}
+    chat_id = str(chat.get("id", ""))
+    if chat_id not in set(TELEGRAM_CHAT_IDS):
+        return
+    text = str(message.get("text") or message.get("caption") or "").strip()
+    if not text:
+        return
+    try:
+        state = load_state()
+        message_id = str(message.get("message_id", ""))
+        remember_channel_news_text(text, state, message_id=message_id, source="channel")
+        save_state(state)
+        logging.debug("Channel duplicate memory: remembered channel post %s for 12h.", message_id or "unknown")
+    except Exception as exc:
+        logging.debug("Channel duplicate memory failed: %s", exc)
+
+
 def is_getupdates_conflict(error: Exception) -> bool:
     error_text = str(error).lower()
     return "409" in error_text and "getupdates" in error_text
@@ -1966,13 +2000,14 @@ def control_loop() -> None:
                 {
                     "offset": offset,
                     "timeout": 20,
-                    "allowed_updates": ["callback_query"],
+                    "allowed_updates": ["callback_query", "channel_post"],
                 },
             )
             for update in response.get("result", []):
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
                 save_control_state(control_update_offset=offset)
                 process_control_update(update)
+                process_channel_post_update(update)
         except Exception as exc:
             if is_getupdates_conflict(exc):
                 logging.debug("Control panel getUpdates conflict; trying webhook cleanup.")
@@ -2402,6 +2437,8 @@ def is_non_news_social_post(post: Post) -> bool:
 # ====== SMART FILTERS: FLAGS, WOMEN/WNBA, DUPLICATE NEWS ======
 RECENT_NEWS_STATE_KEY = "__recent_news_events__"
 RECENT_NEWS_WINDOW_SECONDS = 24 * 60 * 60
+CHANNEL_RECENT_NEWS_STATE_KEY = "__channel_recent_news_events__"
+CHANNEL_RECENT_NEWS_WINDOW_SECONDS = 12 * 60 * 60
 
 SOURCE_PRIORITY = {
     "FabrizioRomano": 100,
@@ -2672,6 +2709,150 @@ def remember_recent_news_event(post: Post, state: dict[str, Any]) -> None:
         }
     )
     state[RECENT_NEWS_STATE_KEY] = recent[-250:]
+
+
+def channel_duplicate_text_to_post(text: str, message_id: str = "") -> Post:
+    cleaned = html.unescape(re.sub(r"<[^>]+>", " ", text or ""))
+    cleaned = re.sub(r"https?://t\.me/neto_sport\b\S*", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace(SIGNATURE_TEXT, " ")
+    cleaned = re.sub(r"נטו\s+ספורט\.?", " ", cleaned)
+    cleaned = re.sub(r"^\s*[\u200e\u200f]*[^\n:]{2,40}:\s*(?:\r?\n)+", " ", cleaned, count=1)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return Post(
+        post_id=f"channel:{message_id or hashlib.sha1(cleaned.encode('utf-8', errors='ignore')).hexdigest()}",
+        username="__channel__",
+        text=cleaned,
+        link=f"channel:{message_id}" if message_id else "",
+        image_urls=[],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[],
+        source_name="telegram_channel",
+    )
+
+
+def cleanup_channel_recent_news_events(state: dict[str, Any], now: float | None = None) -> list[dict[str, Any]]:
+    now = now or time.time()
+    recent_raw = state.get(CHANNEL_RECENT_NEWS_STATE_KEY, [])
+    if not isinstance(recent_raw, list):
+        recent_raw = []
+    recent: list[dict[str, Any]] = []
+    for item in recent_raw:
+        if isinstance(item, dict) and now - float(item.get("ts", 0) or 0) <= CHANNEL_RECENT_NEWS_WINDOW_SECONDS:
+            recent.append(item)
+    state[CHANNEL_RECENT_NEWS_STATE_KEY] = recent[-300:]
+    return state[CHANNEL_RECENT_NEWS_STATE_KEY]
+
+
+def remember_channel_news_text(text: str, state: dict[str, Any], message_id: str = "", source: str = "channel") -> None:
+    post = channel_duplicate_text_to_post(text, message_id)
+    if len(post.text) < 12:
+        return
+    recent = cleanup_channel_recent_news_events(state)
+    signature = news_event_signature(post)
+    if not signature.get("tokens"):
+        return
+    recent.append(
+        {
+            "ts": time.time(),
+            "username": source,
+            "priority": 120,
+            "link": post.link,
+            "ai_text": post.text,
+            "signature": signature,
+        }
+    )
+    state[CHANNEL_RECENT_NEWS_STATE_KEY] = recent[-300:]
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    current = news_event_signature(post)
+    for item in reversed(cleanup_channel_recent_news_events(state)):
+        if not isinstance(item, dict):
+            continue
+        previous = item.get("signature", {})
+        if not isinstance(previous, dict):
+            continue
+        score = _event_similarity(current, previous)
+        local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
+        if local in {"ADVANCED_NEW", "DIFFERENT"}:
+            continue
+        if local == "SAME_DUPLICATE" or score >= 0.76:
+            return item
+    return None
+
+
+def clone_post_with_text(post: Post, text: str) -> Post:
+    return Post(
+        post_id=post.post_id,
+        username=post.username,
+        text=text.strip(),
+        link=post.link,
+        image_urls=post.image_urls,
+        video_urls=post.video_urls,
+        has_video=post.has_video,
+        primary_has_video=post.primary_has_video,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=post.published_ts,
+        dedupe_ids=post.dedupe_ids,
+        source_name=post.source_name,
+    )
+
+
+def split_clear_report_lines(post: Post) -> list[str]:
+    raw = html.unescape(post.text or "")
+    has_coach_context = bool(re.search(r"\b(?:coach|manager|head coach)\b|מאמן|מאמנים", raw, re.IGNORECASE))
+    lines = [re.sub(r"\s+", " ", line).strip() for line in raw.splitlines()]
+    lines = [line for line in lines if line and len(line) >= 18]
+    report_lines: list[str] = []
+    for line in lines:
+        if re.search(r"(?i)\b(?:video|watch|podcast|full episode|listen)\b|וידאו|וידיאו|פודקאסט|פודקסט|פרק מלא|האזינו", line):
+            continue
+        if has_coach_context and re.search(r"\b(?:list|shortlist|top of .*list)\b|רשימת|בראש רשימת", line, re.IGNORECASE) and not re.search(r"\b(?:coach|manager|head coach)\b|מאמן|מאמנים", line, re.IGNORECASE):
+            if re.search(r"\blist\b", line, re.IGNORECASE):
+                line = re.sub(r"\blist\b", "manager list", line, count=1, flags=re.IGNORECASE)
+            elif "רשימת" in line:
+                line = line.replace("רשימת", "רשימת המאמנים", 1)
+        if len(_news_duplicate_tokens(_news_duplicate_clean_text(clone_post_with_text(post, line)))) < 3:
+            continue
+        report_lines.append(line)
+    return report_lines
+
+
+def try_keep_non_duplicate_report_lines(post: Post, state: dict[str, Any]) -> bool:
+    lines = split_clear_report_lines(post)
+    if len(lines) < 2:
+        return False
+    kept: list[str] = []
+    dropped = 0
+    for line in lines:
+        line_post = clone_post_with_text(post, line)
+        if find_channel_duplicate_event(line_post, state) or find_recent_duplicate_event(line_post, state):
+            dropped += 1
+            continue
+        if is_interview_post(line_post) or is_other_sport_post(line_post) or is_youth_or_academy_post(line_post):
+            dropped += 1
+            continue
+        if is_podcast_or_longform_post(line_post) or is_link_only_or_details_post(line_post):
+            dropped += 1
+            continue
+        allowed, _reason, _score, _signals = football_relevance_decision(line_post)
+        if not allowed:
+            dropped += 1
+            continue
+        kept.append(line)
+    if dropped and kept:
+        post.text = "\n".join(kept)
+        post.quoted_text = ""
+        return True
+    return False
 
 
 def sort_candidate_posts_for_priority(candidates: list[tuple[str, Post, float]]) -> list[tuple[str, Post, float]]:
@@ -5142,6 +5323,7 @@ def send_post(post: Post) -> dict[str, Any]:
         quoted_author_translated,
         include_video_link=False,
     )
+    timings["channel_memory_text"] = message
     images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
     timings["prepare_seconds"] = time.perf_counter() - prepare_started
 
@@ -5364,7 +5546,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         seen.update(post.dedupe_ids)
                         log_skip_once("link_only", post, "דילוג מסנן: קישור/פרטים בלי דיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
-                    if is_podcast_or_longform_post(post):
+                    if is_podcast_or_longform_post(post) and not try_keep_non_duplicate_report_lines(post, state):
                         seen.update(post.dedupe_ids)
                         log_skip_once("podcast_or_longform", post, "דילוג מסנן: פודקאסט/תוכן ארוך מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
@@ -5377,7 +5559,14 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         seen.update(post.dedupe_ids)
                         log_skip_once("importance:" + importance_reason, post, "דילוג מסנן חשיבות: %s מ-@%s לא נשלח: %s | טקסט: %s", importance_reason, username, post.link, filtered_post_text_preview(post))
                         continue
-                    duplicate_event = find_recent_duplicate_event(post, state)
+                    duplicate_event = find_channel_duplicate_event(post, state) or find_recent_duplicate_event(post, state)
+                    if duplicate_event:
+                        if try_keep_non_duplicate_report_lines(post, state):
+                            duplicate_event = None
+                        else:
+                            seen.update(post.dedupe_ids)
+                            log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון 24/12 שעות. @%s לא נשלח: %s", username, post.link)
+                            continue
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
                         log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-24 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
@@ -5408,7 +5597,14 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     filtered_post_text_preview(post),
                 )
                 continue
-            duplicate_event = None if getattr(post, "force_startup_send", False) else find_recent_duplicate_event_ai_aware(post, state)
+            duplicate_event = None if getattr(post, "force_startup_send", False) else (find_channel_duplicate_event(post, state) or find_recent_duplicate_event_ai_aware(post, state))
+            if duplicate_event:
+                if try_keep_non_duplicate_report_lines(post, state):
+                    duplicate_event = None
+                else:
+                    mark_candidate_seen(state, candidate)
+                    log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון הערוץ/הבוט. @%s לא נשלח: %s", username, post.link)
+                    continue
             if duplicate_event:
                 mark_candidate_seen(state, candidate)
                 log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
@@ -5429,6 +5625,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     forced_seen = set(state.get(FORCED_FABRIZIO_STARTUP_STATE_KEY, []))
                     forced_seen.update(post_ids)
                     state[FORCED_FABRIZIO_STARTUP_STATE_KEY] = list(forced_seen)[-100:]
+                if result.get("channel_memory_text"):
+                    remember_channel_news_text(str(result.get("channel_memory_text", "")), state, message_id=link, source="bot_sent")
                 sent += 1
                 logging.info(
                     "✅ נשלח פוסט מ-@%s | מצב: %s | מקור RSS: %s | גיל %.0fs | מציאה %.2fs | תרגום/Gemini %.2fs | וידיאו %.2fs | הכנה %.2fs | שליחה %.2fs | סה״כ %.2fs",
