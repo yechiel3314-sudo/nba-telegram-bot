@@ -2254,6 +2254,31 @@ MATCH_NEWS_RESCUE_PATTERNS = (
 )
 
 
+LINEUP_OR_SELECTION_BLOCK_PATTERNS = (
+    r"\b(?:line-?ups?|starting XI|starting eleven|confirmed XI|team news|starts?\s+(?:for|against|vs\.?|v\.?)|starting\s+(?:for|against|vs\.?|v\.?|XI|eleven)|benched|on the bench)\b",
+    r"הרכבים|ההרכב הפותח|פותח(?:ת)? בהרכב|יפתח בהרכב|תפתח בהרכב|יעלה בהרכב|בספסל|על הספסל|מסופסל",
+)
+
+LINEUP_OR_SELECTION_CONTEXT_PATTERNS = (
+    r"\b(?:today|tonight|opener|debut|match(?:day)?|game|fixture|vs\.?|v\.?|against|world cup opener|club world cup|kick-?off)\b",
+    r"היום|הלילה|בכורה|משחק|מחזור|נגד|מול|גביע העולם|מונדיאל|שריקת פתיחה",
+)
+
+LINEUP_OR_SELECTION_CONTEXTUAL_PATTERNS = (
+    r"\b(?:not in the squad|out of the squad|left out of the squad|included in the squad|match squad|squad list|available|unavailable|not available)\b",
+    r"לא בסגל|מחוץ לסגל|נכלל בסגל|סגל למשחק|רשימת הסגל|זמין|לא זמין",
+)
+
+
+def is_lineup_or_selection_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    if _matches_any(LINEUP_OR_SELECTION_BLOCK_PATTERNS, cleaned):
+        return True
+    return _matches_any(LINEUP_OR_SELECTION_CONTEXTUAL_PATTERNS, cleaned) and _matches_any(LINEUP_OR_SELECTION_CONTEXT_PATTERNS, cleaned)
+
+
 def is_match_result_or_engagement_post(post: Post) -> bool:
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if not cleaned:
@@ -2837,7 +2862,7 @@ def try_keep_non_duplicate_report_lines(post: Post, state: dict[str, Any]) -> bo
         if find_channel_duplicate_event(line_post, state) or find_recent_duplicate_event(line_post, state):
             dropped += 1
             continue
-        if is_interview_post(line_post) or is_other_sport_post(line_post) or is_youth_or_academy_post(line_post):
+        if is_interview_post(line_post) or is_other_sport_post(line_post) or is_youth_or_academy_post(line_post) or is_lineup_or_selection_post(line_post):
             dropped += 1
             continue
         if is_podcast_or_longform_post(line_post) or is_link_only_or_details_post(line_post):
@@ -4896,6 +4921,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "youth_or_academy", 0, ["youth_or_academy"]
     if is_interview_post(post):
         return False, "interview_blocked", 0, ["interview"]
+    if is_lineup_or_selection_post(post):
+        return False, "lineup_or_selection", 0, ["lineup_or_selection"]
 
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
@@ -5091,6 +5118,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "youth_or_academy"
     if is_interview_post(post):
         return "interview_blocked"
+    if is_lineup_or_selection_post(post):
+        return "lineup_or_selection"
     if is_match_result_or_engagement_post(post):
         return "match_result_or_engagement"
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
@@ -5541,6 +5570,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     if is_medical_staff_post(post):
                         seen.update(post.dedupe_ids)
                         log_skip_once("medical_staff", post, "דילוג מסנן: צוות רפואי/דוקטור/פיזיותרפיסט מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_lineup_or_selection_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("lineup_or_selection", post, "Skip filter: lineup/bench/match squad report from @%s was not sent: %s | text: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_link_only_or_details_post(post) and not is_clear_player_departure_post(post):
                         seen.update(post.dedupe_ids)
