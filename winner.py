@@ -1936,7 +1936,11 @@ def process_channel_post_update(update: dict[str, Any]) -> None:
         message_id = str(message.get("message_id", ""))
         remember_channel_news_text(text, state, message_id=message_id, source="channel")
         save_state(state)
-        logging.debug("Channel duplicate memory: remembered channel post %s for 12h.", message_id or "unknown")
+        logging.info(
+            "Channel duplicate memory: remembered channel post %s for 12h | text: %s",
+            message_id or "unknown",
+            re.sub(r"\s+", " ", text)[:260],
+        )
     except Exception as exc:
         logging.debug("Channel duplicate memory failed: %s", exc)
 
@@ -2609,11 +2613,20 @@ def _news_duplicate_clean_text(post: Post) -> str:
     return text
 
 
+def _normalize_news_duplicate_token(token: str) -> str:
+    token = (token or "").strip("-'׳").lower()
+    if re.fullmatch(r"[א-ת][א-ת'׳\-]{3,}", token):
+        stripped = re.sub(r"^[ובלה](?=[א-ת]{3,})", "", token, count=1)
+        if len(stripped) >= 3:
+            token = stripped
+    return token
+
+
 def _news_duplicate_tokens(text: str) -> set[str]:
     raw_tokens = re.findall(r"[A-Za-zא-ת][A-Za-zא-ת'׳\-]{2,}|\d+", text or "")
     tokens: set[str] = set()
     for token in raw_tokens:
-        token = token.strip("-'׳").lower()
+        token = _normalize_news_duplicate_token(token)
         if len(token) < 3 or token in NEWS_DUP_STOPWORDS:
             continue
         tokens.add(token)
@@ -2624,6 +2637,8 @@ def news_event_signature(post: Post) -> dict[str, Any]:
     text = _news_duplicate_clean_text(post)
     tokens = _news_duplicate_tokens(text)
     action_tokens = tokens & NEWS_DUP_ACTION_WORDS
+    if re.search(r"\b(?:coach|manager|head coach|shortlist|list|talks?|contacts?|candidate|target)\b|מאמן|מאמנים|רשימה|רשימת|בראש רשימת|מגעים|שיחות|מועמד", text, re.IGNORECASE):
+        action_tokens.add("coach_or_candidate_context")
     entity_tokens: set[str] = set()
     for source, target in {**TEAM_REPLACEMENTS, **PLAYER_REPLACEMENTS, **HANDLE_REPLACEMENTS}.items():
         for value in (source, target):
