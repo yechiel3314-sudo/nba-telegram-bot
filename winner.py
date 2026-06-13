@@ -239,6 +239,13 @@ PRIORITY_X_ACCOUNTS = {
     "NicoSchira",
     "ffpolo",
     "AranchaMOBILE",
+    "MatteMoretto",
+    "FabriceHawkins",
+    "gerardromero",
+    "MonfortCarlos",
+    "JLSanchez78",
+    "jfelixdiaz",
+    "Plettigoal",
 }
 
 ACCOUNT_DISPLAY_NAMES = {
@@ -247,28 +254,28 @@ ACCOUNT_DISPLAY_NAMES = {
     "DiMarzio": "ג'אנלוקה די מארציו",
     "JacobsBen": "בן ג'ייקובס",
     "NicoSchira": "ניקולו שירה",
-    "lauriewhitwell": "לורי וויטוול - מנצ'סטר יונייטד",
-    "SamLee": "סם לי - מנצ'סטר סיטי",
-    "_pauljoyce": "פול ג'ויס - ליברפול",
-    "Matt_Law_DT": "מאט לאו - צ'לסי",
-    "SimonJones_DM": "סיימון ג'ונס - אנגליה",
-    "MatteMoretto": "מתאו מורטו - ספרד",
-    "ffpolo": "פרננדו פולו - ברצלונה",
-    "gerardromero": "ג'ראד רומרו - ברצלונה",
-    "AranchaMOBILE": "ארנצ'ה רודריגס - ריאל מדריד",
-    "JLSanchez78": "חוסה לואיס סאנצ'ס - ריאל מדריד",
-    "AlfredoPedulla": "אלפרדו פדולה - איטליה",
+    "lauriewhitwell": "לורי וויטוול",
+    "SamLee": "סם לי",
+    "_pauljoyce": "פול ג'ויס",
+    "Matt_Law_DT": "מאט לאו",
+    "SimonJones_DM": "סיימון ג'ונס",
+    "MatteMoretto": "מתאו מורטו",
+    "ffpolo": "פרננדו פולו",
+    "gerardromero": "ג'ראד רומרו",
+    "AranchaMOBILE": "ארנצ'ה רודריגס",
+    "JLSanchez78": "חוסה לואיס סאנצ'ס",
+    "AlfredoPedulla": "אלפרדו פדולה",
     "Plettigoal": "פלוריאן פלטנברג",
-    "cfbayern": "כריסטיאן פאלק - גרמניה",
-    "FabriceHawkins": "פבריס הוקינס - צרפת",
-    "Tanziloic": "לואיק טנזי - צרפת",
-    "MonfortCarlos": "קרלוס מונפור - ברצלונה",
+    "cfbayern": "כריסטיאן פאלק",
+    "FabriceHawkins": "פבריס הוקינס",
+    "Tanziloic": "לואיק טנזי",
+    "MonfortCarlos": "קרלוס מונפור",
     "jfelixdiaz": "חוסה פליקס דיאס",
-    "Barca_Buzz": "בארסה באז - ברצלונה",
-    "MadridXtra": "מדריד אקסטרה - ריאל מדריד",
-    "iMiaSanMia": "מיה סן מיה - באיירן",
-    "Santi_J_FM": "סנטי אאונה - פריז סן ז'רמן",
-    "AndyMitten": "אנדי מיטן - מנצ'סטר יונייטד",
+    "Barca_Buzz": "בארסה באז",
+    "MadridXtra": "מדריד אקסטרה",
+    "iMiaSanMia": "מיה סן מיה",
+    "Santi_J_FM": "סנטי אאונה",
+    "AndyMitten": "אנדי מיטן",
 }
 
 TARGET_LANGUAGE = "he"
@@ -2238,11 +2245,11 @@ EARLY_MAJOR_CLUB_CONTEXT_PATTERNS = (
     r"\b(?:Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Newcastle|Aston Villa|West Ham|Brighton|Everton|Leicester|Crystal Palace|Wolves|Fulham|Bournemouth|Brentford|Nottingham Forest|Leeds|Sunderland|Burnley)\b",
     r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Sevilla|Valencia|Villarreal|Real Sociedad|Athletic Club|Athletic Bilbao|Real Betis|Girona|Celta Vigo|Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Espanyol|Levante|Leganes|Granada|Las Palmas|Valladolid)\b",
     r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Lazio|Atalanta|Fiorentina|Torino|Bologna|Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Verona|Parma|Pisa|Cremonese)\b",
-    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|RB Leipzig|Leipzig|Eintracht Frankfurt|Mainz|Freiburg|Augsburg|Wolfsburg|Union Berlin|Hoffenheim|Werder Bremen|Hamburg|Koln|Köln|St Pauli|Heidenheim|Bochum)\b",
+    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|Eintracht Frankfurt|Mainz|Freiburg|Augsburg|Wolfsburg|Union Berlin|Hoffenheim|Werder Bremen|Hamburg|Koln|Köln|St Pauli|Heidenheim|Bochum)\b",
     r"\b(?:PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille|Nice|Rennes|Lens|Strasbourg|Brest|Nantes|Toulouse|Montpellier|Reims|Metz|Auxerre|Angers|Lorient|Paris FC)\b",
     r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה|ווסטהאם|ברייטון|אברטון|לסטר|קריסטל פאלאס|וולבס|פולהאם|בורנמות|ברנטפורד|נוטינגהאם|לידס|סנדרלנד|ברנלי",
     r"יובנטוס|אינטר|מילאן|נאפולי|רומא|לאציו|אטאלנטה|פיורנטינה|טורינו|בולוניה|גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|ורונה|פארמה|פיזה|קרמונזה",
-    r"באיירן|דורטמונד|לברקוזן|לייפציג|פרנקפורט|מיינץ|פרייבורג|אוגסבורג|וולפסבורג|אוניון ברלין|הופנהיים|ורדר ברמן|המבורג|קלן|סט פאולי|בוכום",
+    r"באיירן|דורטמונד|לברקוזן|פרנקפורט|מיינץ|פרייבורג|אוגסבורג|וולפסבורג|אוניון ברלין|הופנהיים|ורדר ברמן|המבורג|קלן|סט פאולי|בוכום",
     r"פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל|ניס|רן|לאנס|שטרסבורג|ברסט|נאנט|טולוז|מונפלייה|ריימס|מץ|אוקזר|אנז'ה|לוריין",
 )
 
@@ -2257,6 +2264,21 @@ POST_MATCH_INTERVIEW_NOISE_PATTERNS = (
     r"\b(?:post[- ]match|after the game|after the match|following the game|following the match|press conference|mixed zone|interview)\b",
     r"אחרי\s+המשחק|לאחר\s+המשחק|בסיום\s+המשחק|מסיבת\s+עיתונאים|ראיון|בראיון|דיבר\s+אחרי|נשאל\s+אחרי",
 )
+
+INTERVIEW_BLOCK_PATTERNS = (
+    r"\b(?:interview|press conference|mixed zone|asked about|on\s+@[A-Za-z0-9_]{2,}|via\s+@[A-Za-z0-9_]{2,})\b",
+    r"\b(?:speaking to|spoke to|told|tells|said to|says to)\s+(?:@[A-Za-z0-9_]{2,}|[A-Z][A-Za-z0-9_.-]{2,}(?:\s+[A-Z][A-Za-z0-9_.-]{2,}){0,3})\b",
+    r"\b(?:on|via)\s+[A-Z][A-Za-z0-9_.-]{2,}(?:\s+[A-Z][A-Za-z0-9_.-]{2,}){0,3}\s*:",
+    r"ראיון|בראיון|מסיבת\s+עיתונאים|אזור\s+מעורב|דיבר\s+עם|נשאל\s+על|נשאלה\s+על",
+)
+
+
+def is_interview_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    return _matches_any(INTERVIEW_BLOCK_PATTERNS, cleaned)
+
 
 def has_real_transfer_context(cleaned: str) -> bool:
     if not cleaned:
@@ -2386,8 +2408,15 @@ SOURCE_PRIORITY = {
     "David_Ornstein": 95,
     "DiMarzio": 90,
     "JacobsBen": 80,
+    "MatteMoretto": 78,
     "ffpolo": 70,
     "AranchaMOBILE": 70,
+    "FabriceHawkins": 68,
+    "gerardromero": 65,
+    "MonfortCarlos": 62,
+    "JLSanchez78": 62,
+    "jfelixdiaz": 60,
+    "Plettigoal": 55,
     "NicoSchira": 10,
 }
 
@@ -4260,8 +4289,8 @@ def build_message(
 # to the normal news-quality filter. If no allowed club appears, it is blocked before Gemini.
 ALLOWED_CLUB_PATTERNS = (
     # Germany
-    r"\b(?:Bayern Munich|FC Bayern|FCBayern|Bayern|FCB|Borussia Dortmund|Dortmund|BVB|Bayer Leverkusen|Leverkusen|B04|Eintracht Frankfurt|Frankfurt|SGE|RB Leipzig|Red Bull Leipzig|Leipzig|RBL|Stuttgart|VfB Stuttgart)\b",
-    r"באיירן(?: מינכן)?|בורוסיה דורטמונד|דורטמונד|באייר לברקוזן|לברקוזן|איינטרכט פרנקפורט|פרנקפורט|רד בול לייפציג|לייפציג|שטוטגרט",
+    r"\b(?:Bayern Munich|FC Bayern|FCBayern|Bayern|FCB|Borussia Dortmund|Dortmund|BVB|Bayer Leverkusen|Leverkusen|B04|Eintracht Frankfurt|Frankfurt|SGE|Stuttgart|VfB Stuttgart)\b",
+    r"באיירן(?: מינכן)?|בורוסיה דורטמונד|דורטמונד|באייר לברקוזן|לברקוזן|איינטרכט פרנקפורט|פרנקפורט|שטוטגרט",
     # France
     r"\b(?:Paris Saint-Germain|Paris Saint Germain|PSG|Marseille|Olympique Marseille|OM|Lyon|Olympique Lyon|OL|Lille|LOSC|Lens|RC Lens|RCL|Monaco|AS Monaco|ASM)\b",
     r"פריז סן[- ]?ז'רמן|פ\.ס\.ז|פ.ס.ז|מארסיי|מרסיי|אולימפיק מארסיי|ליון|אולימפיק ליון|ליל|לאנס|מונאקו",
@@ -4296,8 +4325,8 @@ FINAL_ONLY_ALLOWED_CLUB_PATTERNS = (
     r"\b(?:Roma|Napoli|Lazio|Atalanta|Fiorentina)\b",
     r"רומא|נאפולי|לאציו|אטאלנטה|אטלנטה|פיורנטינה",
     # Germany
-    r"\b(?:Bayer Leverkusen|Leverkusen|B04|Eintracht Frankfurt|Frankfurt|SGE|RB Leipzig|Red Bull Leipzig|Leipzig|RBL|Stuttgart|VfB Stuttgart)\b",
-    r"באייר לברקוזן|לברקוזן|איינטרכט פרנקפורט|פרנקפורט|רד בול לייפציג|לייפציג|שטוטגרט",
+    r"\b(?:Bayer Leverkusen|Leverkusen|B04|Eintracht Frankfurt|Frankfurt|SGE|Stuttgart|VfB Stuttgart)\b",
+    r"באייר לברקוזן|לברקוזן|איינטרכט פרנקפורט|פרנקפורט|שטוטגרט",
     # France
     r"\b(?:Marseille|Olympique Marseille|OM|Lyon|Olympique Lyon|OL|Lille|LOSC|Lens|RC Lens|RCL|Monaco|AS Monaco|ASM)\b",
     r"מארסיי|מרסיי|אולימפיק מארסיי|ליון|אולימפיק ליון|ליל|לאנס|מונאקו",
@@ -4312,6 +4341,11 @@ FINAL_ONLY_ALLOWED_CLUB_PATTERNS = (
 FINAL_OR_NEAR_FINAL_PATTERNS = (
     r"\b(?:official|confirmed|announced|announcement|club statement|signed|has signed|will sign|set to sign|set to join|here we go|done deal|deal done|deal agreed|agreement reached|full agreement|verbal agreement|agreed in principle|medical booked|medical tests|medical|documents signed|contracts signed|completed|sealed|final details|final stages|final steps|closing stages|one step away|imminent|expected to be completed|approved|green light|accepted bid|bid accepted)\b",
     r"רשמי|אושר|אישר|אישרה|הודיע|הודיעה|הודעה רשמית|חתם|חתמה|יחתום|תחתום|צפוי לחתום|צפויה לחתום|צפוי להצטרף|צפויה להצטרף|הנה זה קורה|עסקה סגורה|העסקה סגורה|העסקה הושלמה|העסקה סוכמה|סוכמה העסקה|סיכום מלא|הושג סיכום|סיכום בעל פה|סוכמו התנאים|בדיקות רפואיות|נקבעו בדיקות|מסמכים נחתמו|חוזים נחתמו|הושלם|הושלמה|נסגר|נסגרה|פרטים אחרונים|בשלבים האחרונים|צעד אחד מסגירה|קרוב לסגירה|קרובה לסגירה|מיידי|צפוי להיסגר|אור ירוק|הצעה התקבלה|ההצעה התקבלה",
+)
+
+FINAL_ONLY_STRICT_PATTERNS = (
+    r"\b(?:official|confirmed|announced|announcement|club statement|signed|has signed|done deal|deal done|deal agreed|agreement reached|full agreement|documents signed|contracts signed|completed|sealed|approved|accepted bid|bid accepted)\b",
+    r"׳¨׳©׳׳™|׳׳•׳©׳¨|׳׳™׳©׳¨|׳׳™׳©׳¨׳”|׳”׳•׳“׳™׳¢|׳”׳•׳“׳™׳¢׳”|׳”׳•׳“׳¢׳” ׳¨׳©׳׳™׳×|׳—׳×׳|׳—׳×׳׳”|׳”׳¢׳¡׳§׳” ׳¡׳’׳•׳¨׳”|׳¢׳¡׳§׳” ׳¡׳’׳•׳¨׳”|׳”׳¢׳¡׳§׳” ׳”׳•׳©׳׳׳”|׳”׳¢׳¡׳§׳” ׳¡׳•׳›׳׳”|׳¡׳•׳›׳׳” ׳”׳¢׳¡׳§׳”|׳¡׳™׳›׳•׳ ׳׳׳|׳”׳•׳©׳’ ׳¡׳™׳›׳•׳|׳׳¡׳׳›׳™׳ ׳ ׳—׳×׳׳•|׳—׳•׳–׳™׳ ׳ ׳—׳×׳׳•|׳”׳•׳©׳׳|׳”׳•׳©׳׳׳”|׳ ׳¡׳’׳¨|׳ ׳¡׳’׳¨׳”|׳”׳¦׳¢׳” ׳”׳×׳§׳‘׳׳”|׳”׳”׳¦׳¢׳” ׳”׳×׳§׳‘׳׳”",
 )
 
 ISRAELI_LEAGUE_PATTERNS = (
@@ -4430,14 +4464,14 @@ POPULAR_OR_RECENT_UCL_CLUB_PATTERNS = (
     # Spain
     r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid)\b",
     # Germany / France
-    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|RB Leipzig|Leipzig|PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille)\b",
+    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille)\b",
     # Italy / Portugal / Netherlands
     r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Atalanta|Lazio|Benfica|Porto|Sporting CP|Sporting Lisbon|Ajax|PSV|Feyenoord)\b",
     # Globally relevant non-European / high-traffic clubs
     r"\b(?:Al Hilal|Al-Hilal|Al Ittihad|Al-Ittihad|Al Nassr|Al-Nassr|Inter Miami)\b",
     # Hebrew equivalents
     r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה",
-    r"באיירן|דורטמונד|לברקוזן|לייפציג|פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל",
+    r"באיירן|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל",
     r"יובנטוס|אינטר|מילאן|נאפולי|רומא|אטאלנטה|לאציו|בנפיקה|פורטו|ספורטינג|אייאקס|פ.ס.וו|פיינורד",
     r"אל[- ]?הילאל|אל[- ]?איתיחאד|אל[- ]?נאסר|אינטר מיאמי",
 )
@@ -4625,7 +4659,7 @@ def ai_affiliation_fallback_allows(post: Post) -> bool:
         "Allow YES only if the report is real men's football news and the main person/team is clearly connected to one of these allowed clubs, an Israeli-league club, Israel national team, or a current FIFA top-70 men's national team.\n"
         "Connection can be current club/national team, confirmed destination, or very recent former club if the report is directly about transfer/contract/injury/squad/coach news.\n"
         "Return NO for women's football, basketball/NBA/WNBA/other sports, generic quotes, vague admiration, or if you are not sure.\n"
-        "Allowed clubs include Bayern, Dortmund, Leverkusen, Frankfurt, Leipzig, Stuttgart, PSG, Marseille, Lyon, Lille, Lens, Monaco, Real Madrid, Barcelona, Atletico, Sevilla, Villarreal, Athletic Bilbao, Betis, Valencia, Real Sociedad, Man United, Man City, Liverpool, Chelsea, Arsenal, Tottenham, Newcastle, Aston Villa, West Ham, Everton, Brighton, Juventus, AC Milan, Inter, Roma, Napoli, Lazio, Atalanta, Fiorentina, Porto, Benfica, Sporting, Ajax, PSV, Flamengo, Palmeiras, Sao Paulo, Boca Juniors, River Plate, Al Nassr, Al Hilal, Al Ahli, Galatasaray, Fenerbahce, Inter Miami, Club Brugge, Red Star, Botafogo.\n\n"
+        "Allowed clubs include Bayern, Dortmund, Leverkusen, Frankfurt, Stuttgart, PSG, Marseille, Lyon, Lille, Lens, Monaco, Real Madrid, Barcelona, Atletico, Sevilla, Villarreal, Athletic Bilbao, Betis, Valencia, Real Sociedad, Man United, Man City, Liverpool, Chelsea, Arsenal, Tottenham, Newcastle, Aston Villa, West Ham, Everton, Brighton, Juventus, AC Milan, Inter, Roma, Napoli, Lazio, Atalanta, Fiorentina, Porto, Benfica, Sporting, Ajax, PSV, Flamengo, Palmeiras, Sao Paulo, Boca Juniors, River Plate, Al Nassr, Al Hilal, Al Ahli, Galatasaray, Fenerbahce, Inter Miami, Club Brugge, Red Star, Botafogo.\n\n"
         f"Post:\n{cleaned}"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.0, "maxOutputTokens": 8}}
@@ -4679,6 +4713,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "other_sport", 0, ["other_sport"]
     if is_youth_or_academy_post(post):
         return False, "youth_or_academy", 0, ["youth_or_academy"]
+    if is_interview_post(post):
+        return False, "interview_blocked", 0, ["interview"]
 
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
@@ -4705,12 +4741,13 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_injury_or_fitness_update = _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
     has_major_national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
     has_final_or_near_final = _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
+    has_final_only_strict = _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
 
     # For the user's lower-priority club group, block pure rumours/loose interest.
     # Keep normal rules if a major club is also part of the same report, or when the
     # post is really about a national team / country squad.
-    if has_final_only_club and not has_final_or_near_final and not (has_big_rumor_club or has_big_club_context or has_major_national_context):
-        return False, "final_only_club_not_final_or_near_final", 0, ["final_only_club", "not_final"]
+    if has_final_only_club and not has_final_only_strict:
+        return False, "final_only_club_not_strict_final", 0, ["final_only_club", "not_strict_final"]
 
     score = 0
     signals: list[str] = []
@@ -4871,9 +4908,13 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "other_sport"
     if is_youth_or_academy_post(post):
         return "youth_or_academy"
+    if is_interview_post(post):
+        return "interview_blocked"
     if is_match_result_or_engagement_post(post):
         return "match_result_or_engagement"
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) and not _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned):
+        return "final_only_club_not_strict_final"
     if is_known_admin_person_status_post(cleaned) and not _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned):
         return "admin_or_backroom_only_barca_real_allowed"
     if _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned):
@@ -5298,6 +5339,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
                         seen.update(post.dedupe_ids)
                         continue
+                    if is_interview_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("interview_blocked", post, "׳“׳™׳׳•׳’ ׳׳¡׳ ׳: ׳¨׳׳™׳•׳ ׳-@%s ׳׳ ׳ ׳©׳׳—: %s | ׳˜׳§׳¡׳˜: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
                     if getattr(post, "force_startup_send", False):
                         candidate_posts.append((username, post, time.perf_counter() - cycle_started))
                         continue
@@ -5350,7 +5395,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 break
             username, post, _ = candidate
             seen = set(state.get(username, []))
-            final_block_reason = "" if getattr(post, "force_startup_send", False) else pre_send_final_local_block_reason(post)
+            final_block_reason = "interview_blocked" if is_interview_post(post) else ("" if getattr(post, "force_startup_send", False) else pre_send_final_local_block_reason(post))
             if final_block_reason:
                 mark_candidate_seen(state, candidate)
                 log_skip_once(
