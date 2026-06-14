@@ -2278,15 +2278,6 @@ VAGUE_STATUS_NEEDS_QUOTE_PATTERNS = (
 )
 
 
-def is_live_goal_or_match_moment_post(post: Post) -> bool:
-    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
-    if not cleaned:
-        return False
-    if _matches_any(MATCH_NEWS_RESCUE_PATTERNS, cleaned):
-        return False
-    return _matches_any(LIVE_GOAL_OR_MATCH_MOMENT_PATTERNS, cleaned)
-
-
 def is_contextless_teaser_post(post: Post) -> bool:
     primary = clean_for_ai_translation(html.unescape(post.text or ""))
     if not primary:
@@ -2318,6 +2309,15 @@ def is_vague_status_without_primary_context(post: Post) -> bool:
     if contains_tracked_club_or_israeli_league(primary_only):
         return False
     return not has_quoted_context_for_decision(post)
+
+
+def is_live_goal_or_match_moment_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    if _matches_any(MATCH_NEWS_RESCUE_PATTERNS, cleaned):
+        return False
+    return _matches_any(LIVE_GOAL_OR_MATCH_MOMENT_PATTERNS, cleaned)
 
 
 def is_match_result_or_engagement_post(post: Post) -> bool:
@@ -2502,7 +2502,7 @@ def is_non_news_social_post(post: Post) -> bool:
 
 # ====== SMART FILTERS: FLAGS, WOMEN/WNBA, DUPLICATE NEWS ======
 RECENT_NEWS_STATE_KEY = "__recent_news_events__"
-RECENT_NEWS_WINDOW_SECONDS = 24 * 60 * 60
+RECENT_NEWS_WINDOW_SECONDS = 12 * 60 * 60
 CHANNEL_RECENT_NEWS_STATE_KEY = "__channel_recent_news_events__"
 CHANNEL_RECENT_NEWS_WINDOW_SECONDS = 12 * 60 * 60
 
@@ -2564,6 +2564,36 @@ MEDICAL_STAFF_BLOCK_PATTERNS = (
 )
 
 LOGGED_SKIP_KEYS: set[str] = set()
+
+BLOCK_REASON_HEBREW = {
+    "old_post": "פוסט ישן מדי",
+    "women_or_wnba": "תוכן נשים/WNBA",
+    "medical_staff": "דיווח על צוות רפואי",
+    "other_sport": "ענף ספורט אחר",
+    "youth_or_academy": "נוער/אקדמיה",
+    "interview_blocked": "ראיון או ציטוט בלי חדשות העברה",
+    "contextless_teaser": "הודעת רמז בלי מידע ברור",
+    "vague_status_without_primary_context": "עדכון סטטוס בלי שם/קבוצה ברורים",
+    "live_goal_or_match_moment": "עדכון שער או מהלך משחק",
+    "match_result_or_engagement": "תוצאה/שאלת מעורבות/עדכון משחק",
+    "final_only_club_not_strict_final": "קבוצת דרג ב שמותרת רק בדיווח סופי",
+    "admin_or_backroom_only_barca_real_allowed": "דיווח ניהולי שלא קשור לריאל/ברצלונה",
+    "low_interest_stay_renewal": "הישארות/חידוש חוזה לא מספיק מעניין",
+    "low_interest_non_europe_contract": "חוזה בליגה לא מספיק מעניינת",
+    "low_interest_german_destination": "יעד גרמני לא מספיק מעניין",
+    "low_interest_german_update_not_enough": "עדכון גרמני לא מספיק חשוב",
+    "minor_or_unclear_injury_not_enough": "פציעה/כשירות לא מספיק חשובה",
+    "low_interest_club_strong_move_not_enough": "מעבר בקבוצה לא מספיק מעניינת",
+    "vague_big_club_player_idea_without_real_rumour": "רעיון שחקן בלי דיווח אמיתי",
+    "low_importance": "חשיבות נמוכה",
+}
+
+
+def hebrew_block_reason(reason: str) -> str:
+    base = (reason or "").split(";", 1)[0].strip()
+    if base.startswith("importance:"):
+        base = base.split(":", 1)[1]
+    return BLOCK_REASON_HEBREW.get(base, base or "סיבה לא ידועה")
 
 
 def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
@@ -3172,11 +3202,42 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     if squad_absence_overlap and _is_squad_absence_context(cur_text) and _is_squad_absence_context(prev_text):
         return "SAME_DUPLICATE"
 
+    if (
+        not same_author
+        and distinctive_overlap >= 2
+        and current_stage == "medical_or_final_steps"
+        and "medical" not in cur_text
+        and previous_rank >= 50
+        and detail_delta <= 2
+    ):
+        return "SAME_DUPLICATE"
+
     # Material advancement: official/completed/agreed after a lower stage, or important new detail.
     if entity_overlap >= 1 and current_rank >= previous_rank + 20 and current_rank >= 50:
         return "ADVANCED_NEW"
     if entity_overlap >= 2 and detail_delta >= 3 and current_rank >= previous_rank:
         return "ADVANCED_NEW"
+
+    # Different journalists often phrase the same report very differently.
+    # If the same distinctive person/event tokens and the same action context appear,
+    # treat it as the same story unless this post is a clear advancement.
+    if (
+        not same_author
+        and distinctive_overlap >= 2
+        and (action_overlap >= 1 or score >= 0.35)
+        and current_rank < previous_rank + 20
+        and detail_delta <= 2
+    ):
+        return "SAME_DUPLICATE"
+    if (
+        not same_author
+        and entity_overlap >= 2
+        and distinctive_overlap >= 1
+        and action_overlap >= 1
+        and current_rank < previous_rank + 20
+        and detail_delta <= 2
+    ):
+        return "SAME_DUPLICATE"
 
     # Very strong same-event match with no higher stage: skip locally, no Gemini needed.
     if score >= AI_DUPLICATE_AUTO_SKIP_SIMILARITY and current_rank <= previous_rank and detail_delta == 0:
@@ -3242,18 +3303,18 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
     score = _event_similarity_score_for_post(current_post, previous_item)
     local = local_duplicate_verdict(current_post, previous_item, score)
     if local in {"SAME_DUPLICATE", "ADVANCED_NEW", "DIFFERENT"}:
-        logging.info("חיסכון Gemini: החלטה מקומית בכפילות @%s מול @%s => %s | score=%.2f", current_post.username, previous_item.get("username", "unknown"), local, score)
+        logging.debug("חיסכון Gemini: החלטה מקומית בכפילות @%s מול @%s => %s | score=%.2f", current_post.username, previous_item.get("username", "unknown"), local, score)
         return local
 
     cached = _ai_cache_get(previous_text, current_text)
     if cached:
-        logging.info("חיסכון Gemini: תשובת כפילות מה-cache @%s מול @%s => %s", current_post.username, previous_item.get("username", "unknown"), cached)
+        logging.debug("חיסכון Gemini: תשובת כפילות מה-cache @%s מול @%s => %s", current_post.username, previous_item.get("username", "unknown"), cached)
         return cached
 
     if not ENABLE_AI_DUPLICATE_CHECK or not GEMINI_API_KEYS:
         return "UNKNOWN"
     if not has_gemini_key_available():
-        logging.info("חיסכון Gemini: אין מפתח זמין כרגע לפי cooldown מקומי; מדלג על AI כפילות למחזור הזה")
+        logging.debug("חיסכון Gemini: אין מפתח זמין כרגע לפי cooldown מקומי; מדלג על AI כפילות למחזור הזה")
         return "UNKNOWN"
 
     prompt = (
@@ -3424,13 +3485,13 @@ def ai_merge_parallel_posts(cluster: list[tuple[str, Post, float]]) -> str:
     fallback = _ai_duplicate_text_from_post(_candidate_post(ordered[0]))
     if not parallel_merge_needs_ai(cluster):
         also = ", ".join("@" + _candidate_username(item) for item in ordered[1:4])
-        logging.info("חיסכון Gemini: מיזוג מקביל מקומי בלי AI. מקורות: %s", also or _candidate_username(ordered[0]))
+        logging.debug("חיסכון Gemini: מיזוג מקביל מקומי בלי AI. מקורות: %s", also or _candidate_username(ordered[0]))
         return fallback + (f"\nAlso reported by: {also}" if also else "")
     if not has_gemini_key_available():
         also = ", ".join("@" + _candidate_username(item) for item in ordered[1:4])
-        logging.info("חיסכון Gemini: מיזוג AI נדחה כי אין מפתח זמין; משתמש במקור הטוב ביותר")
+        logging.debug("חיסכון Gemini: מיזוג AI נדחה כי אין מפתח זמין; משתמש במקור הטוב ביותר")
         return fallback + (f"\nAlso reported by: {also}" if also else "")
-    logging.info("Gemini merge: משתמש בבינה רק כי יש כמה מקורות/פרטים חדשים שצריך למזג חכם")
+    logging.debug("Gemini merge: משתמש בבינה רק כי יש כמה מקורות/פרטים חדשים שצריך למזג חכם")
     prompt = (
         "You are an elite sports Telegram news editor. Several sources posted at nearly the same time.\n"
         "Merge them into ONE short factual English update for translation to Hebrew.\n"
@@ -3927,7 +3988,7 @@ def log_gemini_unavailable(error: Exception | None) -> None:
 def mark_gemini_available() -> None:
     global GEMINI_FAILURE_LOGGED, GEMINI_DISABLED_UNTIL, GEMINI_COOLDOWN_IS_QUOTA
     if GEMINI_FAILURE_LOGGED:
-        logging.info("✅ ג'מיני חזר לעבוד")
+        logging.debug("ג'מיני חזר לעבוד")
     GEMINI_FAILURE_LOGGED = False
     GEMINI_DISABLED_UNTIL = 0.0
     GEMINI_COOLDOWN_IS_QUOTA = False
@@ -4328,7 +4389,7 @@ def translate_quoted_text(text: str, force: bool = False) -> str:
     # Big Gemini saver: quoted posts are usually duplicated context, not the news
     # we publish. By default we do NOT translate them with AI.
     if not force and not TRANSLATE_QUOTED_POSTS:
-        logging.info("חיסכון Gemini: ציטוט לא תורגם כי TRANSLATE_QUOTED_POSTS כבוי")
+        logging.debug("חיסכון Gemini: ציטוט לא תורגם כי TRANSLATE_QUOTED_POSTS כבוי")
         return ""
     translated = translate_text(cleaned)
     if not translated:
@@ -4979,7 +5040,6 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "interview_blocked", 0, ["interview"]
     if is_live_goal_or_match_moment_post(post):
         return False, "live_goal_or_match_moment", 0, ["live_goal_or_match_moment"]
-
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
     has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and not has_final_only_club
@@ -5358,18 +5418,19 @@ def send_post(post: Post) -> dict[str, Any]:
     # Final network-free approval gate. No Gemini request, video HEAD/GET,
     # external video API, or Telegram upload is allowed before this passes.
     if getattr(post, "force_startup_send", False):
-        logging.info("Startup verification force mode: skipping local filters for latest @%s post. Gemini/translation and Telegram send still run.", post.username)
+        logging.info("בדיקת הפעלה: מדלג על מסננים מקומיים לפוסט האחרון של @%s. תרגום ושליחה עדיין נבדקים כרגיל.", post.username)
         block_reason = ""
     else:
         block_reason = pre_send_final_local_block_reason(post)
     if block_reason:
         timings["total_seconds"] = time.perf_counter() - started
         timings["mode"] = f"pre_send_blocked:{block_reason}"
+        block_reason_he = hebrew_block_reason(block_reason)
         log_skip_once(
             "pre_send:" + block_reason,
             post,
-            "דילוג לפני בינה/וידיאו: %s מ-@%s לא נשלח ולא בוצעה בדיקת וידיאו/Gemini: %s | %s",
-            block_reason,
+            "דילוג לפני תרגום/וידיאו: %s מ-@%s לא נשלח ולא בוצעה בדיקת וידיאו/תרגום: %s | %s",
+            block_reason_he,
             post.username,
             post.link,
             filtered_post_text_preview(post),
@@ -5635,7 +5696,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         continue
                     if is_live_goal_or_match_moment_post(post):
                         seen.update(post.dedupe_ids)
-                        log_skip_once("live_goal_or_match_moment", post, "דילוג מסנן: עדכון שער/מהלך משחק מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        log_skip_once("live_goal_or_match_moment", post, "דילוג מסנן: עדכון שער או מהלך משחק מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_link_only_or_details_post(post) and not is_clear_player_departure_post(post):
                         seen.update(post.dedupe_ids)
@@ -5652,7 +5713,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     importance_reason = football_importance_block_reason(post)
                     if importance_reason:
                         seen.update(post.dedupe_ids)
-                        log_skip_once("importance:" + importance_reason, post, "דילוג מסנן חשיבות: %s מ-@%s לא נשלח: %s | טקסט: %s", importance_reason, username, post.link, filtered_post_text_preview(post))
+                        log_skip_once("importance:" + importance_reason, post, "דילוג מסנן חשיבות: %s מ-@%s לא נשלח: %s | טקסט: %s", hebrew_block_reason(importance_reason), username, post.link, filtered_post_text_preview(post))
                         continue
                     duplicate_event = find_channel_duplicate_event(post, state) or find_recent_duplicate_event(post, state)
                     if duplicate_event:
@@ -5660,11 +5721,11 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                             duplicate_event = None
                         else:
                             seen.update(post.dedupe_ids)
-                            log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון 24/12 שעות. @%s לא נשלח: %s", username, post.link)
+                            log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון 12 שעות. @%s לא נשלח: %s", username, post.link)
                             continue
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
-                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-24 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-12 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
@@ -5682,11 +5743,12 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             final_block_reason = "interview_blocked" if is_interview_post(post) else ("" if getattr(post, "force_startup_send", False) else pre_send_final_local_block_reason(post))
             if final_block_reason:
                 mark_candidate_seen(state, candidate)
+                final_block_reason_he = hebrew_block_reason(final_block_reason)
                 log_skip_once(
                     "final:" + final_block_reason,
                     post,
-                    "דילוג סופי לפני שליחה: %s מ-@%s לא נשלח, לפני Gemini/וידיאו: %s | %s",
-                    final_block_reason,
+                    "דילוג סופי לפני שליחה: %s מ-@%s לא נשלח, לפני תרגום/וידיאו: %s | %s",
+                    final_block_reason_he,
                     username,
                     post.link,
                     filtered_post_text_preview(post),
@@ -5724,15 +5786,11 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     remember_channel_news_text(str(result.get("channel_memory_text", "")), state, message_id=link, source="bot_sent")
                 sent += 1
                 logging.info(
-                    "✅ נשלח פוסט מ-@%s | מצב: %s | מקור RSS: %s | גיל %.0fs | מציאה %.2fs | תרגום/Gemini %.2fs | וידיאו %.2fs | הכנה %.2fs | שליחה %.2fs | סה״כ %.2fs",
+                    "נשלח פוסט מ-@%s | מקור: %s | גיל: %.0fs | תרגום: %.2fs | שליחה: %.2fs | סה״כ: %.2fs",
                     username,
-                    result.get("mode", "unknown"),
                     result.get("source_name", "unknown"),
                     result.get("post_age_seconds", 0.0),
-                    result.get("found_seconds", 0.0),
                     result.get("translation_seconds", 0.0),
-                    result.get("video_lookup_seconds", 0.0),
-                    result.get("prepare_seconds", 0.0),
                     result.get("send_seconds", 0.0),
                     result.get("total_seconds", 0.0),
                 )
@@ -5741,7 +5799,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 seen.update(post_ids)
                 state[username] = list(seen)[-500:]
                 logging.info(
-                    "דילוג: ג'מיני זיהה שאין עדכון חדשותי, הפוסט סומן כנראה: %s | מקור RSS: %s",
+                    "דילוג: אין עדכון חדשותי, הפוסט סומן כנראה: %s | מקור: %s",
                     link,
                     result.get("source_name", "unknown"),
                 )
@@ -5764,19 +5822,7 @@ def main() -> None:
     refresh_gemini_api_keys_from_env()
     validate_settings()
     env_parts_count = gemini_env_parts_count()
-    normal_loader_count = len(configured_gemini_api_keys())
-    emergency_loader_count = len(emergency_gemini_api_keys_from_any_env())
-    logging.info("BOT_BUILD_ID: %s", BOT_BUILD_ID)
-    print(f"Football bot is running. Accounts: {', '.join('@' + account for account in active_x_accounts())}", flush=True)
-    print(f"Checking every {CHECK_EVERY_SECONDS} seconds.", flush=True)
-    print("Gemini translation: " + (f"ON - {len(GEMINI_API_KEYS)} key(s) loaded" if GEMINI_API_KEYS else "OFF - posts will not be sent without Gemini"), flush=True)
-    logging.info("Gemini: נטענו %s מפתחות API מתוך %s חלקים שנמצאו במשתני הסביבה.", len(GEMINI_API_KEYS), env_parts_count)
-    logging.info("Gemini env debug בטוח, בלי ערכי מפתחות: %s", gemini_env_debug_summary())
-    if not normal_loader_count and emergency_loader_count and GEMINI_API_KEYS:
-        logging.warning(
-            "Gemini אבחון: הטעינה הרגילה החזירה 0, אבל טעינת חירום מצאה %s מפתחות והבוט משתמש בהם עכשיו.",
-            emergency_loader_count,
-        )
+    logging.info("בוט הכדורגל עלה. כתבים פעילים: %s | בדיקה כל %ss", len(active_x_accounts()), current_check_every_seconds())
     if env_parts_count and not GEMINI_API_KEYS:
         logging.error(
             "Gemini אבחון חמור: Railway מכיל %s חלקי מפתחות אבל הקוד טען 0. אם הלוג הזה מופיע עם BOT_BUILD_ID=%s, שלח את שורת הדיבאג; אם BOT_BUILD_ID אחר/חסר, Railway מריץ קוד ישן.",
@@ -5784,7 +5830,7 @@ def main() -> None:
             BOT_BUILD_ID,
         )
     if not env_parts_count:
-        logging.error("Gemini אבחון: לא נמצאו חלקי מפתחות בכלל במשתני הסביבה. בדוק שהשם המדויק הוא GEMINI_API_KEYS ושהוא מחובר לסביבה production.")
+        logging.error("לא נמצאו מפתחות Gemini במשתני הסביבה. פוסטים לא יישלחו בלי תרגום תקין.")
     if CONTROL_CHAT_ID:
         Thread(target=control_loop, daemon=True).start()
 
@@ -5843,8 +5889,6 @@ def main() -> None:
                 save_control_state(False, resume_min_ts=0.0)
             save_translation_cache(TRANSLATION_CACHE)
             save_ai_decision_cache()
-            if sent:
-                print(f"Sent {sent} new post(s).", flush=True)
             now = time.time()
             if now - last_heartbeat_log >= HEARTBEAT_LOG_SECONDS:
                 logging.info("בוט הכדורגל עדיין עובד. כתבים פעילים: %s | בדיקה כל %ss | נשלחו בסבב: %s", len(active_x_accounts()), current_check_every_seconds(), sent)
