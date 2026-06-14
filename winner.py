@@ -302,14 +302,17 @@ NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOU
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
+FORCE_FABRIZIO_STARTUP_TEST_SEND = True  # שנה ל-False אחרי בדיקת ההרצה כדי שלא יישלח בכל הפעלה
 FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP = (
+    FORCE_FABRIZIO_STARTUP_TEST_SEND
+    or
     os.environ.get(
         "FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP",
         os.environ.get("SEND_FABRIZIO_LAST_MATCHING_POST_ON_STARTUP", "0"),
     )
     == "1"
 )
-FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP = os.environ.get("FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP", "0") == "1"
+FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP = FORCE_FABRIZIO_STARTUP_TEST_SEND or os.environ.get("FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP", "0") == "1"
 FORCED_FABRIZIO_STARTUP_STATE_KEY = "__forced_fabrizio_startup_posts__"
 SEND_STARTUP_STATUS_MESSAGE = False
 CONTROL_CHAT_ID = required_env_any(
@@ -358,6 +361,9 @@ FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS"
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
 FEED_NO_POSTS_WARNING_AFTER_FAILURES = int(os.environ.get("FEED_NO_POSTS_WARNING_AFTER_FAILURES", "3"))
 FEED_NO_POSTS_FAILURE_COUNTS: dict[str, int] = {}
+RSS_CONTROL_ALERT_AFTER_FAILURES = int(os.environ.get("RSS_CONTROL_ALERT_AFTER_FAILURES", "40"))
+RSS_CONTROL_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_CONTROL_ALERT_EVERY_SECONDS", str(30 * 60)))
+RSS_CONTROL_ALERT_LAST_SENT_AT: dict[str, float] = {}
 FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
@@ -1598,6 +1604,38 @@ def log_feed_issue(username: str, message: str, *args: Any) -> None:
     logging.debug(message, *args)
 
 
+def send_rss_control_alert_if_needed(username: str, failures: int, checked_sources: int, issue_text: str) -> None:
+    if not CONTROL_CHAT_ID or RSS_CONTROL_ALERT_AFTER_FAILURES <= 0:
+        return
+    if failures < RSS_CONTROL_ALERT_AFTER_FAILURES:
+        return
+    now = time.time()
+    last_sent = RSS_CONTROL_ALERT_LAST_SENT_AT.get(username, 0.0)
+    if now - last_sent < RSS_CONTROL_ALERT_EVERY_SECONDS:
+        return
+    RSS_CONTROL_ALERT_LAST_SENT_AT[username] = now
+    minutes = max(1, round(failures * current_check_every_seconds() / 60))
+    text = (
+        "⚠️ התראת RSS\n"
+        f"@{username} לא מחזיר פוסטים כבר {failures} בדיקות רצופות, בערך {minutes} דקות.\n"
+        f"נבדקו {checked_sources} מקורות RSS.\n"
+        f"סיבה אחרונה: {trim(issue_text, 700)}"
+    )
+    try:
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": CONTROL_CHAT_ID,
+                "text": text,
+                "disable_web_page_preview": True,
+            },
+            max_attempts=1,
+        )
+        logging.warning("⚠️ נשלחה התראת RSS ללוח השליטה עבור @%s אחרי %s בדיקות בלי פוסטים.", username, failures)
+    except Exception as exc:
+        logging.warning("⚠️ התראת RSS ללוח השליטה נכשלה עבור @%s: %s", username, exc)
+
+
 def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
     all_posts: dict[str, Post] = {}
     feed_errors: list[str] = []
@@ -1687,6 +1725,7 @@ def fetch_posts(username: str) -> list[Post]:
                 no_posts_failures,
                 len(checked_templates),
             )
+        send_rss_control_alert_if_needed(username, no_posts_failures, len(checked_templates), issue_text)
     return posts
 
 
@@ -5633,6 +5672,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     send_futures = []
     queued_ids: set[str] = set()
     global_candidate_posts: list[tuple[str, Post, float]] = []
+    scanned_accounts = 0
+    accounts_with_posts = 0
+    fetched_posts_total = 0
+    new_posts_total = 0
 
     def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
@@ -5652,9 +5695,12 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             future_map = {fetch_executor.submit(fetch_posts_safely, username): username for username in ordered_accounts()}
             for future in as_completed(future_map):
                 username, posts = future.result()
+                scanned_accounts += 1
                 seen = set(state.get(username, []))
                 if not posts:
                     continue
+                accounts_with_posts += 1
+                fetched_posts_total += len(posts)
 
                 if not first_run and username not in state and not SEND_BACKLOG_FOR_NEW_ACCOUNTS:
                     for post in posts:
@@ -5663,6 +5709,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     continue
 
                 new_posts = [post for post in posts if not any(post_id in seen for post_id in post.dedupe_ids)]
+                new_posts_total += len(new_posts)
                 force_fabrizio_startup_check = (
                     startup_cycle
                     and FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP
@@ -5697,6 +5744,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     for post in posts:
                         seen.update(post.dedupe_ids)
                     state[username] = list(seen)[-500:]
+                    logging.info("🔎 אתחול ראשון: @%s נמצאו %s פוסטים קיימים וסומנו כנקראו בלי שליחה.", username, len(posts))
                     continue
 
                 candidate_posts: list[tuple[str, Post, float]] = []
@@ -5776,6 +5824,14 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 state[username] = list(seen)[-500:]
 
         global_candidate_posts = cluster_parallel_candidates(global_candidate_posts)
+        logging.info(
+            "🔎 סיכום סריקה: נבדקו %s כתבים | כתבים עם פוסטים: %s | פוסטים שנמצאו: %s | חדשים לפני סינון: %s | מועמדים אחרי סינון: %s",
+            scanned_accounts,
+            accounts_with_posts,
+            fetched_posts_total,
+            new_posts_total,
+            len(global_candidate_posts),
+        )
 
         for candidate in sort_candidate_posts_for_priority(global_candidate_posts):
             if len(send_futures) >= MAX_POSTS_SENT_PER_CYCLE:
