@@ -10,21 +10,52 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib.parse import quote
 
+def load_env_file(path=".env"):
+    if not os.path.exists(path):
+        return
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError as e:
+        print(f"⚠️ לא הצלחתי לקרוא קובץ .env: {e}")
+
+load_env_file()
+
 # ==========================================
 # הגדרות מערכת וטוקנים
 # ==========================================
 SENT_EVENTS_DIR = "sent_events"
 TELEGRAM_TOKEN = os.environ.get(
     "NBA_LIVE_TELEGRAM_BOT_TOKEN_PRIVATE",
-    ""
+    os.environ.get(
+        "NBA_LIVE_TELEGRAM_BOT_TOKEN",
+        os.environ.get("TELEGRAM_TOKEN", "")
+    )
 ).strip()
 
 CHAT_ID = os.environ.get(
     "NBA_LIVE_TELEGRAM_CHAT_ID_PRIVATE",
-    ""
+    os.environ.get(
+        "NBA_LIVE_TELEGRAM_CHAT_ID",
+        os.environ.get("TELEGRAM_CHAT_ID", "")
+    )
 ).strip()
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_cache.json"
+SKIP_EXISTING_ON_START = os.environ.get("NBA_SKIP_EXISTING_ON_START", "0").strip() == "1"
+BLOCK_ON_HEBCAL_FAILURE = os.environ.get("NBA_BLOCK_ON_HEBCAL_FAILURE", "0").strip() == "1"
+CACHE_SCHEMA_VERSION = 2
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Referer": "https://www.nba.com/",
@@ -100,8 +131,8 @@ def is_shabbat_or_yom_tov():
         )
         data = get_json(url)
         if not data:
-            print("?? ?? ?????? ????? ?-Hebcal; ?? ?????? ?????? ??? ?????? ?????? ???/??")
-            return True
+            print("⚠️ לא התקבלה תשובה מ-Hebcal; ממשיך לשלוח כדי לא לחסום הודעות בטעות")
+            return BLOCK_ON_HEBCAL_FAILURE
 
         status = data.get("status") or {}
         return bool(status.get("isAssurBemlacha"))
@@ -460,6 +491,19 @@ PLAYER_PHOTOS = {
     "Christian Braun": "https://pbs.twimg.com/media/HFGEAHOaQAA0iB8?format=jpg&name=large",
 }
 
+def clear_sent_event_markers():
+    if not os.path.isdir(SENT_EVENTS_DIR):
+        return
+
+    for file_name in os.listdir(SENT_EVENTS_DIR):
+        if not file_name.endswith(".done"):
+            continue
+
+        try:
+            os.remove(os.path.join(SENT_EVENTS_DIR, file_name))
+        except OSError as e:
+            print(f"⚠️ לא הצלחתי למחוק סימון אירוע ישן {file_name}: {e}")
+
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
@@ -473,11 +517,18 @@ def load_cache():
                 if "sent_events" not in data:
                     data["sent_events"] = {}
 
+                if data.get("schema_version") != CACHE_SCHEMA_VERSION:
+                    print("⚠️ נמצא cache ישן; מנקה סימוני שליחה כדי לא לחסום הודעות שלא נשלחו")
+                    data["games"] = {}
+                    data["sent_events"] = {}
+                    data["schema_version"] = CACHE_SCHEMA_VERSION
+                    clear_sent_event_markers()
+
                 return data
         except Exception as e:
             print(f"⚠️ שגיאה בטעינת cache: {e}")
 
-    return {"names": {}, "games": {}, "sent_events": {}}
+    return {"names": {}, "games": {}, "sent_events": {}, "schema_version": CACHE_SCHEMA_VERSION}
     
 def save_cache():
     try:
@@ -960,7 +1011,10 @@ def run():
 
     print("🚀 בוט NBA משודרג - גרסה מלאה- כולל הארכותי!")
 
-    first_run = True
+    print(f"Telegram token loaded: {'yes' if TELEGRAM_TOKEN else 'no'} | chat id loaded: {'yes' if CHAT_ID else 'no'}")
+    print(f"Skip existing games on start: {'yes' if SKIP_EXISTING_ON_START else 'no'} | block on Hebcal failure: {'yes' if BLOCK_ON_HEBCAL_FAILURE else 'no'}")
+
+    first_run = SKIP_EXISTING_ON_START
 
     while True:
         try:
