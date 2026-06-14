@@ -556,6 +556,12 @@ def release_event(event_key):
     except OSError as e:
         print(f"?? ?? ?????? ????? ????? ???? ??? ?????: {e}")
 
+def remember_sent(log, key, sent):
+    if sent:
+        log.append(key)
+    else:
+        print(f"⚠️ השליחה נכשלה, האירוע לא יסומן כנשלח: {key}")
+
 def translate_name(name):
     if not name:
         return ""
@@ -917,6 +923,8 @@ def send_telegram(text, photo_url=None, event_key=None):
         # לא משחררים event_key אוטומטית.
         # אחרת אם Telegram שלח בפועל אבל החזיר timeout/שגיאה זמנית,
         # הסריקה הבאה תשלח את אותה הודעה שוב.
+        if claimed and event_key:
+            release_event(event_key)
         return False
 
     except requests.RequestException as e:
@@ -924,6 +932,8 @@ def send_telegram(text, photo_url=None, event_key=None):
 
         # גם כאן לא עושים release_event.
         # Timeout יכול לקרות אחרי שההודעה כבר נשלחה בפועל.
+        if claimed and event_key:
+            release_event(event_key)
         return False
 
 def safe_get_json(url, timeout=10):
@@ -1050,8 +1060,8 @@ def run():
                         label = "המשחק יצא לדרך!" if period == 1 else f"רבע {period} יצא לדרך!"
                         m, p = format_msg(b_resp['game'], label, is_start=True)
                         event_key = make_event_key(gid, f"start_q{period}", period=period)
-                        send_telegram(m, p, event_key=event_key)
-                        log.append(s_key)
+                        sent = send_telegram(m, p, event_key=event_key)
+                        remember_sent(log, s_key, sent)
                 
                 # =======================
                 # מחצית
@@ -1063,8 +1073,8 @@ def run():
                 
                     m, p = format_msg(b_resp['game'], "סיום מחצית")
                     event_key = make_event_key(gid, "halftime", period=period)
-                    send_telegram(m, p, event_key=event_key)
-                    log.append(txt)
+                    sent = send_telegram(m, p, event_key=event_key)
+                    remember_sent(log, txt, sent)
                 
                 # =======================
                 # סיום רבעים
@@ -1076,9 +1086,8 @@ def run():
                 
                     m, p = format_msg(b_resp['game'], f"סיום רבע {period}")
                     event_key = make_event_key(gid, "end_quarter", period=period)
-                    send_telegram(m, p, event_key=event_key)
-                
-                    log.append(txt)
+                    sent = send_telegram(m, p, event_key=event_key)
+                    remember_sent(log, txt, sent)
                 
                 # =======================
                 # סיום רבע 4
@@ -1098,9 +1107,8 @@ def run():
                     if home_score == away_score:
                         m, p = format_msg(game_data, "סיום רבע 4")
                         event_key = make_event_key(gid, "end_quarter", period=4, away_score=away_score, home_score=home_score)
-                        send_telegram(m, p, event_key=event_key)
-                
-                        log.append(txt)
+                        sent = send_telegram(m, p, event_key=event_key)
+                        remember_sent(log, txt, sent)
                 
                         if "drama_q4" not in log:
                             drama_txt = f"טירוף! שוויון {home_score} - {away_score} הולכים להארכה!"
@@ -1111,9 +1119,8 @@ def run():
                                 drama_text=drama_txt
                             )
                             event_key = make_event_key(gid, "drama_q4", period=4, away_score=away_score, home_score=home_score)
-                            send_telegram(m, p, event_key=event_key)
-                
-                            log.append("drama_q4")
+                            sent = send_telegram(m, p, event_key=event_key)
+                            remember_sent(log, "drama_q4", sent)
                     else:
                         log.append(txt)
                 
@@ -1141,9 +1148,8 @@ def run():
                         m, p = format_msg(game_data, label_ot)
                 
                         event_key = make_event_key(gid, "end_ot", period=period, away_score=away_score, home_score=home_score)
-                        send_telegram(m, p, event_key=event_key)
-                
-                        log.append(txt)
+                        sent = send_telegram(m, p, event_key=event_key)
+                        remember_sent(log, txt, sent)
                 
                         drama_key = f"drama_ot_{period}"
                         if drama_key not in log:
@@ -1155,9 +1161,8 @@ def run():
                                 drama_text=drama_txt
                             )
                             event_key = make_event_key(gid, f"drama_ot_{period}", period=period, away_score=away_score, home_score=home_score)
-                            send_telegram(m, p, event_key=event_key)
-                
-                            log.append(drama_key)
+                            sent = send_telegram(m, p, event_key=event_key)
+                            remember_sent(log, drama_key, sent)
                 
                 # =======================
                 # סיום משחק
@@ -1179,9 +1184,8 @@ def run():
                 
                     m, p = format_msg(game_data, label_final, is_final=True)
                     event_key = make_event_key(gid, "final", period=final_period, away_score=away_score, home_score=home_score)
-                    send_telegram(m, p, event_key=event_key)
-                
-                    log.append(game_final_key)
+                    sent = send_telegram(m, p, event_key=event_key)
+                    remember_sent(log, game_final_key, sent)
 
                 # שמירה + חיתוך log
                 cache["games"][gid] = log[-50:]
