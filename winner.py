@@ -1673,12 +1673,9 @@ def fetch_posts(username: str) -> list[Post]:
         )
         log_feed_issue(
             username,
-            "RSS: no posts found for @%s after checking %s sources in %.1fs. Sources: %s | %s",
+            "RSS: no posts found for @%s after checking %s sources. Will retry quietly.",
             username,
             len(checked_templates),
-            FEED_COLLECTION_TIMEOUT_SECONDS,
-            checked_sources,
-            issue_text,
         )
     return posts
 
