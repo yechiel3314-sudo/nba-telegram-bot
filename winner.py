@@ -211,6 +211,8 @@ OPTIONAL_CONTROLLED_ACCOUNTS = [
     "jfelixdiaz",
 ]
 
+ALWAYS_ENABLED_OPTIONAL_ACCOUNTS = {"Plettigoal"}
+
 OPTIONAL_CONTROLLED_ACCOUNT_LABELS = {
     "Plettigoal": "פלוריאן פלטנברג",
     "MatteMoretto": "מתאו מורטו",
@@ -1593,7 +1595,7 @@ def log_feed_issue(username: str, message: str, *args: Any) -> None:
     if len(FEED_ISSUE_LAST_LOGGED_AT) > 1000:
         FEED_ISSUE_LAST_LOGGED_AT.clear()
         LOGGED_FEED_ISSUE_KEYS.clear()
-    logging.warning(message, *args)
+    logging.debug(message, *args)
 
 
 def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
@@ -1766,7 +1768,8 @@ def enabled_optional_accounts_from_state(state: dict[str, Any] | None = None) ->
     if not isinstance(raw_accounts, list):
         raw_accounts = []
     allowed = set(OPTIONAL_CONTROLLED_ACCOUNTS)
-    return [username for username in OPTIONAL_CONTROLLED_ACCOUNTS if username in allowed and username in raw_accounts]
+    enabled = set(raw_accounts) | ALWAYS_ENABLED_OPTIONAL_ACCOUNTS
+    return [username for username in OPTIONAL_CONTROLLED_ACCOUNTS if username in allowed and username in enabled]
 
 
 def disabled_base_accounts_from_state(state: dict[str, Any] | None = None) -> list[str]:
@@ -1886,6 +1889,12 @@ def process_control_update(update: dict[str, Any]) -> None:
         if username not in OPTIONAL_CONTROLLED_ACCOUNTS:
             if callback_id:
                 answer_control_callback(callback_id, "כתב לא מוכר")
+            return
+        if username in ALWAYS_ENABLED_OPTIONAL_ACCOUNTS:
+            label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
+            if callback_id:
+                answer_control_callback(callback_id, f"{label} פעיל קבוע")
+            send_control_panel(is_control_paused(), f"{label} פעיל קבוע ולא כובה.")
             return
         state = load_control_state()
         enabled = set(enabled_optional_accounts_from_state(state))
