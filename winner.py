@@ -2257,6 +2257,64 @@ MATCH_NEWS_RESCUE_PATTERNS = (
     r"פציעה|נפצע|פצוע|השעיה|מורחק|ערעור|זומן|סגל|העברה|חוזה|רשמי|חתם|סיכום|בדיקות רפואיות",
 )
 
+LIVE_GOAL_OR_MATCH_MOMENT_PATTERNS = (
+    r"\b(?:scores?|scored|goal|goals|equalis(?:e|z)r|winner|brace|hat[- ]trick|first goal|debut goal|world cup debut|match debut|against giants?)\b",
+    r"\u05db\u05d1\u05e9|\u05db\u05d1\u05e9\u05d4|\u05e9\u05e2\u05e8|\u05e9\u05e2\u05e8\u05d9\u05dd|\u05e9\u05d5\u05d5\u05d9\u05d5\u05df|\u05e9\u05e2\u05e8 \u05e0\u05d9\u05e6\u05d7\u05d5\u05df|\u05e6\u05de\u05d3|\u05e9\u05dc\u05d5\u05e9\u05e2\u05e8|\u05e9\u05e2\u05e8 \u05d1\u05db\u05d5\u05e8\u05d4|\u05d1\u05db\u05d5\u05e8\u05ea \u05d4\u05de\u05d5\u05e0\u05d3\u05d9\u05d0\u05dc|\u05d1\u05d1\u05db\u05d5\u05e8\u05d4|\u05e0\u05d2\u05d3 \u05e2\u05e0\u05e7\u05d9\u05d5\u05ea|\u05dc\u05d0 \u05d4\u05d0\u05de\u05d9\u05df",
+)
+
+CONTEXTLESS_TEASER_PATTERNS = (
+    r"^\s*(?:👀|👇|⤵️|⬇️|🆕|🔜|soon|more to follow|details soon|breakthrough|here we go)?[\s\W]*(?:[A-Z][A-Za-z .'-]{2,30}|Milan|Juventus|Barcelona|Real Madrid|Chelsea|Arsenal|Liverpool|PSG|Bayern|Portugal|Spain|Italy)?\s*$",
+    r"^\s*(?:👀|👇|⤵️|⬇️|🆕|🔜|\u05d1\u05e7\u05e8\u05d5\u05d1|\u05e4\u05e8\u05d8\u05d9\u05dd \u05d1\u05e7\u05e8\u05d5\u05d1|\u05de\u05d9\u05dc\u05d0\u05df|\u05d9\u05d5\u05d1\u05e0\u05d8\u05d5\u05e1|\u05d1\u05e8\u05e6\u05dc\u05d5\u05e0\u05d4|\u05e8\u05d9\u05d0\u05dc \u05de\u05d3\u05e8\u05d9\u05d3|\u05e6'\u05dc\u05e1\u05d9|\u05d0\u05e8\u05e1\u05e0\u05dc|\u05dc\u05d9\u05d1\u05e8\u05e4\u05d5\u05dc|\u05d1\u05d0\u05d9\u05d9\u05e8\u05df|\u05e4\u05d5\u05e8\u05d8\u05d5\u05d2\u05dc|\u05e1\u05e4\u05e8\u05d3|\u05d0\u05d9\u05d8\u05dc\u05d9\u05d4)\s*$",
+)
+
+VAGUE_STATUS_NEEDS_QUOTE_PATTERNS = (
+    r"\b(?:breakthrough|close to full agreement|close to agreement|final details|not a done deal|not closed yet|deal not done|advanced but not done)\b",
+    r"\u05e4\u05e8\u05d9\u05e6\u05ea \u05d3\u05e8\u05da|\u05e7\u05e8\u05d5\u05d1 \u05dc\u05d4\u05e1\u05db\u05de\u05d4|\u05d4\u05e1\u05db\u05de\u05d4 \u05de\u05dc\u05d0\u05d4|\u05e4\u05e8\u05d8\u05d9\u05dd \u05d0\u05d7\u05e8\u05d5\u05e0\u05d9\u05dd|\u05e2\u05d3\u05d9\u05d9\u05df \u05dc\u05d0 \u05e2\u05e1\u05e7\u05d4 \u05e1\u05d2\u05d5\u05e8\u05d4",
+)
+
+
+def is_live_goal_or_match_moment_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    if _matches_any(MATCH_NEWS_RESCUE_PATTERNS, cleaned):
+        return False
+    return _matches_any(LIVE_GOAL_OR_MATCH_MOMENT_PATTERNS, cleaned)
+
+
+def is_contextless_teaser_post(post: Post) -> bool:
+    primary = clean_for_ai_translation(html.unescape(post.text or ""))
+    if not primary:
+        return True
+    if has_quoted_context_for_decision(post):
+        return False
+    tokens = _news_duplicate_tokens(primary) if "_news_duplicate_tokens" in globals() else set(re.findall(r"\w+", primary))
+    return bool(len(tokens) <= 2 and _matches_any(CONTEXTLESS_TEASER_PATTERNS, primary))
+
+
+def has_quoted_context_for_decision(post: Post) -> bool:
+    quote = clean_for_ai_translation(html.unescape(post.quoted_text or ""))
+    if not quote:
+        return False
+    quote_post = clone_post_with_text(post, quote)
+    if contains_tracked_club_or_israeli_league(quote_post):
+        return True
+    signature = news_event_signature(quote_post) if "news_event_signature" in globals() else {"entities": [], "tokens": []}
+    return bool(len(signature.get("entities", [])) >= 1 and len(signature.get("tokens", [])) >= 4)
+
+
+def is_vague_status_without_primary_context(post: Post) -> bool:
+    primary = clean_for_ai_translation(html.unescape(post.text or ""))
+    if not primary:
+        return False
+    if not _matches_any(VAGUE_STATUS_NEEDS_QUOTE_PATTERNS, primary):
+        return False
+    primary_only = clone_post_with_text(post, primary)
+    if contains_tracked_club_or_israeli_league(primary_only):
+        return False
+    return not has_quoted_context_for_decision(post)
+
+
 def is_match_result_or_engagement_post(post: Post) -> bool:
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if not cleaned:
@@ -4901,6 +4959,10 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     cleaned = clean_for_ai_translation(raw_text)
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
+    if is_contextless_teaser_post(post):
+        return False, "contextless_teaser", 0, ["contextless_teaser"]
+    if is_vague_status_without_primary_context(post):
+        return False, "vague_status_without_primary_context", 0, ["vague_status_without_primary_context"]
     if not contains_tracked_club_or_israeli_league(post):
         logging.debug("פוסט של %s נפסל בסינון האיכות: לא קשור לקבוצה ברשימות הדרגים.", post.username)
         return False, "not_connected_to_tracked_club", 0, ["no_tracked_club"]
@@ -4910,6 +4972,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "youth_or_academy", 0, ["youth_or_academy"]
     if is_interview_post(post):
         return False, "interview_blocked", 0, ["interview"]
+    if is_live_goal_or_match_moment_post(post):
+        return False, "live_goal_or_match_moment", 0, ["live_goal_or_match_moment"]
 
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
@@ -5105,6 +5169,12 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "youth_or_academy"
     if is_interview_post(post):
         return "interview_blocked"
+    if is_contextless_teaser_post(post):
+        return "contextless_teaser"
+    if is_vague_status_without_primary_context(post):
+        return "vague_status_without_primary_context"
+    if is_live_goal_or_match_moment_post(post):
+        return "live_goal_or_match_moment"
     if is_match_result_or_engagement_post(post):
         return "match_result_or_engagement"
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
@@ -5268,13 +5338,7 @@ def translate_post_for_send(post: Post) -> tuple[str, str, str]:
     include_quote = bool(
         not is_self_quote(post)
         and post.quoted_text
-        and (
-            TRANSLATE_QUOTED_POSTS
-            or (
-                TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT
-                and len(clean_before_translation(post.text)) < MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE
-            )
-        )
+        and TRANSLATE_QUOTED_POSTS
     )
     main, quote, quote_author = gemini_translate_post_once(post, include_quote)
     if not (has_meaningful_text(main) or has_meaningful_text(quote)):
@@ -5555,6 +5619,18 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     if is_medical_staff_post(post):
                         seen.update(post.dedupe_ids)
                         log_skip_once("medical_staff", post, "דילוג מסנן: צוות רפואי/דוקטור/פיזיותרפיסט מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_contextless_teaser_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("contextless_teaser", post, "דילוג מסנן: הודעת רמז בלי מידע מ-@%s לא נשלחה: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_vague_status_without_primary_context(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("vague_status_without_primary_context", post, "דילוג מסנן: עדכון סטטוס בלי נושא ברור מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_live_goal_or_match_moment_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("live_goal_or_match_moment", post, "דילוג מסנן: עדכון שער/מהלך משחק מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if is_link_only_or_details_post(post) and not is_clear_player_departure_post(post):
                         seen.update(post.dedupe_ids)
