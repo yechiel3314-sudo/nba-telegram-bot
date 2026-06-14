@@ -36,21 +36,11 @@ load_env_file()
 # הגדרות מערכת וטוקנים
 # ==========================================
 SENT_EVENTS_DIR = "sent_events"
-TELEGRAM_TOKEN = os.environ.get(
-    "NBA_LIVE_TELEGRAM_BOT_TOKEN_PRIVATE",
-    os.environ.get(
-        "NBA_LIVE_TELEGRAM_BOT_TOKEN",
-        os.environ.get("TELEGRAM_TOKEN", "")
-    )
-).strip()
+TELEGRAM_TOKEN_ENV_NAME = "NBA_LIVE_TELEGRAM_BOT_TOKEN_PRIVATE"
+CHAT_ID_ENV_NAME = "NBA_LIVE_TELEGRAM_CHAT_ID_PRIVATE"
 
-CHAT_ID = os.environ.get(
-    "NBA_LIVE_TELEGRAM_CHAT_ID_PRIVATE",
-    os.environ.get(
-        "NBA_LIVE_TELEGRAM_CHAT_ID",
-        os.environ.get("TELEGRAM_CHAT_ID", "")
-    )
-).strip()
+TELEGRAM_TOKEN = os.environ.get(TELEGRAM_TOKEN_ENV_NAME, "").strip()
+CHAT_ID = os.environ.get(CHAT_ID_ENV_NAME, "").strip()
 NBA_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
 CACHE_FILE = "nba_cache.json"
 SKIP_EXISTING_ON_START = os.environ.get("NBA_SKIP_EXISTING_ON_START", "0").strip() == "1"
@@ -921,6 +911,10 @@ def send_telegram(text, photo_url=None, event_key=None):
 
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("חסר TELEGRAM_TOKEN או CHAT_ID")
+        if not TELEGRAM_TOKEN:
+            print(f"Telegram token missing. Expected env name: {TELEGRAM_TOKEN_ENV_NAME}")
+        if not CHAT_ID:
+            print(f"Telegram chat id missing. Expected env name: {CHAT_ID_ENV_NAME}")
         return False
 
     claimed = False
