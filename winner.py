@@ -1651,13 +1651,13 @@ def fetch_posts(username: str) -> list[Post]:
             if timed_out_sources:
                 primary_issue_parts.append("timeouts: " + ", ".join(timed_out_sources[:4]))
             logging.info(
-                "RSS fallback used for @%s: primary source failed, fallback found %s posts via %s",
+                "🔁 RSS: מקור גיבוי הופעל עבור @%s. נמצאו %s פוסטים דרך %s",
                 username,
                 len(fallback_posts),
                 fallback_posts[0].source_name,
             )
             if primary_issue_parts:
-                logging.debug("RSS fallback details for @%s: %s", username, " | ".join(primary_issue_parts))
+                logging.debug("RSS: פרטי מקור הגיבוי עבור @%s: %s", username, " | ".join(primary_issue_parts))
             return fallback_posts
 
     if not posts:
@@ -1682,7 +1682,7 @@ def fetch_posts(username: str) -> list[Post]:
         if no_posts_failures >= FEED_NO_POSTS_WARNING_AFTER_FAILURES:
             log_feed_issue(
                 username,
-                "RSS: no posts found for @%s after %s consecutive checks. Checked %s sources. Will retry quietly.",
+                "RSS: לא נמצאו פוסטים עבור @%s אחרי %s בדיקות רצופות. נבדקו %s מקורות. ינסה שוב בשקט.",
                 username,
                 no_posts_failures,
                 len(checked_templates),
@@ -1696,7 +1696,7 @@ def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
         posts = fetch_posts(username)
         return username, posts
     except Exception as exc:
-        logging.warning("Fetch failed for @%s: %s", username, exc)
+        logging.warning("⚠️ שליפת פוסטים נכשלה עבור @%s: %s", username, exc)
         return username, []
 
 
@@ -1846,7 +1846,7 @@ def send_control_panel(paused: bool, action_done: str = "", force_new: bool = Fa
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
                 return
-            logging.warning("Control panel edit failed, sending one new panel: %s", exc)
+            logging.warning("⚠️ לוח שליטה: עדכון ההודעה נכשל, שולח לוח חדש: %s", exc)
     response = telegram_api("sendMessage", payload)
     new_message_id = response.get("result", {}).get("message_id")
     if new_message_id:
@@ -1874,13 +1874,13 @@ def process_control_update(update: dict[str, Any]) -> None:
         return
     if data == "football_bot_off":
         save_control_state(True)
-        logging.info("Control panel: bot paused by button click.")
+        logging.info("⏸️ לוח שליטה: הבוט הושהה דרך הכפתור.")
         if callback_id:
             answer_control_callback(callback_id, "הבוט כובה")
         send_control_panel(True, "הפעולה בוצעה בהצלחה: הבוט כובה.")
     elif data == "football_bot_on":
         save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
-        logging.info("Control panel: bot resumed by button click.")
+        logging.info("▶️ לוח שליטה: הבוט הופעל מחדש דרך הכפתור.")
         if callback_id:
             answer_control_callback(callback_id, "הבוט הופעל")
         send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
@@ -1902,11 +1902,11 @@ def process_control_update(update: dict[str, Any]) -> None:
         if username in enabled:
             enabled.remove(username)
             action_text = f"{label} כובה"
-            logging.info("לוח שליטה: הכתב האופציונלי @%s כובה בכפתור ולא ייסרק.", username)
+            logging.info("⏸️ לוח שליטה: הכתב האופציונלי @%s כובה בכפתור ולא ייסרק.", username)
         else:
             enabled.add(username)
             action_text = f"{label} הופעל"
-            logging.info("לוח שליטה: הכתב האופציונלי @%s הופעל בכפתור וייכנס לסריקה.", username)
+            logging.info("▶️ לוח שליטה: הכתב האופציונלי @%s הופעל בכפתור וייכנס לסריקה.", username)
         save_control_state(enabled_optional_accounts=[account for account in OPTIONAL_CONTROLLED_ACCOUNTS if account in enabled])
         if callback_id:
             answer_control_callback(callback_id, action_text)
@@ -1923,11 +1923,11 @@ def process_control_update(update: dict[str, Any]) -> None:
         if username in disabled:
             disabled.remove(username)
             action_text = f"{label} הופעל"
-            logging.info("לוח שליטה: הכתב @%s הופעל מחדש בכפתור.", username)
+            logging.info("▶️ לוח שליטה: הכתב @%s הופעל מחדש בכפתור.", username)
         else:
             disabled.add(username)
             action_text = f"{label} כובה"
-            logging.info("לוח שליטה: הכתב @%s כובה בכפתור ולא ייסרק עד להפעלה מחדש.", username)
+            logging.info("⏸️ לוח שליטה: הכתב @%s כובה בכפתור ולא ייסרק עד להפעלה מחדש.", username)
         save_control_state(disabled_base_accounts=[account for account in X_ACCOUNTS if account in disabled])
         if callback_id:
             answer_control_callback(callback_id, action_text)
@@ -1951,12 +1951,12 @@ def process_channel_post_update(update: dict[str, Any]) -> None:
         remember_channel_news_text(text, state, message_id=message_id, source="channel")
         save_state(state)
         logging.info(
-            "Channel duplicate memory: remembered channel post %s for 12h | text: %s",
+            "🧠 זיכרון כפילויות מהערוץ: נשמרה הודעה %s ל-12 שעות | טקסט: %s",
             message_id or "unknown",
             re.sub(r"\s+", " ", text)[:260],
         )
     except Exception as exc:
-        logging.debug("Channel duplicate memory failed: %s", exc)
+        logging.debug("זיכרון כפילויות מהערוץ נכשל: %s", exc)
 
 
 def is_getupdates_conflict(error: Exception) -> bool:
@@ -1978,9 +1978,9 @@ def delete_control_webhook_if_needed() -> None:
         return
     try:
         telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
-        logging.debug("Control panel: webhook cleared, polling callbacks is active.")
+        logging.debug("לוח שליטה: webhook נוקה, מאזין לכפתורים דרך polling.")
     except Exception as exc:
-        logging.debug("Control panel: could not clear webhook before polling: %s", exc)
+        logging.debug("לוח שליטה: לא הצליח לנקות webhook לפני polling: %s", exc)
 
 
 def ensure_control_panel_once_if_requested() -> None:
@@ -2004,13 +2004,13 @@ def control_loop() -> None:
         try:
             send_control_panel(is_control_paused(), force_new=True)
         except Exception as exc:
-            logging.debug("Control panel startup failed: %s", exc)
+            logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
     else:
         try:
             ensure_control_panel_once_if_requested()
         except Exception as exc:
-            logging.debug("Control panel create-if-missing failed: %s", exc)
-        logging.debug("Control panel startup send is disabled; existing button callbacks will still work.")
+            logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+        logging.debug("לוח שליטה: שליחה בהפעלה כבויה; כפתורים קיימים עדיין יעבדו.")
     while True:
         try:
             response = telegram_api(
@@ -2028,17 +2028,17 @@ def control_loop() -> None:
                 process_channel_post_update(update)
         except Exception as exc:
             if is_getupdates_conflict(exc):
-                logging.debug("Control panel getUpdates conflict; trying webhook cleanup.")
+                logging.debug("לוח שליטה: התנגשות getUpdates, מנסה לנקות webhook.")
                 now = time.time()
                 if now - last_conflict_cleanup > 30:
                     last_conflict_cleanup = now
                     try:
                         telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
                     except Exception as cleanup_exc:
-                        logging.warning("Control panel conflict cleanup failed: %s", cleanup_exc)
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
                 time.sleep(CONTROL_POLL_SECONDS)
                 continue
-            logging.warning("Control panel polling failed: %s", exc)
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
             time.sleep(CONTROL_POLL_SECONDS)
 
 
@@ -2087,7 +2087,7 @@ def save_shabbat_windows_to_cache(windows: list[tuple[datetime, datetime]], now:
         temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         temp_path.replace(path)
     except Exception as exc:
-        logging.warning("Shabbat mode: could not save Hebcal cache: %s", exc)
+        logging.warning("⚠️ מצב שבת: לא הצליח לשמור cache זמני שבת: %s", exc)
 
 
 def fetch_shabbat_windows(now: datetime) -> list[tuple[datetime, datetime]]:
@@ -2129,15 +2129,15 @@ def is_shabbat_now() -> bool:
         try:
             windows = fetch_shabbat_windows(now)
             save_shabbat_windows_to_cache(windows, now)
-            logging.info("מצב שבת: זמני שבת עודכנו")
+            logging.info("🕯️ מצב שבת: זמני שבת עודכנו")
         except Exception as exc:
-            logging.warning("Shabbat mode: Hebcal unavailable, using fallback times: %s", exc)
+            logging.warning("⚠️ מצב שבת: Hebcal לא זמין, משתמש בזמני גיבוי: %s", exc)
             return fallback_shabbat_now(now)
     return any(start <= now <= end for start, end in windows)
 
 
 def mark_existing_posts_seen(state: dict[str, list[str]]) -> None:
-    logging.info("מצב שבת: מסמן פוסטים קיימים כנצפו בלי לשלוח")
+    logging.info("🕯️ מצב שבת: מסמן פוסטים קיימים כנצפו בלי לשלוח")
     all_posts = fetch_all_accounts()
     for username in ordered_accounts():
         seen = set(state.get(username, []))
@@ -2614,7 +2614,7 @@ def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
         LOGGED_SKIP_KEYS.clear()
     age_seconds = max(0.0, time.time() - post.published_ts) if getattr(post, "published_ts", 0.0) else 0.0
     source_name = getattr(post, "source_name", "unknown") or "unknown"
-    logging.info(message + " | מקור RSS: %s | גיל: %.0fs", *args, source_name, age_seconds)
+    logging.info("↩️ " + message + " | מקור: %s | גיל: %.0fs", *args, source_name, age_seconds)
 
 NEWS_DUP_STOPWORDS = {
     "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "from", "as", "by", "at", "is", "are", "was", "were", "be", "been", "being",
@@ -2903,6 +2903,19 @@ def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str,
     return None
 
 
+def duplicate_event_source_he(item: dict[str, Any] | None) -> str:
+    if not isinstance(item, dict):
+        return "מקור קודם"
+    source = str(item.get("username") or "unknown")
+    if source == "channel":
+        return "הודעה שכבר קיימת בערוץ שלך"
+    if source == "bot_sent":
+        return "הודעה שהבוט כבר שלח לערוץ"
+    if source and source != "unknown":
+        return f"@{source}"
+    return "מקור קודם"
+
+
 def clone_post_with_text(post: Post, text: str) -> Post:
     return Post(
         post_id=post.post_id,
@@ -3052,9 +3065,9 @@ def _load_ai_decision_cache_from_disk() -> None:
         # remove duplicate order entries while preserving order
         seen_keys: set[str] = set()
         AI_DECISION_CACHE_ORDER[:] = [k for k in AI_DECISION_CACHE_ORDER if not (k in seen_keys or seen_keys.add(k))]
-        logging.info("נטען cache כפילויות AI מהדיסק: %s החלטות", len(AI_DECISION_CACHE))
+        logging.info("🧠 נטען cache כפילויות מהדיסק: %s החלטות", len(AI_DECISION_CACHE))
     except Exception as exc:
-        logging.warning("Could not load AI decision cache: %s", exc)
+        logging.warning("⚠️ לא הצליח לטעון cache החלטות כפילות: %s", exc)
 
 def save_ai_decision_cache() -> None:
     if not ENABLE_AI_REQUEST_SAVER:
@@ -3066,7 +3079,7 @@ def save_ai_decision_cache() -> None:
         temp_path.write_text(json.dumps({"items": ordered}, ensure_ascii=False), encoding="utf-8")
         temp_path.replace(path)
     except Exception as exc:
-        logging.warning("Could not save AI decision cache: %s", exc)
+        logging.warning("⚠️ לא הצליח לשמור cache החלטות כפילות: %s", exc)
 
 _load_ai_decision_cache_from_disk()
 
@@ -3372,7 +3385,7 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
                 pass
             continue
     if last_error:
-        logging.warning("AI duplicate check unavailable: %s", gemini_error_summary(last_error) if 'gemini_error_summary' in globals() else last_error)
+        logging.warning("⚠️ בדיקת כפילות חכמה לא זמינה כרגע: %s", gemini_error_summary(last_error) if 'gemini_error_summary' in globals() else last_error)
     _ai_cache_set(previous_text, current_text, "UNKNOWN")
     return "UNKNOWN"
 
@@ -3573,7 +3586,7 @@ def make_merged_parallel_candidate(cluster: list[tuple[str, Post, float]]) -> tu
     # Dynamic metadata for state/logging. Dataclass has no slots, so this is safe.
     setattr(merged_post, "merged_sources", [_candidate_username(item) for item in cluster])
     logging.info(
-        "מיזוג חכם: %s דיווחים מקבילים אוחדו להודעה אחת. מקור מוביל: @%s | מקורות: %s",
+        "🧩 מיזוג חכם: %s דיווחים מקבילים אוחדו להודעה אחת. מקור מוביל: @%s | מקורות: %s",
         len(cluster),
         best_username,
         ", ".join("@" + _candidate_username(item) for item in cluster),
@@ -3896,7 +3909,7 @@ def save_translation_cache(cache: dict[str, str]) -> None:
         temp_path.write_text(json.dumps(trimmed, ensure_ascii=False), encoding="utf-8")
         temp_path.replace(path)
     except Exception as exc:
-        logging.warning("Could not save translation cache: %s", exc)
+        logging.warning("⚠️ לא הצליח לשמור cache תרגומים: %s", exc)
 
 
 TRANSLATION_CACHE = load_translation_cache()
@@ -4334,7 +4347,7 @@ def translate_text(text: str) -> str:
         logging.error("⛔ ג'מיני לא הצליח בתרגום אחרי עד %s בדיקות / עד %s בקשות אמיתיות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS, GEMINI_MAX_REAL_TRANSLATION_REQUESTS)
         raise TranslationUnavailable("Gemini translation failed after all attempts")
 
-    logging.error("No valid Gemini translation. Post will not be sent.")
+    logging.error("⛔ אין תרגום תקין. הפוסט לא יישלח.")
     raise TranslationUnavailable("Gemini-only translation unavailable")
 
 
@@ -4505,10 +4518,10 @@ def telegram_broadcast(method: str, payload: dict[str, Any]) -> None:
         try:
             telegram_api(method, chat_payload)
             sent_count += 1
-            logging.info("טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
+            logging.info("✅ טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
         except Exception as exc:
             errors.append(f"{chat_id}: {exc}")
-            logging.error("טלגרם: %s נכשל לערוץ %s, ממשיך לערוצים האחרים: %s", method, chat_id, exc)
+            logging.error("⛔ טלגרם: %s נכשל לערוץ %s, ממשיך לערוצים האחרים: %s", method, chat_id, exc)
     if sent_count == 0:
         raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
 
@@ -4522,11 +4535,11 @@ def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], 
         try:
             telegram_api(method, chat_payload)
             sent_count += 1
-            logging.info("טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
+            logging.info("✅ טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
             continue
         except Exception as exc:
             errors.append(f"{chat_id} {method}: {exc}")
-            logging.error("טלגרם: %s נכשל לערוץ %s. מנסה לשלוח טקסט רגיל לאותו ערוץ: %s", method, chat_id, exc)
+            logging.error("⛔ טלגרם: %s נכשל לערוץ %s. מנסה לשלוח טקסט רגיל לאותו ערוץ: %s", method, chat_id, exc)
 
         try:
             telegram_api(
@@ -4539,11 +4552,11 @@ def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], 
                 },
             )
             sent_count += 1
-            logging.info("טלגרם: fallback טקסט נשלח בהצלחה לערוץ %s", chat_id)
+            logging.info("✅ טלגרם: טקסט גיבוי נשלח בהצלחה לערוץ %s", chat_id)
         except Exception as fallback_exc:
             errors.append(f"{chat_id} fallback: {fallback_exc}")
             logging.error(
-                "טלגרם: גם fallback טקסט נכשל לערוץ %s. אם זה הערוץ %s, צריך לבדוק שהבוט אדמין עם הרשאה לפרסם הודעות: %s",
+                "⛔ טלגרם: גם טקסט גיבוי נכשל לערוץ %s. אם זה הערוץ %s, צריך לבדוק שהבוט אדמין עם הרשאה לפרסם הודעות: %s",
                 chat_id,
                 chat_id,
                 fallback_exc,
@@ -5499,7 +5512,7 @@ def send_post(post: Post) -> dict[str, Any]:
             timings["mode"] = "וידיאו"
             return timings
         except Exception as exc:
-            logging.warning("Video send failed, falling back to clean text only: %s", exc)
+            logging.warning("⚠️ שליחת וידיאו נכשלה, שולח טקסט נקי בלבד: %s", exc)
             message = build_message(
                 post,
                 translated,
@@ -5521,7 +5534,7 @@ def send_post(post: Post) -> dict[str, Any]:
             send_started = time.perf_counter()
             telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message)
         except Exception as exc:
-            logging.warning("Could not send images, falling back to text only: %s", exc)
+            logging.warning("⚠️ שליחת תמונות נכשלה, שולח טקסט בלבד: %s", exc)
         else:
             timings["send_seconds"] = time.perf_counter() - send_started
             timings["total_seconds"] = time.perf_counter() - started
@@ -5557,7 +5570,7 @@ def send_video_after_message(video_url: str) -> None:
             },
         )
     except Exception as exc:
-        logging.warning("Post text was sent, but Telegram could not attach video: %s", exc)
+        logging.warning("⚠️ הטקסט נשלח, אבל טלגרם לא הצליח לצרף וידיאו: %s", exc)
 
 
 def state_path() -> Path:
@@ -5572,7 +5585,7 @@ def load_state() -> dict[str, list[str]]:
         data = json.loads(path.read_text(encoding="utf-8"))
         return {key: list(value) for key, value in data.items()}
     except Exception:
-        logging.warning("Could not read state file. Starting fresh.")
+        logging.warning("⚠️ לא הצליח לקרוא קובץ מצב. מתחיל עם מצב נקי.")
         return {}
 
 
@@ -5613,7 +5626,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             result["force_startup_send"] = bool(getattr(post, "force_startup_send", False))
             return username, post.dedupe_ids, post.link, True, result
         except Exception as exc:
-            logging.error("Failed sending %s: %s", post.link, exc)
+            logging.error("⛔ שליחת הפוסט נכשלה %s: %s", post.link, exc)
             return username, post.dedupe_ids, post.link, False, {}
 
     try:
@@ -5647,14 +5660,14 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     ):
                         new_posts = []
                         logging.info(
-                            "Startup verification: latest @FabrizioRomano post was already force-sent before, skipping this startup. Set FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP=1 to send it every restart. Link: %s",
+                            "↩️ בדיקת הפעלה: הפוסט האחרון של @FabrizioRomano כבר נשלח בעבר בבדיקת הפעלה, מדלג עליו עכשיו. קישור: %s",
                             latest_post.link,
                         )
                     else:
                         setattr(latest_post, "force_startup_send", True)
                         new_posts = [latest_post]
                         logging.info(
-                            "Startup verification: force-sending latest @FabrizioRomano post through RSS, Gemini translation and Telegram send. Local filters are skipped for this check only. RSS source: %s | link: %s",
+                            "🚀 בדיקת הפעלה: שולח את הפוסט האחרון של @FabrizioRomano דרך RSS, תרגום ושליחה לטלגרם. מקור: %s | קישור: %s",
                             posts[0].source_name,
                             posts[0].link,
                         )
@@ -5730,11 +5743,13 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                             duplicate_event = None
                         else:
                             seen.update(post.dedupe_ids)
-                            log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון 12 שעות. @%s לא נשלח: %s", username, post.link)
+                            duplicate_source = duplicate_event_source_he(duplicate_event)
+                            log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון 12 שעות מול %s. @%s לא נשלח: %s", duplicate_source, username, post.link)
                             continue
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
-                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח ב-12 השעות האחרונות מ-@%s. הנוכחי מ-@%s לא נשלח: %s", duplicate_event.get("username", "unknown"), username, post.link)
+                        duplicate_source = duplicate_event_source_he(duplicate_event)
+                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח/נשמר ב-12 השעות האחרונות מול %s. הנוכחי מ-@%s לא נשלח: %s", duplicate_source, username, post.link)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
@@ -5769,11 +5784,13 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     duplicate_event = None
                 else:
                     mark_candidate_seen(state, candidate)
-                    log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון הערוץ/הבוט. @%s לא נשלח: %s", username, post.link)
+                    duplicate_source = duplicate_event_source_he(duplicate_event)
+                    log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון מול %s. @%s לא נשלח: %s", duplicate_source, username, post.link)
                     continue
             if duplicate_event:
                 mark_candidate_seen(state, candidate)
-                log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם. @%s לא נשלח: %s", username, post.link)
+                duplicate_source = duplicate_event_source_he(duplicate_event)
+                log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם מול %s. @%s לא נשלח: %s", duplicate_source, username, post.link)
                 continue
             remember_recent_news_event(post, state)
             send_futures.append(send_executor.submit(send_task, candidate))
@@ -5795,7 +5812,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     remember_channel_news_text(str(result.get("channel_memory_text", "")), state, message_id=link, source="bot_sent")
                 sent += 1
                 logging.info(
-                    "נשלח פוסט מ-@%s | מקור: %s | גיל: %.0fs | תרגום: %.2fs | שליחה: %.2fs | סה״כ: %.2fs",
+                    "✅ נשלח פוסט מ-@%s | מקור: %s | גיל: %.0fs | תרגום: %.2fs | שליחה: %.2fs | סה״כ: %.2fs",
                     username,
                     result.get("source_name", "unknown"),
                     result.get("post_age_seconds", 0.0),
@@ -5831,7 +5848,7 @@ def main() -> None:
     refresh_gemini_api_keys_from_env()
     validate_settings()
     env_parts_count = gemini_env_parts_count()
-    logging.info("בוט הכדורגל עלה. כתבים פעילים: %s | בדיקה כל %ss", len(active_x_accounts()), current_check_every_seconds())
+    logging.info("🚀 בוט הכדורגל עלה. כתבים פעילים: %s | בדיקה כל %ss", len(active_x_accounts()), current_check_every_seconds())
     if env_parts_count and not GEMINI_API_KEYS:
         logging.error(
             "Gemini אבחון חמור: Railway מכיל %s חלקי מפתחות אבל הקוד טען 0. אם הלוג הזה מופיע עם BOT_BUILD_ID=%s, שלח את שורת הדיבאג; אם BOT_BUILD_ID אחר/חסר, Railway מריץ קוד ישן.",
@@ -5853,7 +5870,7 @@ def main() -> None:
                 },
             )
         except Exception as exc:
-            logging.error("Startup Telegram test message failed: %s", exc)
+            logging.error("⛔ הודעת בדיקת הפעלה לטלגרם נכשלה: %s", exc)
 
     startup_cycle = True
     skipped_for_shabbat = False
@@ -5865,7 +5882,7 @@ def main() -> None:
             control_state = load_control_state()
             if bool(control_state.get("paused", False)):
                 if not paused_logged:
-                    logging.info("בוט הכדורגל כבוי מלוח השליטה. לא סורק ולא שולח.")
+                    logging.info("⏸️ בוט הכדורגל כבוי מלוח השליטה. לא סורק ולא שולח.")
                     paused_logged = True
                 time.sleep(current_check_every_seconds())
                 continue
@@ -5873,7 +5890,7 @@ def main() -> None:
 
             if is_shabbat_now():
                 if not skipped_for_shabbat:
-                    logging.info("מצב שבת פעיל: הבוט לא סורק, לא שולח ולא שומר מצב")
+                    logging.info("🕯️ מצב שבת פעיל: הבוט לא סורק, לא שולח ולא שומר מצב")
                 skipped_for_shabbat = True
                 time.sleep(SHABBAT_SLEEP_SECONDS)
                 continue
@@ -5886,7 +5903,7 @@ def main() -> None:
                 save_ai_decision_cache()
                 skipped_for_shabbat = False
                 startup_cycle = False
-                logging.info("מצב שבת הסתיים: פוסטים משבת סומנו כנצפו בלי שליחה")
+                logging.info("✅ מצב שבת הסתיים: פוסטים משבת סומנו כנצפו בלי שליחה")
                 time.sleep(current_check_every_seconds())
                 continue
 
@@ -5900,10 +5917,10 @@ def main() -> None:
             save_ai_decision_cache()
             now = time.time()
             if now - last_heartbeat_log >= HEARTBEAT_LOG_SECONDS:
-                logging.info("בוט הכדורגל עדיין עובד. כתבים פעילים: %s | בדיקה כל %ss | נשלחו בסבב: %s", len(active_x_accounts()), current_check_every_seconds(), sent)
+                logging.info("💓 בוט הכדורגל עדיין עובד. כתבים פעילים: %s | בדיקה כל %ss | נשלחו בסבב: %s", len(active_x_accounts()), current_check_every_seconds(), sent)
                 last_heartbeat_log = now
         except Exception as exc:
-            logging.error("Unexpected error. Bot will keep running: %s", exc)
+            logging.error("⛔ שגיאה לא צפויה. הבוט ימשיך לעבוד: %s", exc)
         elapsed = time.time() - cycle_started
         time.sleep(max(0, current_check_every_seconds() - elapsed))
 
