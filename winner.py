@@ -4931,6 +4931,17 @@ BIG_CLUB_RUMOR_PATTERNS = (
     r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא",
 )
 
+BIG_CLUB_AS_MAIN_BUYER_PATTERNS = (
+    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma)\b.{0,120}\b(?:bid|offer|proposal|submit|prepare|ready|expected|set|trying|push(?:ing)?|working|talks|negotiations|advance|close|closing|complete|seal|buy|bring)\b",
+    r"\b(?:bid|offer|proposal|submit|prepare|ready|expected|set|trying|push(?:ing)?|working|talks|negotiations|advance|close|closing|complete|seal|buy|bring)\b.{0,120}\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma)\b",
+    r"(?:ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן(?: מינכן)?|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא).{0,120}(?:הצעה|תציע|צפויה להגיש|צפוי להגיש|מכינה|מכין|מנסה|דוחפת|דוחף|בשיחות|מגעים|מו\"מ|מתקדמת|מתקדם|קרובה|קרוב|לסגור|להשלים|להחתים|לרכוש)",
+    r"(?:הצעה|תציע|צפויה להגיש|צפוי להגיש|מכינה|מכין|מנסה|דוחפת|דוחף|בשיחות|מגעים|מו\"מ|מתקדמת|מתקדם|קרובה|קרוב|לסגור|להשלים|להחתים|לרכוש).{0,120}(?:ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן(?: מינכן)?|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא)",
+)
+
+
+def has_big_club_as_main_buyer(cleaned: str) -> bool:
+    return _matches_any(BIG_CLUB_AS_MAIN_BUYER_PATTERNS, cleaned)
+
 # Transfer/future language broad enough to catch quotes like "his son wants Napoli",
 # but still specific enough to block ordinary post-match interviews.
 TRANSFER_OR_FUTURE_PATTERNS = (
@@ -5064,7 +5075,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "live_goal_or_match_moment", 0, ["live_goal_or_match_moment"]
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
-    has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and not has_final_only_club
+    has_big_club_main_buyer = has_big_club_as_main_buyer(cleaned)
+    has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and (not has_final_only_club or has_big_club_main_buyer)
     has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
     has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
@@ -5092,7 +5104,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     # For the user's lower-priority club group, block pure rumours/loose interest.
     # Keep normal rules if a major club is also part of the same report, or when the
     # post is really about a national team / country squad.
-    if has_final_only_club and not has_final_only_strict:
+    if has_final_only_club and not has_final_only_strict and not has_big_club_main_buyer:
         return False, "final_only_club_not_strict_final", 0, ["final_only_club", "not_strict_final"]
 
     score = 0
@@ -5107,6 +5119,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         add(20, "allowed_club_or_israeli_league")
     if has_big_rumor_club:
         add(70, "big_club")
+    if has_big_club_main_buyer:
+        add(35, "big_club_main_buyer")
     if has_top5_or_promoted_club:
         add(45, "top5_or_promoted_club")
     if has_elite_admin_club:
@@ -5265,7 +5279,11 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     if is_match_result_or_engagement_post(post):
         return "match_result_or_engagement"
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
-    if _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) and not _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned):
+    if (
+        _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
+        and not _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
+        and not has_big_club_as_main_buyer(cleaned)
+    ):
         return "final_only_club_not_strict_final"
     if is_known_admin_person_status_post(cleaned) and not _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned):
         return "admin_or_backroom_only_barca_real_allowed"
