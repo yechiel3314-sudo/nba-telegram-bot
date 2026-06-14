@@ -354,6 +354,8 @@ RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2")
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
+FEED_NO_POSTS_WARNING_AFTER_FAILURES = int(os.environ.get("FEED_NO_POSTS_WARNING_AFTER_FAILURES", "3"))
+FEED_NO_POSTS_FAILURE_COUNTS: dict[str, int] = {}
 FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
@@ -1632,6 +1634,7 @@ def fetch_posts(username: str) -> list[Post]:
         fallback_templates = fallback_templates[:RSS_FALLBACK_SOURCE_COUNT]
     posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(username, primary_templates)
     if posts:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
         return posts
 
     fallback_errors: list[str] = []
@@ -1639,6 +1642,7 @@ def fetch_posts(username: str) -> list[Post]:
     if fallback_templates:
         fallback_posts, fallback_errors, fallback_timeouts = collect_posts_from_feed_templates(username, fallback_templates)
         if fallback_posts:
+            FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
             primary_issue_parts = []
             if feed_errors:
                 primary_issue_parts.append("errors: " + "; ".join(feed_errors[:4]))
@@ -1655,6 +1659,8 @@ def fetch_posts(username: str) -> list[Post]:
             return fallback_posts
 
     if not posts:
+        no_posts_failures = FEED_NO_POSTS_FAILURE_COUNTS.get(username, 0) + 1
+        FEED_NO_POSTS_FAILURE_COUNTS[username] = no_posts_failures
         checked_templates = primary_templates + fallback_templates
         checked_sources = ", ".join(feed_source_name(template) for template in checked_templates)
         all_errors = feed_errors + fallback_errors
@@ -1671,12 +1677,14 @@ def fetch_posts(username: str) -> list[Post]:
             checked_sources,
             issue_text,
         )
-        log_feed_issue(
-            username,
-            "RSS: no posts found for @%s after checking %s sources. Will retry quietly.",
-            username,
-            len(checked_templates),
-        )
+        if no_posts_failures >= FEED_NO_POSTS_WARNING_AFTER_FAILURES:
+            log_feed_issue(
+                username,
+                "RSS: no posts found for @%s after %s consecutive checks. Checked %s sources. Will retry quietly.",
+                username,
+                no_posts_failures,
+                len(checked_templates),
+            )
     return posts
 
 
