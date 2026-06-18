@@ -302,7 +302,7 @@ NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("NIGHT_MAX_PARALLEL_ACCOU
 NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
-FORCE_FABRIZIO_STARTUP_TEST_SEND = False  # שנה ל-False אחרי בדיקת ההרצה כדי שלא יישלח בכל הפעלה
+FORCE_FABRIZIO_STARTUP_TEST_SEND = False  # השאר False; הפעלה כ-True שולחת את פבריציו בכוח בכל הרצה ועוקפת כפילויות
 FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP = (
     FORCE_FABRIZIO_STARTUP_TEST_SEND
     or
@@ -2325,6 +2325,67 @@ VAGUE_STATUS_NEEDS_QUOTE_PATTERNS = (
     r"\u05e4\u05e8\u05d9\u05e6\u05ea \u05d3\u05e8\u05da|\u05e7\u05e8\u05d5\u05d1 \u05dc\u05d4\u05e1\u05db\u05de\u05d4|\u05d4\u05e1\u05db\u05de\u05d4 \u05de\u05dc\u05d0\u05d4|\u05e4\u05e8\u05d8\u05d9\u05dd \u05d0\u05d7\u05e8\u05d5\u05e0\u05d9\u05dd|\u05e2\u05d3\u05d9\u05d9\u05df \u05dc\u05d0 \u05e2\u05e1\u05e7\u05d4 \u05e1\u05d2\u05d5\u05e8\u05d4",
 )
 
+UNCLEAR_SUBJECT_NEWS_PATTERNS = (
+    r"\b(?:he|him|his|they|them|it|this|that|the player|the coach|the club|told him|told them|close to agreement|final details|not a done deal|deal not done|breakthrough|more to follow|details soon)\b",
+    r"הוא|אותו|אותם|הם|זה|הזה|השחקן|המאמן|המועדון|אמר לו|אמר להם|קרוב להסכמה|פרטים אחרונים|עדיין לא עסקה|לא עסקה סגורה|פריצת דרך|פרטים בקרוב",
+)
+
+UNCLEAR_SUBJECT_NEWS_VERB_PATTERNS = (
+    r"\b(?:agree|agreed|agreement|sign|join|move|transfer|bid|offer|talks|negotiations|deal|contract|medical|leave|replace|called up|close|done)\b",
+    r"סיכם|סיכום|הסכמה|יחתום|חתם|מצטרף|יצטרף|מעבר|העברה|הצעה|שיחות|מגעים|עסקה|חוזה|בדיקות רפואיות|יעזוב|מחליף|זומן|קרוב|נסגר",
+)
+
+UNCLEAR_GENERIC_SUBJECT_TOKENS = {
+    "פרטים", "אחרונים", "נותרים", "עדיין", "עסקה", "סגורה", "קרוב", "הסכמה", "מלאה",
+    "שיחות", "מגעים", "הצעה", "דיווח", "מקורות", "שחקן", "מאמן", "מועדון", "קבוצה",
+    "הוא", "אותו", "אותם", "זה", "הזה", "חדש", "חדשה", "בקרוב",
+}
+
+UNCLEAR_GENERIC_LATIN_SUBJECT_TOKENS = {
+    "breakthrough", "close", "full", "agreement", "final", "details", "remain", "still", "done",
+    "deal", "player", "coach", "club", "team", "sources", "exclusive", "new", "soon", "more",
+}
+
+
+def primary_text_has_clear_subject(post: Post) -> bool:
+    primary = clean_for_ai_translation(html.unescape(post.text or ""))
+    if not primary:
+        return False
+    primary_post = clone_post_with_text(post, primary)
+    if contains_tracked_club_or_israeli_league(primary_post):
+        return True
+    if _matches_any(BIG_CLUB_RUMOR_PATTERNS, primary) or _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, primary):
+        return True
+    for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, HANDLE_REPLACEMENTS):
+        for source, target in replacements.items():
+            for value in (source, target):
+                value = str(value or "").strip()
+                if len(value) >= 4 and re.search(r"(?<!\w)" + re.escape(value) + r"(?!\w)", primary, re.IGNORECASE):
+                    return True
+    for match in re.finditer(r"\b[A-Z][A-Za-zÀ-ÿ'’.-]{2,}(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]{2,}){1,3}\b", primary):
+        words = [word.lower().strip("-'’") for word in re.findall(r"[A-Za-zÀ-ÿ'’.-]{2,}", match.group(0))]
+        meaningful_words = [word for word in words if word not in UNCLEAR_GENERIC_LATIN_SUBJECT_TOKENS]
+        if len(meaningful_words) >= 2:
+            return True
+    hebrew_names = re.findall(r"[א-ת][א-ת'׳-]{2,}", primary)
+    meaningful = [
+        token for token in hebrew_names
+        if _normalize_news_duplicate_token(token) not in NEWS_DUP_STOPWORDS
+        and _normalize_news_duplicate_token(token) not in UNCLEAR_GENERIC_SUBJECT_TOKENS
+    ]
+    return len(meaningful) >= 2
+
+
+def is_unclear_subject_news_post(post: Post) -> bool:
+    primary = clean_for_ai_translation(html.unescape(post.text or ""))
+    if not primary:
+        return False
+    if primary_text_has_clear_subject(post):
+        return False
+    if not (_matches_any(UNCLEAR_SUBJECT_NEWS_PATTERNS, primary) or _matches_any(VAGUE_STATUS_NEEDS_QUOTE_PATTERNS, primary)):
+        return False
+    return _matches_any(UNCLEAR_SUBJECT_NEWS_VERB_PATTERNS, primary) or len(_news_duplicate_tokens(primary)) <= 5
+
 
 def is_contextless_teaser_post(post: Post) -> bool:
     primary = clean_for_ai_translation(html.unescape(post.text or ""))
@@ -2622,6 +2683,7 @@ BLOCK_REASON_HEBREW = {
     "interview_blocked": "ראיון או ציטוט בלי חדשות העברה",
     "contextless_teaser": "הודעת רמז בלי מידע ברור",
     "vague_status_without_primary_context": "עדכון סטטוס בלי שם/קבוצה ברורים",
+    "unclear_subject_news": "דיווח בלי שם/קבוצה ברורים",
     "live_goal_or_match_moment": "עדכון שער או מהלך משחק",
     "match_result_or_engagement": "תוצאה/שאלת מעורבות/עדכון משחק",
     "final_only_club_not_strict_final": "קבוצת דרג ב שמותרת רק בדיווח סופי",
@@ -2774,10 +2836,47 @@ def _news_duplicate_tokens(text: str) -> set[str]:
     return tokens
 
 
+NEWS_EVENT_FAMILY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("transfer_move", (
+        r"\b(?:transfer|move|join|joining|sign|signing|loan|buy|purchase|deal|bid|offer|proposal|talks|negotiations|agreement|personal terms|medical)\b",
+        r"העברה|מעבר|מצטרף|יצטרף|חתימה|יחתום|השאלה|רכישה|עסקה|הצעה|שיחות|מגעים|מו\"מ|סיכום|תנאים אישיים|בדיקות רפואיות",
+    )),
+    ("coach_manager", (
+        r"\b(?:coach|manager|head coach|shortlist|candidate|appointed|sacked|replacement)\b",
+        r"מאמן|מאמנים|מועמד|רשימה|ימונה|מונה|פוטר|מחליף",
+    )),
+    ("injury_squad", (
+        r"\b(?:injury|injured|out|miss|misses|ruled out|squad|called up|call-up|replace|replacement)\b",
+        r"פציעה|נפצע|פצוע|ייעדר|יחמיץ|סגל|זומן|זימון|מחליף|להחליף",
+    )),
+    ("contract_stay", (
+        r"\b(?:contract|extension|renewal|stay|stays|remain|release clause)\b",
+        r"חוזה|הארכת חוזה|חידוש חוזה|נשאר|יישאר|סעיף שחרור",
+    )),
+)
+
+
+def _news_event_families(text: str, tokens: set[str]) -> set[str]:
+    families: set[str] = set()
+    for label, patterns in NEWS_EVENT_FAMILY_PATTERNS:
+        if any(re.search(pattern, text or "", re.IGNORECASE) for pattern in patterns):
+            families.add(label)
+    if {"bid", "offer", "proposal", "talks", "negotiations", "agreement", "deal", "medical"} & tokens:
+        families.add("transfer_move")
+    if {"coach", "manager", "candidate", "appointed", "sacked"} & tokens:
+        families.add("coach_manager")
+    if {"injury", "injured", "squad", "replacement", "replace", "misses"} & tokens:
+        families.add("injury_squad")
+    if {"contract", "extension", "renewal", "clause"} & tokens:
+        families.add("contract_stay")
+    return families
+
+
 def news_event_signature(post: Post) -> dict[str, Any]:
     text = _news_duplicate_clean_text(post)
     tokens = _news_duplicate_tokens(text)
     action_tokens = tokens & NEWS_DUP_ACTION_WORDS
+    action_tokens.update(_news_event_families(text, tokens))
     if re.search(r"\b(?:coach|manager|head coach|shortlist|list|talks?|contacts?|candidate|target)\b|מאמן|מאמנים|רשימה|רשימת|בראש רשימת|מגעים|שיחות|מועמד", text, re.IGNORECASE):
         action_tokens.add("coach_or_candidate_context")
     entity_tokens: set[str] = set()
@@ -2832,7 +2931,7 @@ def cleanup_recent_news_events(state: dict[str, Any], now: float | None = None) 
     for item in recent_raw:
         if isinstance(item, dict) and now - float(item.get("ts", 0) or 0) <= RECENT_NEWS_WINDOW_SECONDS:
             recent.append(item)
-    state[RECENT_NEWS_STATE_KEY] = recent[-250:]
+    state[RECENT_NEWS_STATE_KEY] = recent[-700:]
     return state[RECENT_NEWS_STATE_KEY]
 
 
@@ -2863,7 +2962,7 @@ def remember_recent_news_event(post: Post, state: dict[str, Any]) -> None:
             "signature": news_event_signature(post),
         }
     )
-    state[RECENT_NEWS_STATE_KEY] = recent[-250:]
+    state[RECENT_NEWS_STATE_KEY] = recent[-700:]
 
 
 def channel_duplicate_text_to_post(text: str, message_id: str = "") -> Post:
@@ -2900,7 +2999,7 @@ def cleanup_channel_recent_news_events(state: dict[str, Any], now: float | None 
     for item in recent_raw:
         if isinstance(item, dict) and now - float(item.get("ts", 0) or 0) <= CHANNEL_RECENT_NEWS_WINDOW_SECONDS:
             recent.append(item)
-    state[CHANNEL_RECENT_NEWS_STATE_KEY] = recent[-300:]
+    state[CHANNEL_RECENT_NEWS_STATE_KEY] = recent[-700:]
     return state[CHANNEL_RECENT_NEWS_STATE_KEY]
 
 
@@ -2922,7 +3021,7 @@ def remember_channel_news_text(text: str, state: dict[str, Any], message_id: str
             "signature": signature,
         }
     )
-    state[CHANNEL_RECENT_NEWS_STATE_KEY] = recent[-300:]
+    state[CHANNEL_RECENT_NEWS_STATE_KEY] = recent[-700:]
 
 
 def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
@@ -3214,6 +3313,14 @@ def _distinctive_duplicate_tokens(tokens: set[str], entities: set[str]) -> set[s
     return distinctive
 
 
+def _duplicate_family_overlap(cur_actions: set[str], prev_actions: set[str]) -> set[str]:
+    return {
+        action
+        for action in (cur_actions & prev_actions)
+        if action in {"transfer_move", "coach_manager", "injury_squad", "contract_stay", "coach_or_candidate_context"}
+    }
+
+
 def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
     """Fast local decision before Gemini. Returns SAME_DUPLICATE, ADVANCED_NEW, DIFFERENT or BORDERLINE."""
     if not ENABLE_AI_REQUEST_SAVER:
@@ -3239,6 +3346,7 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     cur_distinctive = _distinctive_duplicate_tokens(cur_tokens, cur_entities)
     prev_distinctive = _distinctive_duplicate_tokens(prev_tokens, prev_entities)
     distinctive_overlap = len(cur_distinctive & prev_distinctive)
+    family_overlap = _duplicate_family_overlap(cur_actions, prev_actions)
     squad_absence_overlap = _squad_absence_subject_overlap(cur_tokens, prev_tokens)
 
     # Same journalist often posts several separate updates about the same club minutes apart.
@@ -3247,12 +3355,25 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     if same_author:
         if text_ratio >= 0.94:
             return "SAME_DUPLICATE"
+        if distinctive_overlap >= 2 and family_overlap and current_rank <= previous_rank + 10 and detail_delta <= 1:
+            return "SAME_DUPLICATE"
         if cur_distinctive and prev_distinctive and distinctive_overlap == 0:
             return "DIFFERENT"
         if distinctive_overlap == 0 and score < 0.94:
             return "DIFFERENT"
         if score < 0.86 and text_ratio < 0.86:
             return "DIFFERENT"
+
+    # Before dismissing low text similarity, catch same-event reports that use very
+    # different wording but share the same named subject and event family.
+    if (
+        not same_author
+        and distinctive_overlap >= 2
+        and family_overlap
+        and current_rank < previous_rank + 20
+        and detail_delta <= 2
+    ):
+        return "SAME_DUPLICATE"
 
     # Clearly different: not enough shared entities and not enough text/action overlap.
     if score < AI_DUPLICATE_MIN_SIMILARITY and entity_overlap < 2:
@@ -3261,6 +3382,27 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
         return "DIFFERENT"
 
     if squad_absence_overlap and _is_squad_absence_context(cur_text) and _is_squad_absence_context(prev_text):
+        return "SAME_DUPLICATE"
+
+    # Strong anti-spam rule: the same named subject in the same news family is the
+    # same story even when two writers phrase it very differently.
+    if (
+        not same_author
+        and distinctive_overlap >= 2
+        and family_overlap
+        and current_rank < previous_rank + 20
+        and detail_delta <= 2
+    ):
+        return "SAME_DUPLICATE"
+    if (
+        not same_author
+        and distinctive_overlap >= 1
+        and family_overlap
+        and action_overlap >= 2
+        and score >= 0.30
+        and current_rank < previous_rank + 20
+        and detail_delta <= 1
+    ):
         return "SAME_DUPLICATE"
 
     if (
@@ -3436,24 +3578,22 @@ def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> d
         if not isinstance(item, dict):
             continue
         score = _event_similarity_score_for_post(post, item)
-        if score < AI_DUPLICATE_MIN_SIMILARITY and score < 0.72:
-            continue
-
         local = local_duplicate_verdict(post, item, score)
         if local == "SAME_DUPLICATE":
             return item
         if local in {"ADVANCED_NEW", "DIFFERENT"}:
             continue
+        if score < AI_DUPLICATE_MIN_SIMILARITY:
+            continue
 
         # Gemini only for true borderline cases.
-        if score >= AI_DUPLICATE_MIN_SIMILARITY:
-            verdict = gemini_duplicate_event_verdict(post, item)
-            if verdict == "SAME_DUPLICATE":
-                return item
-            if verdict in {"ADVANCED_NEW", "DIFFERENT"}:
-                continue
-            if score >= 0.78 and fallback_duplicate is None:
-                fallback_duplicate = item
+        verdict = gemini_duplicate_event_verdict(post, item)
+        if verdict == "SAME_DUPLICATE":
+            return item
+        if verdict in {"ADVANCED_NEW", "DIFFERENT"}:
+            continue
+        if score >= 0.78 and fallback_duplicate is None:
+            fallback_duplicate = item
     return fallback_duplicate
 
 
@@ -4985,7 +5125,7 @@ def has_big_club_as_main_buyer(cleaned: str) -> bool:
 # but still specific enough to block ordinary post-match interviews.
 TRANSFER_OR_FUTURE_PATTERNS = (
     r"\b(?:transfer|move|join|joining|sign|signing|leave|leaving|return|back to|future|loan|buy option|option to buy|purchase option|clause|release clause|bid|offer|proposal|talks|negotiations|agreement|medical|deal|contract|free agent|wants? to|would like to|keen to|open to|dreams? of)\b",
-    r"העברה|מעבר|לעבור|להצטרף|חתימה|יחתום|יחתמו|יעזוב|לעזוב|לחזור|חזרה ל|עתידו|עתיד ב|השאלה|אופציית רכישה|אופציית הקנייה|סעיף שחרור|הצעה|שיחות|מו\"מ|משא ומתן|סיכום|בדיקות רפואיות|עסקה|חוזה|שחקן חופשי|רוצה|מעוניין|מעוניינת|חולם|פתוח להצטרף",
+    r"העברה|מעבר|לעבור|להצטרף|חתימה|יחתום|יחתמו|יעזוב|לעזוב|לחזור|חזרה ל|עתידו|עתיד ב|השאלה|אופציית רכישה|אופציית הקנייה|סעיף שחרור|הצעה|שיחות|מו\"מ|משא ומתן|סיכום|הסכמה|תנאים אישיים|בדיקות רפואיות|עסקה|חוזה|שחקן חופשי|רוצה|מעוניין|מעוניינת|חולם|פתוח להצטרף",
 )
 
 # Injury reports are allowed only when they are meaningful, especially around big clubs.
@@ -5099,6 +5239,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "empty_after_clean", 0, ["empty"]
     if is_contextless_teaser_post(post):
         return False, "contextless_teaser", 0, ["contextless_teaser"]
+    if is_unclear_subject_news_post(post):
+        return False, "unclear_subject_news", 0, ["unclear_subject_news"]
     if is_vague_status_without_primary_context(post):
         return False, "vague_status_without_primary_context", 0, ["vague_status_without_primary_context"]
     if not contains_tracked_club_or_israeli_league(post):
@@ -5311,6 +5453,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "interview_blocked"
     if is_contextless_teaser_post(post):
         return "contextless_teaser"
+    if is_unclear_subject_news_post(post):
+        return "unclear_subject_news"
     if is_vague_status_without_primary_context(post):
         return "vague_status_without_primary_context"
     if is_live_goal_or_match_moment_post(post):
@@ -5778,6 +5922,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         seen.update(post.dedupe_ids)
                         log_skip_once("contextless_teaser", post, "דילוג מסנן: הודעת רמז בלי מידע מ-@%s לא נשלחה: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
+                    if is_unclear_subject_news_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("unclear_subject_news", post, "דילוג מסנן: דיווח בלי שם/קבוצה ברורים מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
                     if is_vague_status_without_primary_context(post):
                         seen.update(post.dedupe_ids)
                         log_skip_once("vague_status_without_primary_context", post, "דילוג מסנן: עדכון סטטוס בלי נושא ברור מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
@@ -6001,3 +6149,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
