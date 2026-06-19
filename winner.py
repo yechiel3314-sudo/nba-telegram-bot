@@ -283,6 +283,9 @@ ACCOUNT_DISPLAY_NAMES = {
 TARGET_LANGUAGE = "he"
 CHECK_EVERY_SECONDS = 15
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
+SCAN_CYCLE_SUMMARY_SECONDS = int(os.environ.get("SCAN_CYCLE_SUMMARY_SECONDS", "60"))
+SCAN_CYCLE_SUMMARY_LAST_LOGGED_AT = 0.0
+SCAN_CYCLE_SUMMARY: dict[str, int] = {}
 DAILY_QUALITY_REPORT_ENABLED = os.environ.get("DAILY_QUALITY_REPORT_ENABLED", "1") == "1"
 DAILY_QUALITY_REPORT_HOUR = int(os.environ.get("DAILY_QUALITY_REPORT_HOUR", "23"))
 DAILY_QUALITY_REPORT_MINUTE = int(os.environ.get("DAILY_QUALITY_REPORT_MINUTE", "55"))
@@ -357,6 +360,13 @@ FEED_TEMPLATES = [
     "https://rsshub.rssforever.com/twitter/user/{username}",
     "https://rsshub.app/twitter/user/{username}",
 ]
+EXTRA_FEED_TEMPLATES = [
+    template.strip()
+    for template in re.split(r"[\n,]+", os.environ.get("EXTRA_FEED_TEMPLATES", ""))
+    if template.strip() and "{username}" in template
+]
+if EXTRA_FEED_TEMPLATES:
+    FEED_TEMPLATES = list(dict.fromkeys(FEED_TEMPLATES + EXTRA_FEED_TEMPLATES))
 MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
 RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "3"))
 RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
@@ -369,6 +379,9 @@ FEED_NO_POSTS_FAILURE_COUNTS: dict[str, int] = {}
 RSS_CONTROL_ALERT_AFTER_FAILURES = int(os.environ.get("RSS_CONTROL_ALERT_AFTER_FAILURES", "40"))
 RSS_CONTROL_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_CONTROL_ALERT_EVERY_SECONDS", str(30 * 60)))
 RSS_CONTROL_ALERT_LAST_SENT_AT: dict[str, float] = {}
+RSS_STALE_LATEST_ALERT_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_SECONDS", str(12 * 60 * 60)))
+RSS_STALE_LATEST_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_EVERY_SECONDS", str(6 * 60 * 60)))
+RSS_STALE_LATEST_ALERT_LAST_SENT_AT: dict[str, float] = {}
 FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
@@ -1641,6 +1654,42 @@ def send_rss_control_alert_if_needed(username: str, failures: int, checked_sourc
         logging.warning("⚠️ התראת RSS ללוח השליטה נכשלה עבור @%s: %s", username, exc)
 
 
+def send_rss_stale_latest_alert_if_needed(username: str, posts: list["Post"]) -> None:
+    if not CONTROL_CHAT_ID or RSS_STALE_LATEST_ALERT_SECONDS <= 0 or not posts:
+        return
+    latest = posts[0]
+    if not latest.published_ts:
+        return
+    age_seconds = max(0.0, time.time() - latest.published_ts)
+    if age_seconds < RSS_STALE_LATEST_ALERT_SECONDS:
+        return
+    now = time.time()
+    last_sent = RSS_STALE_LATEST_ALERT_LAST_SENT_AT.get(username, 0.0)
+    if now - last_sent < RSS_STALE_LATEST_ALERT_EVERY_SECONDS:
+        return
+    RSS_STALE_LATEST_ALERT_LAST_SENT_AT[username] = now
+    hours = age_seconds / 3600
+    text = (
+        "⚠️ התראת מקור ישן\n"
+        f"@{username} מחזיר פוסטים, אבל הפוסט האחרון בן בערך {hours:.1f} שעות.\n"
+        f"מקור שהחזיר: {latest.source_name or 'לא ידוע'}.\n"
+        "זה בדרך כלל אומר שהכותב לא פרסם לאחרונה, או שה-feed שמחזיר את המידע תקוע/לא מתעדכן."
+    )
+    try:
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": CONTROL_CHAT_ID,
+                "text": text,
+                "disable_web_page_preview": True,
+            },
+            max_attempts=1,
+        )
+        logging.warning("⚠️ נשלחה התראת מקור ישן עבור @%s: האחרון לפני %.0f שניות.", username, age_seconds)
+    except Exception as exc:
+        logging.warning("⚠️ התראת מקור ישן נכשלה עבור @%s: %s", username, exc)
+
+
 def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
     all_posts: dict[str, Post] = {}
     feed_errors: list[str] = []
@@ -1680,6 +1729,7 @@ def fetch_posts(username: str) -> list[Post]:
     posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(username, primary_templates)
     if posts:
         FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
+        send_rss_stale_latest_alert_if_needed(username, posts)
         return posts
 
     fallback_errors: list[str] = []
@@ -1688,6 +1738,7 @@ def fetch_posts(username: str) -> list[Post]:
         fallback_posts, fallback_errors, fallback_timeouts = collect_posts_from_feed_templates(username, fallback_templates)
         if fallback_posts:
             FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
+            send_rss_stale_latest_alert_if_needed(username, fallback_posts)
             primary_issue_parts = []
             if feed_errors:
                 primary_issue_parts.append("errors: " + "; ".join(feed_errors[:4]))
@@ -2727,6 +2778,9 @@ RECENT_NEWS_STATE_KEY = "__recent_news_events__"
 RECENT_NEWS_WINDOW_SECONDS = 12 * 60 * 60
 CHANNEL_RECENT_NEWS_STATE_KEY = "__channel_recent_news_events__"
 CHANNEL_RECENT_NEWS_WINDOW_SECONDS = 12 * 60 * 60
+BOT_SENT_REPLY_STATE_KEY = "__bot_sent_reply_targets__"
+BOT_SENT_REPLY_WINDOW_SECONDS = int(os.environ.get("BOT_SENT_REPLY_WINDOW_SECONDS", str(12 * 60 * 60)))
+BOT_SENT_REPLY_MAX_ITEMS = int(os.environ.get("BOT_SENT_REPLY_MAX_ITEMS", "250"))
 NEWS_BURST_SPAM_WINDOW_SECONDS = int(os.environ.get("NEWS_BURST_SPAM_WINDOW_SECONDS", str(10 * 60)))
 NEWS_BURST_SPAM_MIN_EVENTS = int(os.environ.get("NEWS_BURST_SPAM_MIN_EVENTS", "5"))
 
@@ -2791,7 +2845,10 @@ LOGGED_SKIP_KEYS: set[str] = set()
 SKIP_SUMMARY_LOG_SECONDS = int(os.environ.get("SKIP_SUMMARY_LOG_SECONDS", "60"))
 SKIP_SUMMARY_LAST_LOGGED_AT = 0.0
 SKIP_SUMMARY_COUNTS: dict[str, dict[str, Any]] = {}
-ACCOUNT_SCAN_SUMMARY_SECONDS = int(os.environ.get("ACCOUNT_SCAN_SUMMARY_SECONDS", str(5 * 60)))
+ACCOUNT_SCAN_SUMMARY_ENABLED = os.environ.get("ACCOUNT_SCAN_SUMMARY_ENABLED", "0") == "1"
+ACCOUNT_SCAN_SUMMARY_ON_STARTUP = os.environ.get("ACCOUNT_SCAN_SUMMARY_ON_STARTUP", "1") == "1"
+ACCOUNT_SCAN_SUMMARY_SECONDS = int(os.environ.get("ACCOUNT_SCAN_SUMMARY_SECONDS", str(15 * 60)))
+ACCOUNT_STALE_LATEST_SECONDS = int(os.environ.get("ACCOUNT_STALE_LATEST_SECONDS", str(6 * 60 * 60)))
 ACCOUNT_SCAN_SUMMARY_LAST_LOGGED_AT = 0.0
 ACCOUNT_SCAN_SUMMARY: dict[str, dict[str, Any]] = {}
 
@@ -3026,6 +3083,35 @@ def send_daily_quality_report_if_due() -> None:
         logging.warning("⚠️ שליחת דו\"ח יומי לערוץ השקט נכשלה: %s", exc)
 
 
+def record_scan_cycle_summary(scanned: int, with_posts: int, fetched: int, new: int, candidates: int) -> None:
+    SCAN_CYCLE_SUMMARY["cycles"] = int(SCAN_CYCLE_SUMMARY.get("cycles", 0) or 0) + 1
+    SCAN_CYCLE_SUMMARY["scanned"] = int(SCAN_CYCLE_SUMMARY.get("scanned", 0) or 0) + scanned
+    SCAN_CYCLE_SUMMARY["with_posts"] = int(SCAN_CYCLE_SUMMARY.get("with_posts", 0) or 0) + with_posts
+    SCAN_CYCLE_SUMMARY["fetched"] = int(SCAN_CYCLE_SUMMARY.get("fetched", 0) or 0) + fetched
+    SCAN_CYCLE_SUMMARY["new"] = int(SCAN_CYCLE_SUMMARY.get("new", 0) or 0) + new
+    SCAN_CYCLE_SUMMARY["candidates"] = int(SCAN_CYCLE_SUMMARY.get("candidates", 0) or 0) + candidates
+
+
+def flush_scan_cycle_summary(force: bool = False) -> None:
+    global SCAN_CYCLE_SUMMARY_LAST_LOGGED_AT
+    if not SCAN_CYCLE_SUMMARY:
+        return
+    now = time.time()
+    if not force and now - SCAN_CYCLE_SUMMARY_LAST_LOGGED_AT < SCAN_CYCLE_SUMMARY_SECONDS:
+        return
+    SCAN_CYCLE_SUMMARY_LAST_LOGGED_AT = now
+    logging.info(
+        "🔎 סיכום סריקה: %s סבבים | נבדקו %s כתבים | כתבים עם פוסטים: %s | פוסטים שנמצאו: %s | חדשים לפני סינון: %s | מועמדים אחרי סינון: %s",
+        SCAN_CYCLE_SUMMARY.get("cycles", 0),
+        SCAN_CYCLE_SUMMARY.get("scanned", 0),
+        SCAN_CYCLE_SUMMARY.get("with_posts", 0),
+        SCAN_CYCLE_SUMMARY.get("fetched", 0),
+        SCAN_CYCLE_SUMMARY.get("new", 0),
+        SCAN_CYCLE_SUMMARY.get("candidates", 0),
+    )
+    SCAN_CYCLE_SUMMARY.clear()
+
+
 def record_account_scan_summary(username: str, posts: list["Post"], new_count: int) -> None:
     item = ACCOUNT_SCAN_SUMMARY.setdefault(username, {"scans": 0, "fetched": 0, "new": 0, "latest_age": None, "latest_source": ""})
     item["scans"] = int(item.get("scans", 0) or 0) + 1
@@ -3041,6 +3127,9 @@ def flush_account_scan_summary(force: bool = False) -> None:
     global ACCOUNT_SCAN_SUMMARY_LAST_LOGGED_AT
     if not ACCOUNT_SCAN_SUMMARY:
         return
+    if not (ACCOUNT_SCAN_SUMMARY_ENABLED or force):
+        ACCOUNT_SCAN_SUMMARY.clear()
+        return
     now = time.time()
     if not force and now - ACCOUNT_SCAN_SUMMARY_LAST_LOGGED_AT < ACCOUNT_SCAN_SUMMARY_SECONDS:
         return
@@ -3048,11 +3137,16 @@ def flush_account_scan_summary(force: bool = False) -> None:
     parts = []
     for username, item in sorted(ACCOUNT_SCAN_SUMMARY.items()):
         age_value = item.get("latest_age")
-        age_text = "אין פוסט" if age_value is None else f"אחרון לפני {float(age_value):.0f}s"
+        if age_value is None:
+            age_text = "אין פוסט"
+        else:
+            age_float = float(age_value)
+            stale = " ⚠️ מקור ישן/תקוע" if age_float >= ACCOUNT_STALE_LATEST_SECONDS else ""
+            age_text = f"אחרון לפני {age_float:.0f}s{stale}"
         parts.append(
-            f"@{username}: {item.get('scans', 0)} סריקות, {item.get('fetched', 0)} נמצאו, {item.get('new', 0)} חדשים, {age_text}"
+            f"@{username}: {item.get('scans', 0)} סריקות, {item.get('fetched', 0)} נמצאו, {item.get('new', 0)} חדשים, {age_text}, מקור {item.get('latest_source') or 'לא ידוע'}"
         )
-    logging.info("🔎 סיכום כתבים: %s", " | ".join(parts[:18]))
+    logging.info("🔎 אבחון כתבים: %s", " | ".join(parts[:18]))
     ACCOUNT_SCAN_SUMMARY.clear()
 
 NEWS_DUP_STOPWORDS = {
@@ -3212,11 +3306,52 @@ def _news_duplicate_clean_text(post: Post) -> str:
 
 def _normalize_news_duplicate_token(token: str) -> str:
     token = (token or "").strip("-'׳").lower()
+    token = token.replace("'", "").replace("׳", "").replace("’", "")
+    token = token.translate(str.maketrans({"ך": "כ", "ם": "מ", "ן": "נ", "ף": "פ", "ץ": "צ"}))
     if re.fullmatch(r"[א-ת][א-ת'׳\-]{3,}", token):
         stripped = re.sub(r"^[ובלה](?=[א-ת]{3,})", "", token, count=1)
         if len(stripped) >= 3:
             token = stripped
     return token
+
+
+def _duplicate_hebrew_name_skeleton(token: str) -> str:
+    token = _normalize_news_duplicate_token(token)
+    if not re.search(r"[א-ת]", token):
+        return ""
+    skeleton = re.sub(r"[אהוי]", "", token)
+    skeleton = re.sub(r"(.)\1+", r"\1", skeleton)
+    return skeleton if len(skeleton) >= 4 else ""
+
+
+def _duplicate_latin_name_skeleton(token: str) -> str:
+    token = re.sub(r"[^a-z]", "", (token or "").lower())
+    if len(token) < 5:
+        return ""
+    skeleton = re.sub(r"[aeiouy]", "", token)
+    skeleton = re.sub(r"(.)\1+", r"\1", skeleton)
+    return skeleton if len(skeleton) >= 4 else ""
+
+
+def _duplicate_token_aliases(token: str) -> set[str]:
+    aliases = {token}
+    skeleton = _duplicate_hebrew_name_skeleton(token)
+    if skeleton:
+        aliases.add(skeleton)
+    latin_skeleton = _duplicate_latin_name_skeleton(token)
+    if latin_skeleton:
+        aliases.add(latin_skeleton)
+    if re.fullmatch(r"[A-Za-z][A-Za-z'’.-]{2,}", token or "") and "transliterate_word" in globals():
+        try:
+            transliterated = _normalize_news_duplicate_token(transliterate_word(token))
+            if len(transliterated) >= 3:
+                aliases.add(transliterated)
+            transliterated_skeleton = _duplicate_hebrew_name_skeleton(transliterated)
+            if transliterated_skeleton:
+                aliases.add(transliterated_skeleton)
+        except Exception:
+            pass
+    return aliases
 
 
 def _news_duplicate_tokens(text: str) -> set[str]:
@@ -3226,14 +3361,16 @@ def _news_duplicate_tokens(text: str) -> set[str]:
         token = _normalize_news_duplicate_token(token)
         if len(token) < 3 or token in NEWS_DUP_STOPWORDS:
             continue
-        tokens.add(token)
+        for alias in _duplicate_token_aliases(token):
+            if len(alias) >= 3 and alias not in NEWS_DUP_STOPWORDS:
+                tokens.add(alias)
     return tokens
 
 
 NEWS_EVENT_FAMILY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("transfer_move", (
-        r"\b(?:transfer|move|join|joining|sign|signing|loan|buy|purchase|deal|bid|offer|proposal|talks|negotiations|agreement|personal terms|medical)\b",
-        r"העברה|מעבר|מצטרף|יצטרף|חתימה|יחתום|השאלה|רכישה|עסקה|הצעה|שיחות|מגעים|מו\"מ|סיכום|תנאים אישיים|בדיקות רפואיות",
+        r"\b(?:transfer|move|join|joining|sign|signing|loan|buy|purchase|deal|bid|offer|proposal|talks|negotiations|agreement|personal terms|medical|confident|optimistic|close|closing|final stages|advanced|push|pushing)\b",
+        r"העברה|מעבר|מצטרף|יצטרף|חתימה|יחתום|השאלה|רכישה|עסקה|הצעה|שיחות|מגעים|מו\"מ|סיכום|תנאים אישיים|בדיקות רפואיות|בטוחים|בטוחה|אופטימי|אופטימית|קרוב|קרובה|סופי|סופיים|מתקדם|מתקדמת",
     )),
     ("coach_manager", (
         r"\b(?:coach|manager|head coach|shortlist|candidate|appointed|sacked|replacement)\b",
@@ -3255,7 +3392,7 @@ def _news_event_families(text: str, tokens: set[str]) -> set[str]:
     for label, patterns in NEWS_EVENT_FAMILY_PATTERNS:
         if any(re.search(pattern, text or "", re.IGNORECASE) for pattern in patterns):
             families.add(label)
-    if {"bid", "offer", "proposal", "talks", "negotiations", "agreement", "deal", "medical"} & tokens:
+    if {"bid", "offer", "proposal", "talks", "negotiations", "agreement", "deal", "medical", "confident", "optimistic", "close", "closing", "advanced", "push", "pushing"} & tokens:
         families.add("transfer_move")
     if {"coach", "manager", "candidate", "appointed", "sacked"} & tokens:
         families.add("coach_manager")
@@ -3441,6 +3578,60 @@ def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str,
         if local == "SAME_DUPLICATE" or score >= 0.76:
             return item
     return None
+
+
+def cleanup_bot_sent_reply_targets(state: dict[str, Any], now: float | None = None) -> list[dict[str, Any]]:
+    now = now or time.time()
+    recent_raw = state.get(BOT_SENT_REPLY_STATE_KEY, [])
+    if not isinstance(recent_raw, list):
+        recent_raw = []
+    recent: list[dict[str, Any]] = []
+    for item in recent_raw:
+        if isinstance(item, dict) and now - float(item.get("ts", 0) or 0) <= BOT_SENT_REPLY_WINDOW_SECONDS:
+            recent.append(item)
+    state[BOT_SENT_REPLY_STATE_KEY] = recent[-BOT_SENT_REPLY_MAX_ITEMS:]
+    return state[BOT_SENT_REPLY_STATE_KEY]
+
+
+def remember_bot_sent_reply_target(post: Post, state: dict[str, Any], message_ids_by_chat: dict[str, int]) -> None:
+    if not message_ids_by_chat:
+        return
+    recent = cleanup_bot_sent_reply_targets(state)
+    recent.append(
+        {
+            "ts": time.time(),
+            "username": post.username,
+            "priority": SOURCE_PRIORITY.get(post.username, 0),
+            "link": post.link,
+            "message_ids": {str(chat_id): int(message_id) for chat_id, message_id in message_ids_by_chat.items() if message_id},
+            "signature": news_event_signature(post),
+        }
+    )
+    state[BOT_SENT_REPLY_STATE_KEY] = recent[-BOT_SENT_REPLY_MAX_ITEMS:]
+
+
+def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    best_item: dict[str, Any] | None = None
+    best_score = 0.0
+    for item in reversed(cleanup_bot_sent_reply_targets(state)):
+        if not isinstance(item, dict):
+            continue
+        message_ids = item.get("message_ids")
+        if not isinstance(message_ids, dict) or not message_ids:
+            continue
+        previous = item.get("signature", {})
+        if not isinstance(previous, dict):
+            continue
+        score = _event_similarity(news_event_signature(post), previous)
+        local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
+        if local != "ADVANCED_NEW":
+            continue
+        if score > best_score:
+            best_item = item
+            best_score = score
+    if not best_item:
+        return {}
+    return {str(chat_id): int(message_id) for chat_id, message_id in dict(best_item.get("message_ids", {})).items() if message_id}
 
 
 def find_recent_burst_spam_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
@@ -3636,6 +3827,7 @@ AI_PARALLEL_MERGE_USE_AI_MIN_CLUSTER_SIZE = int(os.environ.get("AI_PARALLEL_MERG
 AI_PARALLEL_MERGE_USE_AI_MIN_DETAIL_DELTA = int(os.environ.get("AI_PARALLEL_MERGE_USE_AI_MIN_DETAIL_DELTA", "2"))
 AI_DECISION_CACHE: dict[str, str] = {}
 AI_DECISION_CACHE_ORDER: list[str] = []
+AI_DECISION_CACHE_DIRTY = False
 
 
 def ai_decision_cache_path() -> Path:
@@ -3668,7 +3860,10 @@ def _load_ai_decision_cache_from_disk() -> None:
         logging.warning("⚠️ לא הצליח לטעון cache החלטות כפילות: %s", exc)
 
 def save_ai_decision_cache() -> None:
+    global AI_DECISION_CACHE_DIRTY
     if not ENABLE_AI_REQUEST_SAVER:
+        return
+    if not AI_DECISION_CACHE_DIRTY:
         return
     try:
         path = ai_decision_cache_path()
@@ -3676,6 +3871,7 @@ def save_ai_decision_cache() -> None:
         ordered = {key: AI_DECISION_CACHE[key] for key in AI_DECISION_CACHE_ORDER[-AI_DECISION_CACHE_MAX_ITEMS:] if key in AI_DECISION_CACHE}
         temp_path.write_text(json.dumps({"items": ordered}, ensure_ascii=False), encoding="utf-8")
         temp_path.replace(path)
+        AI_DECISION_CACHE_DIRTY = False
     except Exception as exc:
         logging.warning("⚠️ לא הצליח לשמור cache החלטות כפילות: %s", exc)
 
@@ -3729,9 +3925,36 @@ GENERIC_DUPLICATE_CONTEXT_TOKENS = {
     "tottenham", "spurs", "city", "inter", "milan", "juventus", "psg", "bayern", "dortmund", "villa",
     "official", "confirmed", "free", "agent", "players", "player", "club", "clubs", "deal", "transfer",
     "contract", "years", "year", "today", "expected", "chapter", "new", "since", "after", "joins", "leaves",
+    "מנצסטר", "יונייטד", "סיטי", "ריאל", "מדריד", "ברצלונה", "בארסה", "ארסנל", "צלסי", "ליברפול",
+    "טוטנהאמ", "ספרס", "אינטר", "מילאנ", "יובנטוס", "באיירנ", "דורטמונד", "וילה",
     "רשמי", "רשמית", "שחקן", "שחקנים", "חופשי", "חופשיים", "עוזב", "עוזבים", "עזב", "עזבו", "מועדון",
     "קבוצה", "העברה", "עסקה", "חוזה", "שנים", "שנה", "היום", "צפוי", "צפויים", "חדש", "חדשה",
 }
+
+
+BIG_CLUB_DUPLICATE_TOKEN_GROUPS: tuple[set[str], ...] = (
+    {"מנצסטר", "סיטי", "manchester", "city", "mcfc"},
+    {"מנצסטר", "יונייטד", "manchester", "united", "mufc"},
+    {"ריאל", "מדריד", "real", "madrid", "rma"},
+    {"ברצלונה", "בארסה", "barcelona", "barca"},
+    {"ליברפול", "liverpool", "lfc"},
+    {"ארסנל", "arsenal"},
+    {"צלסי", "chelsea"},
+    {"טוטנהאמ", "ספרס", "tottenham", "spurs"},
+    {"באיירנ", "bayern"},
+    {"פסז", "psg", "פריז"},
+    {"יובנטוס", "juventus", "juve"},
+    {"אינטר", "inter"},
+    {"מילאנ", "milan"},
+)
+
+
+def _shared_big_club_groups(cur_tokens: set[str], prev_tokens: set[str]) -> int:
+    shared = 0
+    for group in BIG_CLUB_DUPLICATE_TOKEN_GROUPS:
+        if cur_tokens & group and prev_tokens & group:
+            shared += 1
+    return shared
 
 DETAIL_RICHNESS_PATTERNS = (
     r"\b(?:€|£|\$|million|m|fee|package|add-ons|sell-on|clause|release clause|contract until|until 20\d{2}|salary|wages|medical|bid|offer|proposal|loan|option|obligation|buy option|permanent)\b",
@@ -3796,6 +4019,23 @@ def _duplicate_family_overlap(cur_actions: set[str], prev_actions: set[str]) -> 
     }
 
 
+def _near_duplicate_subject_overlap(cur_distinctive: set[str], prev_distinctive: set[str]) -> int:
+    overlap = len(cur_distinctive & prev_distinctive)
+    if overlap:
+        return overlap
+    matches = 0
+    for cur in cur_distinctive:
+        if len(cur) < 5:
+            continue
+        for prev in prev_distinctive:
+            if len(prev) < 5:
+                continue
+            if SequenceMatcher(None, cur, prev).ratio() >= 0.88:
+                matches += 1
+                break
+    return matches
+
+
 def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
     """Fast local decision before Gemini. Returns SAME_DUPLICATE, ADVANCED_NEW, DIFFERENT or BORDERLINE."""
     if not ENABLE_AI_REQUEST_SAVER:
@@ -3820,9 +4060,10 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     text_ratio = SequenceMatcher(None, cur_text, prev_text).ratio()
     cur_distinctive = _distinctive_duplicate_tokens(cur_tokens, cur_entities)
     prev_distinctive = _distinctive_duplicate_tokens(prev_tokens, prev_entities)
-    distinctive_overlap = len(cur_distinctive & prev_distinctive)
+    distinctive_overlap = _near_duplicate_subject_overlap(cur_distinctive, prev_distinctive)
     family_overlap = _duplicate_family_overlap(cur_actions, prev_actions)
     squad_absence_overlap = _squad_absence_subject_overlap(cur_tokens, prev_tokens)
+    shared_big_club_groups = _shared_big_club_groups(cur_tokens | cur_entities, prev_tokens | prev_entities)
 
     # Same journalist often posts several separate updates about the same club minutes apart.
     # For the same source, block only a near-repeat or a post sharing the same distinctive
@@ -3846,6 +4087,20 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
         and distinctive_overlap >= 2
         and family_overlap
         and current_rank < previous_rank + 20
+        and detail_delta <= 2
+    ):
+        return "SAME_DUPLICATE"
+
+    # Cross-language channel memory: English source post vs Hebrew message already
+    # published in the channel. Same player-name token (including transliteration),
+    # same major club and same transfer/contract family is a duplicate even when
+    # the text ratio is low.
+    if (
+        not same_author
+        and shared_big_club_groups >= 1
+        and distinctive_overlap >= 1
+        and family_overlap
+        and current_rank < previous_rank + 25
         and detail_delta <= 2
     ):
         return "SAME_DUPLICATE"
@@ -3942,16 +4197,20 @@ def _ai_cache_get(previous_text: str, current_text: str) -> str | None:
 
 
 def _ai_cache_set(previous_text: str, current_text: str, verdict: str) -> None:
+    global AI_DECISION_CACHE_DIRTY
     if not ENABLE_AI_REQUEST_SAVER or verdict not in {"SAME_DUPLICATE", "ADVANCED_NEW", "DIFFERENT", "UNKNOWN"}:
         return
     key = _ai_cache_key(previous_text, current_text)
     if key not in AI_DECISION_CACHE:
         AI_DECISION_CACHE_ORDER.append(key)
+    if AI_DECISION_CACHE.get(key) != verdict:
+        AI_DECISION_CACHE_DIRTY = True
     AI_DECISION_CACHE[key] = verdict
-    save_ai_decision_cache()
     while len(AI_DECISION_CACHE_ORDER) > AI_DECISION_CACHE_MAX_ITEMS:
         old = AI_DECISION_CACHE_ORDER.pop(0)
-        AI_DECISION_CACHE.pop(old, None)
+        if AI_DECISION_CACHE.pop(old, None) is not None:
+            AI_DECISION_CACHE_DIRTY = True
+    save_ai_decision_cache()
 
 
 def parallel_merge_needs_ai(cluster: list[tuple[str, Post, float]]) -> bool:
@@ -4557,17 +4816,25 @@ def load_translation_cache() -> dict[str, str]:
 
 
 def save_translation_cache(cache: dict[str, str]) -> None:
+    global TRANSLATION_CACHE_DIRTY
+    if not TRANSLATION_CACHE_DIRTY:
+        return
     try:
         trimmed = dict(list(cache.items())[-10000:])
         path = cache_path()
         temp_path = path.with_suffix(path.suffix + ".tmp")
         temp_path.write_text(json.dumps(trimmed, ensure_ascii=False), encoding="utf-8")
         temp_path.replace(path)
+        if len(trimmed) != len(cache):
+            cache.clear()
+            cache.update(trimmed)
+        TRANSLATION_CACHE_DIRTY = False
     except Exception as exc:
         logging.warning("⚠️ לא הצליח לשמור cache תרגומים: %s", exc)
 
 
 TRANSLATION_CACHE = load_translation_cache()
+TRANSLATION_CACHE_DIRTY = False
 GEMINI_FAILURE_LOGGED = False
 GEMINI_DISABLED_UNTIL = 0.0
 GEMINI_COOLDOWN_IS_QUOTA = False
@@ -4944,6 +5211,7 @@ def untranslated_fallback_text(text: str) -> str:
 
 
 def translate_text(text: str) -> str:
+    global TRANSLATION_CACHE_DIRTY
     started = time.perf_counter()
     ai_text = clean_for_ai_translation(text)
     cleaned = clean_before_translation(text)
@@ -4987,6 +5255,7 @@ def translate_text(text: str) -> str:
                     raise RuntimeError("Gemini translation changed locked numbers or years")
                 if polished:
                     TRANSLATION_CACHE[gemini_key] = polished
+                    TRANSLATION_CACHE_DIRTY = True
                     return polished
             except Exception as exc:
                 last_error = exc
@@ -5166,32 +5435,61 @@ def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[st
     return response
 
 
-def telegram_broadcast(method: str, payload: dict[str, Any]) -> None:
+def _telegram_message_id_from_response(response: dict[str, Any]) -> int | None:
+    result = response.get("result")
+    if isinstance(result, dict):
+        message_id = result.get("message_id")
+        return int(message_id) if message_id else None
+    if isinstance(result, list) and result:
+        first = result[0]
+        if isinstance(first, dict) and first.get("message_id"):
+            return int(first["message_id"])
+    return None
+
+
+def telegram_broadcast(method: str, payload: dict[str, Any], reply_message_ids: dict[str, int] | None = None) -> dict[str, int]:
     sent_count = 0
     errors: list[str] = []
+    message_ids: dict[str, int] = {}
     for chat_id in TELEGRAM_CHAT_IDS:
         chat_payload = dict(payload)
         chat_payload["chat_id"] = chat_id
+        reply_id = (reply_message_ids or {}).get(str(chat_id))
+        if reply_id:
+            chat_payload["reply_to_message_id"] = int(reply_id)
+            chat_payload["allow_sending_without_reply"] = True
         try:
-            telegram_api(method, chat_payload)
+            response = telegram_api(method, chat_payload)
             sent_count += 1
+            message_id = _telegram_message_id_from_response(response)
+            if message_id:
+                message_ids[str(chat_id)] = message_id
             logging.info("✅ טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
         except Exception as exc:
             errors.append(f"{chat_id}: {exc}")
             logging.error("⛔ טלגרם: %s נכשל לערוץ %s, ממשיך לערוצים האחרים: %s", method, chat_id, exc)
     if sent_count == 0:
         raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
+    return message_ids
 
 
-def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], fallback_text: str) -> None:
+def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], fallback_text: str, reply_message_ids: dict[str, int] | None = None) -> dict[str, int]:
     sent_count = 0
     errors: list[str] = []
+    message_ids: dict[str, int] = {}
     for chat_id in TELEGRAM_CHAT_IDS:
         chat_payload = dict(payload)
         chat_payload["chat_id"] = chat_id
+        reply_id = (reply_message_ids or {}).get(str(chat_id))
+        if reply_id:
+            chat_payload["reply_to_message_id"] = int(reply_id)
+            chat_payload["allow_sending_without_reply"] = True
         try:
-            telegram_api(method, chat_payload)
+            response = telegram_api(method, chat_payload)
             sent_count += 1
+            message_id = _telegram_message_id_from_response(response)
+            if message_id:
+                message_ids[str(chat_id)] = message_id
             logging.info("✅ טלגרם: %s נשלח בהצלחה לערוץ %s", method, chat_id)
             continue
         except Exception as exc:
@@ -5199,16 +5497,20 @@ def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], 
             logging.error("⛔ טלגרם: %s נכשל לערוץ %s. מנסה לשלוח טקסט רגיל לאותו ערוץ: %s", method, chat_id, exc)
 
         try:
-            telegram_api(
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": trim(fallback_text, 4096),
-                    "disable_web_page_preview": True,
-                    "parse_mode": "HTML",
-                },
-            )
+            fallback_payload = {
+                "chat_id": chat_id,
+                "text": trim(fallback_text, 4096),
+                "disable_web_page_preview": True,
+                "parse_mode": "HTML",
+            }
+            if reply_id:
+                fallback_payload["reply_to_message_id"] = int(reply_id)
+                fallback_payload["allow_sending_without_reply"] = True
+            response = telegram_api("sendMessage", fallback_payload)
             sent_count += 1
+            message_id = _telegram_message_id_from_response(response)
+            if message_id:
+                message_ids[str(chat_id)] = message_id
             logging.info("✅ טלגרם: טקסט גיבוי נשלח בהצלחה לערוץ %s", chat_id)
         except Exception as fallback_exc:
             errors.append(f"{chat_id} fallback: {fallback_exc}")
@@ -5226,6 +5528,7 @@ def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], 
 
     if sent_count == 0:
         raise RuntimeError("Telegram broadcast failed for all chats: " + " | ".join(errors))
+    return message_ids
 
 
 def trim(text: str, limit: int) -> str:
@@ -6025,6 +6328,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 
 
 def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    global TRANSLATION_CACHE_DIRTY
     """Translate main + quoted text in ONE Gemini request, after local approval only."""
     if not GEMINI_API_KEYS:
         raise TranslationUnavailable("No Gemini API key configured")
@@ -6101,6 +6405,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
                 raise RuntimeError("Gemini translation changed locked numbers or years")
             if main or quote:
                 TRANSLATION_CACHE[cache_key] = json.dumps({"main": main, "quote": quote, "quote_author": quote_author}, ensure_ascii=False)
+                TRANSLATION_CACHE_DIRTY = True
                 GEMINI_KEY_COOLDOWNS.pop(key, None)
                 mark_gemini_available()
                 return main, quote, quote_author
@@ -6140,7 +6445,7 @@ def translate_post_for_send(post: Post) -> tuple[str, str, str]:
     return main, quote, quote_author
 
 
-def send_post(post: Post) -> dict[str, Any]:
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     timings: dict[str, Any] = {"sent": False, "mode": "skipped"}
 
@@ -6203,7 +6508,7 @@ def send_post(post: Post) -> dict[str, Any]:
     if video_url:
         try:
             send_started = time.perf_counter()
-            telegram_broadcast_with_text_fallback(
+            message_ids = telegram_broadcast_with_text_fallback(
                 "sendVideo",
                 {
                     "video": video_url,
@@ -6212,11 +6517,13 @@ def send_post(post: Post) -> dict[str, Any]:
                     "supports_streaming": True,
                 },
                 message,
+                reply_message_ids=reply_message_ids,
             )
             timings["send_seconds"] = time.perf_counter() - send_started
             timings["total_seconds"] = time.perf_counter() - started
             timings["sent"] = True
             timings["mode"] = "וידיאו"
+            timings["telegram_message_ids"] = message_ids
             return timings
         except Exception as exc:
             logging.warning("⚠️ שליחת וידיאו נכשלה, שולח טקסט נקי בלבד: %s", exc)
@@ -6239,7 +6546,7 @@ def send_post(post: Post) -> dict[str, Any]:
             media.append(item)
         try:
             send_started = time.perf_counter()
-            telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message)
+            message_ids = telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message, reply_message_ids=reply_message_ids)
         except Exception as exc:
             logging.warning("⚠️ שליחת תמונות נכשלה, שולח טקסט בלבד: %s", exc)
         else:
@@ -6247,21 +6554,24 @@ def send_post(post: Post) -> dict[str, Any]:
             timings["total_seconds"] = time.perf_counter() - started
             timings["sent"] = True
             timings["mode"] = f"{len(images)} תמונה/ות"
+            timings["telegram_message_ids"] = message_ids
             return timings
 
     send_started = time.perf_counter()
-    telegram_broadcast(
+    message_ids = telegram_broadcast(
         "sendMessage",
         {
             "text": trim(message, 4096),
             "disable_web_page_preview": True,
             "parse_mode": "HTML",
         },
+        reply_message_ids=reply_message_ids,
     )
     timings["send_seconds"] = time.perf_counter() - send_started
     timings["total_seconds"] = time.perf_counter() - started
     timings["sent"] = True
     timings["mode"] = "טקסט"
+    timings["telegram_message_ids"] = message_ids
     return timings
 
 
@@ -6280,27 +6590,40 @@ def send_video_after_message(video_url: str) -> None:
         logging.warning("⚠️ הטקסט נשלח, אבל טלגרם לא הצליח לצרף וידיאו: %s", exc)
 
 
+STATE_LAST_SAVED_JSON: str | None = None
+
+
 def state_path() -> Path:
     return Path(__file__).resolve().parent / STATE_FILE
 
 
-def load_state() -> dict[str, list[str]]:
+def load_state() -> dict[str, Any]:
+    global STATE_LAST_SAVED_JSON
     path = state_path()
     if not path.exists():
+        STATE_LAST_SAVED_JSON = None
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return {key: list(value) for key, value in data.items()}
+        raw = path.read_text(encoding="utf-8")
+        STATE_LAST_SAVED_JSON = raw
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
     except Exception:
         logging.warning("⚠️ לא הצליח לקרוא קובץ מצב. מתחיל עם מצב נקי.")
+        STATE_LAST_SAVED_JSON = None
         return {}
 
 
-def save_state(state: dict[str, list[str]]) -> None:
+def save_state(state: dict[str, Any]) -> None:
+    global STATE_LAST_SAVED_JSON
     path = state_path()
+    serialized = json.dumps(state, ensure_ascii=False, indent=2)
+    if serialized == STATE_LAST_SAVED_JSON:
+        return
     temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.write_text(serialized, encoding="utf-8")
     temp_path.replace(path)
+    STATE_LAST_SAVED_JSON = serialized
 
 
 def validate_settings() -> None:
@@ -6327,18 +6650,18 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     fetched_posts_total = 0
     new_posts_total = 0
 
-    def send_task(item: tuple[str, Post, float]) -> tuple[str, list[str], str, bool, dict[str, Any]]:
+    def send_task(item: tuple[str, Post, float], reply_message_ids: dict[str, int] | None = None) -> tuple[str, Post, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
         try:
-            result = send_post(post)
+            result = send_post(post, reply_message_ids=reply_message_ids)
             result["found_seconds"] = found_seconds
             result["post_age_seconds"] = max(0.0, time.time() - post.published_ts) if post.published_ts else 0.0
             result["source_name"] = post.source_name
             result["force_startup_send"] = bool(getattr(post, "force_startup_send", False))
-            return username, post.dedupe_ids, post.link, True, result
+            return username, post, post.dedupe_ids, post.link, True, result
         except Exception as exc:
             logging.error("⛔ שליחת הפוסט נכשלה %s: %s", post.link, exc)
-            return username, post.dedupe_ids, post.link, False, {}
+            return username, post, post.dedupe_ids, post.link, False, {}
 
     try:
         with ThreadPoolExecutor(max_workers=fetch_workers) as fetch_executor:
@@ -6526,16 +6849,16 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 state[username] = list(seen)[-500:]
 
         global_candidate_posts = cluster_parallel_candidates(global_candidate_posts)
-        logging.info(
-            "🔎 סיכום סריקה: נבדקו %s כתבים | כתבים עם פוסטים: %s | פוסטים שנמצאו: %s | חדשים לפני סינון: %s | מועמדים אחרי סינון: %s",
+        record_scan_cycle_summary(
             scanned_accounts,
             accounts_with_posts,
             fetched_posts_total,
             new_posts_total,
             len(global_candidate_posts),
         )
+        flush_scan_cycle_summary()
         flush_skip_summary()
-        flush_account_scan_summary()
+        flush_account_scan_summary(force=bool(startup_cycle and ACCOUNT_SCAN_SUMMARY_ON_STARTUP))
 
         for candidate in sort_candidate_posts_for_priority(global_candidate_posts):
             if len(send_futures) >= MAX_POSTS_SENT_PER_CYCLE:
@@ -6572,12 +6895,15 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 duplicate_detail = duplicate_event_debug_he(post, duplicate_event)
                 log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם מול %s. @%s לא נשלח: %s | %s", duplicate_source, username, post.link, duplicate_detail)
                 continue
+            reply_message_ids = find_bot_reply_target_for_post(post, state)
             remember_recent_news_event(post, state)
-            send_futures.append(send_executor.submit(send_task, candidate))
+            if reply_message_ids:
+                logging.info("↩️ תגובה חכמה: הפוסט מ-@%s יישלח כתגובה להודעה קודמת של הבוט באותו אירוע.", username)
+            send_futures.append(send_executor.submit(send_task, candidate, reply_message_ids))
             queued_ids.update(post.dedupe_ids)
 
         for future in as_completed(send_futures):
-            username, post_ids, link, ok, result = future.result()
+            username, sent_post, post_ids, link, ok, result = future.result()
             if not ok:
                 continue
             if result.get("sent"):
@@ -6590,6 +6916,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     state[FORCED_FABRIZIO_STARTUP_STATE_KEY] = list(forced_seen)[-100:]
                 if result.get("channel_memory_text"):
                     remember_channel_news_text(str(result.get("channel_memory_text", "")), state, message_id=link, source="bot_sent")
+                if result.get("telegram_message_ids"):
+                    remember_bot_sent_reply_target(sent_post, state, dict(result.get("telegram_message_ids", {})))
                 sent += 1
                 daily_stat_increment("sent", username, 1)
                 logging.info(
