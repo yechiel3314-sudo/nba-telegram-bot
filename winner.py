@@ -1755,7 +1755,8 @@ def fetch_posts(username: str) -> list[Post]:
                 if fallback_latest_age is None or fallback_latest_age < latest_age:
                     FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
                     send_rss_stale_latest_alert_if_needed(username, fallback_posts)
-                    logging.warning(
+                    log_feed_issue(
+                        username,
                         "🔁 RSS: המקור הראשי של @%s ישן/תקוע (%s, אחרון לפני %.0fs). הוחלף למקור גיבוי %s, אחרון לפני %s.",
                         username,
                         posts[0].source_name,
@@ -1771,7 +1772,8 @@ def fetch_posts(username: str) -> list[Post]:
                             ", ".join(fallback_timeouts[:4]),
                         )
                     return fallback_posts
-            logging.warning(
+            log_feed_issue(
+                username,
                 "⚠️ RSS: כל המקורות שנבדקו עבור @%s נראים ישנים/תקועים. המקור הראשי %s אחרון לפני %.0fs.",
                 username,
                 posts[0].source_name,
@@ -2062,22 +2064,22 @@ def _onoff_label(text: str, state: dict[str, Any], key: str) -> str:
 def quick_control_reply_markup() -> dict[str, Any]:
     keyboard = [
         [
-            {"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"},
+            {"text": "👤 בדוק כתב ספציפי - שליחת פוסט אחרון לערוץ השקט", "callback_data": "football_choose_account_latest"},
         ],
         [
-            {"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"},
+            {"text": "🔎 בדיקה וניטור - RSS, מקורות ופוסטים אחרונים", "callback_data": "football_menu_monitor"},
         ],
         [
-            {"text": "🛡️ הגדרות וסינון", "callback_data": "football_menu_filter"},
+            {"text": "🛡️ הגדרות וסינון - שליטה במה שהבוט שולח", "callback_data": "football_menu_filter"},
         ],
         [
-            {"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"},
+            {"text": "📊 סטטיסטיקות - נתוני היום והסיבות לחסימה", "callback_data": "football_menu_stats"},
         ],
         [
-            {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
+            {"text": "📊 סיכום היום עכשיו - דוח מלא לערוץ השקט", "callback_data": "football_daily_report_now"},
         ],
         [
-            {"text": "ℹ️ הסבר כפתורים", "callback_data": "football_buttons_help"},
+            {"text": "ℹ️ הסבר כפתורים - מה כל פעולה עושה", "callback_data": "football_buttons_help"},
         ],
     ]
     return {"inline_keyboard": keyboard}
@@ -2428,16 +2430,19 @@ def check_all_accounts_now_text() -> str:
         "",
         "הבדיקה הזו עושה RSS בלבד. אין שימוש ב-Gemini ואין שליחת פוסטים.",
         "המספרים כאן הם רק פוסטים שפורסמו ב-24 השעות האחרונות לפי זמן הפרסום של הפוסט.",
+        "חשוב: זה אומר שהפוסט נמצא ב-RSS. הוא עדיין יכול לא להישלח בגלל שכבר נשלח/סומן, כפילות, גיל, או סינון תוכן.",
         "",
     ]
     accounts = active_x_accounts()
     total_recent_posts = 0
     ok_count = 0
+    recent_snapshot: dict[str, int] = {}
     for username in accounts:
         label = _hebrew_account_label(username)
         try:
             posts = fetch_posts(username)
             recent = recent_24h_posts(posts)
+            recent_snapshot[username] = len(recent)
             total_recent_posts += len(recent)
             ok_count += 1
             if recent:
@@ -2449,7 +2454,9 @@ def check_all_accounts_now_text() -> str:
                 latest = "אין פוסטים כרגע"
             lines.append(f"✅ {label}: {len(recent)} פוסטים ביממה האחרונה | אחרון: {latest}")
         except Exception as exc:
+            recent_snapshot[username] = 0
             lines.append(f"❌ {label}: תקלה בשליפה - {short_error(exc, 160)}")
+    daily_stat_replace_table("fetched_recent_24h_snapshot", recent_snapshot)
     lines.extend(["", f"סיכום: {ok_count}/{len(accounts)} כתבים פעילים נבדקו. נמצאו יחד {total_recent_posts} פוסטים מהיממה האחרונה."])
     return "\n".join(lines)
 
@@ -2599,14 +2606,17 @@ def simple_stat_text(kind: str) -> str:
     bucket = _daily_stats_bucket()
     sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
     skipped_total = sum(count for _key, count in _top_daily_items("skips", 1000))
-    fetched_total = sum(count for _key, count in _top_daily_items("fetched_recent_24h", 1000))
-    scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
+    recent_snapshot = bucket.get("fetched_recent_24h_snapshot", {})
+    if not isinstance(recent_snapshot, dict) or not recent_snapshot:
+        recent_snapshot = bucket.get("fetched_recent_24h", {})
+    if not isinstance(recent_snapshot, dict):
+        recent_snapshot = {}
     if kind == "active_writer":
-        items = _top_daily_items("fetched_recent_24h", 10)
+        items = sorted(((str(key), int(value or 0)) for key, value in recent_snapshot.items()), key=lambda item: item[1], reverse=True)[:10]
         if not items:
             return "🏆 הכתב הכי פעיל ביממה האחרונה\n\nאין עדיין נתונים מהיממה האחרונה."
         username, count = items[0]
-        return f"🏆 הכתב הכי פעיל ביממה האחרונה\n\n{_hebrew_account_label(username)} עם {count} פוסטים שפורסמו ב-24 השעות האחרונות."
+        return f"🏆 הכתב הכי פעיל ביממה האחרונה\n\n{_hebrew_account_label(username)} עם {count} פוסטים שפורסמו ב-24 השעות האחרונות לפי תמונת ה-RSS האחרונה.\n\nזה לא אומר שכולם יישלחו: אחרי זה עדיין יש סינון, כפילויות ובדיקת פוסטים שכבר סומנו."
     if kind == "success_rate":
         total = sent_total + skipped_total
         pct = round((sent_total / total) * 100, 1) if total else 0
@@ -2619,11 +2629,10 @@ def simple_stat_text(kind: str) -> str:
         count = int((bucket.get("skip_reasons", {}) or {}).get(BLOCK_REASON_HEBREW.get("old_post", "פוסט ישן מדי"), 0) or 0)
         return f"⏳ פוסטים ישנים מדי\n\nנרשמו היום: {count}\nב-30 הדקות הראשונות אחרי הרצת הבוט הם לא נכנסים לדוח 'למה לא נשלח'."
     if kind == "posts_by_writer":
-        table = (bucket.get("fetched_recent_24h", {}) or {})
         lines = []
         for i, username in enumerate(all_control_test_accounts(), 1):
-            lines.append(f"{i}. {_hebrew_account_label(username)} - {int(table.get(username, 0) or 0)}")
-        return "📋 כמה פוסטים כל כתב פרסם ביממה האחרונה\n\n" + "\n".join(lines)
+            lines.append(f"{i}. {_hebrew_account_label(username)} - {int(recent_snapshot.get(username, 0) or 0)}")
+        return "📋 כמה פוסטים כל כתב פרסם ביממה האחרונה\n\nלפי תמונת ה-RSS האחרונה, לא לפי צבירה של כל סריקה.\n\n" + "\n".join(lines)
     if kind == "top_blocks":
         items = _top_daily_items("skip_reasons", 10)
         if not items:
@@ -3985,6 +3994,22 @@ def daily_stat_increment(section: str, key: str, amount: int = 1) -> None:
     save_daily_quality_stats_to_disk(force=False)
 
 
+def daily_stat_set(section: str, key: str, value: int) -> None:
+    bucket = _daily_stats_bucket()
+    table = bucket.setdefault(section, {})
+    if not isinstance(table, dict):
+        table = {}
+        bucket[section] = table
+    table[key] = int(value or 0)
+    save_daily_quality_stats_to_disk(force=False)
+
+
+def daily_stat_replace_table(section: str, values: dict[str, int]) -> None:
+    bucket = _daily_stats_bucket()
+    bucket[section] = {str(key): int(value or 0) for key, value in values.items()}
+    save_daily_quality_stats_to_disk(force=False)
+
+
 def daily_stat_add_timing(metric: str, seconds: float) -> None:
     if seconds < 0:
         return
@@ -4167,7 +4192,10 @@ def build_daily_quality_report_text() -> str:
     bucket = _daily_stats_bucket()
     sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
     skipped_total = sum(count for _key, count in _top_daily_items("skips", 1000))
-    fetched_total = sum(count for _key, count in _top_daily_items("fetched_recent_24h", 1000))
+    recent_snapshot = bucket.get("fetched_recent_24h_snapshot", {})
+    if not isinstance(recent_snapshot, dict) or not recent_snapshot:
+        recent_snapshot = bucket.get("fetched_recent_24h", {})
+    fetched_total = sum(int(value or 0) for value in (recent_snapshot or {}).values()) if isinstance(recent_snapshot, dict) else 0
     new_total = sum(count for _key, count in _top_daily_items("new", 1000))
     scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
     active_accounts_count = len(active_x_accounts())
@@ -7911,6 +7939,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     accounts_with_posts = 0
     fetched_posts_total = 0
     new_posts_total = 0
+    recent_24h_snapshot: dict[str, int] = {}
 
     def send_task(item: tuple[str, Post, float], reply_message_ids: dict[str, int] | None = None) -> tuple[str, Post, list[str], str, bool, dict[str, Any]]:
         username, post, found_seconds = item
@@ -7934,14 +7963,15 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 daily_stat_increment("scanned", username, 1)
                 seen = set(state.get(username, []))
                 if not posts:
+                    recent_24h_snapshot[username] = 0
                     record_account_scan_summary(username, [], 0)
                     continue
                 accounts_with_posts += 1
                 fetched_posts_total += len(posts)
                 daily_stat_increment("fetched", username, len(posts))
                 recent_count = recent_24h_count(posts)
-                if recent_count:
-                    daily_stat_increment("fetched_recent_24h", username, recent_count)
+                recent_24h_snapshot[username] = recent_count
+                daily_stat_set("fetched_recent_24h", username, recent_count)
 
                 if not first_run and username not in state and not SEND_BACKLOG_FOR_NEW_ACCOUNTS:
                     for post in posts:
@@ -8114,6 +8144,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 state[username] = list(seen)[-500:]
 
         global_candidate_posts = cluster_parallel_candidates(global_candidate_posts)
+        if recent_24h_snapshot:
+            daily_stat_replace_table("fetched_recent_24h_snapshot", recent_24h_snapshot)
         record_scan_cycle_summary(
             scanned_accounts,
             accounts_with_posts,
