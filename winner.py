@@ -1924,6 +1924,10 @@ def _control_mode_status_text(state: dict[str, Any], key: str) -> str:
     return f"פעיל לעוד {minutes} דק׳"
 
 
+def night_mode_control_active(state: dict[str, Any] | None = None) -> bool:
+    return _control_until_active(state or load_control_state(), "night_mode_until")
+
+
 def control_reply_markup(paused: bool) -> dict[str, Any]:
     state = load_control_state()
     disabled_base = set(disabled_base_accounts_from_state(state))
@@ -1933,12 +1937,6 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
         keyboard.append([{"text": "להפעיל את הבוט", "callback_data": "football_bot_on"}])
     else:
         keyboard.append([{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}])
-    keyboard.append([
-        {"text": f"רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_elite_only_2h"},
-        {"text": f"סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_strict_filter_2h"},
-    ])
-    if elite_only_mode_active(state) or strict_filter_active(state):
-        keyboard.append([{"text": "לבטל מצבים זמניים", "callback_data": "football_clear_temp_modes"}])
     for username in X_ACCOUNTS:
         label = CONTROLLED_BASE_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
         status = "כבוי" if username in disabled_base else "פעיל"
@@ -1947,6 +1945,25 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
         label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
         status = "פעיל" if username in enabled_optional else "כבוי"
         keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_account:{username}"}])
+    return {"inline_keyboard": keyboard}
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    state = load_control_state()
+    keyboard = [
+        [{"text": f"מצב לילה: {_control_mode_status_text(state, 'night_mode_until')}", "callback_data": "football_night_mode_until_morning"}],
+        [{"text": "סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
+        [
+            {"text": "למה לא נשלח", "callback_data": "football_last_blocked"},
+            {"text": "כפילות אחרונה", "callback_data": "football_last_duplicate"},
+        ],
+        [
+            {"text": f"רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_elite_only_2h"},
+            {"text": f"סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_strict_filter_2h"},
+        ],
+    ]
+    if elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state):
+        keyboard.append([{"text": "לבטל מצבים זמניים", "callback_data": "football_clear_temp_modes"}])
     return {"inline_keyboard": keyboard}
 
 
@@ -1981,8 +1998,73 @@ def send_control_panel(paused: bool, action_done: str = "", force_new: bool = Fa
         save_control_state(paused, control_message_id=new_message_id)
 
 
+def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> None:
+    if not CONTROL_CHAT_ID or not CONTROL_PANEL_MESSAGES_ENABLED:
+        return
+    text = action_done or "כלים מהירים לבוט הכדורגל."
+    state = load_control_state()
+    message_id = state.get("quick_control_message_id")
+    payload = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": text,
+        "reply_markup": quick_control_reply_markup(),
+    }
+    if message_id and not force_new:
+        try:
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)})
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logging.warning("⚠️ לוח כלים מהירים: עדכון ההודעה נכשל, שולח חדש: %s", exc)
+    response = telegram_api("sendMessage", payload)
+    new_message_id = response.get("result", {}).get("message_id")
+    if new_message_id:
+        save_control_state(quick_control_message_id=new_message_id)
+
+
 def answer_control_callback(callback_id: str, text: str = "") -> None:
     telegram_api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text, "show_alert": False})
+
+
+def _control_list_text(title: str, items: list[dict[str, Any]], empty: str) -> str:
+    lines = [title, ""]
+    if not items:
+        lines.append(empty)
+        return "\n".join(lines)
+    for index, item in enumerate(items[-5:], 1):
+        source = item.get("source", "unknown")
+        reason = item.get("reason", "סיבה לא ידועה")
+        preview = item.get("preview", "")
+        link = item.get("link", "")
+        lines.append(f"{index}. @{source} - {reason}")
+        if preview:
+            lines.append(f"   {preview[:180]}")
+        if link:
+            lines.append(f"   {link}")
+    return "\n".join(lines)
+
+
+def send_control_text(text: str) -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    telegram_api(
+        "sendMessage",
+        {
+            "chat_id": CONTROL_CHAT_ID,
+            "text": trim(text, 3900),
+            "disable_web_page_preview": True,
+        },
+        max_attempts=1,
+    )
+
+
+def next_morning_timestamp() -> float:
+    now_dt = datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    target = now_dt.replace(hour=7, minute=0, second=0, microsecond=0)
+    if target <= now_dt:
+        target += timedelta(days=1)
+    return target.timestamp()
 
 
 def process_control_update(update: dict[str, Any]) -> None:
@@ -2018,20 +2100,41 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "רק גדולות הופעל לשעתיים")
         logging.info("🔒 לוח שליטה: מצב רק גדולות הופעל עד %s.", datetime.fromtimestamp(until, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M"))
-        send_control_panel(is_control_paused(), "הופעל מצב זמני: רק גדולות לשעתיים.")
+        send_quick_control_panel("הופעל מצב זמני: רק גדולות לשעתיים.")
     elif data == "football_strict_filter_2h":
         until = time.time() + CONTROL_TEMP_MODE_SECONDS
         save_control_state(strict_filter_until=until)
         if callback_id:
             answer_control_callback(callback_id, "סינון קשוח הופעל לשעתיים")
         logging.info("🔒 לוח שליטה: סינון קשוח הופעל עד %s.", datetime.fromtimestamp(until, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M"))
-        send_control_panel(is_control_paused(), "הופעל מצב זמני: סינון קשוח לשעתיים.")
+        send_quick_control_panel("הופעל מצב זמני: סינון קשוח לשעתיים.")
+    elif data == "football_night_mode_until_morning":
+        until = next_morning_timestamp()
+        save_control_state(night_mode_until=until)
+        if callback_id:
+            answer_control_callback(callback_id, "מצב לילה הופעל עד הבוקר")
+        logging.info("🌙 לוח שליטה: מצב לילה הופעל עד %s.", datetime.fromtimestamp(until, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M"))
+        send_quick_control_panel("הופעל מצב לילה עד 07:00.")
+    elif data == "football_daily_report_now":
+        if callback_id:
+            answer_control_callback(callback_id, "שולח סיכום עכשיו")
+        send_control_text(build_daily_quality_report_text())
+    elif data == "football_last_blocked":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג חסימות אחרונות")
+        state = load_control_state()
+        send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", list(state.get("last_blocked_posts", [])) if isinstance(state.get("last_blocked_posts", []), list) else [], "אין חסימות שמורות כרגע."))
+    elif data == "football_last_duplicate":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג כפילויות אחרונות")
+        state = load_control_state()
+        send_control_text(_control_list_text("🧠 כפילויות אחרונות", list(state.get("last_duplicate_posts", [])) if isinstance(state.get("last_duplicate_posts", []), list) else [], "אין כפילויות שמורות כרגע."))
     elif data == "football_clear_temp_modes":
-        save_control_state(elite_only_until=0.0, strict_filter_until=0.0)
+        save_control_state(elite_only_until=0.0, strict_filter_until=0.0, night_mode_until=0.0)
         if callback_id:
             answer_control_callback(callback_id, "המצבים הזמניים בוטלו")
         logging.info("🔓 לוח שליטה: המצבים הזמניים בוטלו.")
-        send_control_panel(is_control_paused(), "המצבים הזמניים בוטלו.")
+        send_quick_control_panel("המצבים הזמניים בוטלו.")
     elif data.startswith("football_account:"):
         username = data.split(":", 1)[1]
         if username not in OPTIONAL_CONTROLLED_ACCOUNTS:
@@ -2153,6 +2256,7 @@ def control_loop() -> None:
     if CONTROL_SEND_PANEL_ON_STARTUP:
         try:
             send_control_panel(is_control_paused(), force_new=True)
+            send_quick_control_panel(force_new=True)
         except Exception as exc:
             logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
     else:
@@ -2936,6 +3040,7 @@ BLOCK_REASON_HEBREW = {
     "writer_profile_noise": "רעש אופייני לכתב",
     "temporary_elite_only_mode": "מצב זמני רק גדולות",
     "temporary_strict_filter_mode": "מצב זמני סינון קשוח",
+    "temporary_night_mode": "מצב לילה",
     "low_importance": "חשיבות נמוכה",
 }
 
@@ -2945,6 +3050,35 @@ def hebrew_block_reason(reason: str) -> str:
     if base.startswith("importance:"):
         base = base.split(":", 1)[1]
     return BLOCK_REASON_HEBREW.get(base, base or "סיבה לא ידועה")
+
+
+def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
+    try:
+        state = load_control_state()
+        item = {
+            "ts": time.time(),
+            "source": getattr(post, "username", "unknown") or "unknown",
+            "reason": hebrew_block_reason(reason),
+            "preview": filtered_post_text_preview(post),
+            "link": getattr(post, "link", "") or "",
+        }
+        blocked = state.get("last_blocked_posts", [])
+        if not isinstance(blocked, list):
+            blocked = []
+        blocked.append(item)
+        state["last_blocked_posts"] = blocked[-5:]
+        if duplicate:
+            duplicates = state.get("last_duplicate_posts", [])
+            if not isinstance(duplicates, list):
+                duplicates = []
+            duplicates.append(item)
+            state["last_duplicate_posts"] = duplicates[-5:]
+        path = control_state_path()
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(path)
+    except Exception as exc:
+        logging.debug("שמירת חסימה אחרונה ללוח השליטה נכשלה: %s", exc)
 
 
 def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
@@ -2959,6 +3093,7 @@ def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
     rendered = (message % args) if args else message
     logging.debug("↩️ " + rendered + " | מקור: %s | גיל: %.0fs", source_name, age_seconds)
     record_skip_summary(reason, post, rendered, source_name, age_seconds)
+    remember_control_block_event(reason, post, rendered, duplicate=("duplicate" in reason or "כפילות" in rendered))
 
 
 def _daily_stats_bucket() -> dict[str, Any]:
@@ -6299,7 +6434,7 @@ def football_importance_block_reason(post: Post) -> str:
 
 def temporary_control_filter_block_reason(post: Post) -> str:
     state = load_control_state()
-    if not (elite_only_mode_active(state) or strict_filter_active(state)):
+    if not (elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state)):
         return ""
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     has_big_club = (
@@ -6317,6 +6452,8 @@ def temporary_control_filter_block_reason(post: Post) -> str:
         return "temporary_elite_only_mode"
     if strict_filter_active(state) and not (has_big_club and has_high_value_news):
         return "temporary_strict_filter_mode"
+    if night_mode_control_active(state) and not (has_big_club and has_high_value_news):
+        return "temporary_night_mode"
     return ""
 
 
