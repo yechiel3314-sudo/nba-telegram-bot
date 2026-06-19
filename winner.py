@@ -223,7 +223,8 @@ OPTIONAL_CONTROLLED_ACCOUNTS = [
     "jfelixdiaz",
 ]
 
-ALWAYS_ENABLED_OPTIONAL_ACCOUNTS = {"Plettigoal"}
+DEFAULT_ENABLED_OPTIONAL_ACCOUNTS = {"Plettigoal"}
+ALWAYS_ENABLED_OPTIONAL_ACCOUNTS: set[str] = set()
 
 OPTIONAL_CONTROLLED_ACCOUNT_LABELS = {
     "Plettigoal": "פלוריאן פלטנברג",
@@ -1916,7 +1917,7 @@ def load_control_state() -> dict[str, Any]:
 
 def enabled_optional_accounts_from_state(state: dict[str, Any] | None = None) -> list[str]:
     state = state or load_control_state()
-    raw_accounts = state.get("enabled_optional_accounts", [])
+    raw_accounts = state.get("enabled_optional_accounts", list(DEFAULT_ENABLED_OPTIONAL_ACCOUNTS))
     if not isinstance(raw_accounts, list):
         raw_accounts = []
     allowed = set(OPTIONAL_CONTROLLED_ACCOUNTS)
@@ -2085,6 +2086,8 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
         [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
         [{"text": "📬 פוסט אחרון שנשלח", "callback_data": "football_last_sent_post"}],
+        [{"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"}],
+        [{"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"}],
         [{"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"}],
         [{"text": "📊 אחוז הצלחה היום", "callback_data": "football_stat_success_rate"}],
         [{"text": "✅ כמה נשלחו היום", "callback_data": "football_stat_sent_today"}],
@@ -2133,12 +2136,6 @@ def filter_menu_reply_markup() -> dict[str, Any]:
         ],
         [
             {"text": _onoff_label("🔵⚪ רק ריאל וברצלונה", state, "only_real_barca"), "callback_data": "football_toggle_filter:only_real_barca"},
-        ],
-        [
-            {"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"},
-        ],
-        [
-            {"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"},
         ],
     ]
     if elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state) or any(bool(state.get(k, False)) for k in CONTROL_FILTER_KEYS):
@@ -2666,6 +2663,8 @@ def category_help_text(category: str) -> str:
             "הקטגוריה הזו מיועדת לבדיקות מצב בלבד. הכפתורים כאן לא מתרגמים פוסטים ולא משתמשים ב-Gemini.\n\n"
             "🔄 בדוק את כל הכתבים עכשיו — עושה שליפת RSS לכל הכתבים הפעילים ומחזיר כמה פוסטים נמצאו. לא שולח פוסטים ולא מפעיל תרגום.\n"
             "📬 פוסט אחרון שנשלח — מציג את הפוסט האחרון שהבוט שמר כשליחה. לא עושה שליפה חדשה.\n"
+            "↩️ למה לא נשלח — מציג חסימות אחרונות.\n"
+            "🧠 כפילות אחרונה — מציג כפילויות שנחסמו.\n"
             "📡 RSS תקין — בודק אם מקורות ה-RSS מחזירים פוסטים. לא משתמש ב-Gemini.\n"
             "🤖 Gemini תקין — בודק רק אם מפתחות טעונים וזמינים מקומית. אין בקשה אמיתית ל-Gemini ואין בזבוז קרדיט.\n"
             "🏆/📊/✅/🚫/⏳ — מציגים נתונים שכבר נשמרו בדוח היומי."
@@ -2680,9 +2679,7 @@ def category_help_text(category: str) -> str:
             "🚨/🌍/🩺/📸 — חסימת שמועות, נבחרות, פציעות או פוסטים חברתיים.\n"
             "🟢 רק Here We Go — שולח רק דיווחים חזקים מאוד מסוג Here We Go.\n"
             "🏅 רק טופ 5 — מגביל לליגות הבכירות.\n"
-            "🔵⚪ רק ריאל וברצלונה — כפתור אחד שמפעיל/מכבה סינון לשתי הקבוצות ביחד.\n"
-            "↩️ למה לא נשלח — מציג חסימות אחרונות.\n"
-            "🧠 כפילות אחרונה — מציג כפילויות שנחסמו."
+            "🔵⚪ רק ריאל וברצלונה — כפתור אחד שמפעיל/מכבה סינון לשתי הקבוצות ביחד."
         )
     if category == "stats":
         return (
@@ -2874,12 +2871,12 @@ def process_control_update(update: dict[str, Any]) -> None:
         state = load_control_state()
         blocked_posts = list(state.get("last_blocked_posts", [])) if isinstance(state.get("last_blocked_posts", []), list) else []
         blocked_posts = [item for item in blocked_posts if isinstance(item, dict)][-5:]
-        send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."), message.get("message_id"), filter_menu_reply_markup())
+        send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."), message.get("message_id"), monitor_menu_reply_markup())
     elif data == "football_last_duplicate":
         if callback_id:
             answer_control_callback(callback_id, "מציג כפילויות אחרונות")
         state = load_control_state()
-        send_control_text(_control_list_text("🧠 כפילויות אחרונות", list(state.get("last_duplicate_posts", [])) if isinstance(state.get("last_duplicate_posts", []), list) else [], "אין כפילויות שמורות כרגע."), message.get("message_id"), filter_menu_reply_markup())
+        send_control_text(_control_list_text("🧠 כפילויות אחרונות", list(state.get("last_duplicate_posts", [])) if isinstance(state.get("last_duplicate_posts", []), list) else [], "אין כפילויות שמורות כרגע."), message.get("message_id"), monitor_menu_reply_markup())
     elif data.startswith("football_category_help:"):
         category = data.split(":", 1)[1]
         if callback_id:
