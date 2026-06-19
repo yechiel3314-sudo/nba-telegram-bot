@@ -26,6 +26,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -287,8 +288,8 @@ SCAN_CYCLE_SUMMARY_SECONDS = int(os.environ.get("SCAN_CYCLE_SUMMARY_SECONDS", "6
 SCAN_CYCLE_SUMMARY_LAST_LOGGED_AT = 0.0
 SCAN_CYCLE_SUMMARY: dict[str, int] = {}
 DAILY_QUALITY_REPORT_ENABLED = os.environ.get("DAILY_QUALITY_REPORT_ENABLED", "1") == "1"
-DAILY_QUALITY_REPORT_HOUR = int(os.environ.get("DAILY_QUALITY_REPORT_HOUR", "23"))
-DAILY_QUALITY_REPORT_MINUTE = int(os.environ.get("DAILY_QUALITY_REPORT_MINUTE", "55"))
+DAILY_QUALITY_REPORT_HOUR = int(os.environ.get("DAILY_QUALITY_REPORT_HOUR", "22"))
+DAILY_QUALITY_REPORT_MINUTE = int(os.environ.get("DAILY_QUALITY_REPORT_MINUTE", "0"))
 DAILY_QUALITY_REPORT_LAST_DATE = ""
 DAILY_QUALITY_STATS: dict[str, Any] = {}
 HTTP_RETRIES = 3
@@ -331,7 +332,9 @@ CONTROL_CHAT_ID = required_env_any(
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = 2
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
-CONTROL_SEND_PANEL_ON_STARTUP = True  # שולח כפתורי שליטה חדשים בכל הרצה של הבוט
+CONTROL_TEMP_MODE_SECONDS = int(os.environ.get("CONTROL_TEMP_MODE_SECONDS", str(2 * 60 * 60)))
+CONTROL_PANEL_MESSAGES_ENABLED = os.environ.get("CONTROL_PANEL_MESSAGES_ENABLED", "1") == "1"
+CONTROL_SEND_PANEL_ON_STARTUP = os.environ.get("CONTROL_SEND_PANEL_ON_STARTUP", "1") == "1"
 CONTROL_CREATE_PANEL_IF_MISSING = os.environ.get("CONTROL_CREATE_PANEL_IF_MISSING", "0") == "1"
 CONTROL_DELETE_WEBHOOK_ON_STARTUP = os.environ.get("CONTROL_DELETE_WEBHOOK_ON_STARTUP", "1") == "1"
 SHABBAT_MODE_ENABLED = True
@@ -374,12 +377,12 @@ RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2")
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
-FEED_NO_POSTS_WARNING_AFTER_FAILURES = int(os.environ.get("FEED_NO_POSTS_WARNING_AFTER_FAILURES", "3"))
+FEED_NO_POSTS_WARNING_AFTER_FAILURES = int(os.environ.get("FEED_NO_POSTS_WARNING_AFTER_FAILURES", "0"))
 FEED_NO_POSTS_FAILURE_COUNTS: dict[str, int] = {}
-RSS_CONTROL_ALERT_AFTER_FAILURES = int(os.environ.get("RSS_CONTROL_ALERT_AFTER_FAILURES", "40"))
+RSS_CONTROL_ALERT_AFTER_FAILURES = int(os.environ.get("RSS_CONTROL_ALERT_AFTER_FAILURES", "0"))
 RSS_CONTROL_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_CONTROL_ALERT_EVERY_SECONDS", str(30 * 60)))
 RSS_CONTROL_ALERT_LAST_SENT_AT: dict[str, float] = {}
-RSS_STALE_LATEST_ALERT_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_SECONDS", str(12 * 60 * 60)))
+RSS_STALE_LATEST_ALERT_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_SECONDS", "0"))
 RSS_STALE_LATEST_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_EVERY_SECONDS", str(6 * 60 * 60)))
 RSS_STALE_LATEST_ALERT_LAST_SENT_AT: dict[str, float] = {}
 FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
@@ -1773,7 +1776,7 @@ def fetch_posts(username: str) -> list[Post]:
             checked_sources,
             issue_text,
         )
-        if no_posts_failures >= FEED_NO_POSTS_WARNING_AFTER_FAILURES:
+        if FEED_NO_POSTS_WARNING_AFTER_FAILURES > 0 and no_posts_failures >= FEED_NO_POSTS_WARNING_AFTER_FAILURES:
             log_feed_issue(
                 username,
                 "RSS: לא נמצאו פוסטים עבור @%s אחרי %s בדיקות רצופות. נבדקו %s מקורות. ינסה שוב בשקט.",
@@ -1900,6 +1903,27 @@ def is_control_paused() -> bool:
     return bool(load_control_state().get("paused", False))
 
 
+def _control_until_active(state: dict[str, Any], key: str) -> bool:
+    return float(state.get(key, 0.0) or 0.0) > time.time()
+
+
+def strict_filter_active(state: dict[str, Any] | None = None) -> bool:
+    return _control_until_active(state or load_control_state(), "strict_filter_until")
+
+
+def elite_only_mode_active(state: dict[str, Any] | None = None) -> bool:
+    return _control_until_active(state or load_control_state(), "elite_only_until")
+
+
+def _control_mode_status_text(state: dict[str, Any], key: str) -> str:
+    until = float(state.get(key, 0.0) or 0.0)
+    remaining = until - time.time()
+    if remaining <= 0:
+        return "כבוי"
+    minutes = max(1, int(math.ceil(remaining / 60)))
+    return f"פעיל לעוד {minutes} דק׳"
+
+
 def control_reply_markup(paused: bool) -> dict[str, Any]:
     state = load_control_state()
     disabled_base = set(disabled_base_accounts_from_state(state))
@@ -1909,6 +1933,12 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
         keyboard.append([{"text": "להפעיל את הבוט", "callback_data": "football_bot_on"}])
     else:
         keyboard.append([{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}])
+    keyboard.append([
+        {"text": f"רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_elite_only_2h"},
+        {"text": f"סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_strict_filter_2h"},
+    ])
+    if elite_only_mode_active(state) or strict_filter_active(state):
+        keyboard.append([{"text": "לבטל מצבים זמניים", "callback_data": "football_clear_temp_modes"}])
     for username in X_ACCOUNTS:
         label = CONTROLLED_BASE_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
         status = "כבוי" if username in disabled_base else "פעיל"
@@ -1922,6 +1952,9 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
 
 def send_control_panel(paused: bool, action_done: str = "", force_new: bool = False) -> None:
     if not CONTROL_CHAT_ID:
+        return
+    if not CONTROL_PANEL_MESSAGES_ENABLED:
+        logging.debug("לוח שליטה: הודעת לוח לא נשלחה לערוץ השקט כי CONTROL_PANEL_MESSAGES_ENABLED כבוי.")
         return
     status = "כבוי" if paused else "פעיל"
     text = action_done or f"לוח שליטה בבוט הכדורגל. מצב נוכחי: {status}."
@@ -1979,6 +2012,26 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "הבוט הופעל")
         send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
+    elif data == "football_elite_only_2h":
+        until = time.time() + CONTROL_TEMP_MODE_SECONDS
+        save_control_state(elite_only_until=until)
+        if callback_id:
+            answer_control_callback(callback_id, "רק גדולות הופעל לשעתיים")
+        logging.info("🔒 לוח שליטה: מצב רק גדולות הופעל עד %s.", datetime.fromtimestamp(until, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M"))
+        send_control_panel(is_control_paused(), "הופעל מצב זמני: רק גדולות לשעתיים.")
+    elif data == "football_strict_filter_2h":
+        until = time.time() + CONTROL_TEMP_MODE_SECONDS
+        save_control_state(strict_filter_until=until)
+        if callback_id:
+            answer_control_callback(callback_id, "סינון קשוח הופעל לשעתיים")
+        logging.info("🔒 לוח שליטה: סינון קשוח הופעל עד %s.", datetime.fromtimestamp(until, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M"))
+        send_control_panel(is_control_paused(), "הופעל מצב זמני: סינון קשוח לשעתיים.")
+    elif data == "football_clear_temp_modes":
+        save_control_state(elite_only_until=0.0, strict_filter_until=0.0)
+        if callback_id:
+            answer_control_callback(callback_id, "המצבים הזמניים בוטלו")
+        logging.info("🔓 לוח שליטה: המצבים הזמניים בוטלו.")
+        send_control_panel(is_control_paused(), "המצבים הזמניים בוטלו.")
     elif data.startswith("football_account:"):
         username = data.split(":", 1)[1]
         if username not in OPTIONAL_CONTROLLED_ACCOUNTS:
@@ -2881,6 +2934,8 @@ BLOCK_REASON_HEBREW = {
     "weak_copy_without_primary_value": "דיווח ממוחזר בלי ערך חדש",
     "burst_spam": "עומס דיווחים על אותו נושא",
     "writer_profile_noise": "רעש אופייני לכתב",
+    "temporary_elite_only_mode": "מצב זמני רק גדולות",
+    "temporary_strict_filter_mode": "מצב זמני סינון קשוח",
     "low_importance": "חשיבות נמוכה",
 }
 
@@ -3015,6 +3070,7 @@ def build_daily_quality_report_text() -> str:
         f"📥 פוסטים שנמצאו ב-RSS: {fetched_total}",
         f"🆕 פוסטים חדשים לפני סינון: {new_total}",
         f"↩️ נחסמו/דולגו: {skipped_total}",
+        f"💸 חיסכון משוער: {skipped_total} פוסטים נעצרו לפני תרגום/שליחה",
         "",
         "🧠 מקורות הכי שימושיים:",
     ]
@@ -3039,6 +3095,8 @@ def build_daily_quality_report_text() -> str:
     scanned = dict(_top_daily_items("scanned", 1000))
     sent = dict(_top_daily_items("sent", 1000))
     fetched = dict(_top_daily_items("fetched", 1000))
+    new = dict(_top_daily_items("new", 1000))
+    skipped = dict(_top_daily_items("skips", 1000))
     quiet = [
         (username, count)
         for username, count in scanned.items()
@@ -3047,7 +3105,18 @@ def build_daily_quality_report_text() -> str:
     quiet = sorted(quiet, key=lambda item: (-(fetched.get(item[0], 0)), -item[1], item[0]))[:6]
     if quiet:
         for username, count in quiet:
-            lines.append(f"- {_hebrew_account_label(username)}: {count} סריקות, {fetched.get(username, 0)} פוסטים נמצאו, 0 נשלחו")
+            fetched_count = int(fetched.get(username, 0) or 0)
+            new_count = int(new.get(username, 0) or 0)
+            skipped_count = int(skipped.get(username, 0) or 0)
+            if fetched_count == 0:
+                why = "לא נמצאו פוסטים במקורות"
+            elif new_count == 0:
+                why = "המקורות החזירו פוסטים, אבל לא היה חדש"
+            elif skipped_count >= new_count:
+                why = "היו חדשים, אבל כולם נחסמו בסינון"
+            else:
+                why = "לא הגיעו לשלב שליחה אחרי תעדוף/כפילויות"
+            lines.append(f"- {_hebrew_account_label(username)}: {count} סריקות, {fetched_count} נמצאו, {new_count} חדשים, {skipped_count} דילוגים | {why}")
     else:
         lines.append("- אין כתב שנסרק הרבה בלי שליחה")
 
@@ -6227,6 +6296,30 @@ def football_importance_block_reason(post: Post) -> str:
         return ""
     return f"{reason}; score={score}; signals={','.join(signals) or 'none'}"
 
+
+def temporary_control_filter_block_reason(post: Post) -> str:
+    state = load_control_state()
+    if not (elite_only_mode_active(state) or strict_filter_active(state)):
+        return ""
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    has_big_club = (
+        _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
+        or _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
+        or has_big_club_as_main_buyer(cleaned)
+    )
+    has_high_value_news = (
+        _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
+        or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+        or _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
+        or _matches_any(SERIOUS_INJURY_PATTERNS, cleaned)
+    )
+    if elite_only_mode_active(state) and not has_big_club:
+        return "temporary_elite_only_mode"
+    if strict_filter_active(state) and not (has_big_club and has_high_value_news):
+        return "temporary_strict_filter_mode"
+    return ""
+
+
 def pre_send_final_local_block_reason(post: Post) -> str:
     """Last cheap safety gate before any Gemini translation or video lookup.
 
@@ -6270,6 +6363,9 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "weak_copy_without_primary_value"
     if is_writer_profile_noise_post(post):
         return "writer_profile_noise"
+    temporary_block_reason = temporary_control_filter_block_reason(post)
+    if temporary_block_reason:
+        return temporary_block_reason
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if (
         _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
