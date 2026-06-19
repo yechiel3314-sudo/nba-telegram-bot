@@ -50,6 +50,9 @@ from zoneinfo import ZoneInfo
 # ====== SETTINGS ======
 
 BOT_BUILD_ID = "football-rss-gemini-loader-reset-2026-06-11-1805"
+BOT_STARTED_AT = time.time()
+SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
+
 
 # Telegram secrets are intentionally NOT hardcoded in this file.
 # Set these in Railway -> Variables.
@@ -316,8 +319,10 @@ FORCE_FABRIZIO_STARTUP_TEST_SEND = False  # השאר False; הפעלה כ-True �
 # - Check every active reporter.
 # - Do NOT send the latest post from every reporter.
 # - Send only Fabrizio Romano's latest post on startup.
-FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP = True
-FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP = FORCE_FABRIZIO_STARTUP_TEST_SEND or os.environ.get("FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP", "0") == "1"
+# Safety: the manual "latest Fabrizio" test is allowed to send ONLY to the quiet/control channel.
+# Do not force-send Fabrizio automatically on bot startup, because startup sends use the main broadcast path.
+FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP = False
+FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP = False
 FORCED_FABRIZIO_STARTUP_STATE_KEY = "__forced_fabrizio_startup_posts__"
 SEND_STARTUP_STATUS_MESSAGE = False
 CONTROL_CHAT_ID = required_env_any(
@@ -2193,7 +2198,12 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "מציג חסימות אחרונות")
         state = load_control_state()
-        send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", list(state.get("last_blocked_posts", [])) if isinstance(state.get("last_blocked_posts", []), list) else [], "אין חסימות שמורות כרגע."))
+        blocked_posts = list(state.get("last_blocked_posts", [])) if isinstance(state.get("last_blocked_posts", []), list) else []
+        blocked_posts = [
+            item for item in blocked_posts
+            if isinstance(item, dict) and item.get("reason") != BLOCK_REASON_HEBREW.get("old_post", "פוסט ישן מדי")
+        ][-5:]
+        send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."))
     elif data == "football_last_duplicate":
         if callback_id:
             answer_control_callback(callback_id, "מציג כפילויות אחרונות")
@@ -3128,6 +3138,17 @@ def hebrew_block_reason(reason: str) -> str:
 
 def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
     try:
+        # בזמן 30 הדקות הראשונות אחרי שהבוט עולה, RSS יכול להחזיר הרבה פוסטים ישנים.
+        # אותם לא שומרים בכפתור "למה לא נשלח", כדי שלא ידחקו 5 חסימות אמיתיות.
+        # אחרי חלון ההפעלה הראשוני כן מדווחים על "פוסט ישן מדי" כרגיל.
+        base_reason = (reason or "").split(";", 1)[0].strip()
+        if (
+            base_reason == "old_post"
+            and SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS > 0
+            and time.time() - BOT_STARTED_AT < SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS
+        ):
+            return
+
         state = load_control_state()
         item = {
             "ts": time.time(),
@@ -3139,6 +3160,7 @@ def remember_control_block_event(reason: str, post: "Post", rendered: str, dupli
         blocked = state.get("last_blocked_posts", [])
         if not isinstance(blocked, list):
             blocked = []
+        blocked = [existing for existing in blocked if isinstance(existing, dict)]
         blocked.append(item)
         state["last_blocked_posts"] = blocked[-5:]
         if duplicate:
