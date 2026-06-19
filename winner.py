@@ -184,6 +184,11 @@ GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", 
 GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
+# When Gemini quota is exhausted, do not keep probing the API every few minutes.
+# A failed probe is also an API request, so quota protection pauses all real Gemini requests
+# until the control-panel button releases it after the quota has refilled.
+GEMINI_QUOTA_GUARD_ENABLED = os.environ.get("GEMINI_QUOTA_GUARD_ENABLED", "1") == "1"
+GEMINI_QUOTA_GUARD_STATE_KEY = "gemini_requests_paused_until_refill"
 GEMINI_MAX_PARALLEL_TRANSLATIONS = int(os.environ.get("GEMINI_MAX_PARALLEL_TRANSLATIONS", "1"))
 TRANSLATE_QUOTED_POSTS = os.environ.get("TRANSLATE_QUOTED_POSTS", "0") == "1"
 TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "0") != "0"
@@ -2013,6 +2018,7 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
             {"text": "📡 RSS תקין?", "callback_data": "football_rss_status"},
             {"text": "🤖 Gemini תקין?", "callback_data": "football_gemini_status"},
         ],
+        [{"text": gemini_guard_button_label(), "callback_data": "football_gemini_toggle_quota_guard"}],
         [
             {"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"},
             {"text": "📊 אחוז הצלחה היום", "callback_data": "football_stat_success_rate"},
@@ -2110,6 +2116,20 @@ def all_control_test_accounts() -> list[str]:
     # היא כוללת בדיוק את הכתבים שמוגדרים בלוח הבקרה, גם אם כתב מסוים כבוי כרגע.
     # פתיחת התפריט אינה מבצעת שליפה ואינה משתמשת ב-Gemini.
     return list(CONTROL_TEST_ACCOUNT_ORDER)
+
+
+def recent_24h_posts(posts: list[Post]) -> list[Post]:
+    """Posts whose published time is within the last 24 hours.
+
+    RSS mirrors often return a fixed page of old posts. For button statistics we
+    count only real posts from the last 24 hours, not every item returned by RSS.
+    """
+    cutoff = time.time() - 24 * 60 * 60
+    return [post for post in posts if float(getattr(post, "published_ts", 0.0) or 0.0) >= cutoff]
+
+
+def recent_24h_count(posts: list[Post]) -> int:
+    return len(recent_24h_posts(posts))
 
 
 def account_latest_menu_reply_markup() -> dict[str, Any]:
@@ -2328,55 +2348,162 @@ def run_latest_fabrizio_control_test() -> None:
 
 
 def check_all_accounts_now_text() -> str:
-    lines = ["🔄 בדיקת כל הכתבים הפעילים עכשיו", "", "הבדיקה הזו עושה RSS בלבד. אין שימוש ב-Gemini ואין שליחת פוסטים.", ""]
+    lines = [
+        "🔄 בדיקת כל הכתבים הפעילים עכשיו",
+        "",
+        "הבדיקה הזו עושה RSS בלבד. אין שימוש ב-Gemini ואין שליחת פוסטים.",
+        "המספרים כאן הם רק פוסטים שפורסמו ב-24 השעות האחרונות לפי זמן הפרסום של הפוסט.",
+        "",
+    ]
     accounts = active_x_accounts()
-    total_posts = 0
+    total_recent_posts = 0
     ok_count = 0
     for username in accounts:
         label = _hebrew_account_label(username)
         try:
             posts = fetch_posts(username)
-            total_posts += len(posts)
+            recent = recent_24h_posts(posts)
+            total_recent_posts += len(recent)
             ok_count += 1
-            latest = posts[0].link if posts else "אין פוסטים כרגע"
-            lines.append(f"✅ {label}: נמצאו {len(posts)} פוסטים | אחרון: {latest}")
+            if recent:
+                latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+                latest = f"{latest_dt} | {recent[0].link}"
+            elif posts:
+                latest = "יש פוסטים ב-RSS, אבל אין פוסטים מהיממה האחרונה"
+            else:
+                latest = "אין פוסטים כרגע"
+            lines.append(f"✅ {label}: {len(recent)} פוסטים ביממה האחרונה | אחרון: {latest}")
         except Exception as exc:
             lines.append(f"❌ {label}: תקלה בשליפה - {short_error(exc, 160)}")
-    lines.extend(["", f"סיכום: {ok_count}/{len(accounts)} כתבים נבדקו בהצלחה. נמצאו יחד {total_posts} פוסטים במקורות."])
+    lines.extend(["", f"סיכום: {ok_count}/{len(accounts)} כתבים פעילים נבדקו. נמצאו יחד {total_recent_posts} פוסטים מהיממה האחרונה."])
     return "\n".join(lines)
 
 
 def rss_status_text() -> str:
-    lines = ["📡 בדיקת RSS", ""]
-    accounts = active_x_accounts()[:8]
+    lines = [
+        "📡 בדיקת RSS לכל 14 הכתבים",
+        "",
+        "הבדיקה הזו בודקת מקורות RSS בלבד ולא משתמשת ב-Gemini.",
+        "היא מציגה גם כתבים שכרגע כבויים, כדי שתוכל לראות אם הבעיה היא בכתב או במקור RSS.",
+        "",
+    ]
+    accounts = all_control_test_accounts()
     ok_count = 0
+    recent_total = 0
     for username in accounts:
         label = _hebrew_account_label(username)
         try:
             posts = fetch_posts(username)
+            recent = recent_24h_posts(posts)
+            recent_total += len(recent)
             if posts:
                 ok_count += 1
-                lines.append(f"✅ {label}: תקין, נמצאו {len(posts)} פוסטים")
+                source = posts[0].source_name or "לא ידוע"
+                if recent:
+                    latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+                    lines.append(f"✅ {label}: RSS תקין | {len(recent)} פוסטים ביממה | מקור אחרון: {source} | אחרון: {latest_dt}")
+                else:
+                    lines.append(f"⚠️ {label}: RSS מחזיר פוסטים, אבל כולם ישנים מ-24 שעות | מקור אחרון: {source}")
             else:
-                lines.append(f"⚠️ {label}: RSS עובד אבל לא החזיר פוסטים כרגע")
+                lines.append(f"⚠️ {label}: RSS עובד/נבדק, אבל לא החזיר פוסטים כרגע")
         except Exception as exc:
-            lines.append(f"❌ {label}: {short_error(exc, 140)}")
+            lines.append(f"❌ {label}: תקלה במקורות RSS - {short_error(exc, 140)}")
     lines.append("")
-    lines.append(f"תוצאה: {ok_count}/{len(accounts)} החזירו פוסטים בפועל.")
+    lines.append(f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים כלשהם. פוסטים מהיממה האחרונה: {recent_total}.")
     return "\n".join(lines)
+
+
+def gemini_requests_paused_until_refill(state: dict[str, Any] | None = None) -> bool:
+    state = state or load_control_state()
+    return bool(state.get(GEMINI_QUOTA_GUARD_STATE_KEY, False))
+
+
+def set_gemini_requests_pause(paused: bool, reason: str = "") -> None:
+    updates: dict[str, Any] = {GEMINI_QUOTA_GUARD_STATE_KEY: bool(paused)}
+    if paused:
+        updates["gemini_requests_paused_reason"] = reason or "מכסה נגמרה / הגנה ידנית"
+        updates["gemini_requests_paused_at"] = time.time()
+    else:
+        updates["gemini_requests_paused_reason"] = ""
+        updates["gemini_requests_paused_at"] = 0.0
+    save_control_state(**updates)
+
+
+def gemini_guard_button_label() -> str:
+    if gemini_requests_paused_until_refill():
+        return "♻️ שחרור Gemini אחרי שהתמלא"
+    return "⛔ עצור בקשות Gemini עד האיפוס"
+
+
+def gemini_quota_guard_text(paused: bool) -> str:
+    if paused:
+        return (
+            "⛔ הגנת Gemini הופעלה\n\n"
+            "מעכשיו הבוט לא ישלח שום בקשה אמיתית ל-Gemini, גם אם מגיע פוסט שעבר סינון.\n"
+            "זה מונע שריפת בקשות כשאין מכסה, כי גם ניסיון כושל נחשב בקשה.\n\n"
+            "כשהמכסה מתמלאת שוב או אחרי שהוספת מפתח תקין ב-Railway, לחץ על:\n"
+            "♻️ שחרור Gemini אחרי שהתמלא"
+        )
+    return (
+        "♻️ Gemini שוחרר אחרי שהתמלא\n\n"
+        "נוקו קירורים מקומיים והבוט רשאי שוב לשלוח בקשות אמיתיות ל-Gemini.\n"
+        "אם המכסה עדיין לא התמלאה, הכשל הבא יפעיל שוב הגנה ויעצור בקשות."
+    )
+
+
+def gemini_toggle_quota_guard() -> str:
+    now_paused = gemini_requests_paused_until_refill()
+    if now_paused:
+        set_gemini_requests_pause(False)
+        return gemini_clear_local_cooldowns(clear_pause=False) + "\n\n" + gemini_quota_guard_text(False)
+    set_gemini_requests_pause(True, "עצירה ידנית מהכפתור")
+    global GEMINI_DISABLED_UNTIL, GEMINI_COOLDOWN_IS_QUOTA, GEMINI_FAILURE_LOGGED
+    GEMINI_DISABLED_UNTIL = 10 ** 12
+    GEMINI_COOLDOWN_IS_QUOTA = True
+    GEMINI_FAILURE_LOGGED = True
+    return gemini_quota_guard_text(True)
+
+
+def gemini_clear_local_cooldowns(clear_pause: bool = True) -> str:
+    global GEMINI_DISABLED_UNTIL, GEMINI_COOLDOWN_IS_QUOTA, GEMINI_FAILURE_LOGGED
+    with GEMINI_KEY_LOCK:
+        count = len(GEMINI_KEY_COOLDOWNS)
+        GEMINI_KEY_COOLDOWNS.clear()
+    GEMINI_DISABLED_UNTIL = 0.0
+    GEMINI_COOLDOWN_IS_QUOTA = False
+    GEMINI_FAILURE_LOGGED = False
+    if clear_pause:
+        set_gemini_requests_pause(False)
+    return f"♻️ שוחרר קירור Gemini מקומי ל-{count} מפתחות."
 
 
 def gemini_status_text() -> str:
     refresh_gemini_api_keys_from_env()
-    available = gemini_available_key_indexes() if 'gemini_available_key_indexes' in globals() else []
+    now = time.time()
+    with GEMINI_KEY_LOCK:
+        loaded = len(GEMINI_API_KEYS)
+        cooled = sum(1 for key in GEMINI_API_KEYS if GEMINI_KEY_COOLDOWNS.get(key, 0.0) > now)
+        longest_wait = max([GEMINI_KEY_COOLDOWNS.get(key, 0.0) - now for key in GEMINI_API_KEYS if GEMINI_KEY_COOLDOWNS.get(key, 0.0) > now] or [0])
+    available_count = max(0, loaded - cooled)
+    global_wait = max(0, int(GEMINI_DISABLED_UNTIL - now)) if GEMINI_DISABLED_UNTIL and GEMINI_DISABLED_UNTIL < 10**11 else 0
+    paused_until_refill = gemini_requests_paused_until_refill()
+    bucket = _daily_stats_bucket()
+    failures_today = sum(int(v or 0) for v in (bucket.get("gemini_failures", {}) or {}).values())
+    status = "עצור עד שחרור ידני" if paused_until_refill else ("תקין מקומית" if loaded and (available_count > 0) and not global_wait else ("בקירור מקומי" if loaded else "אין מפתחות טעונים"))
     return (
-        "🤖 בדיקת Gemini\n\n"
-        f"מפתחות טעונים: {len(GEMINI_API_KEYS)}\n"
-        f"מפתחות זמינים מקומית כרגע: {len(available)}\n"
-        f"מודל תרגום: {GEMINI_MODEL}\n\n"
-        "הבדיקה הזו לא מבזבזת קרדיט Gemini; היא בודקת טעינה וקירור מקומי בלבד."
+        "🤖 בדיקת Gemini מקומית\n\n"
+        f"מצב: {status}\n"
+        f"מפתחות טעונים: {loaded}\n"
+        f"מפתחות פנויים מקומית: {available_count}\n"
+        f"מפתחות בקירור מקומי: {cooled}\n"
+        f"הגנת מכסה עד שחרור: {'פעילה' if paused_until_refill else 'כבויה'}\n"
+        f"כשלי Gemini שנרשמו היום: {failures_today}\n"
+        f"מודל תרגום: {GEMINI_MODEL}\n"
+        + (f"\nקירור כללי נשאר: {global_wait} שניות" if global_wait else "")
+        + (f"\nהמתנה ארוכה ביותר למפתח: {int(longest_wait)} שניות" if longest_wait else "")
+        + "\n\nהבדיקה הזו לא שולחת בקשה ל-Gemini ולא מבזבזת קרדיט.\n"
+        "אם נגמרה מכסה: הפעל עצירת בקשות Gemini. כשהמכסה מתמלאת או כשמוסיפים מפתח חדש, לחץ שחרור Gemini אחרי שהתמלא."
     )
-
 
 def last_sent_post_text() -> str:
     state = load_control_state()
@@ -2397,14 +2524,14 @@ def simple_stat_text(kind: str) -> str:
     bucket = _daily_stats_bucket()
     sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
     skipped_total = sum(count for _key, count in _top_daily_items("skips", 1000))
-    fetched_total = sum(count for _key, count in _top_daily_items("fetched", 1000))
+    fetched_total = sum(count for _key, count in _top_daily_items("fetched_recent_24h", 1000))
     scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
     if kind == "active_writer":
-        items = _top_daily_items("fetched", 10)
+        items = _top_daily_items("fetched_recent_24h", 10)
         if not items:
-            return "🏆 הכתב הכי פעיל היום\n\nאין עדיין נתונים."
+            return "🏆 הכתב הכי פעיל ביממה האחרונה\n\nאין עדיין נתונים מהיממה האחרונה."
         username, count = items[0]
-        return f"🏆 הכתב הכי פעיל היום\n\n{_hebrew_account_label(username)} עם {count} פוסטים שנמצאו ב-RSS."
+        return f"🏆 הכתב הכי פעיל ביממה האחרונה\n\n{_hebrew_account_label(username)} עם {count} פוסטים שפורסמו ב-24 השעות האחרונות."
     if kind == "success_rate":
         total = sent_total + skipped_total
         pct = round((sent_total / total) * 100, 1) if total else 0
@@ -2417,10 +2544,11 @@ def simple_stat_text(kind: str) -> str:
         count = int((bucket.get("skip_reasons", {}) or {}).get(BLOCK_REASON_HEBREW.get("old_post", "פוסט ישן מדי"), 0) or 0)
         return f"⏳ פוסטים ישנים מדי\n\nנרשמו היום: {count}\nב-30 הדקות הראשונות אחרי הרצת הבוט הם לא נכנסים לדוח 'למה לא נשלח'."
     if kind == "posts_by_writer":
-        items = _top_daily_items("fetched", 20)
-        if not items:
-            return "📋 כמה פוסטים כל כתב פרסם\n\nאין עדיין נתונים."
-        return "📋 כמה פוסטים כל כתב פרסם\n\n" + "\n".join(f"{i}. {_hebrew_account_label(u)} - {c}" for i,(u,c) in enumerate(items,1))
+        table = (bucket.get("fetched_recent_24h", {}) or {})
+        lines = []
+        for i, username in enumerate(all_control_test_accounts(), 1):
+            lines.append(f"{i}. {_hebrew_account_label(username)} - {int(table.get(username, 0) or 0)}")
+        return "📋 כמה פוסטים כל כתב פרסם ביממה האחרונה\n\n" + "\n".join(lines)
     if kind == "top_blocks":
         items = _top_daily_items("skip_reasons", 10)
         if not items:
@@ -2432,15 +2560,20 @@ def simple_stat_text(kind: str) -> str:
             return "😅 הכתב שנחסם הכי הרבה\n\nאין עדיין נתונים."
         u,c=items[0]
         return f"😅 הכתב שנחסם הכי הרבה\n\n{_hebrew_account_label(u)} - {c} חסימות"
-    if kind in {"longest_post", "shortest_post", "avg_scan", "avg_translation", "gemini_failures"}:
+    if kind == "gemini_failures":
+        items = _top_daily_items("gemini_failures", 10)
+        total = sum(count for _key, count in items)
+        if not items:
+            return "❌ כמה פעמים Gemini נכשל\n\nלא נרשמו היום כשלי Gemini."
+        return "❌ כמה פעמים Gemini נכשל היום\n\n" + f"סה״כ: {total}\n" + "\n".join(f"{i}. {reason} - {count}" for i,(reason,count) in enumerate(items,1))
+    if kind in {"longest_post", "shortest_post", "avg_scan", "avg_translation"}:
         names = {
             "longest_post": "📚 הפוסט הארוך ביותר היום",
             "shortest_post": "✂️ הפוסט הקצר ביותר היום",
             "avg_scan": "⚡ זמן סריקה ממוצע",
             "avg_translation": "🧠 זמן תרגום ממוצע",
-            "gemini_failures": "❌ כמה פעמים Gemini נכשל",
         }
-        return f"{names[kind]}\n\nהכפתור מחובר ועובד, אבל אין עדיין מדידה מפורטת בקוד הקיים לשדה הזה. כדי שייתן מספר מדויק צריך להוסיף איסוף זמן/כשל בכל שליחה. כרגע הדוח היומי המרכזי כן נשמר ועובד."
+        return f"{names[kind]}\n\nהכפתור מחובר, אבל למדד הזה עדיין אין איסוף עומק מדויק בקוד. שאר הסטטיסטיקות המרכזיות כן נשמרות ועובדות."
     return build_daily_quality_report_text()
 
 def category_help_text(category: str) -> str:
@@ -2575,6 +2708,14 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "בודק Gemini")
         send_control_text(gemini_status_text(), message.get("message_id"), monitor_menu_reply_markup())
+    elif data == "football_gemini_toggle_quota_guard":
+        if callback_id:
+            answer_control_callback(callback_id, "מעדכן הגנת Gemini")
+        send_control_text(gemini_toggle_quota_guard(), message.get("message_id"), monitor_menu_reply_markup())
+    elif data == "football_gemini_clear_local_cooldown":
+        if callback_id:
+            answer_control_callback(callback_id, "משחרר קירור מקומי")
+        send_control_text(gemini_clear_local_cooldowns(), message.get("message_id"), monitor_menu_reply_markup())
     elif data == "football_last_sent_post":
         if callback_id:
             answer_control_callback(callback_id, "מציג פוסט אחרון")
@@ -3721,10 +3862,12 @@ def _empty_daily_quality_bucket(today: str) -> dict[str, Any]:
         "date": today,
         "scanned": {},
         "fetched": {},
+        "fetched_recent_24h": {},
         "new": {},
         "sent": {},
         "skips": {},
         "skip_reasons": {},
+        "gemini_failures": {},
     }
 
 
@@ -3855,7 +3998,7 @@ def build_daily_quality_report_text() -> str:
     bucket = _daily_stats_bucket()
     sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
     skipped_total = sum(count for _key, count in _top_daily_items("skips", 1000))
-    fetched_total = sum(count for _key, count in _top_daily_items("fetched", 1000))
+    fetched_total = sum(count for _key, count in _top_daily_items("fetched_recent_24h", 1000))
     new_total = sum(count for _key, count in _top_daily_items("new", 1000))
     scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
     active_accounts_count = len(active_x_accounts())
@@ -3869,7 +4012,7 @@ def build_daily_quality_report_text() -> str:
         f"✅ הודעות שנשלחו: {sent_total}",
         f"👥 כתבים פעילים: {active_accounts_count}",
         f"🔎 סריקות כתבים שבוצעו: {scanned_total}",
-        f"📥 פוסטים שנמצאו במקורות העדכונים: {fetched_total}",
+        f"📥 פוסטים מהיממה האחרונה שנמצאו במקורות: {fetched_total}",
         f"🆕 פוסטים חדשים לפני סינון: {new_total}",
         f"↩️ פוסטים שנעצרו לפני תרגום/שליחה: {skipped_total}",
         "",
@@ -5728,7 +5871,9 @@ def gemini_key_order_limited(max_keys: int | None = None) -> list[tuple[int, str
     return keys[:limit]
 
 def has_gemini_key_available() -> bool:
-    # Free local check only: scans all configured key cooldowns in memory, never calls Gemini.
+    # Free local check only: scans configured key cooldowns in memory, never calls Gemini.
+    if gemini_requests_paused_until_refill():
+        return False
     return bool(GEMINI_API_KEYS and gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE))
 
 
@@ -5741,18 +5886,30 @@ def gemini_available_keys_for_operation() -> list[tuple[int, str]]:
     GEMINI_MAX_REAL_TRANSLATION_REQUESTS and the max_real_requests argument in
     gemini_translate().
     """
+    if gemini_requests_paused_until_refill():
+        return []
     return gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE)
 
 
 def cool_down_gemini_key(key: str, error: Exception | None) -> None:
+    if GEMINI_QUOTA_GUARD_ENABLED and is_gemini_quota_error(error):
+        set_gemini_requests_pause(True, gemini_error_summary(error))
     cooldown = GEMINI_COOLDOWN_SECONDS if is_gemini_quota_error(error) else 60
     GEMINI_KEY_COOLDOWNS[key] = time.time() + cooldown
+    try:
+        daily_stat_increment("gemini_failures", gemini_error_summary(error), 1)
+    except Exception:
+        pass
 
 
 def log_gemini_unavailable(error: Exception | None) -> None:
     global GEMINI_FAILURE_LOGGED, GEMINI_DISABLED_UNTIL, GEMINI_COOLDOWN_IS_QUOTA
-    GEMINI_DISABLED_UNTIL = time.time() + GEMINI_COOLDOWN_SECONDS
     GEMINI_COOLDOWN_IS_QUOTA = is_gemini_quota_error(error)
+    if GEMINI_QUOTA_GUARD_ENABLED and GEMINI_COOLDOWN_IS_QUOTA:
+        set_gemini_requests_pause(True, gemini_error_summary(error))
+        GEMINI_DISABLED_UNTIL = 10 ** 12
+    else:
+        GEMINI_DISABLED_UNTIL = time.time() + GEMINI_COOLDOWN_SECONDS
     if GEMINI_FAILURE_LOGGED:
         return
     GEMINI_FAILURE_LOGGED = True
@@ -5794,6 +5951,8 @@ def mymemory_translate(text: str) -> str:
 
 
 def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_requests: int = 1) -> str:
+    if gemini_requests_paused_until_refill():
+        raise RuntimeError("Gemini requests are paused until quota refill/manual release")
     if not GEMINI_API_KEYS:
         raise RuntimeError("No Gemini API key configured")
     if respect_global_cooldown and time.time() < GEMINI_DISABLED_UNTIL:
@@ -7551,6 +7710,9 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 accounts_with_posts += 1
                 fetched_posts_total += len(posts)
                 daily_stat_increment("fetched", username, len(posts))
+                recent_count = recent_24h_count(posts)
+                if recent_count:
+                    daily_stat_increment("fetched_recent_24h", username, recent_count)
 
                 if not first_run and username not in state and not SEND_BACKLOG_FOR_NEW_ACCOUNTS:
                     for post in posts:
