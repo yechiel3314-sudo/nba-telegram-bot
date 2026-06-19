@@ -283,6 +283,11 @@ ACCOUNT_DISPLAY_NAMES = {
 TARGET_LANGUAGE = "he"
 CHECK_EVERY_SECONDS = 15
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
+DAILY_QUALITY_REPORT_ENABLED = os.environ.get("DAILY_QUALITY_REPORT_ENABLED", "1") == "1"
+DAILY_QUALITY_REPORT_HOUR = int(os.environ.get("DAILY_QUALITY_REPORT_HOUR", "23"))
+DAILY_QUALITY_REPORT_MINUTE = int(os.environ.get("DAILY_QUALITY_REPORT_MINUTE", "55"))
+DAILY_QUALITY_REPORT_LAST_DATE = ""
+DAILY_QUALITY_STATS: dict[str, Any] = {}
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "5"))
@@ -1974,7 +1979,7 @@ def process_control_update(update: dict[str, Any]) -> None:
 
 
 def process_channel_post_update(update: dict[str, Any]) -> None:
-    message = update.get("channel_post") or {}
+    message = update.get("channel_post") or update.get("edited_channel_post") or {}
     if not isinstance(message, dict):
         return
     chat = message.get("chat", {}) or {}
@@ -1987,10 +1992,12 @@ def process_channel_post_update(update: dict[str, Any]) -> None:
     try:
         state = load_state()
         message_id = str(message.get("message_id", ""))
-        remember_channel_news_text(text, state, message_id=message_id, source="channel")
+        update_source = "channel_edit" if update.get("edited_channel_post") else "channel"
+        remember_channel_news_text(text, state, message_id=message_id, source=update_source)
         save_state(state)
         logging.info(
-            "🧠 זיכרון כפילויות מהערוץ: נשמרה הודעה %s ל-12 שעות | טקסט: %s",
+            "🧠 זיכרון כפילויות מהערוץ: נשמרה %s %s ל-12 שעות | טקסט: %s",
+            "עריכה" if update_source == "channel_edit" else "הודעה",
             message_id or "unknown",
             re.sub(r"\s+", " ", text)[:260],
         )
@@ -2057,7 +2064,7 @@ def control_loop() -> None:
                 {
                     "offset": offset,
                     "timeout": 20,
-                    "allowed_updates": ["callback_query", "channel_post"],
+                    "allowed_updates": ["callback_query", "channel_post", "edited_channel_post"],
                 },
             )
             for update in response.get("result", []):
@@ -2310,9 +2317,24 @@ MATCH_NEWS_RESCUE_PATTERNS = (
     r"פציעה|נפצע|פצוע|השעיה|מורחק|ערעור|זומן|סגל|העברה|חוזה|רשמי|חתם|סיכום|בדיקות רפואיות",
 )
 
+MATCH_CONTEXT_NOISE_PATTERNS = (
+    r"\b(?:line[- ]?up|starting XI|XI|predicted XI|probable XI|team news|training|trained|arrived|arrival|stadium|hotel|warm[- ]?up|walkout|dressing room|locker room|pre[- ]?match|post[- ]?match|press conference|mixed zone|reaction|reacts|asked about|on his performance|World Cup mode|matchday|kick[- ]?off)\b",
+    r"הרכב|ההרכב|הרכבים|פותח|פותחים|צפוי לפתוח|צפויים לפתוח|אימון|התאמן|התאמנו|הגעה|הגיעו|אצטדיון|מלון|חימום|חדר הלבשה|לפני המשחק|אחרי המשחק|מסיבת עיתונאים|תגובה|נשאל על|מצב משחק|יום משחק|שריקת פתיחה",
+)
+
+AUDIENCE_OR_QUESTION_PATTERNS = (
+    r"\b(?:who was your|your player of the match|what do you think|thoughts\?|would you|should he|should they|poll|vote|question)\b",
+    r"מי היה|מה דעתכם|מה אתם חושבים|הייתם|צריך לדעתכם|סקר|הצביעו|שאלה",
+)
+
 LIVE_GOAL_OR_MATCH_MOMENT_PATTERNS = (
     r"\b(?:scores?|scored|goal|goals|equalis(?:e|z)r|winner|brace|hat[- ]trick|first goal|debut goal|world cup debut|match debut|against giants?)\b",
     r"\u05db\u05d1\u05e9|\u05db\u05d1\u05e9\u05d4|\u05e9\u05e2\u05e8|\u05e9\u05e2\u05e8\u05d9\u05dd|\u05e9\u05d5\u05d5\u05d9\u05d5\u05df|\u05e9\u05e2\u05e8 \u05e0\u05d9\u05e6\u05d7\u05d5\u05df|\u05e6\u05de\u05d3|\u05e9\u05dc\u05d5\u05e9\u05e2\u05e8|\u05e9\u05e2\u05e8 \u05d1\u05db\u05d5\u05e8\u05d4|\u05d1\u05db\u05d5\u05e8\u05ea \u05d4\u05de\u05d5\u05e0\u05d3\u05d9\u05d0\u05dc|\u05d1\u05d1\u05db\u05d5\u05e8\u05d4|\u05e0\u05d2\u05d3 \u05e2\u05e0\u05e7\u05d9\u05d5\u05ea|\u05dc\u05d0 \u05d4\u05d0\u05de\u05d9\u05df",
+)
+
+MEDIA_ONLY_OR_PROMO_PATTERNS = (
+    r"\b(?:video|watch video|watch here|watch now|photo|pictures?|gallery|highlights?|clip|full video|new video)\b",
+    r"וידאו|וידיאו|צפו|תמונה|תמונות|גלריה|תקציר|קליפ|הסרטון המלא|וידאו חדש",
 )
 
 CONTEXTLESS_TEASER_PATTERNS = (
@@ -2438,6 +2460,97 @@ def is_match_result_or_engagement_post(post: Post) -> bool:
     has_match_result = _matches_any(MATCH_RESULT_OR_ENGAGEMENT_PATTERNS, cleaned)
     has_score = bool(re.search(r"\b\d+\s*[-:]\s*\d+\b", cleaned))
     return bool(has_match_result or has_score)
+
+
+def is_match_context_noise_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned or _matches_any(MATCH_NEWS_RESCUE_PATTERNS, cleaned):
+        return False
+    return _matches_any(MATCH_CONTEXT_NOISE_PATTERNS, cleaned) or _matches_any(AUDIENCE_OR_QUESTION_PATTERNS, cleaned)
+
+
+def has_news_action_signal(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    return bool(
+        _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned)
+        or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+        or _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
+        or _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
+        or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
+        or _matches_any(ADMIN_PERSON_EXIT_OR_STATUS_PATTERNS, cleaned)
+    )
+
+
+def is_media_without_report_post(post: Post) -> bool:
+    raw = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
+    cleaned = clean_for_ai_translation(raw)
+    if not cleaned:
+        return False
+    if _matches_any(MATCH_NEWS_RESCUE_PATTERNS, cleaned) or has_news_action_signal(post):
+        return False
+    tokens = _news_duplicate_tokens(_news_duplicate_clean_text(post)) if "_news_duplicate_tokens" in globals() else set(re.findall(r"\w+", cleaned))
+    has_media = bool(post.image_urls or post.has_video or _matches_any(MEDIA_ONLY_OR_PROMO_PATTERNS, cleaned) or has_linkish_text(raw))
+    return bool(has_media and len(tokens) <= 7)
+
+
+def is_name_without_news_action_post(post: Post) -> bool:
+    if not primary_text_has_clear_subject(post):
+        return False
+    if has_news_action_signal(post):
+        return False
+    cleaned = clean_for_ai_translation(html.unescape(post.text or ""))
+    tokens = _news_duplicate_tokens(cleaned)
+    return bool(len(tokens) <= 8 or _matches_any(AUDIENCE_OR_QUESTION_PATTERNS, cleaned))
+
+
+def is_too_short_without_strong_news_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape(post.text or ""))
+    tokens = _news_duplicate_tokens(_news_duplicate_clean_text(clone_post_with_text(post, cleaned)))
+    if len(tokens) >= 5:
+        return False
+    if primary_text_has_clear_subject(post) and (
+        _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+        or (_matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned) and has_news_action_signal(post))
+    ):
+        return False
+    return bool(len(tokens) <= 4)
+
+
+def is_unclear_main_club_context_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned or has_big_club_as_main_buyer(cleaned):
+        return False
+    if not (_matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) and _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)):
+        return False
+    weak_big_context = _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned) or re.search(
+        r"\b(?:were interested|had interest|previously interested|wanted him before|monitored)\b|"
+        r"התעניינ[וה]|התעניינה בעבר|רצו בעבר|עקבו בעבר",
+        cleaned,
+        re.IGNORECASE,
+    )
+    return bool(weak_big_context)
+
+
+def is_weak_copy_without_primary_value_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape(post.text or ""))
+    if _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned):
+        return False
+    return bool(re.search(r"\b(?:as reported|as revealed|as told|confirmed since|verified since|no surprise|nothing new)\b|כפי שדווח|כפי שנחשף|מאומת מאז|אין הפתעות|לא חדש", cleaned, re.IGNORECASE))
+
+
+def is_writer_profile_noise_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    username = (post.username or "").lower()
+    if has_news_action_signal(post) and primary_text_has_clear_subject(post):
+        return False
+    if username in {"gerardromero", "jijantesfc"}:
+        return bool(re.search(r"\b(?:directo|twitch|youtube|live|min\s?\d+|gol|goooo+l|pam!|watchalong)\b|לייב|יוטיוב|דקה\s?\d+|גול", cleaned, re.IGNORECASE))
+    if username in {"jfelixdiaz", "jlsanchez78"}:
+        return bool(re.search(r"\b(?:opinion|entrevista|interview|top interview|inmorales|debate|chiringuito|asked|thoughts)\b|ראיון|דעה|ויכוח|נשאל|מה דעתכם", cleaned, re.IGNORECASE))
+    if username in {"nicoschira", "plettigoal"}:
+        noise_cleaned = remove_writer_noise_for_event_matching(cleaned)
+        return bool(len(_news_duplicate_tokens(noise_cleaned)) <= 4 and not has_news_action_signal(clone_post_with_text(post, noise_cleaned)))
+    return False
 
 
 def filtered_post_text_preview(post: Post, limit: int = 260) -> str:
@@ -2614,6 +2727,8 @@ RECENT_NEWS_STATE_KEY = "__recent_news_events__"
 RECENT_NEWS_WINDOW_SECONDS = 12 * 60 * 60
 CHANNEL_RECENT_NEWS_STATE_KEY = "__channel_recent_news_events__"
 CHANNEL_RECENT_NEWS_WINDOW_SECONDS = 12 * 60 * 60
+NEWS_BURST_SPAM_WINDOW_SECONDS = int(os.environ.get("NEWS_BURST_SPAM_WINDOW_SECONDS", str(10 * 60)))
+NEWS_BURST_SPAM_MIN_EVENTS = int(os.environ.get("NEWS_BURST_SPAM_MIN_EVENTS", "5"))
 
 SOURCE_PRIORITY = {
     "FabrizioRomano": 100,
@@ -2673,6 +2788,12 @@ MEDICAL_STAFF_BLOCK_PATTERNS = (
 )
 
 LOGGED_SKIP_KEYS: set[str] = set()
+SKIP_SUMMARY_LOG_SECONDS = int(os.environ.get("SKIP_SUMMARY_LOG_SECONDS", "60"))
+SKIP_SUMMARY_LAST_LOGGED_AT = 0.0
+SKIP_SUMMARY_COUNTS: dict[str, dict[str, Any]] = {}
+ACCOUNT_SCAN_SUMMARY_SECONDS = int(os.environ.get("ACCOUNT_SCAN_SUMMARY_SECONDS", str(5 * 60)))
+ACCOUNT_SCAN_SUMMARY_LAST_LOGGED_AT = 0.0
+ACCOUNT_SCAN_SUMMARY: dict[str, dict[str, Any]] = {}
 
 BLOCK_REASON_HEBREW = {
     "old_post": "פוסט ישן מדי",
@@ -2695,6 +2816,14 @@ BLOCK_REASON_HEBREW = {
     "minor_or_unclear_injury_not_enough": "פציעה/כשירות לא מספיק חשובה",
     "low_interest_club_strong_move_not_enough": "מעבר בקבוצה לא מספיק מעניינת",
     "vague_big_club_player_idea_without_real_rumour": "רעיון שחקן בלי דיווח אמיתי",
+    "match_context_noise": "ספאם סביב משחק/נבחרת בלי חדשות",
+    "name_without_news_action": "שם בלי פעולה חדשותית ברורה",
+    "media_without_report": "תמונה/וידאו בלי דיווח",
+    "too_short_without_strong_news": "הודעה קצרה מדי בלי דיווח חזק",
+    "unclear_main_club_context": "לא ברור מי עיקר הדיווח",
+    "weak_copy_without_primary_value": "דיווח ממוחזר בלי ערך חדש",
+    "burst_spam": "עומס דיווחים על אותו נושא",
+    "writer_profile_noise": "רעש אופייני לכתב",
     "low_importance": "חשיבות נמוכה",
 }
 
@@ -2715,7 +2844,216 @@ def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
         LOGGED_SKIP_KEYS.clear()
     age_seconds = max(0.0, time.time() - post.published_ts) if getattr(post, "published_ts", 0.0) else 0.0
     source_name = getattr(post, "source_name", "unknown") or "unknown"
-    logging.info("↩️ " + message + " | מקור: %s | גיל: %.0fs", *args, source_name, age_seconds)
+    rendered = (message % args) if args else message
+    logging.debug("↩️ " + rendered + " | מקור: %s | גיל: %.0fs", source_name, age_seconds)
+    record_skip_summary(reason, post, rendered, source_name, age_seconds)
+
+
+def _daily_stats_bucket() -> dict[str, Any]:
+    today = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).strftime("%Y-%m-%d")
+    if DAILY_QUALITY_STATS.get("date") != today:
+        DAILY_QUALITY_STATS.clear()
+        DAILY_QUALITY_STATS.update(
+            {
+                "date": today,
+                "scanned": {},
+                "fetched": {},
+                "new": {},
+                "sent": {},
+                "skips": {},
+                "skip_reasons": {},
+            }
+        )
+    return DAILY_QUALITY_STATS
+
+
+def daily_stat_increment(section: str, key: str, amount: int = 1) -> None:
+    bucket = _daily_stats_bucket()
+    table = bucket.setdefault(section, {})
+    if not isinstance(table, dict):
+        table = {}
+        bucket[section] = table
+    table[key] = int(table.get(key, 0) or 0) + amount
+
+
+def daily_stat_skip(username: str, reason_he: str) -> None:
+    daily_stat_increment("skips", username, 1)
+    daily_stat_increment("skip_reasons", reason_he, 1)
+
+
+def record_skip_summary(reason: str, post: "Post", rendered: str, source_name: str, age_seconds: float) -> None:
+    source = getattr(post, "username", "unknown") or "unknown"
+    base_reason = hebrew_block_reason(reason)
+    daily_stat_skip(source, base_reason)
+    key = f"{source}|{base_reason}"
+    item = SKIP_SUMMARY_COUNTS.setdefault(
+        key,
+        {
+            "count": 0,
+            "source": source,
+            "reason": base_reason,
+            "latest": "",
+            "rss": source_name,
+            "age_seconds": age_seconds,
+        },
+    )
+    item["count"] = int(item.get("count", 0) or 0) + 1
+    item["latest"] = trim(rendered, 220) if "trim" in globals() else rendered[:220]
+    item["rss"] = source_name
+    item["age_seconds"] = age_seconds
+
+
+def flush_skip_summary(force: bool = False) -> None:
+    global SKIP_SUMMARY_LAST_LOGGED_AT
+    if not SKIP_SUMMARY_COUNTS:
+        return
+    now = time.time()
+    if not force and now - SKIP_SUMMARY_LAST_LOGGED_AT < SKIP_SUMMARY_LOG_SECONDS:
+        return
+    SKIP_SUMMARY_LAST_LOGGED_AT = now
+    items = sorted(SKIP_SUMMARY_COUNTS.values(), key=lambda item: int(item.get("count", 0) or 0), reverse=True)
+    parts = []
+    for item in items[:12]:
+        parts.append(
+            f"@{item.get('source', 'unknown')}: {item.get('count', 0)}x {item.get('reason', 'סיבה לא ידועה')}"
+        )
+    logging.info("↩️ סיכום דילוגים בדקה האחרונה: %s", " | ".join(parts))
+    for item in items[:5]:
+        logging.debug(
+            "↩️ פירוט דילוג לדוגמה: @%s | %s | מקור: %s | גיל: %.0fs | %s",
+            item.get("source", "unknown"),
+            item.get("reason", "סיבה לא ידועה"),
+            item.get("rss", "unknown"),
+            float(item.get("age_seconds", 0.0) or 0.0),
+            item.get("latest", ""),
+        )
+    SKIP_SUMMARY_COUNTS.clear()
+
+
+def _top_daily_items(section: str, limit: int = 5) -> list[tuple[str, int]]:
+    bucket = _daily_stats_bucket()
+    table = bucket.get(section, {})
+    if not isinstance(table, dict):
+        return []
+    return sorted(((str(key), int(value or 0)) for key, value in table.items()), key=lambda item: item[1], reverse=True)[:limit]
+
+
+def _hebrew_account_label(username: str) -> str:
+    return ACCOUNT_DISPLAY_NAMES.get(username, OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username))
+
+
+def build_daily_quality_report_text() -> str:
+    bucket = _daily_stats_bucket()
+    sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
+    skipped_total = sum(count for _key, count in _top_daily_items("skips", 1000))
+    fetched_total = sum(count for _key, count in _top_daily_items("fetched", 1000))
+    new_total = sum(count for _key, count in _top_daily_items("new", 1000))
+    scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
+
+    lines = [
+        "📊 דו\"ח יומי - בוט כדורגל",
+        "",
+        f"✅ נשלחו היום: {sent_total}",
+        f"🔎 סריקות כתבים: {scanned_total}",
+        f"📥 פוסטים שנמצאו ב-RSS: {fetched_total}",
+        f"🆕 פוסטים חדשים לפני סינון: {new_total}",
+        f"↩️ נחסמו/דולגו: {skipped_total}",
+        "",
+        "🧠 מקורות הכי שימושיים:",
+    ]
+    sent_items = _top_daily_items("sent", 5)
+    if sent_items:
+        for index, (username, count) in enumerate(sent_items, 1):
+            lines.append(f"{index}. {_hebrew_account_label(username)} - {count} נשלחו")
+    else:
+        lines.append("- לא נשלחו הודעות היום")
+
+    lines.append("")
+    lines.append("🧹 סיבות חסימה מובילות:")
+    reason_items = _top_daily_items("skip_reasons", 6)
+    if reason_items:
+        for reason, count in reason_items:
+            lines.append(f"- {reason}: {count}")
+    else:
+        lines.append("- אין חסימות שנרשמו מאז ההפעלה")
+
+    lines.append("")
+    lines.append("⚠️ כתבים שנסרקו הרבה ולא שלחו:")
+    scanned = dict(_top_daily_items("scanned", 1000))
+    sent = dict(_top_daily_items("sent", 1000))
+    fetched = dict(_top_daily_items("fetched", 1000))
+    quiet = [
+        (username, count)
+        for username, count in scanned.items()
+        if count >= 10 and int(sent.get(username, 0) or 0) == 0
+    ]
+    quiet = sorted(quiet, key=lambda item: (-(fetched.get(item[0], 0)), -item[1], item[0]))[:6]
+    if quiet:
+        for username, count in quiet:
+            lines.append(f"- {_hebrew_account_label(username)}: {count} סריקות, {fetched.get(username, 0)} פוסטים נמצאו, 0 נשלחו")
+    else:
+        lines.append("- אין כתב שנסרק הרבה בלי שליחה")
+
+    lines.append("")
+    lines.append("🧩 הערת איכות:")
+    lines.append("הנתונים נאספים מאז ההפעלה האחרונה של הבוט, בלי שימוש בג'מיני ובלי שינוי RSS.")
+    return "\n".join(lines)
+
+
+def send_daily_quality_report_if_due() -> None:
+    global DAILY_QUALITY_REPORT_LAST_DATE
+    if not DAILY_QUALITY_REPORT_ENABLED or not CONTROL_CHAT_ID:
+        return
+    now_dt = datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    today = now_dt.strftime("%Y-%m-%d")
+    if DAILY_QUALITY_REPORT_LAST_DATE == today:
+        return
+    if (now_dt.hour, now_dt.minute) < (DAILY_QUALITY_REPORT_HOUR, DAILY_QUALITY_REPORT_MINUTE):
+        return
+    try:
+        telegram_api(
+            "sendMessage",
+            {
+                "chat_id": CONTROL_CHAT_ID,
+                "text": build_daily_quality_report_text(),
+                "disable_web_page_preview": True,
+            },
+            max_attempts=1,
+        )
+        DAILY_QUALITY_REPORT_LAST_DATE = today
+        logging.info("📊 דו\"ח יומי נשלח לערוץ השקט.")
+    except Exception as exc:
+        logging.warning("⚠️ שליחת דו\"ח יומי לערוץ השקט נכשלה: %s", exc)
+
+
+def record_account_scan_summary(username: str, posts: list["Post"], new_count: int) -> None:
+    item = ACCOUNT_SCAN_SUMMARY.setdefault(username, {"scans": 0, "fetched": 0, "new": 0, "latest_age": None, "latest_source": ""})
+    item["scans"] = int(item.get("scans", 0) or 0) + 1
+    item["fetched"] = int(item.get("fetched", 0) or 0) + len(posts)
+    item["new"] = int(item.get("new", 0) or 0) + new_count
+    if posts:
+        latest = posts[0]
+        item["latest_age"] = max(0.0, time.time() - latest.published_ts) if latest.published_ts else None
+        item["latest_source"] = latest.source_name
+
+
+def flush_account_scan_summary(force: bool = False) -> None:
+    global ACCOUNT_SCAN_SUMMARY_LAST_LOGGED_AT
+    if not ACCOUNT_SCAN_SUMMARY:
+        return
+    now = time.time()
+    if not force and now - ACCOUNT_SCAN_SUMMARY_LAST_LOGGED_AT < ACCOUNT_SCAN_SUMMARY_SECONDS:
+        return
+    ACCOUNT_SCAN_SUMMARY_LAST_LOGGED_AT = now
+    parts = []
+    for username, item in sorted(ACCOUNT_SCAN_SUMMARY.items()):
+        age_value = item.get("latest_age")
+        age_text = "אין פוסט" if age_value is None else f"אחרון לפני {float(age_value):.0f}s"
+        parts.append(
+            f"@{username}: {item.get('scans', 0)} סריקות, {item.get('fetched', 0)} נמצאו, {item.get('new', 0)} חדשים, {age_text}"
+        )
+    logging.info("🔎 סיכום כתבים: %s", " | ".join(parts[:18]))
+    ACCOUNT_SCAN_SUMMARY.clear()
 
 NEWS_DUP_STOPWORDS = {
     "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "from", "as", "by", "at", "is", "are", "was", "were", "be", "been", "being",
@@ -2729,6 +3067,14 @@ NEWS_DUP_ACTION_WORDS = {
     "transfer", "trade", "traded", "waive", "waived", "injury", "injured", "out", "miss", "misses", "called", "call", "replace", "replaces", "replacement", "sacked", "appointed", "agreed", "agreement", "deal", "announce", "announced", "confirmed",
     "עוזב", "יעזוב", "עזב", "שוחרר", "חופשי", "חוזה", "חתם", "יחתום", "מצטרף", "עבר", "יעבור", "העברה", "טרייד", "פציעה", "נפצע", "יחמיץ", "ייעדר", "מחליף", "להחליף", "זומן", "קורא", "לא", "ישחק", "מונה", "פוטר", "סוכם", "אישרה", "אישר", "הודיעה", "פורסם",
 }
+
+NEWS_DUP_STOPWORDS.update(
+    {
+        "transfer", "transfers", "mercato", "calciomercato", "sky", "sport", "sports", "germany", "deutschland",
+        "breaking", "exclusive", "update", "updates", "news", "via", "video", "watch", "live",
+        "העברות", "העברה", "סקיי", "ספורט", "גרמניה", "חדשות", "עדכון", "וידאו", "וידיאו", "לייב",
+    }
+)
 
 
 def strip_country_code_leftovers_near_flags(text: str) -> str:
@@ -2801,14 +3147,62 @@ def is_medical_staff_post(post: Post) -> bool:
     return any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in MEDICAL_STAFF_BLOCK_PATTERNS)
 
 
+WRITER_NOISE_PATTERNS = (
+    r"(?im)^\s*(?:#?(?:transfers?|mercato|calciomercato)|העברות)\s*$",
+    r"(?im)^\s*(?:sky\s*sport(?:s)?\s*germany|sky\s*germany|skysportde|סקיי\s+ספורט\s+גרמניה)\s*$",
+    r"(?im)\s+(?:#(?:transfers?|mercato|calciomercato)|העברות)\s*$",
+    r"(?im)\s+(?:sky\s*sport(?:s)?\s*germany|sky\s*germany|skysportde|סקיי\s+ספורט\s+גרמניה)\s*$",
+)
+
+
+TRAILING_DUPLICATE_TAG_WORD_PATTERNS = (
+    r"[A-Za-z][A-Za-z .'-]{2,35}",
+    r"[א-ת][א-ת '׳\".-]{2,35}",
+)
+
+
+def remove_writer_noise_for_event_matching(text: str) -> str:
+    cleaned = text or ""
+    for pattern in WRITER_NOISE_PATTERNS:
+        cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?<!\w)@[A-Za-z0-9_]{1,20}\s*$", " ", cleaned)
+    cleaned = re.sub(r"(?:^|\s)#(?:transfers?|mercato|calciomercato)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?:^|\s)#?העברות\b", " ", cleaned)
+
+    # Some writers, especially Nico Schira, append a bare team tag at the end:
+    # "... sell-on clause. Tottenham". If the exact team tag already appears in
+    # the report, remove only that trailing duplicate tag for matching purposes.
+    for _ in range(3):
+        stripped = cleaned.rstrip(" .,!?:;|/-–—\n\r\t")
+        match = None
+        for pattern in TRAILING_DUPLICATE_TAG_WORD_PATTERNS:
+            candidate = re.search(rf"(?:^|\s)({pattern})\s*$", stripped)
+            if candidate:
+                match = candidate
+                break
+        if not match:
+            break
+        tag = re.sub(r"\s+", " ", match.group(1)).strip()
+        if len(tag) < 3:
+            break
+        before = stripped[: match.start(1)]
+        if re.search(r"(?<!\w)" + re.escape(tag) + r"(?!\w)", before, re.IGNORECASE):
+            cleaned = before.rstrip()
+            continue
+        break
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _news_duplicate_clean_text(post: Post) -> str:
     text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     text = normalize_country_flags(text) if "normalize_country_flags" in globals() else text
     text = remove_external_links(text)
     text = convert_hashtags_to_text(text)
+    text = remove_writer_noise_for_event_matching(text)
     text = apply_handle_replacements(text)
     text = apply_phrase_replacements(text, TEAM_REPLACEMENTS)
     text = apply_phrase_replacements(text, PLAYER_REPLACEMENTS)
+    text = remove_writer_noise_for_event_matching(text)
     text = re.sub(r"(?<!\w)@[A-Za-z0-9_]+", " ", text)
     text = re.sub(r"[🚨✅🔴⚪🟢🔵🟡⚫⭐️📌📍🗣🔥💣🏆🥇📈✍️]", " ", text)
     text = re.sub(r"[^A-Za-z0-9א-ת'׳\- ]+", " ", text)
@@ -2888,11 +3282,14 @@ def news_event_signature(post: Post) -> dict[str, Any]:
     for token in tokens:
         if len(token) >= 5 and token not in NEWS_DUP_ACTION_WORDS:
             entity_tokens.add(token)
+    stage_rank, stage_label = _text_stage_rank(text) if "_text_stage_rank" in globals() else (0, "unknown")
     return {
         "text": text,
         "tokens": sorted(tokens),
         "entities": sorted(entity_tokens),
         "actions": sorted(action_tokens),
+        "stage_rank": stage_rank,
+        "stage": stage_label,
     }
 
 
@@ -3008,6 +3405,11 @@ def remember_channel_news_text(text: str, state: dict[str, Any], message_id: str
     if len(post.text) < 12:
         return
     recent = cleanup_channel_recent_news_events(state)
+    if message_id:
+        recent = [
+            item for item in recent
+            if not (isinstance(item, dict) and str(item.get("link", "")) == f"channel:{message_id}")
+        ]
     signature = news_event_signature(post)
     if not signature.get("tokens"):
         return
@@ -3041,17 +3443,74 @@ def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str,
     return None
 
 
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    current_sig = news_event_signature(post)
+    current_tokens = set(current_sig.get("tokens", []))
+    current_entities = set(current_sig.get("entities", []))
+    current_actions = set(current_sig.get("actions", []))
+    current_stage_rank, _stage = _text_stage_rank(str(current_sig.get("text", ""))) if "_text_stage_rank" in globals() else (0, "unknown")
+    if current_stage_rank >= 60 or event_detail_richness(post) >= 10:
+        return None
+    current_distinctive = _distinctive_duplicate_tokens(current_tokens, current_entities)
+    if not current_distinctive:
+        return None
+    now = time.time()
+    matches: list[dict[str, Any]] = []
+    for item in reversed(cleanup_recent_news_events(state)):
+        if not isinstance(item, dict) or now - float(item.get("ts", 0) or 0) > NEWS_BURST_SPAM_WINDOW_SECONDS:
+            continue
+        previous = item.get("signature", {})
+        if not isinstance(previous, dict):
+            continue
+        prev_tokens = set(previous.get("tokens", []))
+        prev_entities = set(previous.get("entities", []))
+        prev_actions = set(previous.get("actions", []))
+        prev_distinctive = _distinctive_duplicate_tokens(prev_tokens, prev_entities)
+        if len(current_distinctive & prev_distinctive) >= 1 and (
+            _duplicate_family_overlap(current_actions, prev_actions)
+            or _event_similarity(current_sig, previous) >= 0.42
+        ):
+            matches.append(item)
+    if len(matches) >= NEWS_BURST_SPAM_MIN_EVENTS:
+        return matches[0]
+    return None
+
+
 def duplicate_event_source_he(item: dict[str, Any] | None) -> str:
     if not isinstance(item, dict):
         return "מקור קודם"
     source = str(item.get("username") or "unknown")
-    if source == "channel":
+    if source in {"channel", "channel_edit"}:
         return "הודעה שכבר קיימת בערוץ שלך"
     if source == "bot_sent":
         return "הודעה שהבוט כבר שלח לערוץ"
     if source and source != "unknown":
         return f"@{source}"
     return "מקור קודם"
+
+
+def duplicate_event_debug_he(post: Post, item: dict[str, Any] | None) -> str:
+    if not isinstance(item, dict):
+        return "לא נמצאו פרטי כפילות"
+    score = _event_similarity_score_for_post(post, item) if "_event_similarity_score_for_post" in globals() else 0.0
+    local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
+    cur_sig = news_event_signature(post)
+    prev_sig = item.get("signature", {}) if isinstance(item.get("signature", {}), dict) else {}
+    cur_entities = set(cur_sig.get("entities", []))
+    prev_entities = set(prev_sig.get("entities", []))
+    cur_actions = set(cur_sig.get("actions", []))
+    prev_actions = set(prev_sig.get("actions", []))
+    cur_tokens = set(cur_sig.get("tokens", []))
+    prev_tokens = set(prev_sig.get("tokens", []))
+    cur_rank, cur_stage = _text_stage_rank(str(cur_sig.get("text", ""))) if "_text_stage_rank" in globals() else (0, "unknown")
+    prev_rank, prev_stage = _text_stage_rank(str(prev_sig.get("text", ""))) if "_text_stage_rank" in globals() else (0, "unknown")
+    shared_entities = sorted((cur_entities & prev_entities) or (_distinctive_duplicate_tokens(cur_tokens, cur_entities) & _distinctive_duplicate_tokens(prev_tokens, prev_entities)))[:8]
+    shared_actions = sorted(cur_actions & prev_actions)[:6]
+    return (
+        f"סיבה: {duplicate_event_source_he(item)} | דמיון {score:.2f} | החלטה {local} | "
+        f"שלב נוכחי {cur_stage}/{cur_rank}, קודם {prev_stage}/{prev_rank} | "
+        f"נושא משותף: {', '.join(shared_entities) or 'לא זוהה'} | פעולה: {', '.join(shared_actions) or 'לא זוהתה'}"
+    )
 
 
 def clone_post_with_text(post: Post, text: str) -> Post:
@@ -3127,6 +3586,7 @@ def sort_candidate_posts_for_priority(candidates: list[tuple[str, Post, float]])
         candidates,
         key=lambda item: (
             -SOURCE_PRIORITY.get(item[0], 0),
+            -event_detail_richness(item[1]),
             -(item[1].published_ts or 0),
         ),
     )
@@ -3272,6 +3732,21 @@ GENERIC_DUPLICATE_CONTEXT_TOKENS = {
     "רשמי", "רשמית", "שחקן", "שחקנים", "חופשי", "חופשיים", "עוזב", "עוזבים", "עזב", "עזבו", "מועדון",
     "קבוצה", "העברה", "עסקה", "חוזה", "שנים", "שנה", "היום", "צפוי", "צפויים", "חדש", "חדשה",
 }
+
+DETAIL_RICHNESS_PATTERNS = (
+    r"\b(?:€|£|\$|million|m|fee|package|add-ons|sell-on|clause|release clause|contract until|until 20\d{2}|salary|wages|medical|bid|offer|proposal|loan|option|obligation|buy option|permanent)\b",
+    r"מיליון|אירו|יורו|ליש\"ט|דולר|סכום|חבילה|בונוסים|אחוזים ממכירה|מכירה עתידית|סעיף|סעיף שחרור|חוזה עד|עד 20\d{2}|שכר|בדיקות רפואיות|הצעה|השאלה|אופציה|חובת רכישה|רכישה",
+)
+
+
+def event_detail_richness(post: Post) -> int:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    score = 0
+    for pattern in DETAIL_RICHNESS_PATTERNS:
+        score += len(re.findall(pattern, cleaned, flags=re.IGNORECASE)) * 4
+    score += min(12, len(re.findall(r"\b(?:19|20)\d{2}\b|[€£$]\s?\d+|\d+\s?(?:m|million|מיליון|%)", cleaned, flags=re.IGNORECASE)) * 3)
+    score += min(10, len(_news_duplicate_tokens(_news_duplicate_clean_text(post))) // 5)
+    return score
 
 
 SQUAD_ABSENCE_CONTEXT_PATTERNS = (
@@ -3666,6 +4141,7 @@ def best_source_item(cluster: list[tuple[str, Post, float]]) -> tuple[str, Post,
         cluster,
         key=lambda item: (
             -SOURCE_PRIORITY.get(_candidate_username(item), 0),
+            -event_detail_richness(_candidate_post(item)),
             -(_candidate_post(item).published_ts or 0),
             _candidate_username(item),
         ),
@@ -4635,6 +5111,7 @@ def tidy_translated_text(text: str) -> str:
     text = final_hebrew_polish(normalize_country_flags(html.unescape(text or "").strip()))
     text = fix_known_player_positions(text)
     text = remove_junk_topic_tags(text)
+    text = remove_writer_noise_for_event_matching(text)
     text = remove_untranslated_arabic_leftovers(text)
     text = re.sub(r"(?im)^\s*(וידאו|וידיאו|וידאו מצורף|וידיאו מצורף|📹\s*וידאו מצורף|📹\s*וידיאו מצורף)\s*$", "", text)
     for handle, replacement in sorted(ATTRIBUTION_HANDLE_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
@@ -4655,6 +5132,7 @@ def tidy_translated_text(text: str) -> str:
     text = re.sub(r"(?iu)\s+לפי\s*[.!?.,;:]*\s*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = remove_junk_tail_lines(text)
+    text = remove_writer_noise_for_event_matching(text)
     text = final_visual_cleanup(text)
     return text.strip()
 
@@ -5254,6 +5732,20 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "interview_blocked", 0, ["interview"]
     if is_live_goal_or_match_moment_post(post):
         return False, "live_goal_or_match_moment", 0, ["live_goal_or_match_moment"]
+    if is_match_context_noise_post(post):
+        return False, "match_context_noise", 0, ["match_context_noise"]
+    if is_media_without_report_post(post):
+        return False, "media_without_report", 0, ["media_without_report"]
+    if is_too_short_without_strong_news_post(post):
+        return False, "too_short_without_strong_news", 0, ["too_short_without_strong_news"]
+    if is_name_without_news_action_post(post):
+        return False, "name_without_news_action", 0, ["name_without_news_action"]
+    if is_unclear_main_club_context_post(post):
+        return False, "unclear_main_club_context", 0, ["unclear_main_club_context"]
+    if is_weak_copy_without_primary_value_post(post):
+        return False, "weak_copy_without_primary_value", 0, ["weak_copy_without_primary_value"]
+    if is_writer_profile_noise_post(post):
+        return False, "writer_profile_noise", 0, ["writer_profile_noise"]
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
     has_big_club_main_buyer = has_big_club_as_main_buyer(cleaned)
@@ -5461,6 +5953,20 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "live_goal_or_match_moment"
     if is_match_result_or_engagement_post(post):
         return "match_result_or_engagement"
+    if is_match_context_noise_post(post):
+        return "match_context_noise"
+    if is_media_without_report_post(post):
+        return "media_without_report"
+    if is_too_short_without_strong_news_post(post):
+        return "too_short_without_strong_news"
+    if is_name_without_news_action_post(post):
+        return "name_without_news_action"
+    if is_unclear_main_club_context_post(post):
+        return "unclear_main_club_context"
+    if is_weak_copy_without_primary_value_post(post):
+        return "weak_copy_without_primary_value"
+    if is_writer_profile_noise_post(post):
+        return "writer_profile_noise"
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if (
         _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
@@ -5840,11 +6346,14 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             for future in as_completed(future_map):
                 username, posts = future.result()
                 scanned_accounts += 1
+                daily_stat_increment("scanned", username, 1)
                 seen = set(state.get(username, []))
                 if not posts:
+                    record_account_scan_summary(username, [], 0)
                     continue
                 accounts_with_posts += 1
                 fetched_posts_total += len(posts)
+                daily_stat_increment("fetched", username, len(posts))
 
                 if not first_run and username not in state and not SEND_BACKLOG_FOR_NEW_ACCOUNTS:
                     for post in posts:
@@ -5854,6 +6363,9 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
 
                 new_posts = [post for post in posts if not any(post_id in seen for post_id in post.dedupe_ids)]
                 new_posts_total += len(new_posts)
+                if new_posts:
+                    daily_stat_increment("new", username, len(new_posts))
+                record_account_scan_summary(username, posts, len(new_posts))
                 force_fabrizio_startup_check = (
                     startup_cycle
                     and FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP
@@ -5896,6 +6408,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 for post in reversed(posts_to_consider):
                     if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
                         seen.update(post.dedupe_ids)
+                        log_skip_once("old_post", post, "דילוג: פוסט ישן מטווח ההפעלה מחדש מ-@%s לא נשלח: %s", username, post.link)
                         continue
                     if is_interview_post(post):
                         seen.update(post.dedupe_ids)
@@ -5906,6 +6419,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         continue
                     if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
+                        log_skip_once("old_post", post, "דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
                         continue
                     if any(post_id in queued_ids for post_id in post.dedupe_ids):
                         log_skip_once("queued_duplicate", post, "דילוג: כפילות באותו סבב מ-@%s לא נשלחה: %s", username, post.link)
@@ -5934,6 +6448,38 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         seen.update(post.dedupe_ids)
                         log_skip_once("live_goal_or_match_moment", post, "דילוג מסנן: עדכון שער או מהלך משחק מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
+                    if is_match_result_or_engagement_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("match_result_or_engagement", post, "דילוג מסנן: תוצאה/שאלת קהל/עדכון משחק מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_match_context_noise_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("match_context_noise", post, "דילוג מסנן: סביבת משחק/נבחרת בלי חדשות מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_media_without_report_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("media_without_report", post, "דילוג מסנן: תמונה/וידאו בלי דיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_too_short_without_strong_news_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("too_short_without_strong_news", post, "דילוג מסנן: הודעה קצרה מדי בלי דיווח חזק מ-@%s לא נשלחה: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_name_without_news_action_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("name_without_news_action", post, "דילוג מסנן: שם בלי פעולה חדשותית ברורה מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_unclear_main_club_context_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("unclear_main_club_context", post, "דילוג מסנן: לא ברור מי עיקר הדיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_weak_copy_without_primary_value_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("weak_copy_without_primary_value", post, "דילוג מסנן: דיווח ממוחזר בלי ערך חדש מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_writer_profile_noise_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("writer_profile_noise", post, "דילוג מסנן: רעש אופייני לכתב מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
                     if is_link_only_or_details_post(post) and not is_clear_player_departure_post(post):
                         seen.update(post.dedupe_ids)
                         log_skip_once("link_only", post, "דילוג מסנן: קישור/פרטים בלי דיווח מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
@@ -5951,6 +6497,12 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         seen.update(post.dedupe_ids)
                         log_skip_once("importance:" + importance_reason, post, "דילוג מסנן חשיבות: %s מ-@%s לא נשלח: %s | טקסט: %s", hebrew_block_reason(importance_reason), username, post.link, filtered_post_text_preview(post))
                         continue
+                    burst_event = find_recent_burst_spam_event(post, state)
+                    if burst_event:
+                        seen.update(post.dedupe_ids)
+                        burst_detail = duplicate_event_debug_he(post, burst_event)
+                        log_skip_once("burst_spam", post, "דילוג עומס: יש כבר גל דיווחים על אותו נושא, והנוכחי לא מוסיף התקדמות חזקה. @%s לא נשלח: %s | %s", username, post.link, burst_detail)
+                        continue
                     duplicate_event = find_channel_duplicate_event(post, state) or find_recent_duplicate_event(post, state)
                     if duplicate_event:
                         if try_keep_non_duplicate_report_lines(post, state):
@@ -5958,12 +6510,14 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         else:
                             seen.update(post.dedupe_ids)
                             duplicate_source = duplicate_event_source_he(duplicate_event)
-                            log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון 12 שעות מול %s. @%s לא נשלח: %s", duplicate_source, username, post.link)
+                            duplicate_detail = duplicate_event_debug_he(post, duplicate_event)
+                            log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון 12 שעות מול %s. @%s לא נשלח: %s | %s", duplicate_source, username, post.link, duplicate_detail)
                             continue
                     if duplicate_event:
                         seen.update(post.dedupe_ids)
                         duplicate_source = duplicate_event_source_he(duplicate_event)
-                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח/נשמר ב-12 השעות האחרונות מול %s. הנוכחי מ-@%s לא נשלח: %s", duplicate_source, username, post.link)
+                        duplicate_detail = duplicate_event_debug_he(post, duplicate_event)
+                        log_skip_once("recent_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נשלח/נשמר ב-12 השעות האחרונות מול %s. הנוכחי מ-@%s לא נשלח: %s | %s", duplicate_source, username, post.link, duplicate_detail)
                         continue
                     candidate_posts.append((username, post, time.perf_counter() - cycle_started))
 
@@ -5980,6 +6534,8 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
             new_posts_total,
             len(global_candidate_posts),
         )
+        flush_skip_summary()
+        flush_account_scan_summary()
 
         for candidate in sort_candidate_posts_for_priority(global_candidate_posts):
             if len(send_futures) >= MAX_POSTS_SENT_PER_CYCLE:
@@ -6007,12 +6563,14 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 else:
                     mark_candidate_seen(state, candidate)
                     duplicate_source = duplicate_event_source_he(duplicate_event)
-                    log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון מול %s. @%s לא נשלח: %s", duplicate_source, username, post.link)
+                    duplicate_detail = duplicate_event_debug_he(post, duplicate_event)
+                    log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון מול %s. @%s לא נשלח: %s | %s", duplicate_source, username, post.link, duplicate_detail)
                     continue
             if duplicate_event:
                 mark_candidate_seen(state, candidate)
                 duplicate_source = duplicate_event_source_he(duplicate_event)
-                log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם מול %s. @%s לא נשלח: %s", duplicate_source, username, post.link)
+                duplicate_detail = duplicate_event_debug_he(post, duplicate_event)
+                log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם מול %s. @%s לא נשלח: %s | %s", duplicate_source, username, post.link, duplicate_detail)
                 continue
             remember_recent_news_event(post, state)
             send_futures.append(send_executor.submit(send_task, candidate))
@@ -6033,6 +6591,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 if result.get("channel_memory_text"):
                     remember_channel_news_text(str(result.get("channel_memory_text", "")), state, message_id=link, source="bot_sent")
                 sent += 1
+                daily_stat_increment("sent", username, 1)
                 logging.info(
                     "✅ נשלח פוסט מ-@%s | מקור: %s | גיל: %.0fs | תרגום: %.2fs | שליחה: %.2fs | סה״כ: %.2fs",
                     username,
@@ -6137,6 +6696,7 @@ def main() -> None:
                 save_control_state(False, resume_min_ts=0.0)
             save_translation_cache(TRANSLATION_CACHE)
             save_ai_decision_cache()
+            send_daily_quality_report_if_due()
             now = time.time()
             if now - last_heartbeat_log >= HEARTBEAT_LOG_SECONDS:
                 logging.info("💓 בוט הכדורגל עדיין עובד. כתבים פעילים: %s | בדיקה כל %ss | נשלחו בסבב: %s", len(active_x_accounts()), current_check_every_seconds(), sent)
