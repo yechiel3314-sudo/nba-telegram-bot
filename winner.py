@@ -49,7 +49,7 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-BOT_BUILD_ID = "football-control-buttons-full-2026-06-19"
+BOT_BUILD_ID = "football-control-buttons-refined-2026-06-19"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -1940,8 +1940,7 @@ CONTROL_FILTER_KEYS = (
     "block_social",
     "only_herewego",
     "only_top5",
-    "only_barca",
-    "only_real",
+    "only_real_barca",
 )
 
 
@@ -1983,14 +1982,13 @@ def quick_control_reply_markup() -> dict[str, Any]:
             {"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"},
         ],
         [
+            {"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"},
+        ],
+        [
             {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
         ],
         [
             {"text": "ℹ️ הסבר כפתורים", "callback_data": "football_buttons_help"},
-        ],
-        [
-            {"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"},
-            {"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"},
         ],
     ]
     return {"inline_keyboard": keyboard}
@@ -1999,7 +1997,6 @@ def quick_control_reply_markup() -> dict[str, Any]:
 def monitor_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
         [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
-        [{"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"}],
         [{"text": "📬 פוסט אחרון שנשלח", "callback_data": "football_last_sent_post"}],
         [
             {"text": "📡 RSS תקין?", "callback_data": "football_rss_status"},
@@ -2014,6 +2011,7 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
             {"text": "🚫 כמה נחסמו היום", "callback_data": "football_stat_blocked_today"},
         ],
         [{"text": "⏳ כמה פוסטים ישנים מדי היו", "callback_data": "football_stat_old_posts"}],
+        [{"text": "ℹ️ הסבר בדיקה וניטור", "callback_data": "football_category_help:monitor"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
     return {"inline_keyboard": keyboard}
@@ -2042,12 +2040,16 @@ def filter_menu_reply_markup() -> dict[str, Any]:
             {"text": _onoff_label("🏅 רק טופ 5", state, "only_top5"), "callback_data": "football_toggle_filter:only_top5"},
         ],
         [
-            {"text": _onoff_label("🔵 רק ברצלונה", state, "only_barca"), "callback_data": "football_toggle_filter:only_barca"},
-            {"text": _onoff_label("⚪ רק ריאל", state, "only_real"), "callback_data": "football_toggle_filter:only_real"},
+            {"text": _onoff_label("🔵⚪ רק ריאל וברצלונה", state, "only_real_barca"), "callback_data": "football_toggle_filter:only_real_barca"},
+        ],
+        [
+            {"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"},
+            {"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"},
         ],
     ]
     if elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state) or any(bool(state.get(k, False)) for k in CONTROL_FILTER_KEYS):
         keyboard.append([{"text": "🔓 לבטל כל הסינונים הזמניים", "callback_data": "football_clear_temp_modes"}])
+    keyboard.append([{"text": "ℹ️ הסבר הגדרות וסינון", "callback_data": "football_category_help:filter"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return {"inline_keyboard": keyboard}
 
@@ -2068,37 +2070,64 @@ def stats_menu_reply_markup() -> dict[str, Any]:
             {"text": "🧠 זמן תרגום ממוצע", "callback_data": "football_stat_avg_translation"},
         ],
         [{"text": "❌ כמה פעמים Gemini נכשל", "callback_data": "football_stat_gemini_failures"}],
+        [{"text": "ℹ️ הסבר סטטיסטיקות", "callback_data": "football_category_help:stats"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
     return {"inline_keyboard": keyboard}
 
 
+def all_control_test_accounts() -> list[str]:
+    # מציג לבחירת בדיקה את כל הכתבים שמוגדרים בקוד, לא רק הפעילים בסריקה כרגע.
+    # פתיחת התפריט עצמה לא עושה שליפה ולא משתמשת ב-Gemini.
+    accounts: list[str] = []
+    sources = [
+        list(X_ACCOUNTS),
+        list(OPTIONAL_CONTROLLED_ACCOUNTS),
+        list(PRIORITY_X_ACCOUNTS),
+        list(ACCOUNT_DISPLAY_NAMES.keys()),
+    ]
+    for source in sources:
+        for username in source:
+            if username and username not in accounts:
+                accounts.append(username)
+    return accounts
+
+
 def account_latest_menu_reply_markup() -> dict[str, Any]:
     keyboard: list[list[dict[str, str]]] = []
-    accounts = active_x_accounts()
+    accounts = all_control_test_accounts()
     for username in accounts:
         label = _hebrew_account_label(username)
         keyboard.append([{
             "text": label,
             "callback_data": f"football_test_latest_account:{username}",
         }])
-    keyboard.append([{"text": "⬅️ חזרה לבדיקה וניטור", "callback_data": "football_menu_monitor"}])
+    keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return {"inline_keyboard": keyboard}
 
 
-def send_control_menu(text: str, reply_markup: dict[str, Any]) -> None:
+def send_control_menu(text: str, reply_markup: dict[str, Any], message_id: Any = None) -> None:
     if not CONTROL_CHAT_ID:
         return
-    telegram_api(
-        "sendMessage",
-        {
-            "chat_id": CONTROL_CHAT_ID,
-            "text": rtl(text),
-            "reply_markup": reply_markup,
-            "disable_web_page_preview": True,
-        },
-        max_attempts=1,
-    )
+    payload = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": rtl(text),
+        "reply_markup": reply_markup,
+        "disable_web_page_preview": True,
+    }
+    if message_id:
+        try:
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1)
+            save_control_state(quick_control_message_id=message_id)
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logging.warning("⚠️ תפריט שליטה: עריכת ההודעה נכשלה, שולח הודעה חדשה: %s", exc)
+    response = telegram_api("sendMessage", payload, max_attempts=1)
+    new_message_id = response.get("result", {}).get("message_id") if isinstance(response, dict) else None
+    if new_message_id:
+        save_control_state(quick_control_message_id=new_message_id)
 
 def send_control_panel(paused: bool, action_done: str = "", force_new: bool = False) -> None:
     if not CONTROL_CHAT_ID:
@@ -2181,19 +2210,26 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str) -> s
     return "\n".join(lines)
 
 
-def send_control_text(text: str) -> None:
+def send_control_text(text: str, message_id: Any = None, reply_markup: dict[str, Any] | None = None) -> None:
     if not CONTROL_CHAT_ID:
         return
     formatted = rtl(text)
-    telegram_api(
-        "sendMessage",
-        {
-            "chat_id": CONTROL_CHAT_ID,
-            "text": trim(formatted, 3900),
-            "disable_web_page_preview": True,
-        },
-        max_attempts=1,
-    )
+    payload = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": trim(formatted, 3900),
+        "disable_web_page_preview": True,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    if message_id:
+        try:
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1)
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logging.warning("⚠️ טקסט שליטה: עריכת ההודעה נכשלה, שולח הודעה חדשה: %s", exc)
+    telegram_api("sendMessage", payload, max_attempts=1)
 
 
 def send_control_html(text: str) -> None:
@@ -2230,8 +2266,10 @@ def run_latest_account_control_test(username: str) -> None:
     try:
         translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
         message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+        post_dt = datetime.fromtimestamp(post.published_ts, ZoneInfo(SHABBAT_TIMEZONE)) if post.published_ts else None
+        post_when = post_dt.strftime("%d/%m/%Y %H:%M:%S") if post_dt else "לא ידוע"
         header = html.escape(rtl(f"🧪 בדיקת {label} אחרון - נשלח בכוח לערוץ השקט"))
-        source = html.escape(rtl(f"מקור RSS: {post.source_name} | קישור: {post.link}"))
+        source = html.escape(rtl(f"תאריך הפוסט לפי שעון ישראל: {post_when} | מקור RSS: {post.source_name} | קישור: {post.link}"))
         send_control_html(f"<b>{header}</b>\n{source}\n\n{message}")
         logging.info("🧪 בדיקת כתב: הפוסט האחרון של @%s נשלח בכוח לערוץ השקט ללא סינון וללא בדיקת כפילות. קישור: %s", username, post.link)
     except Exception as exc:
@@ -2247,7 +2285,7 @@ def run_latest_fabrizio_control_test() -> None:
 
 
 def check_all_accounts_now_text() -> str:
-    lines = ["🔄 בדיקת כל הכתבים הפעילים עכשיו", ""]
+    lines = ["🔄 בדיקת כל הכתבים הפעילים עכשיו", "", "הבדיקה הזו עושה RSS בלבד. אין שימוש ב-Gemini ואין שליחת פוסטים.", ""]
     accounts = active_x_accounts()
     total_posts = 0
     ok_count = 0
@@ -2362,10 +2400,48 @@ def simple_stat_text(kind: str) -> str:
         return f"{names[kind]}\n\nהכפתור מחובר ועובד, אבל אין עדיין מדידה מפורטת בקוד הקיים לשדה הזה. כדי שייתן מספר מדויק צריך להוסיף איסוף זמן/כשל בכל שליחה. כרגע הדוח היומי המרכזי כן נשמר ועובד."
     return build_daily_quality_report_text()
 
+def category_help_text(category: str) -> str:
+    if category == "monitor":
+        return (
+            "ℹ️ הסבר בדיקה וניטור\n\n"
+            "הקטגוריה הזו מיועדת לבדיקות מצב בלבד. הכפתורים כאן לא מתרגמים פוסטים ולא משתמשים ב-Gemini.\n\n"
+            "🔄 בדוק את כל הכתבים עכשיו — עושה שליפת RSS לכל הכתבים הפעילים ומחזיר כמה פוסטים נמצאו. לא שולח פוסטים ולא מפעיל תרגום.\n"
+            "📬 פוסט אחרון שנשלח — מציג את הפוסט האחרון שהבוט שמר כשליחה. לא עושה שליפה חדשה.\n"
+            "📡 RSS תקין — בודק אם מקורות ה-RSS מחזירים פוסטים. לא משתמש ב-Gemini.\n"
+            "🤖 Gemini תקין — בודק רק אם מפתחות טעונים וזמינים מקומית. אין בקשה אמיתית ל-Gemini ואין בזבוז קרדיט.\n"
+            "🏆/📊/✅/🚫/⏳ — מציגים נתונים שכבר נשמרו בדוח היומי."
+        )
+    if category == "filter":
+        return (
+            "ℹ️ הסבר הגדרות וסינון\n\n"
+            "כאן נמצאים הכפתורים שמשנים בפועל את מה שהבוט שולח. גם הכפתורים האלה לא משתמשים ב-Gemini; הם רק משנים מצב בקובץ הבקרה.\n\n"
+            "🌙 מצב לילה — מפעיל מצב שקט עד 07:00 לפי שעון ישראל.\n"
+            "⭐ רק גדולות — מגביל זמנית לדיווחים חזקים על קבוצות גדולות.\n"
+            "🛡️ סינון קשוח — מחמיר את הסינון לשעתיים.\n"
+            "🚨/🌍/🩺/📸 — חסימת שמועות, נבחרות, פציעות או פוסטים חברתיים.\n"
+            "🟢 רק Here We Go — שולח רק דיווחים חזקים מאוד מסוג Here We Go.\n"
+            "🏅 רק טופ 5 — מגביל לליגות הבכירות.\n"
+            "🔵⚪ רק ריאל וברצלונה — כפתור אחד שמפעיל/מכבה סינון לשתי הקבוצות ביחד.\n"
+            "↩️ למה לא נשלח — מציג חסימות אחרונות.\n"
+            "🧠 כפילות אחרונה — מציג כפילויות שנחסמו."
+        )
+    if category == "stats":
+        return (
+            "ℹ️ הסבר סטטיסטיקות\n\n"
+            "הקטגוריה הזו מציגה נתונים שכבר נאספו ונשמרו. היא לא מפעילה Gemini ולא שולחת פוסטים.\n\n"
+            "📈 סיכום היום עכשיו — דוח מלא בעברית על הפעילות היום.\n"
+            "🏆 הכתב הכי פעיל — מי החזיר הכי הרבה פוסטים ב-RSS.\n"
+            "📋 כמה פוסטים כל כתב פרסם — פירוט לפי כתבים.\n"
+            "🧱 טופ סיבות חסימה — למה פוסטים נחסמו.\n"
+            "😅 מי נחסם הכי הרבה — לפי הסטטיסטיקה היומית.\n"
+            "שאר מדדי הזמן/כשלי Gemini מוכנים לכפתורים, וכדי לדייק אותם אפשר בהמשך להוסיף מדידה עמוקה יותר בכל פעולה."
+        )
+    return control_buttons_help_text()
+
 def control_buttons_help_text() -> str:
     return (
         "ℹ️ הסבר כפתורים מורחב\n\n"
-        "המסך הראשי מחולק ל-3 קטגוריות, כדי שהלוח יהיה מסודר ולא עמוס.\n\n"
+        "המסך הראשי מחולק ל-3 קטגוריות, ובנוסף יש בו בדיקת כתב ספציפי, סיכום היום עכשיו והסבר כפתורים.\n\n"
         "🔎 בדיקה וניטור\n"
         "כאן יש בדיקות מיידיות: בדיקת כל הכתבים הפעילים, בדיקת כתב ספציפי, RSS, Gemini, פוסט אחרון שנשלח ונתוני פעילות בסיסיים.\n"
         "בדיקת כתב ספציפי שולחת את הפוסט האחרון שלו לערוץ השקט בלבד, בכוח, גם אם הסינון הרגיל היה חוסם אותו. זה מיועד לבדיקה בלבד ולא לערוץ הראשי.\n\n"
@@ -2414,24 +2490,24 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_menu_monitor":
         if callback_id:
             answer_control_callback(callback_id, "פותח בדיקה וניטור")
-        send_control_menu("🔎 בדיקה וניטור", monitor_menu_reply_markup())
+        send_control_menu("🔎 בדיקה וניטור", monitor_menu_reply_markup(), message.get("message_id"))
     elif data == "football_menu_filter":
         if callback_id:
             answer_control_callback(callback_id, "פותח הגדרות וסינון")
-        send_control_menu("🛡️ הגדרות וסינון", filter_menu_reply_markup())
+        send_control_menu("🛡️ הגדרות וסינון", filter_menu_reply_markup(), message.get("message_id"))
     elif data == "football_menu_stats":
         if callback_id:
             answer_control_callback(callback_id, "פותח סטטיסטיקות")
-        send_control_menu("📊 סטטיסטיקות", stats_menu_reply_markup())
+        send_control_menu("📊 סטטיסטיקות", stats_menu_reply_markup(), message.get("message_id"))
     elif data == "football_choose_account_latest":
         if callback_id:
             answer_control_callback(callback_id, "בחר כתב")
-        send_control_menu("👤 בחר כתב לשליחת הפוסט האחרון לערוץ השקט", account_latest_menu_reply_markup())
+        send_control_menu("👤 בחר כתב לשליחת הפוסט האחרון לערוץ השקט", account_latest_menu_reply_markup(), message.get("message_id"))
     elif data.startswith("football_test_latest_account:"):
         username = data.split(":", 1)[1]
-        if username not in active_x_accounts():
+        if username not in all_control_test_accounts():
             if callback_id:
-                answer_control_callback(callback_id, "כתב לא פעיל")
+                answer_control_callback(callback_id, "כתב לא מוכר")
             return
         if callback_id:
             answer_control_callback(callback_id, f"בודק את {_hebrew_account_label(username)}")
@@ -2439,24 +2515,24 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_check_all_accounts_now":
         if callback_id:
             answer_control_callback(callback_id, "בודק את כל הכתבים")
-        send_control_text(check_all_accounts_now_text())
+        send_control_text(check_all_accounts_now_text(), message.get("message_id"), monitor_menu_reply_markup())
     elif data == "football_rss_status":
         if callback_id:
             answer_control_callback(callback_id, "בודק RSS")
-        send_control_text(rss_status_text())
+        send_control_text(rss_status_text(), message.get("message_id"), monitor_menu_reply_markup())
     elif data == "football_gemini_status":
         if callback_id:
             answer_control_callback(callback_id, "בודק Gemini")
-        send_control_text(gemini_status_text())
+        send_control_text(gemini_status_text(), message.get("message_id"), monitor_menu_reply_markup())
     elif data == "football_last_sent_post":
         if callback_id:
             answer_control_callback(callback_id, "מציג פוסט אחרון")
-        send_control_text(last_sent_post_text())
+        send_control_text(last_sent_post_text(), message.get("message_id"), monitor_menu_reply_markup())
     elif data.startswith("football_stat_"):
         kind = data.replace("football_stat_", "", 1)
         if callback_id:
             answer_control_callback(callback_id, "מציג נתון")
-        send_control_text(simple_stat_text(kind))
+        send_control_text(simple_stat_text(kind), message.get("message_id"), stats_menu_reply_markup())
     elif data.startswith("football_toggle_filter:"):
         key = data.split(":", 1)[1]
         if key not in CONTROL_FILTER_KEYS:
@@ -2466,14 +2542,10 @@ def process_control_update(update: dict[str, Any]) -> None:
         state = load_control_state()
         new_value = not bool(state.get(key, False))
         updates = {key: new_value}
-        if key == "only_barca" and new_value:
-            updates["only_real"] = False
-        if key == "only_real" and new_value:
-            updates["only_barca"] = False
         save_control_state(**updates)
         if callback_id:
             answer_control_callback(callback_id, "עודכן")
-        send_control_menu("🛡️ הגדרות וסינון - עודכן", filter_menu_reply_markup())
+        send_control_menu("🛡️ הגדרות וסינון - עודכן", filter_menu_reply_markup(), message.get("message_id"))
     elif data == "football_bot_off":
         save_control_state(True)
         logging.info("⏸️ לוח שליטה: הבוט הושהה דרך הכפתור.")
@@ -2510,7 +2582,7 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_daily_report_now":
         if callback_id:
             answer_control_callback(callback_id, "שולח סיכום עכשיו")
-        send_control_text(build_daily_quality_report_text())
+        send_control_text(build_daily_quality_report_text(), message.get("message_id"), quick_control_reply_markup())
     elif data == "football_test_latest_fabrizio":
         if callback_id:
             answer_control_callback(callback_id, "בודק את פבריציו האחרון")
@@ -2521,16 +2593,22 @@ def process_control_update(update: dict[str, Any]) -> None:
         state = load_control_state()
         blocked_posts = list(state.get("last_blocked_posts", [])) if isinstance(state.get("last_blocked_posts", []), list) else []
         blocked_posts = [item for item in blocked_posts if isinstance(item, dict)][-5:]
-        send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."))
+        send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."), message.get("message_id"), filter_menu_reply_markup())
     elif data == "football_last_duplicate":
         if callback_id:
             answer_control_callback(callback_id, "מציג כפילויות אחרונות")
         state = load_control_state()
-        send_control_text(_control_list_text("🧠 כפילויות אחרונות", list(state.get("last_duplicate_posts", [])) if isinstance(state.get("last_duplicate_posts", []), list) else [], "אין כפילויות שמורות כרגע."))
+        send_control_text(_control_list_text("🧠 כפילויות אחרונות", list(state.get("last_duplicate_posts", [])) if isinstance(state.get("last_duplicate_posts", []), list) else [], "אין כפילויות שמורות כרגע."), message.get("message_id"), filter_menu_reply_markup())
+    elif data.startswith("football_category_help:"):
+        category = data.split(":", 1)[1]
+        if callback_id:
+            answer_control_callback(callback_id, "מציג הסבר קטגוריה")
+        markup = monitor_menu_reply_markup() if category == "monitor" else filter_menu_reply_markup() if category == "filter" else stats_menu_reply_markup() if category == "stats" else quick_control_reply_markup()
+        send_control_text(category_help_text(category), message.get("message_id"), markup)
     elif data == "football_buttons_help":
         if callback_id:
             answer_control_callback(callback_id, "מציג הסבר כפתורים")
-        send_control_text(control_buttons_help_text())
+        send_control_text(control_buttons_help_text(), message.get("message_id"), quick_control_reply_markup())
     elif data == "football_clear_temp_modes":
         save_control_state(elite_only_until=0.0, strict_filter_until=0.0, night_mode_until=0.0, **{key: False for key in CONTROL_FILTER_KEYS})
         if callback_id:
@@ -3459,8 +3537,7 @@ BLOCK_REASON_HEBREW = {
     "control_block_social": "סינון כפתור: פוסטים חברתיים כבויים",
     "control_only_herewego": "סינון כפתור: רק Here We Go",
     "control_only_top5": "סינון כפתור: רק טופ 5 ליגות",
-    "control_only_barca": "סינון כפתור: רק ברצלונה",
-    "control_only_real": "סינון כפתור: רק ריאל מדריד",
+    "control_only_real_barca": "סינון כפתור: רק ריאל וברצלונה",
 }
 
 
@@ -3760,7 +3837,7 @@ def send_daily_quality_report_if_due() -> None:
     if (now_dt.hour, now_dt.minute) < (DAILY_QUALITY_REPORT_HOUR, DAILY_QUALITY_REPORT_MINUTE):
         return
     try:
-        send_control_text(build_daily_quality_report_text())
+        send_control_text(build_daily_quality_report_text(), message.get("message_id"), quick_control_reply_markup())
         save_daily_quality_stats_to_disk(force=True)
         DAILY_QUALITY_REPORT_LAST_DATE = today
         logging.info("📊 דו\"ח יומי נשלח לערוץ השקט.")
@@ -6930,10 +7007,8 @@ def temporary_control_filter_block_reason(post: Post) -> str:
         return "control_only_herewego"
     if bool(state.get("only_top5", False)) and not _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and not _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned):
         return "control_only_top5"
-    if bool(state.get("only_barca", False)) and not re.search(r"ברצלונה|בארסה|barcelona|barca|fc barcelona", cleaned, re.IGNORECASE):
-        return "control_only_barca"
-    if bool(state.get("only_real", False)) and not re.search(r"ריאל מדריד|real madrid|rma", cleaned, re.IGNORECASE):
-        return "control_only_real"
+    if bool(state.get("only_real_barca", False)) and not re.search(r"ברצלונה|בארסה|barcelona|barca|fc barcelona|ריאל מדריד|real madrid|rma", cleaned, re.IGNORECASE):
+        return "control_only_real_barca"
     if not (elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state)):
         return ""
     has_big_club = (
