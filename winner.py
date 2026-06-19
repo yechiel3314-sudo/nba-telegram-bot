@@ -312,15 +312,11 @@ NIGHT_MAX_PARALLEL_POST_SENDS = 4
 SEND_LAST_POST_ON_FIRST_RUN = False
 SEND_LAST_POST_ON_EVERY_START = False
 FORCE_FABRIZIO_STARTUP_TEST_SEND = False  # השאר False; הפעלה כ-True שולחת את פבריציו בכוח בכל הרצה ועוקפת כפילויות
-FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP = (
-    FORCE_FABRIZIO_STARTUP_TEST_SEND
-    or
-    os.environ.get(
-        "FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP",
-        os.environ.get("SEND_FABRIZIO_LAST_MATCHING_POST_ON_STARTUP", "0"),
-    )
-    == "1"
-)
+# Startup behavior requested:
+# - Check every active reporter.
+# - Do NOT send the latest post from every reporter.
+# - Send only Fabrizio Romano's latest post on startup.
+FORCE_SEND_LATEST_FABRIZIO_ON_STARTUP = True
 FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP = FORCE_FABRIZIO_STARTUP_TEST_SEND or os.environ.get("FORCE_SEND_LATEST_FABRIZIO_EVERY_STARTUP", "0") == "1"
 FORCED_FABRIZIO_STARTUP_STATE_KEY = "__forced_fabrizio_startup_posts__"
 SEND_STARTUP_STATUS_MESSAGE = False
@@ -7059,9 +7055,9 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                             posts[0].source_name,
                             posts[0].link,
                         )
-                elif startup_cycle and SEND_LAST_POST_ON_EVERY_START:
+                elif startup_cycle and SEND_LAST_POST_ON_EVERY_START and username == "FabrizioRomano":
                     new_posts = posts[:1]
-                elif first_run and SEND_LAST_POST_ON_FIRST_RUN:
+                elif first_run and SEND_LAST_POST_ON_FIRST_RUN and username == "FabrizioRomano":
                     new_posts = posts[:1]
                 elif first_run:
                     for post in posts:
@@ -7084,7 +7080,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     if getattr(post, "force_startup_send", False):
                         candidate_posts.append((username, post, time.perf_counter() - cycle_started))
                         continue
-                    if is_too_old_post(post) and not (startup_cycle and SEND_LAST_POST_ON_EVERY_START):
+                    if is_too_old_post(post) and not (username == "FabrizioRomano" and startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
                         log_skip_once("old_post", post, "דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
                         continue
