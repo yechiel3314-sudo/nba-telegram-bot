@@ -179,10 +179,12 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "9"))
+# ברירת מחדל חסכונית: פוסט אחד = ניסיון Gemini אמיתי אחד בלבד.
+# אם רוצים רוטציה אגרסיבית בזמן תקלה, אפשר להגדיל ב-Railway דרך GEMINI_MAX_REAL_TRANSLATION_REQUESTS.
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
-GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
+GEMINI_MAX_PARALLEL_TRANSLATIONS = int(os.environ.get("GEMINI_MAX_PARALLEL_TRANSLATIONS", "1"))
 TRANSLATE_QUOTED_POSTS = os.environ.get("TRANSLATE_QUOTED_POSTS", "0") == "1"
 TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT = os.environ.get("TRANSLATE_QUOTED_POSTS_IF_MAIN_TOO_SHORT", "0") != "0"
 MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE = int(os.environ.get("MIN_MAIN_TEXT_CHARS_FOR_SKIP_QUOTE", "45"))
@@ -1913,14 +1915,21 @@ def _control_until_active(state: dict[str, Any], key: str) -> bool:
 
 
 def strict_filter_active(state: dict[str, Any] | None = None) -> bool:
-    return _control_until_active(state or load_control_state(), "strict_filter_until")
+    state = state or load_control_state()
+    return bool(state.get("strict_filter", False)) or _control_until_active(state, "strict_filter_until")
 
 
 def elite_only_mode_active(state: dict[str, Any] | None = None) -> bool:
-    return _control_until_active(state or load_control_state(), "elite_only_until")
+    state = state or load_control_state()
+    return bool(state.get("elite_only", False)) or _control_until_active(state, "elite_only_until")
 
 
 def _control_mode_status_text(state: dict[str, Any], key: str) -> str:
+    # המצבים האלה כבר לא זמניים לשעתיים. הם נשמרים כמצב קבוע עד שלוחצים שוב/מבטלים הכל.
+    bool_key = key.removesuffix("_until")
+    if bool(state.get(bool_key, False)):
+        return "פעיל"
+    # תמיכה לאחור בקובץ מצב ישן שהיה בו until.
     until = float(state.get(key, 0.0) or 0.0)
     remaining = until - time.time()
     if remaining <= 0:
@@ -1930,7 +1939,8 @@ def _control_mode_status_text(state: dict[str, Any], key: str) -> str:
 
 
 def night_mode_control_active(state: dict[str, Any] | None = None) -> bool:
-    return _control_until_active(state or load_control_state(), "night_mode_until")
+    state = state or load_control_state()
+    return bool(state.get("night_mode", False)) or _control_until_active(state, "night_mode_until")
 
 
 CONTROL_FILTER_KEYS = (
@@ -2021,11 +2031,11 @@ def filter_menu_reply_markup() -> dict[str, Any]:
     state = load_control_state()
     keyboard = [
         [
-            {"text": f"🌙 מצב לילה: {_control_mode_status_text(state, 'night_mode_until')}", "callback_data": "football_night_mode_until_morning"},
+            {"text": f"🌙 מצב לילה: {_control_mode_status_text(state, 'night_mode_until')}", "callback_data": "football_toggle_mode:night_mode"},
         ],
         [
-            {"text": f"⭐ רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_elite_only_2h"},
-            {"text": f"🛡️ סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_strict_filter_2h"},
+            {"text": f"⭐ רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_toggle_mode:elite_only"},
+            {"text": f"🛡️ סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_toggle_mode:strict_filter"},
         ],
         [
             {"text": _onoff_label("🚨 חסימת שמועות", state, "block_rumors"), "callback_data": "football_toggle_filter:block_rumors"},
@@ -2048,7 +2058,7 @@ def filter_menu_reply_markup() -> dict[str, Any]:
         ],
     ]
     if elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state) or any(bool(state.get(k, False)) for k in CONTROL_FILTER_KEYS):
-        keyboard.append([{"text": "🔓 לבטל כל הסינונים הזמניים", "callback_data": "football_clear_temp_modes"}])
+        keyboard.append([{"text": "🔓 לבטל את כל הסינונים", "callback_data": "football_clear_temp_modes"}])
     keyboard.append([{"text": "ℹ️ הסבר הגדרות וסינון", "callback_data": "football_category_help:filter"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return {"inline_keyboard": keyboard}
@@ -2077,20 +2087,9 @@ def stats_menu_reply_markup() -> dict[str, Any]:
 
 
 def all_control_test_accounts() -> list[str]:
-    # מציג לבחירת בדיקה את כל הכתבים שמוגדרים בקוד, לא רק הפעילים בסריקה כרגע.
+    # מציג רק את הכתבים הפעילים כרגע בבוט, בלי רשימות נוספות שהתווספו למילון שמות.
     # פתיחת התפריט עצמה לא עושה שליפה ולא משתמשת ב-Gemini.
-    accounts: list[str] = []
-    sources = [
-        list(X_ACCOUNTS),
-        list(OPTIONAL_CONTROLLED_ACCOUNTS),
-        list(PRIORITY_X_ACCOUNTS),
-        list(ACCOUNT_DISPLAY_NAMES.keys()),
-    ]
-    for source in sources:
-        for username in source:
-            if username and username not in accounts:
-                accounts.append(username)
-    return accounts
+    return active_x_accounts()
 
 
 def account_latest_menu_reply_markup() -> dict[str, Any]:
@@ -2102,6 +2101,7 @@ def account_latest_menu_reply_markup() -> dict[str, Any]:
             "text": label,
             "callback_data": f"football_test_latest_account:{username}",
         }])
+    keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return {"inline_keyboard": keyboard}
 
@@ -2123,7 +2123,8 @@ def send_control_menu(text: str, reply_markup: dict[str, Any], message_id: Any =
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
                 return
-            logging.warning("⚠️ תפריט שליטה: עריכת ההודעה נכשלה, שולח הודעה חדשה: %s", exc)
+            logging.warning("⚠️ תפריט שליטה: עריכת ההודעה נכשלה ולא נשלחה הודעה חדשה כדי לא ליצור כפילות: %s", exc)
+            return
     response = telegram_api("sendMessage", payload, max_attempts=1)
     new_message_id = response.get("result", {}).get("message_id") if isinstance(response, dict) else None
     if new_message_id:
@@ -2228,7 +2229,8 @@ def send_control_text(text: str, message_id: Any = None, reply_markup: dict[str,
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
                 return
-            logging.warning("⚠️ טקסט שליטה: עריכת ההודעה נכשלה, שולח הודעה חדשה: %s", exc)
+            logging.warning("⚠️ טקסט שליטה: עריכת ההודעה נכשלה ולא נשלחה הודעה חדשה כדי לא ליצור כפילות: %s", exc)
+            return
     telegram_api("sendMessage", payload, max_attempts=1)
 
 
@@ -2436,6 +2438,14 @@ def category_help_text(category: str) -> str:
             "😅 מי נחסם הכי הרבה — לפי הסטטיסטיקה היומית.\n"
             "שאר מדדי הזמן/כשלי Gemini מוכנים לכפתורים, וכדי לדייק אותם אפשר בהמשך להוסיף מדידה עמוקה יותר בכל פעולה."
         )
+    if category == "account_latest":
+        return (
+            "ℹ️ הסבר בדיקת כתב ספציפי\n\n"
+            "הרשימה מציגה רק את הכתבים הפעילים כרגע בבוט. פתיחת הרשימה לא עושה שליפה ולא משתמשת ב-Gemini.\n\n"
+            "לחיצה על כתב כן שולפת RSS רק לאותו כתב, ואז שולחת את הפוסט האחרון שלו לערוץ השקט בלבד. "
+            "רק בשלב השליחה בפועל יכול להיות שימוש ב-Gemini לצורך תרגום ההודעה.\n\n"
+            "כפתור החזרה מחזיר למסך הראשי באותה הודעה."
+        )
     return control_buttons_help_text()
 
 def control_buttons_help_text() -> str:
@@ -2457,7 +2467,7 @@ def control_buttons_help_text() -> str:
         "🧠 כפילות אחרונה\n"
         "מציג כפילויות אחרונות שהבוט חסם.\n\n"
         "🔓 ביטול כל הסינונים הזמניים\n"
-        "מכבה מצב לילה, רק גדולות, סינון קשוח וכל כפתורי הסינון החדשים, ומחזיר את הבוט למצב רגיל."
+        "מכבה מצב לילה, רק גדולות, סינון קשוח וכל כפתורי הסינון, ומחזיר את הבוט למצב רגיל."
     )
 
 def next_morning_timestamp() -> float:
@@ -2486,23 +2496,23 @@ def process_control_update(update: dict[str, Any]) -> None:
     if data == "football_quick_main":
         if callback_id:
             answer_control_callback(callback_id, "חזרה לראשי")
-        send_quick_control_panel("כלים מהירים לבוט הכדורגל.")
+        send_control_menu("כלים מהירים לבוט הכדורגל.", quick_control_reply_markup(), message.get("message_id"))
     elif data == "football_menu_monitor":
         if callback_id:
             answer_control_callback(callback_id, "פותח בדיקה וניטור")
-        send_control_menu("🔎 בדיקה וניטור", monitor_menu_reply_markup(), message.get("message_id"))
+        send_control_menu("🔎 בדיקה וניטור\nבחר פעולה. הכל כאן ללא Gemini וללא שליחת פוסטים.", monitor_menu_reply_markup(), message.get("message_id"))
     elif data == "football_menu_filter":
         if callback_id:
             answer_control_callback(callback_id, "פותח הגדרות וסינון")
-        send_control_menu("🛡️ הגדרות וסינון", filter_menu_reply_markup(), message.get("message_id"))
+        send_control_menu("🛡️ הגדרות וסינון\nהסינונים נשמרים קבוע עד שמכבים אותם. אין כאן שימוש ב-Gemini.", filter_menu_reply_markup(), message.get("message_id"))
     elif data == "football_menu_stats":
         if callback_id:
             answer_control_callback(callback_id, "פותח סטטיסטיקות")
-        send_control_menu("📊 סטטיסטיקות", stats_menu_reply_markup(), message.get("message_id"))
+        send_control_menu("📊 סטטיסטיקות\nנתונים שנאספו ונשמרו. אין כאן שימוש ב-Gemini.", stats_menu_reply_markup(), message.get("message_id"))
     elif data == "football_choose_account_latest":
         if callback_id:
             answer_control_callback(callback_id, "בחר כתב")
-        send_control_menu("👤 בחר כתב לשליחת הפוסט האחרון לערוץ השקט", account_latest_menu_reply_markup(), message.get("message_id"))
+        send_control_menu("👤 בדוק כתב ספציפי\nמוצגים רק הכתבים הפעילים כרגע בבוט. הבחירה תשלח את הפוסט האחרון לערוץ השקט בלבד.", account_latest_menu_reply_markup(), message.get("message_id"))
     elif data.startswith("football_test_latest_account:"):
         username = data.split(":", 1)[1]
         if username not in all_control_test_accounts():
@@ -2533,6 +2543,18 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "מציג נתון")
         send_control_text(simple_stat_text(kind), message.get("message_id"), stats_menu_reply_markup())
+    elif data.startswith("football_toggle_mode:"):
+        key = data.split(":", 1)[1]
+        if key not in {"night_mode", "elite_only", "strict_filter"}:
+            if callback_id:
+                answer_control_callback(callback_id, "מצב לא מוכר")
+            return
+        state = load_control_state()
+        new_value = not bool(state.get(key, False))
+        save_control_state(**{key: new_value, f"{key}_until": 0.0})
+        if callback_id:
+            answer_control_callback(callback_id, "עודכן")
+        send_control_menu("🛡️ הגדרות וסינון - עודכן\nהמצב נשמר קבוע עד שמכבים אותו.", filter_menu_reply_markup(), message.get("message_id"))
     elif data.startswith("football_toggle_filter:"):
         key = data.split(":", 1)[1]
         if key not in CONTROL_FILTER_KEYS:
@@ -2559,26 +2581,20 @@ def process_control_update(update: dict[str, Any]) -> None:
             answer_control_callback(callback_id, "הבוט הופעל")
         send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
     elif data == "football_elite_only_2h":
-        until = time.time() + CONTROL_TEMP_MODE_SECONDS
-        save_control_state(elite_only_until=until)
+        save_control_state(elite_only=True, elite_only_until=0.0)
         if callback_id:
-            answer_control_callback(callback_id, "רק גדולות הופעל לשעתיים")
-        logging.info("🔒 לוח שליטה: מצב רק גדולות הופעל עד %s.", datetime.fromtimestamp(until, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M"))
-        send_quick_control_panel("הופעל מצב זמני: רק גדולות לשעתיים.")
+            answer_control_callback(callback_id, "רק גדולות הופעל קבוע")
+        send_control_menu("🛡️ הגדרות וסינון - עודכן", filter_menu_reply_markup(), message.get("message_id"))
     elif data == "football_strict_filter_2h":
-        until = time.time() + CONTROL_TEMP_MODE_SECONDS
-        save_control_state(strict_filter_until=until)
+        save_control_state(strict_filter=True, strict_filter_until=0.0)
         if callback_id:
-            answer_control_callback(callback_id, "סינון קשוח הופעל לשעתיים")
-        logging.info("🔒 לוח שליטה: סינון קשוח הופעל עד %s.", datetime.fromtimestamp(until, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M"))
-        send_quick_control_panel("הופעל מצב זמני: סינון קשוח לשעתיים.")
+            answer_control_callback(callback_id, "סינון קשוח הופעל קבוע")
+        send_control_menu("🛡️ הגדרות וסינון - עודכן", filter_menu_reply_markup(), message.get("message_id"))
     elif data == "football_night_mode_until_morning":
-        until = next_morning_timestamp()
-        save_control_state(night_mode_until=until)
+        save_control_state(night_mode=True, night_mode_until=0.0)
         if callback_id:
-            answer_control_callback(callback_id, "מצב לילה הופעל עד הבוקר")
-        logging.info("🌙 לוח שליטה: מצב לילה הופעל עד %s.", datetime.fromtimestamp(until, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M"))
-        send_quick_control_panel("הופעל מצב לילה עד 07:00.")
+            answer_control_callback(callback_id, "מצב לילה הופעל קבוע")
+        send_control_menu("🛡️ הגדרות וסינון - עודכן", filter_menu_reply_markup(), message.get("message_id"))
     elif data == "football_daily_report_now":
         if callback_id:
             answer_control_callback(callback_id, "שולח סיכום עכשיו")
@@ -2603,18 +2619,28 @@ def process_control_update(update: dict[str, Any]) -> None:
         category = data.split(":", 1)[1]
         if callback_id:
             answer_control_callback(callback_id, "מציג הסבר קטגוריה")
-        markup = monitor_menu_reply_markup() if category == "monitor" else filter_menu_reply_markup() if category == "filter" else stats_menu_reply_markup() if category == "stats" else quick_control_reply_markup()
+        markup = (
+            monitor_menu_reply_markup() if category == "monitor" else
+            filter_menu_reply_markup() if category == "filter" else
+            stats_menu_reply_markup() if category == "stats" else
+            account_latest_menu_reply_markup() if category == "account_latest" else
+            quick_control_reply_markup()
+        )
         send_control_text(category_help_text(category), message.get("message_id"), markup)
     elif data == "football_buttons_help":
         if callback_id:
             answer_control_callback(callback_id, "מציג הסבר כפתורים")
         send_control_text(control_buttons_help_text(), message.get("message_id"), quick_control_reply_markup())
     elif data == "football_clear_temp_modes":
-        save_control_state(elite_only_until=0.0, strict_filter_until=0.0, night_mode_until=0.0, **{key: False for key in CONTROL_FILTER_KEYS})
+        save_control_state(
+            elite_only=False, strict_filter=False, night_mode=False,
+            elite_only_until=0.0, strict_filter_until=0.0, night_mode_until=0.0,
+            **{key: False for key in CONTROL_FILTER_KEYS},
+        )
         if callback_id:
-            answer_control_callback(callback_id, "המצבים הזמניים בוטלו")
-        logging.info("🔓 לוח שליטה: המצבים הזמניים בוטלו.")
-        send_quick_control_panel("המצבים הזמניים בוטלו.")
+            answer_control_callback(callback_id, "כל הסינונים בוטלו")
+        logging.info("🔓 לוח שליטה: כל הסינונים בוטלו.")
+        send_control_menu("🛡️ הגדרות וסינון - כל הסינונים בוטלו", filter_menu_reply_markup(), message.get("message_id"))
     elif data.startswith("football_account:"):
         username = data.split(":", 1)[1]
         if username not in OPTIONAL_CONTROLLED_ACCOUNTS:
