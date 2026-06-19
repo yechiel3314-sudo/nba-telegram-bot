@@ -295,6 +295,10 @@ DAILY_QUALITY_REPORT_HOUR = int(os.environ.get("DAILY_QUALITY_REPORT_HOUR", "22"
 DAILY_QUALITY_REPORT_MINUTE = int(os.environ.get("DAILY_QUALITY_REPORT_MINUTE", "0"))
 DAILY_QUALITY_REPORT_LAST_DATE = ""
 DAILY_QUALITY_STATS: dict[str, Any] = {}
+DAILY_QUALITY_STATS_FILE = os.environ.get("DAILY_QUALITY_STATS_FILE", "football_daily_quality_stats.json")
+DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS = int(os.environ.get("DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS", "10"))
+DAILY_QUALITY_STATS_LAST_SAVE_AT = 0.0
+DAILY_QUALITY_STATS_LOADED = False
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "5"))
@@ -2040,15 +2044,18 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str) -> s
         lines.append(empty)
         return "\n".join(lines)
     for index, item in enumerate(items[-5:], 1):
-        source = item.get("source", "unknown")
-        reason = item.get("reason", "סיבה לא ידועה")
-        preview = item.get("preview", "")
-        link = item.get("link", "")
-        lines.append(f"{index}. @{source} - {reason}")
+        source = _hebrew_account_label(str(item.get("source", "") or ""))
+        reason = hebrew_block_reason(str(item.get("reason", "") or "סיבה לא ידועה"))
+        preview = str(item.get("preview", "") or "")
+        link = str(item.get("link", "") or "")
+        lines.append(f"{index}. כתב: {source}")
+        lines.append(f"   סיבה: {reason}")
         if preview:
-            lines.append(f"   {preview[:180]}")
+            lines.append(f"   תקציר: {preview[:180]}")
         if link:
-            lines.append(f"   {link}")
+            lines.append(f"   קישור לפוסט: {link}")
+        if index != min(5, len(items[-5:])):
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -3126,6 +3133,15 @@ BLOCK_REASON_HEBREW = {
     "temporary_strict_filter_mode": "מצב זמני סינון קשוח",
     "temporary_night_mode": "מצב לילה",
     "low_importance": "חשיבות נמוכה",
+    "not_connected_to_tracked_club": "לא קשור לקבוצה במעקב",
+    "non_news_social": "פוסט חברתי/לא חדשותי",
+    "official_on_minor": "דיווח רשמי על קבוצה פחות חשובה",
+    "media_only": "תמונה/וידאו בלי דיווח חדשותי",
+    "duplicate": "כפילות",
+    "semantic_duplicate": "כפילות תוכן",
+    "recent_duplicate": "כפילות מהזמן האחרון",
+    "translation_unavailable": "תרגום לא זמין",
+    "send_failed": "כשל בשליחה",
 }
 
 
@@ -3133,7 +3149,14 @@ def hebrew_block_reason(reason: str) -> str:
     base = (reason or "").split(";", 1)[0].strip()
     if base.startswith("importance:"):
         base = base.split(":", 1)[1]
-    return BLOCK_REASON_HEBREW.get(base, base or "סיבה לא ידועה")
+    translated = BLOCK_REASON_HEBREW.get(base)
+    if translated:
+        return translated
+    # נפילה בטוחה: שלא יופיעו בקבוצת השליטה קודי מערכת באנגלית עם קו תחתון.
+    if re.fullmatch(r"[A-Za-z0-9_:-]+", base or ""):
+        clean = base.replace("_", " ").replace(":", " - ").strip()
+        return f"סיבת מערכת: {clean}" if clean else "סיבה לא ידועה"
+    return base or "סיבה לא ידועה"
 
 
 def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
@@ -3192,21 +3215,63 @@ def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
     remember_control_block_event(reason, post, rendered, duplicate=("duplicate" in reason or "כפילות" in rendered))
 
 
+def daily_quality_stats_path() -> Path:
+    return Path(__file__).resolve().parent / DAILY_QUALITY_STATS_FILE
+
+
+def load_daily_quality_stats_from_disk() -> None:
+    global DAILY_QUALITY_STATS_LOADED
+    if DAILY_QUALITY_STATS_LOADED:
+        return
+    DAILY_QUALITY_STATS_LOADED = True
+    path = daily_quality_stats_path()
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            DAILY_QUALITY_STATS.clear()
+            DAILY_QUALITY_STATS.update(data)
+    except Exception as exc:
+        logging.warning("⚠️ לא הצלחתי לקרוא את קובץ הזיכרון של הדוח היומי: %s", exc)
+
+
+def save_daily_quality_stats_to_disk(force: bool = False) -> None:
+    global DAILY_QUALITY_STATS_LAST_SAVE_AT
+    if not DAILY_QUALITY_STATS:
+        return
+    now = time.time()
+    if not force and now - DAILY_QUALITY_STATS_LAST_SAVE_AT < DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS:
+        return
+    DAILY_QUALITY_STATS_LAST_SAVE_AT = now
+    try:
+        path = daily_quality_stats_path()
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(DAILY_QUALITY_STATS, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(path)
+    except Exception as exc:
+        logging.debug("שמירת זיכרון הדוח היומי נכשלה: %s", exc)
+
+
+def _empty_daily_quality_bucket(today: str) -> dict[str, Any]:
+    return {
+        "date": today,
+        "scanned": {},
+        "fetched": {},
+        "new": {},
+        "sent": {},
+        "skips": {},
+        "skip_reasons": {},
+    }
+
+
 def _daily_stats_bucket() -> dict[str, Any]:
+    load_daily_quality_stats_from_disk()
     today = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).strftime("%Y-%m-%d")
     if DAILY_QUALITY_STATS.get("date") != today:
         DAILY_QUALITY_STATS.clear()
-        DAILY_QUALITY_STATS.update(
-            {
-                "date": today,
-                "scanned": {},
-                "fetched": {},
-                "new": {},
-                "sent": {},
-                "skips": {},
-                "skip_reasons": {},
-            }
-        )
+        DAILY_QUALITY_STATS.update(_empty_daily_quality_bucket(today))
+        save_daily_quality_stats_to_disk(force=True)
     return DAILY_QUALITY_STATS
 
 
@@ -3217,6 +3282,7 @@ def daily_stat_increment(section: str, key: str, amount: int = 1) -> None:
         table = {}
         bucket[section] = table
     table[key] = int(table.get(key, 0) or 0) + amount
+    save_daily_quality_stats_to_disk(force=False)
 
 
 def daily_stat_skip(username: str, reason_he: str) -> None:
@@ -3282,7 +3348,9 @@ def _top_daily_items(section: str, limit: int = 5) -> list[tuple[str, int]]:
 
 
 def _hebrew_account_label(username: str) -> str:
-    return ACCOUNT_DISPLAY_NAMES.get(username, OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username))
+    if not username:
+        return "כתב לא ידוע"
+    return ACCOUNT_DISPLAY_NAMES.get(username, OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, CONTROLLED_BASE_ACCOUNT_LABELS.get(username, username)))
 
 
 def skip_reason_category_he(reason: str) -> str:
@@ -3328,30 +3396,37 @@ def build_daily_quality_report_text() -> str:
     new_total = sum(count for _key, count in _top_daily_items("new", 1000))
     scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
     active_accounts_count = len(active_x_accounts())
+    report_date = bucket.get("date") or datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).strftime("%Y-%m-%d")
 
     lines = [
-        "📊 דו\"ח יומי - בוט כדורגל",
+        "📊 דוח יומי - בוט כדורגל",
+        f"📅 תאריך: {report_date}",
         "",
-        f"✅ נשלחו היום: {sent_total}",
-        f"👥 כתבים פעילים ברשימה שלך: {active_accounts_count}",
-        f"🔎 בדיקות כתבים שבוצעו: {scanned_total}",
-        f"📥 פוסטים שנמצאו ב-RSS: {fetched_total}",
+        "📌 תמונת מצב",
+        f"✅ הודעות שנשלחו: {sent_total}",
+        f"👥 כתבים פעילים: {active_accounts_count}",
+        f"🔎 סריקות כתבים שבוצעו: {scanned_total}",
+        f"📥 פוסטים שנמצאו במקורות העדכונים: {fetched_total}",
         f"🆕 פוסטים חדשים לפני סינון: {new_total}",
-        f"↩️ נחסמו/דולגו: {skipped_total}",
-        f"💸 חיסכון משוער: {skipped_total} פוסטים נעצרו לפני תרגום/שליחה",
+        f"↩️ פוסטים שנעצרו לפני תרגום/שליחה: {skipped_total}",
         "",
-        "🧠 מקורות הכי שימושיים:",
+        "💰 חיסכון",
+        f"נחסכו בערך {skipped_total} פעולות תרגום/שליחה, כי הפוסטים נעצרו בסינון המוקדם.",
+        "",
+        "🧠 כתבים שמהם נשלחו הכי הרבה הודעות",
     ]
     sent_items = _top_daily_items("sent", 5)
     if sent_items:
         for index, (username, count) in enumerate(sent_items, 1):
-            lines.append(f"{index}. {_hebrew_account_label(username)} - {count} נשלחו")
+            lines.append(f"{index}. {_hebrew_account_label(username)} - {count} הודעות")
     else:
         lines.append("- לא נשלחו הודעות היום")
 
     lines.append("")
-    lines.append("🧹 חסימות לפי קטגוריה:")
+    lines.append("🧹 למה פוסטים לא נשלחו")
     lines.extend(grouped_skip_reason_lines())
+    lines.append("")
+    lines.append("💾 הדוח נשמר בזיכרון מקומי, לכן הנתונים נשמרים גם אחרי הפעלה מחדש באותו שרת.")
     return "\n".join(lines)
 
 
@@ -3367,6 +3442,7 @@ def send_daily_quality_report_if_due() -> None:
         return
     try:
         send_control_text(build_daily_quality_report_text())
+        save_daily_quality_stats_to_disk(force=True)
         DAILY_QUALITY_REPORT_LAST_DATE = today
         logging.info("📊 דו\"ח יומי נשלח לערוץ השקט.")
     except Exception as exc:
