@@ -179,9 +179,9 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
-# ברירת מחדל חסכונית: פוסט אחד = ניסיון Gemini אמיתי אחד בלבד.
-# אם רוצים רוטציה אגרסיבית בזמן תקלה, אפשר להגדיל ב-Railway דרך GEMINI_MAX_REAL_TRANSLATION_REQUESTS.
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
+# Default: try the configured key pool for a publishable post before giving up.
+# Railway can still lower this with GEMINI_MAX_REAL_TRANSLATION_REQUESTS to save quota.
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "8"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 # When Gemini quota is exhausted, do not keep probing the API every few minutes.
@@ -713,7 +713,7 @@ SELF_QUOTE_ALIASES.update(
 
 FOOTBALL_TERMS = {
     "here we go": "הנה זה קורה",
-    "breaking": "דיווח דרמטי",
+    "breaking": "דיווח",
     "breakthrough": "התפתחות משמעותית",
     "exclusive": "בלעדי",
     "understand": "לפי המידע",
@@ -1744,6 +1744,36 @@ def fetch_posts(username: str) -> list[Post]:
         fallback_templates = fallback_templates[:RSS_FALLBACK_SOURCE_COUNT]
     posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(username, primary_templates)
     if posts:
+        latest_age = max(0.0, time.time() - posts[0].published_ts) if posts[0].published_ts else None
+        if fallback_templates and latest_age is not None and latest_age >= ACCOUNT_STALE_LATEST_SECONDS:
+            fallback_posts, fallback_errors, fallback_timeouts = collect_posts_from_feed_templates(username, fallback_templates)
+            if fallback_posts:
+                fallback_latest_age = max(0.0, time.time() - fallback_posts[0].published_ts) if fallback_posts[0].published_ts else None
+                if fallback_latest_age is None or fallback_latest_age < latest_age:
+                    FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
+                    send_rss_stale_latest_alert_if_needed(username, fallback_posts)
+                    logging.warning(
+                        "🔁 RSS: המקור הראשי של @%s ישן/תקוע (%s, אחרון לפני %.0fs). הוחלף למקור גיבוי %s, אחרון לפני %s.",
+                        username,
+                        posts[0].source_name,
+                        latest_age,
+                        fallback_posts[0].source_name,
+                        "לא ידוע" if fallback_latest_age is None else f"{fallback_latest_age:.0f}s",
+                    )
+                    if fallback_errors or fallback_timeouts:
+                        logging.debug(
+                            "RSS: פרטי גיבוי עבור @%s: errors=%s | timeouts=%s",
+                            username,
+                            "; ".join(fallback_errors[:4]),
+                            ", ".join(fallback_timeouts[:4]),
+                        )
+                    return fallback_posts
+            logging.warning(
+                "⚠️ RSS: כל המקורות שנבדקו עבור @%s נראים ישנים/תקועים. המקור הראשי %s אחרון לפני %.0fs.",
+                username,
+                posts[0].source_name,
+                latest_age,
+            )
         FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
         send_rss_stale_latest_alert_if_needed(username, posts)
         return posts
@@ -1805,8 +1835,10 @@ def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
     started = time.perf_counter()
     try:
         posts = fetch_posts(username)
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
         return username, posts
     except Exception as exc:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
         logging.warning("⚠️ שליפת פוסטים נכשלה עבור @%s: %s", username, exc)
         return username, []
 
@@ -2566,14 +2598,18 @@ def simple_stat_text(kind: str) -> str:
         if not items:
             return "❌ כמה פעמים Gemini נכשל\n\nלא נרשמו היום כשלי Gemini."
         return "❌ כמה פעמים Gemini נכשל היום\n\n" + f"סה״כ: {total}\n" + "\n".join(f"{i}. {reason} - {count}" for i,(reason,count) in enumerate(items,1))
-    if kind in {"longest_post", "shortest_post", "avg_scan", "avg_translation"}:
-        names = {
-            "longest_post": "📚 הפוסט הארוך ביותר היום",
-            "shortest_post": "✂️ הפוסט הקצר ביותר היום",
-            "avg_scan": "⚡ זמן סריקה ממוצע",
-            "avg_translation": "🧠 זמן תרגום ממוצע",
-        }
-        return f"{names[kind]}\n\nהכפתור מחובר, אבל למדד הזה עדיין אין איסוף עומק מדויק בקוד. שאר הסטטיסטיקות המרכזיות כן נשמרות ועובדות."
+    if kind in {"longest_post", "shortest_post"}:
+        return daily_stat_post_length_text(kind)
+    if kind == "avg_scan":
+        avg, count, max_seconds = daily_stat_average_seconds("scan_seconds")
+        if not count:
+            return "⚡ זמן סריקה ממוצע\n\nעדיין לא נשמרו סריקות היום."
+        return f"⚡ זמן סריקה ממוצע\n\nממוצע: {avg:.2f} שניות לכתב\nמדידות: {count}\nהכי איטי היום: {max_seconds:.2f} שניות"
+    if kind == "avg_translation":
+        avg, count, max_seconds = daily_stat_average_seconds("translation_seconds")
+        if not count:
+            return "🧠 זמן תרגום ממוצע\n\nעדיין לא נשמרו תרגומים מוצלחים היום."
+        return f"🧠 זמן תרגום ממוצע\n\nממוצע: {avg:.2f} שניות לפוסט שנשלח\nמדידות: {count}\nהכי איטי היום: {max_seconds:.2f} שניות"
     return build_daily_quality_report_text()
 
 def category_help_text(category: str) -> str:
@@ -2610,7 +2646,7 @@ def category_help_text(category: str) -> str:
             "📋 כמה פוסטים כל כתב פרסם — פירוט לפי כתבים.\n"
             "🧱 טופ סיבות חסימה — למה פוסטים נחסמו.\n"
             "😅 מי נחסם הכי הרבה — לפי הסטטיסטיקה היומית.\n"
-            "שאר מדדי הזמן/כשלי Gemini מוכנים לכפתורים, וכדי לדייק אותם אפשר בהמשך להוסיף מדידה עמוקה יותר בכל פעולה."
+            "מדדי הזמן, כשלי Gemini והפוסט הארוך/קצר נאספים בזמן אמת מתוך הסריקות והשליחות בפועל."
         )
     if category == "account_latest":
         return (
@@ -3487,8 +3523,17 @@ POST_MATCH_INTERVIEW_NOISE_PATTERNS = (
 INTERVIEW_BLOCK_PATTERNS = (
     r"\b(?:interview|press conference|mixed zone|asked about|on\s+@[A-Za-z0-9_]{2,}|via\s+@[A-Za-z0-9_]{2,})\b",
     r"\b(?:speaking to|spoke to|told|tells|said to|says to)\s+(?:@[A-Za-z0-9_]{2,}|[A-Z][A-Za-z0-9_.-]{2,}(?:\s+[A-Z][A-Za-z0-9_.-]{2,}){0,3})\b",
+    r"\b(?:said|told|speaking|spoke)\s+(?:to|with)\s+(?:El\s+Mundo|Marca|AS|COPE|SER|L'Equipe|LEquipe|Sky|ESPN|TNT|DAZN|BBC|The\s+Athletic|Telegraph|Guardian|MailSport)\b",
     r"\b(?:on|via)\s+[A-Z][A-Za-z0-9_.-]{2,}(?:\s+[A-Z][A-Za-z0-9_.-]{2,}){0,3}\s*:",
     r"ראיון|בראיון|מסיבת\s+עיתונאים|אזור\s+מעורב|דיבר\s+עם|נשאל\s+על|נשאלה\s+על",
+)
+
+QUOTE_INTERVIEW_FORMAT_PATTERNS = (
+    r"(?m)^\s*(?:[A-Z][A-Za-zÀ-ÿ'’.-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]+){0,5}|@[A-Za-z0-9_]{2,})\s*:\s*[\"“”'‘’]",
+    r"\b(?:why choose|why choosing|what about|how do you define|your thoughts on)\b",
+    r"\b(?:mystique|unpredictable|comebacks?|historic comebacks?|admire|idol|dream club)\b",
+    r"(?m)^\s*(?:[א-ת][א-ת'״\".-]+(?:\s+[א-ת][א-ת'״\".-]+){0,5})\s*:\s*[\"“”'‘’]",
+    r"למה\s+לבחור|איך\s+להגדיר|מה\s+דעתך|מיסטיקה|בלתי\s+צפוי|קאמבקים|מעריץ|מועדון\s+חלומות",
 )
 
 
@@ -3496,7 +3541,11 @@ def is_interview_post(post: Post) -> bool:
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if not cleaned:
         return False
-    return _matches_any(INTERVIEW_BLOCK_PATTERNS, cleaned)
+    if _matches_any(INTERVIEW_BLOCK_PATTERNS, cleaned):
+        return True
+    if _matches_any(QUOTE_INTERVIEW_FORMAT_PATTERNS, cleaned) and not has_real_transfer_context(cleaned):
+        return True
+    return False
 
 
 def has_real_transfer_context(cleaned: str) -> bool:
@@ -3868,6 +3917,8 @@ def _empty_daily_quality_bucket(today: str) -> dict[str, Any]:
         "skips": {},
         "skip_reasons": {},
         "gemini_failures": {},
+        "timings": {},
+        "post_lengths": {},
     }
 
 
@@ -3889,6 +3940,81 @@ def daily_stat_increment(section: str, key: str, amount: int = 1) -> None:
         bucket[section] = table
     table[key] = int(table.get(key, 0) or 0) + amount
     save_daily_quality_stats_to_disk(force=False)
+
+
+def daily_stat_add_timing(metric: str, seconds: float) -> None:
+    if seconds < 0:
+        return
+    bucket = _daily_stats_bucket()
+    timings = bucket.setdefault("timings", {})
+    if not isinstance(timings, dict):
+        timings = {}
+        bucket["timings"] = timings
+    item = timings.setdefault(metric, {"count": 0, "total_seconds": 0.0, "max_seconds": 0.0})
+    if not isinstance(item, dict):
+        item = {"count": 0, "total_seconds": 0.0, "max_seconds": 0.0}
+        timings[metric] = item
+    item["count"] = int(item.get("count", 0) or 0) + 1
+    item["total_seconds"] = float(item.get("total_seconds", 0.0) or 0.0) + float(seconds)
+    item["max_seconds"] = max(float(item.get("max_seconds", 0.0) or 0.0), float(seconds))
+    save_daily_quality_stats_to_disk(force=False)
+
+
+def daily_stat_average_seconds(metric: str) -> tuple[float, int, float]:
+    bucket = _daily_stats_bucket()
+    timings = bucket.get("timings", {})
+    if not isinstance(timings, dict):
+        return 0.0, 0, 0.0
+    item = timings.get(metric, {})
+    if not isinstance(item, dict):
+        return 0.0, 0, 0.0
+    count = int(item.get("count", 0) or 0)
+    total = float(item.get("total_seconds", 0.0) or 0.0)
+    max_seconds = float(item.get("max_seconds", 0.0) or 0.0)
+    return (total / count if count else 0.0), count, max_seconds
+
+
+def daily_stat_record_post_length(username: str, link: str, text: str) -> None:
+    cleaned = re.sub(r"\s+", " ", html.unescape(text or "")).strip()
+    length = len(cleaned)
+    if length <= 0:
+        return
+    bucket = _daily_stats_bucket()
+    lengths = bucket.setdefault("post_lengths", {})
+    if not isinstance(lengths, dict):
+        lengths = {}
+        bucket["post_lengths"] = lengths
+    preview = trim(cleaned, 220) if "trim" in globals() else cleaned[:220]
+    item = {"username": username, "link": link, "length": length, "preview": preview, "ts": time.time()}
+    longest = lengths.get("longest")
+    shortest = lengths.get("shortest")
+    if not isinstance(longest, dict) or length > int(longest.get("length", 0) or 0):
+        lengths["longest"] = item
+    if not isinstance(shortest, dict) or length < int(shortest.get("length", 10**9) or 10**9):
+        lengths["shortest"] = item
+    save_daily_quality_stats_to_disk(force=False)
+
+
+def daily_stat_post_length_text(kind: str) -> str:
+    bucket = _daily_stats_bucket()
+    lengths = bucket.get("post_lengths", {})
+    if not isinstance(lengths, dict):
+        lengths = {}
+    key = "longest" if kind == "longest_post" else "shortest"
+    item = lengths.get(key)
+    title = "📚 הפוסט הארוך ביותר היום" if kind == "longest_post" else "✂️ הפוסט הקצר ביותר היום"
+    if not isinstance(item, dict):
+        return f"{title}\n\nעדיין לא נשמר פוסט שנשלח היום."
+    ts = float(item.get("ts", 0.0) or 0.0)
+    when = datetime.fromtimestamp(ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M") if ts else "לא ידוע"
+    return (
+        f"{title}\n\n"
+        f"כתב: {_hebrew_account_label(str(item.get('username', '')))}\n"
+        f"אורך: {int(item.get('length', 0) or 0)} תווים\n"
+        f"שעה: {when}\n"
+        f"תקציר: {item.get('preview', '')}\n"
+        f"קישור: {item.get('link', '')}"
+    )
 
 
 def daily_stat_skip(username: str, reason_he: str) -> None:
@@ -4003,6 +4129,8 @@ def build_daily_quality_report_text() -> str:
     scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
     active_accounts_count = len(active_x_accounts())
     report_date = bucket.get("date") or datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).strftime("%Y-%m-%d")
+    avg_scan, scan_count, max_scan = daily_stat_average_seconds("scan_seconds")
+    avg_translation, translation_count, max_translation = daily_stat_average_seconds("translation_seconds")
 
     lines = [
         "📊 דוח יומי - בוט כדורגל",
@@ -4015,6 +4143,8 @@ def build_daily_quality_report_text() -> str:
         f"📥 פוסטים מהיממה האחרונה שנמצאו במקורות: {fetched_total}",
         f"🆕 פוסטים חדשים לפני סינון: {new_total}",
         f"↩️ פוסטים שנעצרו לפני תרגום/שליחה: {skipped_total}",
+        f"⚡ זמן סריקה ממוצע: {avg_scan:.2f}s ({scan_count} מדידות, שיא {max_scan:.2f}s)",
+        f"🧠 זמן תרגום ממוצע: {avg_translation:.2f}s ({translation_count} מדידות, שיא {max_translation:.2f}s)",
         "",
         "💰 חיסכון",
         f"נחסכו בערך {skipped_total} פעולות תרגום/שליחה, כי הפוסטים נעצרו בסינון המוקדם.",
@@ -5560,6 +5690,33 @@ def remove_credit_handles(text: str) -> str:
     return text.strip()
 
 
+def remove_dangling_source_attribution(text: str) -> str:
+    """Remove source-credit fragments after handles/outlets were stripped."""
+    text = text or ""
+    source_names = (
+        r"@?[A-Za-z0-9_]{3,40}|"
+        r"Fabrizio\s+Romano|David\s+Ornstein|Gianluca\s+Di\s+Marzio|Di\s+Marzio|Nicol[oò]\s+Schira|"
+        r"Matteo\s+Moretto|Ben\s+Jacobs|Florian\s+Plettenberg|Fernando\s+Polo|Gerard\s+Romero|"
+        r"פבריציו\s+רומאנו|דיוויד\s+אורנשטיין|ג'אנלוקה\s+די\s+מרציו|ניקולו\s+שירה|מתאו\s+מורטו|בן\s+ג'ייקובס"
+    )
+    empty_tail = r"(?:\s*(?:[.,;:!?]|$))"
+    patterns = (
+        rf"(?iu)\s*,?\s*(?:as\s+(?:first\s+)?reported|as\s+revealed|as\s+told|reported)\s+by\s*(?:{source_names})?{empty_tail}",
+        rf"(?iu)\s*,?\s*(?:via|h/t|credit(?:s)?\s+to)\s*(?:{source_names}){empty_tail}",
+        rf"(?iu)\s*,?\s*(?:כפי\s+ש(?:דווח|נחשף|פורסם)|כמו\s+ש(?:דווח|פורסם)|לפי\s+הדיווח)\s+(?:על\s+ידי|בידי|אצל|של)?\s*(?:{source_names})?{empty_tail}",
+        rf"(?iu)\s*,?\s*(?:דווח|פורסם|נחשף)\s+(?:על\s+ידי|בידי|אצל)\s*(?:{source_names})?{empty_tail}",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, ".", text)
+    text = re.sub(r"(?iu)\s*,?\s*(?:as\s+(?:first\s+)?reported|reported\s+by|כפי\s+שדווח|דווח\s+על\s+ידי)\s*[.,;:!?]*\s*$", "", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"\.{2,}", ".", text)
+    text = re.sub(r"\s*\.\s*\.", ".", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n+ *", "\n", text)
+    return text.strip(" \t,;:")
+
+
 def remove_junk_topic_tags(text: str) -> str:
     value = text or ""
     value = re.sub(
@@ -5892,8 +6049,6 @@ def gemini_available_keys_for_operation() -> list[tuple[int, str]]:
 
 
 def cool_down_gemini_key(key: str, error: Exception | None) -> None:
-    if GEMINI_QUOTA_GUARD_ENABLED and is_gemini_quota_error(error):
-        set_gemini_requests_pause(True, gemini_error_summary(error))
     cooldown = GEMINI_COOLDOWN_SECONDS if is_gemini_quota_error(error) else 60
     GEMINI_KEY_COOLDOWNS[key] = time.time() + cooldown
     try:
@@ -5950,7 +6105,7 @@ def mymemory_translate(text: str) -> str:
     return html.unescape(data.get("responseData", {}).get("translatedText", "")).strip()
 
 
-def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_requests: int = 1) -> str:
+def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_requests: int = GEMINI_MAX_REAL_TRANSLATION_REQUESTS) -> str:
     if gemini_requests_paused_until_refill():
         raise RuntimeError("Gemini requests are paused until quota refill/manual release")
     if not GEMINI_API_KEYS:
@@ -5971,11 +6126,14 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "- Send only reports with concrete news: transfer, contract, injury, squad, appointment, dismissal, official announcement, negotiation, bid, match-relevant update, or a verified factual development.\n"
         "- If it is only a social/atmosphere post, quote, interview sentence, player/coach reaction, meme, congratulation, reaction, Instagram/story screenshot, personal message, vague caption, tribute, joke, opinion or image with no concrete news update, return an empty string.\n"
         "- Interview quotes such as 'X on Y: ...', 'X said...', 'X told...' are usually not news.\n"
+        "- Do not publish ordinary player interviews or admiration quotes, even when they mention a major club, unless the quote itself contains a concrete transfer/contract/injury/official decision.\n"
         "- Keep an interview/quote only when it is genuinely newsworthy or highly relevant: club president/owner/coach/agent speaking about a star player, contract renewal, future at the club, transfer, injury, official decision, squad call-up, bid, club direction or a major sporting development.\n"
+        "- Block youth/reserve/academy/B-team reports, including U15-U23, under-23, Primavera, Next Gen, Futuro, Castilla, Atletic/Atlètic, II/B teams, reserve teams, and reports focused on underage birth years/classes.\n"
         "- Remove ordinary statistics-only posts unless they contain a real record, official achievement or current news angle.\n"
         "- Block women's football, women's leagues/teams, WNBA/NBA/NFL/UFC/tennis/basketball and every sport that is not men's football.\n"
         "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
+        "- Remove self/source attribution clauses such as 'as reported by...', 'as revealed by...', 'via...', and Hebrew equivalents like 'כפי שדווח על ידי'. Keep the news fact only, and never leave dangling fragments like 'כפי שדווח על ידי'.\n"
         "- Remove all URLs, website domains and link text.\n"
         "- For @handles: if it is a real player, club, journalist or outlet needed for the news, write it naturally in Hebrew; if it is only a source credit or junk tag, omit it.\n"
         "- For hashtags: turn meaningful football hashtags into normal Hebrew words; omit promotional/source hashtags.\n"
@@ -5992,6 +6150,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "- Do not convert times to Israel time and never add the words 'שעון ישראל'. Keep original time-zone wording only if it is essential.\n"
         "- If the post is mostly a video caption, write one clean Hebrew sentence that explains the actual clip.\n"
         "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
+        "- Do not exaggerate labels. Translate 'breaking' as 'דיווח' or omit the label; avoid 'דיווח דרמטי' unless the original facts are truly exceptional.\n"
         "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
         "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
@@ -6105,8 +6264,9 @@ def normalize_breaking_label(text: str) -> str:
         r"ברייקינג|"
         r"breaking"
     )
-    text = re.sub(rf"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)(?:{label})\s*[-:–—]?\s*", r"\1דיווח דרמטי: ", text or "")
-    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)דיווח\s+דרמטי\s*[-:–—]\s*", r"\1דיווח דרמטי: ", text)
+    text = re.sub(rf"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)(?:{label})\s*[-:–—]?\s*", r"\1דיווח: ", text or "")
+    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)דיווח\s+דרמטי\s*[-:–—]\s*", r"\1דיווח: ", text)
+    text = re.sub(r"(?im)^(\s*(?:[^A-Za-z0-9א-ת\n]*\s*)?)דיווח\s*[-:–—]\s*", r"\1דיווח: ", text)
     return text
 
 
@@ -6118,6 +6278,7 @@ def final_hebrew_polish(text: str) -> str:
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
+    text = remove_dangling_source_attribution(text)
     text = convert_hashtags_to_text(text)
     for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, FOOTBALL_TERMS, HEBREW_FINAL_FIXES):
         text = apply_phrase_replacements(text, replacements)
@@ -6137,6 +6298,7 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_untranslated_tail_tokens(text)
     text = remove_junk_tail_lines(text)
     text = remove_israel_time_additions(text)
+    text = remove_dangling_source_attribution(text)
     text = normalize_exclusive_label(text)
     text = normalize_breaking_label(text)
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
@@ -6667,13 +6829,37 @@ OTHER_SPORT_BLOCK_PATTERNS = (
 
 YOUTH_ACADEMY_BLOCK_PATTERNS = (
     r"\b(?:academy|youth team|youth sides?|youth football|U-?15|U-?16|U-?17|U-?18|U-?19|U-?20|U-?21|U-?23|under[- ]?(?:15|16|17|18|19|20|21|23)|juvenil|primavera|reserve team|reserves|B team|underage)\b",
-    r"מחלקת נוער|קבוצת נוער|נוער|נערים|נערים א|נערים ב|ילדים|אקדמיה|קבוצת מילואים|מילואים|עד גיל\s*(?:15|16|17|18|19|20|21|23)|U ?(?:15|16|17|18|19|20|21|23)",
+    r"\b(?:Milan Futuro|AC Milan Futuro|Juventus Next Gen|Juve Next Gen|Atalanta U-?23|Real Madrid Castilla|Barca Atletic|Barça Atlètic|Barcelona Atletic|Barcelona Atlètic|Bayern II|Borussia Dortmund II|Dortmund II|Ajax Jong|Jong Ajax|Jong PSV|Jong AZ|Jong Utrecht|Benfica B|Porto B|Sporting CP B|Real Sociedad B|Villarreal B|Sevilla Atletico|Sevilla Atlético|Athletic Bilbao B|Valencia Mestalla|Freiburg II|Stuttgart II|Hoffenheim II|Mainz II|Wolfsburg II|Leipzig U-?19|Chelsea U-?21|Liverpool U-?21|Arsenal U-?21|Man City U-?21|Manchester City U-?21|Man United U-?21|Manchester United U-?21|Tottenham U-?21|Spurs U-?21)\b",
+    r"\b(?:[A-Z][A-Za-zÀ-ÿ'’.-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]+){0,3})\s+(?:II|B|U-?23|U-?21|U-?19|Futuro|Next\s+Gen|Castilla|Atletic|Atlètic|Primavera|Mestalla)\b",
+    r"מחלקת נוער|קבוצת נוער|נוער|נערים|נערים א|נערים ב|ילדים|אקדמיה|קבוצת מילואים|מילואים|קבוצת עתודה|עתודה|קבוצת בת|קבוצת ב׳|קבוצת ב'|עד גיל\s*(?:15|16|17|18|19|20|21|23)|U ?(?:15|16|17|18|19|20|21|23)",
+    r"מילאן\s+פוטורו|יובנטוס\s+נקסט\s+ג'?ן|ריאל\s+מדריד\s+קסטיליה|ברצלונה\s+אתלטיק|בארסה\s+אתלטיק|באיירן\s+2|באיירן\s+II|דורטמונד\s+2|דורטמונד\s+II|אייאקס\s+יונג|יונג\s+אייאקס|בנפיקה\s+B|פורטו\s+B|ספורטינג\s+B|ויאריאל\s+B|ריאל\s+סוסיאדד\s+B|ולנסיה\s+מסטאייה",
 )
+
+
+def has_underage_birth_year_signal(text: str) -> bool:
+    if not text:
+        return False
+    current_year = time.localtime().tm_year
+    patterns = (
+        r"\b(?:born|born in|born on|class of|generation|year group)\s+(20\d{2})\b",
+        r"\b(20\d{2})\s*(?:born|birth year|class|generation)\b",
+        r"(?:יליד|נולד\s+ב|נולד\s+בשנת|שנתון|מחזור)\s*(20\d{2})",
+        r"(20\d{2})\s*(?:יליד|שנתון|מחזור)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            try:
+                birth_year = int(match.group(1))
+            except Exception:
+                continue
+            if 8 <= current_year - birth_year <= 18:
+                return True
+    return False
 
 
 def is_youth_or_academy_post(post: Post) -> bool:
     cleaned = post_filter_text(post)
-    return _matches_any(YOUTH_ACADEMY_BLOCK_PATTERNS, cleaned)
+    return _matches_any(YOUTH_ACADEMY_BLOCK_PATTERNS, cleaned) or has_underage_birth_year_signal(cleaned)
 
 
 FOOTBALL_CONTEXT_ALLOW_PATTERNS = (
@@ -7956,6 +8142,9 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     remember_bot_sent_reply_target(sent_post, state, dict(result.get("telegram_message_ids", {})))
                 sent += 1
                 daily_stat_increment("sent", username, 1)
+                if float(result.get("translation_seconds", 0.0) or 0.0) > 0:
+                    daily_stat_add_timing("translation_seconds", float(result.get("translation_seconds", 0.0) or 0.0))
+                daily_stat_record_post_length(username, link, str(result.get("channel_memory_text", "") or ""))
                 save_control_state(last_sent_post={"ts": time.time(), "username": username, "link": link})
                 logging.info(
                     "✅ נשלח פוסט מ-@%s | מקור: %s | גיל: %.0fs | תרגום: %.2fs | שליחה: %.2fs | סה״כ: %.2fs",
@@ -8074,4 +8263,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
