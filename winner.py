@@ -1956,7 +1956,6 @@ def quick_control_reply_markup() -> dict[str, Any]:
         ],
         [
             {"text": "בדיקת פבריציו אחרון", "callback_data": "football_test_latest_fabrizio"},
-            {"text": "אחרון מכל הכתבים", "callback_data": "football_test_latest_all_accounts"},
         ],
         [{"text": "סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
         [
@@ -2091,57 +2090,21 @@ def run_latest_fabrizio_control_test() -> None:
         send_control_text("🧪 בדיקת פבריציו: לא נמצאו פוסטים במקורות ה-RSS כרגע.")
         return
     post = posts[0]
-    block_reason = pre_send_final_local_block_reason(post)
-    if block_reason:
-        send_control_text(
-            "🧪 בדיקת פבריציו אחרון\n"
-            "הפוסט נמצא, אבל לא נשלח כי הוא נחסם לפי הסינון הרגיל.\n"
-            f"סיבה: {hebrew_block_reason(block_reason)}\n"
-            f"קישור: {post.link}\n"
-            f"טקסט: {filtered_post_text_preview(post)}"
-        )
-        return
+    # בדיקת כפתור ידנית: שולחים את הפוסט האחרון של פבריציו לערוץ השקט
+    # גם אם הסינון הרגיל היה חוסם אותו. כפילות וסיבות חסימה אינן נבדקות כאן.
     try:
         translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
         message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
-        header = html.escape(rtl("🧪 בדיקת פבריציו אחרון - נשלח לערוץ השקט בלבד"))
+        header = html.escape(rtl("🧪 בדיקת פבריציו אחרון - נשלח בכוח לערוץ השקט"))
         source = html.escape(rtl(f"מקור RSS: {post.source_name} | קישור: {post.link}"))
         send_control_html(f"<b>{header}</b>\n{source}\n\n{message}")
-        logging.info("🧪 בדיקת פבריציו: הפוסט האחרון עבר סינון ותורגם לערוץ השקט בלבד. קישור: %s", post.link)
+        logging.info("🧪 בדיקת פבריציו: הפוסט האחרון נשלח בכוח לערוץ השקט ללא סינון וללא בדיקת כפילות. קישור: %s", post.link)
     except Exception as exc:
         send_control_text(
-            "🧪 בדיקת פבריציו: הפוסט עבר סינון, אבל התרגום/שליחה לערוץ השקט נכשלו.\n"
+            "🧪 בדיקת פבריציו: הפוסט נמצא, אבל התרגום/השליחה לערוץ השקט נכשלו.\n"
             f"סיבה: {short_error(exc, 600)}\n"
             f"קישור: {post.link}"
         )
-
-
-def latest_post_control_summary_line(username: str, post: "Post") -> str:
-    label = _hebrew_account_label(username)
-    block_reason = pre_send_final_local_block_reason(post)
-    if block_reason:
-        return f"@{username} ({label}): נחסם - {hebrew_block_reason(block_reason)} | {post.link}"
-    return f"@{username} ({label}): עובר סינון | {post.link}"
-
-
-def run_latest_all_accounts_control_test() -> None:
-    accounts = active_x_accounts()
-    lines = [
-        "🧪 בדיקת פוסט אחרון מכל הכתבים",
-        f"נבדקים רק הכתבים הפעילים אצלך כרגע: {len(accounts)}.",
-        "לא שולח לערוץ הראשי, לא מסמן כפילות, ולא משנה זיכרון שליחה.",
-        "",
-    ]
-    for username in accounts:
-        try:
-            posts = fetch_posts(username)
-            if not posts:
-                lines.append(f"@{username}: לא נמצאו פוסטים במקורות")
-                continue
-            lines.append(latest_post_control_summary_line(username, posts[0]))
-        except Exception as exc:
-            lines.append(f"@{username}: שגיאה בשליפה - {short_error(exc, 160)}")
-    send_control_text("\n".join(lines))
 
 
 def control_buttons_help_text() -> str:
@@ -2153,8 +2116,7 @@ def control_buttons_help_text() -> str:
         "🔒 סינון קשוח - לשעתיים, דורש גם מועדון גדול וגם דיווח חזק.\n"
         "🔓 לבטל מצבים זמניים - מחזיר את מצב הסינון הרגיל.\n\n"
         "כלים ובדיקות:\n"
-        "🧪 בדיקת פבריציו אחרון - בודק את הפוסט האחרון של פבריציו ושולח לשקט בלבד אם עבר סינון. כפילות לא חוסמת בבדיקה הזאת.\n"
-        "🧪 אחרון מכל הכתבים - בודק את הפוסט האחרון מכל הכתבים הפעילים ברשימה שלך ושולח סיכום לשקט בלבד.\n"
+        "🧪 בדיקת פבריציו אחרון - שולח בכוח לערוץ השקט את הפוסט האחרון של פבריציו, גם אם הסינון הרגיל היה חוסם אותו. כפילות אינה חוסמת.\n"
         "📊 סיכום היום עכשיו - שולח מיד את דו\"ח היום.\n"
         "↩️ למה לא נשלח - מציג את 5 החסימות האחרונות.\n"
         "🧠 כפילות אחרונה - מציג את הכפילויות האחרונות שנחסמו.\n\n"
@@ -2227,10 +2189,6 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "בודק את פבריציו האחרון")
         run_latest_fabrizio_control_test()
-    elif data == "football_test_latest_all_accounts":
-        if callback_id:
-            answer_control_callback(callback_id, "בודק פוסט אחרון מכל הכתבים")
-        run_latest_all_accounts_control_test()
     elif data == "football_last_blocked":
         if callback_id:
             answer_control_callback(callback_id, "מציג חסימות אחרונות")
