@@ -1747,38 +1747,6 @@ def fetch_posts(username: str) -> list[Post]:
         fallback_templates = fallback_templates[:RSS_FALLBACK_SOURCE_COUNT]
     posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(username, primary_templates)
     if posts:
-        latest_age = max(0.0, time.time() - posts[0].published_ts) if posts[0].published_ts else None
-        if fallback_templates and latest_age is not None and latest_age >= ACCOUNT_STALE_LATEST_SECONDS:
-            fallback_posts, fallback_errors, fallback_timeouts = collect_posts_from_feed_templates(username, fallback_templates)
-            if fallback_posts:
-                fallback_latest_age = max(0.0, time.time() - fallback_posts[0].published_ts) if fallback_posts[0].published_ts else None
-                if fallback_latest_age is None or fallback_latest_age < latest_age:
-                    FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
-                    send_rss_stale_latest_alert_if_needed(username, fallback_posts)
-                    log_feed_issue(
-                        username,
-                        "🔁 RSS: המקור הראשי של @%s ישן/תקוע (%s, אחרון לפני %.0fs). הוחלף למקור גיבוי %s, אחרון לפני %s.",
-                        username,
-                        posts[0].source_name,
-                        latest_age,
-                        fallback_posts[0].source_name,
-                        "לא ידוע" if fallback_latest_age is None else f"{fallback_latest_age:.0f}s",
-                    )
-                    if fallback_errors or fallback_timeouts:
-                        logging.debug(
-                            "RSS: פרטי גיבוי עבור @%s: errors=%s | timeouts=%s",
-                            username,
-                            "; ".join(fallback_errors[:4]),
-                            ", ".join(fallback_timeouts[:4]),
-                        )
-                    return fallback_posts
-            log_feed_issue(
-                username,
-                "⚠️ RSS: כל המקורות שנבדקו עבור @%s נראים ישנים/תקועים. המקור הראשי %s אחרון לפני %.0fs.",
-                username,
-                posts[0].source_name,
-                latest_age,
-            )
         FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
         send_rss_stale_latest_alert_if_needed(username, posts)
         return posts
@@ -2050,7 +2018,7 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
         label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
         status = "פעיל" if username in enabled_optional else "כבוי"
         keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_account:{username}"}])
-    return {"inline_keyboard": keyboard}
+    return stable_reply_markup(keyboard)
 
 
 def _flag_status(state: dict[str, Any], key: str) -> str:
@@ -2061,28 +2029,54 @@ def _onoff_label(text: str, state: dict[str, Any], key: str) -> str:
     return f"{text}: {_flag_status(state, key)}"
 
 
+CONTROL_BUTTON_TEXT_WIDTH = int(os.environ.get("CONTROL_BUTTON_TEXT_WIDTH", "26"))
+CONTROL_BUTTON_PAD = "\u2007"
+
+
+def stable_button_label(text: str) -> str:
+    """Pad one-button rows so Telegram keeps a steady keyboard width."""
+    label = text or ""
+    visible_len = len(re.sub(r"[\ufe0f\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", label))
+    if visible_len >= CONTROL_BUTTON_TEXT_WIDTH:
+        return label
+    pad = CONTROL_BUTTON_PAD * (CONTROL_BUTTON_TEXT_WIDTH - visible_len)
+    return f"{pad}{label}{pad}"
+
+
+def stable_reply_markup(keyboard: list[list[dict[str, str]]]) -> dict[str, Any]:
+    stable_keyboard: list[list[dict[str, str]]] = []
+    for row in keyboard:
+        if len(row) == 1 and "text" in row[0]:
+            button = dict(row[0])
+            button["text"] = stable_button_label(str(button.get("text", "")))
+            stable_keyboard.append([button])
+        else:
+            stable_keyboard.append(row)
+    return {"inline_keyboard": stable_keyboard}
+
+
 def quick_control_reply_markup() -> dict[str, Any]:
     keyboard = [
         [
-            {"text": "👤 בדוק כתב ספציפי - שליחת פוסט אחרון לערוץ השקט", "callback_data": "football_choose_account_latest"},
+            {"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"},
         ],
         [
-            {"text": "🔎 בדיקה וניטור - RSS, מקורות ופוסטים אחרונים", "callback_data": "football_menu_monitor"},
+            {"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"},
         ],
         [
-            {"text": "🛡️ הגדרות וסינון - שליטה במה שהבוט שולח", "callback_data": "football_menu_filter"},
+            {"text": "🛡️ הגדרות וסינון", "callback_data": "football_menu_filter"},
         ],
         [
-            {"text": "📊 סטטיסטיקות - נתוני היום והסיבות לחסימה", "callback_data": "football_menu_stats"},
+            {"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"},
         ],
         [
-            {"text": "📊 סיכום היום עכשיו - דוח מלא לערוץ השקט", "callback_data": "football_daily_report_now"},
+            {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
         ],
         [
-            {"text": "ℹ️ הסבר כפתורים - מה כל פעולה עושה", "callback_data": "football_buttons_help"},
+            {"text": "ℹ️ הסבר כפתורים", "callback_data": "football_buttons_help"},
         ],
     ]
-    return {"inline_keyboard": keyboard}
+    return stable_reply_markup(keyboard)
 
 
 def monitor_menu_reply_markup() -> dict[str, Any]:
@@ -2102,7 +2096,7 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
         [{"text": "ℹ️ הסבר בדיקה וניטור", "callback_data": "football_category_help:monitor"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
-    return {"inline_keyboard": keyboard}
+    return stable_reply_markup(keyboard)
 
 
 def filter_menu_reply_markup() -> dict[str, Any]:
@@ -2149,12 +2143,11 @@ def filter_menu_reply_markup() -> dict[str, Any]:
         keyboard.append([{"text": "🔓 לבטל את כל הסינונים", "callback_data": "football_clear_temp_modes"}])
     keyboard.append([{"text": "ℹ️ הסבר הגדרות וסינון", "callback_data": "football_category_help:filter"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
-    return {"inline_keyboard": keyboard}
+    return stable_reply_markup(keyboard)
 
 
 def stats_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
-        [{"text": "📈 סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
         [{"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"}],
         [{"text": "📋 כמה פוסטים כל כתב פרסם", "callback_data": "football_stat_posts_by_writer"}],
         [{"text": "🧱 טופ 10 סיבות חסימה", "callback_data": "football_stat_top_blocks"}],
@@ -2167,7 +2160,7 @@ def stats_menu_reply_markup() -> dict[str, Any]:
         [{"text": "ℹ️ הסבר סטטיסטיקות", "callback_data": "football_category_help:stats"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
-    return {"inline_keyboard": keyboard}
+    return stable_reply_markup(keyboard)
 
 
 CONTROL_TEST_ACCOUNT_ORDER = [
@@ -2220,7 +2213,7 @@ def account_latest_menu_reply_markup() -> dict[str, Any]:
         }])
     keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
-    return {"inline_keyboard": keyboard}
+    return stable_reply_markup(keyboard)
 
 
 def send_control_menu(text: str, reply_markup: dict[str, Any], message_id: Any = None) -> None:
