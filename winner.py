@@ -1951,16 +1951,23 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
 def quick_control_reply_markup() -> dict[str, Any]:
     state = load_control_state()
     keyboard = [
-        [{"text": f"מצב לילה: {_control_mode_status_text(state, 'night_mode_until')}", "callback_data": "football_night_mode_until_morning"}],
-        [{"text": "סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
         [
-            {"text": "למה לא נשלח", "callback_data": "football_last_blocked"},
-            {"text": "כפילות אחרונה", "callback_data": "football_last_duplicate"},
+            {"text": f"מצב לילה: {_control_mode_status_text(state, 'night_mode_until')}", "callback_data": "football_night_mode_until_morning"},
         ],
         [
             {"text": f"רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_elite_only_2h"},
             {"text": f"סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_strict_filter_2h"},
         ],
+        [
+            {"text": "בדיקת פבריציו אחרון", "callback_data": "football_test_latest_fabrizio"},
+            {"text": "אחרון מכל הכתבים", "callback_data": "football_test_latest_all_accounts"},
+        ],
+        [{"text": "סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
+        [
+            {"text": "למה לא נשלח", "callback_data": "football_last_blocked"},
+            {"text": "כפילות אחרונה", "callback_data": "football_last_duplicate"},
+        ],
+        [{"text": "הסבר כפתורים", "callback_data": "football_buttons_help"}],
     ]
     if elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state):
         keyboard.append([{"text": "לבטל מצבים זמניים", "callback_data": "football_clear_temp_modes"}])
@@ -2048,14 +2055,115 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str) -> s
 def send_control_text(text: str) -> None:
     if not CONTROL_CHAT_ID:
         return
+    formatted = rtl(text)
     telegram_api(
         "sendMessage",
         {
             "chat_id": CONTROL_CHAT_ID,
-            "text": trim(text, 3900),
+            "text": trim(formatted, 3900),
             "disable_web_page_preview": True,
         },
         max_attempts=1,
+    )
+
+
+def send_control_html(text: str) -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    formatted = rtl(text)
+    telegram_api(
+        "sendMessage",
+        {
+            "chat_id": CONTROL_CHAT_ID,
+            "text": trim(formatted, 4096),
+            "disable_web_page_preview": True,
+            "parse_mode": "HTML",
+        },
+        max_attempts=1,
+    )
+
+
+def run_latest_fabrizio_control_test() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    try:
+        posts = fetch_posts("FabrizioRomano")
+    except Exception as exc:
+        send_control_text(f"🧪 בדיקת פבריציו נכשלה בשליפת RSS:\n{short_error(exc, 500)}")
+        return
+    if not posts:
+        send_control_text("🧪 בדיקת פבריציו: לא נמצאו פוסטים במקורות ה-RSS כרגע.")
+        return
+    post = posts[0]
+    block_reason = pre_send_final_local_block_reason(post)
+    if block_reason:
+        send_control_text(
+            "🧪 בדיקת פבריציו אחרון\n"
+            "הפוסט נמצא, אבל לא נשלח כי הוא נחסם לפי הסינון הרגיל.\n"
+            f"סיבה: {hebrew_block_reason(block_reason)}\n"
+            f"קישור: {post.link}\n"
+            f"טקסט: {filtered_post_text_preview(post)}"
+        )
+        return
+    try:
+        translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
+        message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+        header = html.escape(rtl("🧪 בדיקת פבריציו אחרון - נשלח לערוץ השקט בלבד"))
+        source = html.escape(rtl(f"מקור RSS: {post.source_name} | קישור: {post.link}"))
+        send_control_html(f"<b>{header}</b>\n{source}\n\n{message}")
+        logging.info("🧪 בדיקת פבריציו: הפוסט האחרון עבר סינון ותורגם לערוץ השקט בלבד. קישור: %s", post.link)
+    except Exception as exc:
+        send_control_text(
+            "🧪 בדיקת פבריציו: הפוסט עבר סינון, אבל התרגום/שליחה לערוץ השקט נכשלו.\n"
+            f"סיבה: {short_error(exc, 600)}\n"
+            f"קישור: {post.link}"
+        )
+
+
+def latest_post_control_summary_line(username: str, post: "Post") -> str:
+    label = _hebrew_account_label(username)
+    block_reason = pre_send_final_local_block_reason(post)
+    if block_reason:
+        return f"@{username} ({label}): נחסם - {hebrew_block_reason(block_reason)} | {post.link}"
+    return f"@{username} ({label}): עובר סינון | {post.link}"
+
+
+def run_latest_all_accounts_control_test() -> None:
+    accounts = active_x_accounts()
+    lines = [
+        "🧪 בדיקת פוסט אחרון מכל הכתבים",
+        f"נבדקים רק הכתבים הפעילים אצלך כרגע: {len(accounts)}.",
+        "לא שולח לערוץ הראשי, לא מסמן כפילות, ולא משנה זיכרון שליחה.",
+        "",
+    ]
+    for username in accounts:
+        try:
+            posts = fetch_posts(username)
+            if not posts:
+                lines.append(f"@{username}: לא נמצאו פוסטים במקורות")
+                continue
+            lines.append(latest_post_control_summary_line(username, posts[0]))
+        except Exception as exc:
+            lines.append(f"@{username}: שגיאה בשליפה - {short_error(exc, 160)}")
+    send_control_text("\n".join(lines))
+
+
+def control_buttons_help_text() -> str:
+    return (
+        "ℹ️ הסבר כפתורים\n\n"
+        "מצבים שמשנים את התנהגות הבוט:\n"
+        "🌙 מצב לילה - עד 07:00 הבוט שולח רק דיווחים גדולים וחזקים.\n"
+        "🔒 רק גדולות - לשעתיים, שולח רק דיווחים עם מועדון גדול ברור.\n"
+        "🔒 סינון קשוח - לשעתיים, דורש גם מועדון גדול וגם דיווח חזק.\n"
+        "🔓 לבטל מצבים זמניים - מחזיר את מצב הסינון הרגיל.\n\n"
+        "כלים ובדיקות:\n"
+        "🧪 בדיקת פבריציו אחרון - בודק את הפוסט האחרון של פבריציו ושולח לשקט בלבד אם עבר סינון. כפילות לא חוסמת בבדיקה הזאת.\n"
+        "🧪 אחרון מכל הכתבים - בודק את הפוסט האחרון מכל הכתבים הפעילים ברשימה שלך ושולח סיכום לשקט בלבד.\n"
+        "📊 סיכום היום עכשיו - שולח מיד את דו\"ח היום.\n"
+        "↩️ למה לא נשלח - מציג את 5 החסימות האחרונות.\n"
+        "🧠 כפילות אחרונה - מציג את הכפילויות האחרונות שנחסמו.\n\n"
+        "הלוח הראשי:\n"
+        "הפעלה/כיבוי של הבוט ושל כתבים. זה משפיע על מי נסרק בפועל."
     )
 
 
@@ -2119,6 +2227,14 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "שולח סיכום עכשיו")
         send_control_text(build_daily_quality_report_text())
+    elif data == "football_test_latest_fabrizio":
+        if callback_id:
+            answer_control_callback(callback_id, "בודק את פבריציו האחרון")
+        run_latest_fabrizio_control_test()
+    elif data == "football_test_latest_all_accounts":
+        if callback_id:
+            answer_control_callback(callback_id, "בודק פוסט אחרון מכל הכתבים")
+        run_latest_all_accounts_control_test()
     elif data == "football_last_blocked":
         if callback_id:
             answer_control_callback(callback_id, "מציג חסימות אחרונות")
@@ -2129,6 +2245,10 @@ def process_control_update(update: dict[str, Any]) -> None:
             answer_control_callback(callback_id, "מציג כפילויות אחרונות")
         state = load_control_state()
         send_control_text(_control_list_text("🧠 כפילויות אחרונות", list(state.get("last_duplicate_posts", [])) if isinstance(state.get("last_duplicate_posts", []), list) else [], "אין כפילויות שמורות כרגע."))
+    elif data == "football_buttons_help":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג הסבר כפתורים")
+        send_control_text(control_buttons_help_text())
     elif data == "football_clear_temp_modes":
         save_control_state(elite_only_until=0.0, strict_filter_until=0.0, night_mode_until=0.0)
         if callback_id:
@@ -3189,6 +3309,41 @@ def _hebrew_account_label(username: str) -> str:
     return ACCOUNT_DISPLAY_NAMES.get(username, OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username))
 
 
+def skip_reason_category_he(reason: str) -> str:
+    reason = reason or ""
+    if any(token in reason for token in ("כפילות", "עומס דיווחים")):
+        return "כפילויות ועומס"
+    if any(token in reason for token in ("משחק", "שער", "תוצאה", "נבחרת", "סביבת משחק")):
+        return "משחקים ונבחרות"
+    if any(token in reason for token in ("חשיבות", "דרג", "קבוצה", "לא מספיק", "מועדון", "ליגה")):
+        return "חשיבות וקבוצות"
+    if any(token in reason for token in ("ראיון", "ציטוט", "פודקאסט", "תוכן", "סטטיסטיקה", "רעש")):
+        return "תוכן לא חדשותי"
+    if any(token in reason for token in ("תמונה", "וידאו", "קישור", "קצרה", "רמז", "ברור")):
+        return "איכות/בהירות ההודעה"
+    if any(token in reason for token in ("נשים", "WNBA", "נוער", "אקדמיה", "צוות רפואי", "ספורט אחר")):
+        return "סינון תחום"
+    if any(token in reason for token in ("מצב זמני", "מצב לילה")):
+        return "מצבים זמניים"
+    return "אחר"
+
+
+def grouped_skip_reason_lines(limit_per_category: int = 4) -> list[str]:
+    reason_items = _top_daily_items("skip_reasons", 1000)
+    if not reason_items:
+        return ["- אין חסימות שנרשמו מאז ההפעלה"]
+    grouped: dict[str, list[tuple[str, int]]] = {}
+    for reason, count in reason_items:
+        grouped.setdefault(skip_reason_category_he(reason), []).append((reason, count))
+    lines: list[str] = []
+    for category, items in sorted(grouped.items(), key=lambda item: -sum(count for _reason, count in item[1])):
+        total = sum(count for _reason, count in items)
+        lines.append(f"{category}: {total}")
+        for reason, count in items[:limit_per_category]:
+            lines.append(f"- {reason}: {count}")
+    return lines
+
+
 def build_daily_quality_report_text() -> str:
     bucket = _daily_stats_bucket()
     sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
@@ -3196,12 +3351,14 @@ def build_daily_quality_report_text() -> str:
     fetched_total = sum(count for _key, count in _top_daily_items("fetched", 1000))
     new_total = sum(count for _key, count in _top_daily_items("new", 1000))
     scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
+    active_accounts_count = len(active_x_accounts())
 
     lines = [
         "📊 דו\"ח יומי - בוט כדורגל",
         "",
         f"✅ נשלחו היום: {sent_total}",
-        f"🔎 סריקות כתבים: {scanned_total}",
+        f"👥 כתבים פעילים ברשימה שלך: {active_accounts_count}",
+        f"🔎 בדיקות כתבים שבוצעו: {scanned_total}",
         f"📥 פוסטים שנמצאו ב-RSS: {fetched_total}",
         f"🆕 פוסטים חדשים לפני סינון: {new_total}",
         f"↩️ נחסמו/דולגו: {skipped_total}",
@@ -3217,47 +3374,8 @@ def build_daily_quality_report_text() -> str:
         lines.append("- לא נשלחו הודעות היום")
 
     lines.append("")
-    lines.append("🧹 סיבות חסימה מובילות:")
-    reason_items = _top_daily_items("skip_reasons", 6)
-    if reason_items:
-        for reason, count in reason_items:
-            lines.append(f"- {reason}: {count}")
-    else:
-        lines.append("- אין חסימות שנרשמו מאז ההפעלה")
-
-    lines.append("")
-    lines.append("⚠️ כתבים שנסרקו הרבה ולא שלחו:")
-    scanned = dict(_top_daily_items("scanned", 1000))
-    sent = dict(_top_daily_items("sent", 1000))
-    fetched = dict(_top_daily_items("fetched", 1000))
-    new = dict(_top_daily_items("new", 1000))
-    skipped = dict(_top_daily_items("skips", 1000))
-    quiet = [
-        (username, count)
-        for username, count in scanned.items()
-        if count >= 10 and int(sent.get(username, 0) or 0) == 0
-    ]
-    quiet = sorted(quiet, key=lambda item: (-(fetched.get(item[0], 0)), -item[1], item[0]))[:6]
-    if quiet:
-        for username, count in quiet:
-            fetched_count = int(fetched.get(username, 0) or 0)
-            new_count = int(new.get(username, 0) or 0)
-            skipped_count = int(skipped.get(username, 0) or 0)
-            if fetched_count == 0:
-                why = "לא נמצאו פוסטים במקורות"
-            elif new_count == 0:
-                why = "המקורות החזירו פוסטים, אבל לא היה חדש"
-            elif skipped_count >= new_count:
-                why = "היו חדשים, אבל כולם נחסמו בסינון"
-            else:
-                why = "לא הגיעו לשלב שליחה אחרי תעדוף/כפילויות"
-            lines.append(f"- {_hebrew_account_label(username)}: {count} סריקות, {fetched_count} נמצאו, {new_count} חדשים, {skipped_count} דילוגים | {why}")
-    else:
-        lines.append("- אין כתב שנסרק הרבה בלי שליחה")
-
-    lines.append("")
-    lines.append("🧩 הערת איכות:")
-    lines.append("הנתונים נאספים מאז ההפעלה האחרונה של הבוט, בלי שימוש בג'מיני ובלי שינוי RSS.")
+    lines.append("🧹 חסימות לפי קטגוריה:")
+    lines.extend(grouped_skip_reason_lines())
     return "\n".join(lines)
 
 
@@ -3272,15 +3390,7 @@ def send_daily_quality_report_if_due() -> None:
     if (now_dt.hour, now_dt.minute) < (DAILY_QUALITY_REPORT_HOUR, DAILY_QUALITY_REPORT_MINUTE):
         return
     try:
-        telegram_api(
-            "sendMessage",
-            {
-                "chat_id": CONTROL_CHAT_ID,
-                "text": build_daily_quality_report_text(),
-                "disable_web_page_preview": True,
-            },
-            max_attempts=1,
-        )
+        send_control_text(build_daily_quality_report_text())
         DAILY_QUALITY_REPORT_LAST_DATE = today
         logging.info("📊 דו\"ח יומי נשלח לערוץ השקט.")
     except Exception as exc:
@@ -3305,8 +3415,9 @@ def flush_scan_cycle_summary(force: bool = False) -> None:
         return
     SCAN_CYCLE_SUMMARY_LAST_LOGGED_AT = now
     logging.info(
-        "🔎 סיכום סריקה: %s סבבים | נבדקו %s כתבים | כתבים עם פוסטים: %s | פוסטים שנמצאו: %s | חדשים לפני סינון: %s | מועמדים אחרי סינון: %s",
+        "🔎 סיכום סריקה: %s סבבים | כתבים פעילים: %s | בדיקות כתבים שבוצעו: %s | בדיקות עם פוסטים: %s | פוסטים שנמצאו: %s | חדשים לפני סינון: %s | מועמדים אחרי סינון: %s",
         SCAN_CYCLE_SUMMARY.get("cycles", 0),
+        len(active_x_accounts()),
         SCAN_CYCLE_SUMMARY.get("scanned", 0),
         SCAN_CYCLE_SUMMARY.get("with_posts", 0),
         SCAN_CYCLE_SUMMARY.get("fetched", 0),
