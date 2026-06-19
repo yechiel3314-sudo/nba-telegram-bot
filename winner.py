@@ -29,6 +29,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import sys
 import time
 import unicodedata
@@ -306,6 +307,8 @@ DAILY_QUALITY_STATS_FILE = os.environ.get("DAILY_QUALITY_STATS_FILE", "football_
 DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS = int(os.environ.get("DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS", "10"))
 DAILY_QUALITY_STATS_LAST_SAVE_AT = 0.0
 DAILY_QUALITY_STATS_LOADED = False
+BOT_DATA_DIR = os.environ.get("FOOTBALL_BOT_DATA_DIR") or os.environ.get("BOT_DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or ""
+APP_DATA_DIR_CACHE: Path | None = None
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "5"))
@@ -1883,12 +1886,48 @@ def fetch_all_accounts() -> dict[str, list[Post]]:
     return results
 
 
+def app_data_dir() -> Path:
+    global APP_DATA_DIR_CACHE
+    if APP_DATA_DIR_CACHE is not None:
+        return APP_DATA_DIR_CACHE
+    candidates: list[Path] = []
+    if BOT_DATA_DIR:
+        candidates.append(Path(BOT_DATA_DIR))
+    data_path = Path("/data")
+    if data_path.exists():
+        candidates.append(data_path)
+    candidates.append(Path(__file__).resolve().parent)
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            test_path = candidate / ".football_bot_write_test"
+            test_path.write_text("ok", encoding="utf-8")
+            test_path.unlink(missing_ok=True)
+            APP_DATA_DIR_CACHE = candidate
+            return candidate
+        except Exception:
+            continue
+    APP_DATA_DIR_CACHE = Path(__file__).resolve().parent
+    return APP_DATA_DIR_CACHE
+
+
+def app_data_path(filename: str) -> Path:
+    target = app_data_dir() / filename
+    legacy = Path(__file__).resolve().parent / filename
+    if target != legacy and not target.exists() and legacy.exists():
+        try:
+            shutil.copy2(legacy, target)
+        except Exception as exc:
+            logging.debug("לא הצליח להעתיק קובץ מצב ישן אל תיקיית הדאטה: %s", exc)
+    return target
+
+
 def shabbat_cache_path() -> Path:
-    return Path(__file__).resolve().parent / SHABBAT_CACHE_FILE
+    return app_data_path(SHABBAT_CACHE_FILE)
 
 
 def control_state_path() -> Path:
-    return Path(__file__).resolve().parent / CONTROL_STATE_FILE
+    return app_data_path(CONTROL_STATE_FILE)
 
 
 def load_control_state() -> dict[str, Any]:
@@ -2023,14 +2062,16 @@ def _onoff_label(text: str, state: dict[str, Any], key: str) -> str:
 def quick_control_reply_markup() -> dict[str, Any]:
     keyboard = [
         [
+            {"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"},
+        ],
+        [
             {"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"},
+        ],
+        [
             {"text": "🛡️ הגדרות וסינון", "callback_data": "football_menu_filter"},
         ],
         [
             {"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"},
-        ],
-        [
-            {"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"},
         ],
         [
             {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
@@ -2046,20 +2087,16 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
         [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
         [{"text": "📬 פוסט אחרון שנשלח", "callback_data": "football_last_sent_post"}],
+        [{"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"}],
+        [{"text": "📊 אחוז הצלחה היום", "callback_data": "football_stat_success_rate"}],
+        [{"text": "✅ כמה נשלחו היום", "callback_data": "football_stat_sent_today"}],
+        [{"text": "🚫 כמה נחסמו היום", "callback_data": "football_stat_blocked_today"}],
+        [{"text": "⏳ כמה פוסטים ישנים מדי היו", "callback_data": "football_stat_old_posts"}],
         [
             {"text": "📡 RSS תקין?", "callback_data": "football_rss_status"},
             {"text": "🤖 Gemini תקין?", "callback_data": "football_gemini_status"},
         ],
         [{"text": gemini_guard_button_label(), "callback_data": "football_gemini_toggle_quota_guard"}],
-        [
-            {"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"},
-            {"text": "📊 אחוז הצלחה היום", "callback_data": "football_stat_success_rate"},
-        ],
-        [
-            {"text": "✅ כמה נשלחו היום", "callback_data": "football_stat_sent_today"},
-            {"text": "🚫 כמה נחסמו היום", "callback_data": "football_stat_blocked_today"},
-        ],
-        [{"text": "⏳ כמה פוסטים ישנים מדי היו", "callback_data": "football_stat_old_posts"}],
         [{"text": "ℹ️ הסבר בדיקה וניטור", "callback_data": "football_category_help:monitor"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
@@ -2074,18 +2111,26 @@ def filter_menu_reply_markup() -> dict[str, Any]:
         ],
         [
             {"text": f"⭐ רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_toggle_mode:elite_only"},
+        ],
+        [
             {"text": f"🛡️ סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_toggle_mode:strict_filter"},
         ],
         [
             {"text": _onoff_label("🚨 חסימת שמועות", state, "block_rumors"), "callback_data": "football_toggle_filter:block_rumors"},
+        ],
+        [
             {"text": _onoff_label("🌍 חסימת נבחרות", state, "block_national"), "callback_data": "football_toggle_filter:block_national"},
         ],
         [
             {"text": _onoff_label("🩺 חסימת פציעות", state, "block_injuries"), "callback_data": "football_toggle_filter:block_injuries"},
+        ],
+        [
             {"text": _onoff_label("📸 חסימת חברתי", state, "block_social"), "callback_data": "football_toggle_filter:block_social"},
         ],
         [
             {"text": _onoff_label("🟢 רק Here We Go", state, "only_herewego"), "callback_data": "football_toggle_filter:only_herewego"},
+        ],
+        [
             {"text": _onoff_label("🏅 רק טופ 5", state, "only_top5"), "callback_data": "football_toggle_filter:only_top5"},
         ],
         [
@@ -2093,6 +2138,8 @@ def filter_menu_reply_markup() -> dict[str, Any]:
         ],
         [
             {"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"},
+        ],
+        [
             {"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"},
         ],
     ]
@@ -2110,14 +2157,10 @@ def stats_menu_reply_markup() -> dict[str, Any]:
         [{"text": "📋 כמה פוסטים כל כתב פרסם", "callback_data": "football_stat_posts_by_writer"}],
         [{"text": "🧱 טופ 10 סיבות חסימה", "callback_data": "football_stat_top_blocks"}],
         [{"text": "😅 איזה כתב נחסם הכי הרבה", "callback_data": "football_stat_most_blocked_writer"}],
-        [
-            {"text": "📚 הפוסט הארוך ביותר היום", "callback_data": "football_stat_longest_post"},
-            {"text": "✂️ הפוסט הקצר ביותר היום", "callback_data": "football_stat_shortest_post"},
-        ],
-        [
-            {"text": "⚡ זמן סריקה ממוצע", "callback_data": "football_stat_avg_scan"},
-            {"text": "🧠 זמן תרגום ממוצע", "callback_data": "football_stat_avg_translation"},
-        ],
+        [{"text": "📚 הפוסט הארוך ביותר היום", "callback_data": "football_stat_longest_post"}],
+        [{"text": "✂️ הפוסט הקצר ביותר היום", "callback_data": "football_stat_shortest_post"}],
+        [{"text": "⚡ זמן סריקה ממוצע", "callback_data": "football_stat_avg_scan"}],
+        [{"text": "🧠 זמן תרגום ממוצע", "callback_data": "football_stat_avg_translation"}],
         [{"text": "❌ כמה פעמים Gemini נכשל", "callback_data": "football_stat_gemini_failures"}],
         [{"text": "ℹ️ הסבר סטטיסטיקות", "callback_data": "football_category_help:stats"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
@@ -3869,7 +3912,7 @@ def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
 
 
 def daily_quality_stats_path() -> Path:
-    return Path(__file__).resolve().parent / DAILY_QUALITY_STATS_FILE
+    return app_data_path(DAILY_QUALITY_STATS_FILE)
 
 
 def load_daily_quality_stats_from_disk() -> None:
@@ -4934,7 +4977,7 @@ AI_DECISION_CACHE_DIRTY = False
 
 
 def ai_decision_cache_path() -> Path:
-    return Path(__file__).resolve().parent / AI_DECISION_CACHE_FILE
+    return app_data_path(AI_DECISION_CACHE_FILE)
 
 def _load_ai_decision_cache_from_disk() -> None:
     if not ENABLE_AI_REQUEST_SAVER:
@@ -5931,7 +5974,7 @@ def preserve_original_emojis(original: str, translated: str) -> str:
 
 
 def cache_path() -> Path:
-    return Path(__file__).resolve().parent / TRANSLATION_CACHE_FILE
+    return app_data_path(TRANSLATION_CACHE_FILE)
 
 
 def load_translation_cache() -> dict[str, str]:
@@ -7813,7 +7856,7 @@ STATE_LAST_SAVED_JSON: str | None = None
 
 
 def state_path() -> Path:
-    return Path(__file__).resolve().parent / STATE_FILE
+    return app_data_path(STATE_FILE)
 
 
 def load_state() -> dict[str, Any]:
