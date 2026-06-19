@@ -337,7 +337,8 @@ CONTROL_CHAT_ID = required_env_any(
     "CONTROL_CHAT_ID",
 )
 CONTROL_STATE_FILE = "football_control_state.json"
-CONTROL_POLL_SECONDS = 2
+CONTROL_POLL_SECONDS = float(os.environ.get("CONTROL_POLL_SECONDS", "0.25"))
+TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS = float(os.environ.get("TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS", "4"))
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
 CONTROL_TEMP_MODE_SECONDS = int(os.environ.get("CONTROL_TEMP_MODE_SECONDS", str(2 * 60 * 60)))
 CONTROL_PANEL_MESSAGES_ENABLED = os.environ.get("CONTROL_PANEL_MESSAGES_ENABLED", "1") == "1"
@@ -2086,10 +2087,29 @@ def stats_menu_reply_markup() -> dict[str, Any]:
     return {"inline_keyboard": keyboard}
 
 
+CONTROL_TEST_ACCOUNT_ORDER = [
+    "FabrizioRomano",
+    "David_Ornstein",
+    "DiMarzio",
+    "JacobsBen",
+    "NicoSchira",
+    "ffpolo",
+    "AranchaMOBILE",
+    "Plettigoal",
+    "MatteMoretto",
+    "FabriceHawkins",
+    "gerardromero",
+    "MonfortCarlos",
+    "JLSanchez78",
+    "jfelixdiaz",
+]
+
+
 def all_control_test_accounts() -> list[str]:
-    # מציג רק את הכתבים הפעילים כרגע בבוט, בלי רשימות נוספות שהתווספו למילון שמות.
-    # פתיחת התפריט עצמה לא עושה שליפה ולא משתמשת ב-Gemini.
-    return active_x_accounts()
+    # הרשימה הקבועה במסך "בדוק כתב ספציפי".
+    # היא כוללת בדיוק את הכתבים שמוגדרים בלוח הבקרה, גם אם כתב מסוים כבוי כרגע.
+    # פתיחת התפריט אינה מבצעת שליפה ואינה משתמשת ב-Gemini.
+    return list(CONTROL_TEST_ACCOUNT_ORDER)
 
 
 def account_latest_menu_reply_markup() -> dict[str, Any]:
@@ -2117,7 +2137,7 @@ def send_control_menu(text: str, reply_markup: dict[str, Any], message_id: Any =
     }
     if message_id:
         try:
-            telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1)
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
             save_control_state(quick_control_message_id=message_id)
             return
         except Exception as exc:
@@ -2125,7 +2145,7 @@ def send_control_menu(text: str, reply_markup: dict[str, Any], message_id: Any =
                 return
             logging.warning("⚠️ תפריט שליטה: עריכת ההודעה נכשלה ולא נשלחה הודעה חדשה כדי לא ליצור כפילות: %s", exc)
             return
-    response = telegram_api("sendMessage", payload, max_attempts=1)
+    response = telegram_api("sendMessage", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
     new_message_id = response.get("result", {}).get("message_id") if isinstance(response, dict) else None
     if new_message_id:
         save_control_state(quick_control_message_id=new_message_id)
@@ -2149,13 +2169,13 @@ def send_control_panel(paused: bool, action_done: str = "", force_new: bool = Fa
     # Button clicks still try to edit the active panel to avoid unnecessary spam.
     if message_id and not force_new:
         try:
-            telegram_api("editMessageText", {**payload, "message_id": int(message_id)})
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
             return
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
                 return
             logging.warning("⚠️ לוח שליטה: עדכון ההודעה נכשל, שולח לוח חדש: %s", exc)
-    response = telegram_api("sendMessage", payload)
+    response = telegram_api("sendMessage", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
     new_message_id = response.get("result", {}).get("message_id")
     if new_message_id:
         save_control_state(paused, control_message_id=new_message_id)
@@ -2174,20 +2194,41 @@ def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> 
     }
     if message_id and not force_new:
         try:
-            telegram_api("editMessageText", {**payload, "message_id": int(message_id)})
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
             return
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
                 return
             logging.warning("⚠️ לוח כלים מהירים: עדכון ההודעה נכשל, שולח חדש: %s", exc)
-    response = telegram_api("sendMessage", payload)
+    response = telegram_api("sendMessage", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
     new_message_id = response.get("result", {}).get("message_id")
     if new_message_id:
         save_control_state(quick_control_message_id=new_message_id)
 
 
 def answer_control_callback(callback_id: str, text: str = "") -> None:
-    telegram_api("answerCallbackQuery", {"callback_query_id": callback_id, "text": text, "show_alert": False})
+    """Acknowledge Telegram button clicks without delaying menu edits.
+
+    Telegram shows a loading spinner on inline buttons until answerCallbackQuery is
+    received. Network retries here can make the whole menu feel slow, so this is
+    intentionally sent in a tiny background thread with one short attempt.
+    The actual menu edit continues immediately.
+    """
+    if not callback_id:
+        return
+
+    def _send_ack() -> None:
+        try:
+            telegram_api(
+                "answerCallbackQuery",
+                {"callback_query_id": callback_id, "text": text, "show_alert": False},
+                max_attempts=1,
+                timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logging.debug("Telegram callback ack failed quickly: %s", exc)
+
+    Thread(target=_send_ack, daemon=True).start()
 
 
 def _control_list_text(title: str, items: list[dict[str, Any]], empty: str) -> str:
@@ -2224,14 +2265,14 @@ def send_control_text(text: str, message_id: Any = None, reply_markup: dict[str,
         payload["reply_markup"] = reply_markup
     if message_id:
         try:
-            telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1)
+            telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
             return
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
                 return
             logging.warning("⚠️ טקסט שליטה: עריכת ההודעה נכשלה ולא נשלחה הודעה חדשה כדי לא ליצור כפילות: %s", exc)
             return
-    telegram_api("sendMessage", payload, max_attempts=1)
+    telegram_api("sendMessage", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
 
 
 def send_control_html(text: str) -> None:
@@ -2512,7 +2553,7 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_choose_account_latest":
         if callback_id:
             answer_control_callback(callback_id, "בחר כתב")
-        send_control_menu("👤 בדוק כתב ספציפי\nמוצגים רק הכתבים הפעילים כרגע בבוט. הבחירה תשלח את הפוסט האחרון לערוץ השקט בלבד.", account_latest_menu_reply_markup(), message.get("message_id"))
+        send_control_menu("👤 בדוק כתב ספציפי\nמוצגים כל 14 הכתבים שמוגדרים בבוט, כולל כתבים שכרגע כבויים. הבחירה תשלח את הפוסט האחרון של הכתב לערוץ השקט בלבד.", account_latest_menu_reply_markup(), message.get("message_id"))
     elif data.startswith("football_test_latest_account:"):
         username = data.split(":", 1)[1]
         if username not in all_control_test_accounts():
@@ -2777,7 +2818,7 @@ def control_loop() -> None:
                 "getUpdates",
                 {
                     "offset": offset,
-                    "timeout": 20,
+                    "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "10")),
                     "allowed_updates": ["callback_query", "channel_post", "edited_channel_post"],
                 },
             )
