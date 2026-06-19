@@ -1777,8 +1777,27 @@ def fetch_posts(username: str) -> list[Post]:
         no_posts_failures = FEED_NO_POSTS_FAILURE_COUNTS.get(username, 0) + 1
         FEED_NO_POSTS_FAILURE_COUNTS[username] = no_posts_failures
         checked_templates = primary_templates + fallback_templates
+        retry_posts: list[Post] = []
+        retry_errors: list[str] = []
+        if os.environ.get("RSS_RETRY_EACH_SOURCE_ON_EMPTY", "1") == "1":
+            for template in checked_templates:
+                source_name = feed_source_name(template)
+                try:
+                    retry_posts.extend(fetch_feed(username, template))
+                except Exception as exc:
+                    retry_errors.append(f"{source_name}: {type(exc).__name__}: {short_error(exc)}")
+            if retry_posts:
+                merged: dict[str, Post] = {}
+                for post in retry_posts:
+                    merged.setdefault(post.post_id, post)
+                posts = list(merged.values())
+                posts.sort(key=lambda post: post.published_ts, reverse=True)
+                FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
+                send_rss_stale_latest_alert_if_needed(username, posts)
+                logging.debug("RSS retry recovered %s posts for @%s after empty parallel fetch.", len(posts), username)
+                return posts
         checked_sources = ", ".join(feed_source_name(template) for template in checked_templates)
-        all_errors = feed_errors + fallback_errors
+        all_errors = feed_errors + fallback_errors + retry_errors
         all_timeouts = timed_out_sources + fallback_timeouts
         issue_parts = []
         if all_errors:
@@ -2419,14 +2438,14 @@ def run_latest_fabrizio_control_test() -> None:
 
 def check_all_accounts_now_text() -> str:
     lines = [
-        "🔄 בדיקת כל הכתבים הפעילים עכשיו",
+        "🔄 בדיקת כל 14 הכתבים עכשיו",
         "",
         "הבדיקה הזו עושה RSS בלבד. אין שימוש ב-Gemini ואין שליחת פוסטים.",
         "המספרים כאן הם רק פוסטים שפורסמו ב-24 השעות האחרונות לפי זמן הפרסום של הפוסט.",
         "חשוב: זה אומר שהפוסט נמצא ב-RSS. הוא עדיין יכול לא להישלח בגלל שכבר נשלח/סומן, כפילות, גיל, או סינון תוכן.",
         "",
     ]
-    accounts = active_x_accounts()
+    accounts = all_control_test_accounts()
     total_recent_posts = 0
     ok_count = 0
     recent_snapshot: dict[str, int] = {}
