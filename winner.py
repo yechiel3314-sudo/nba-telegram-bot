@@ -39,7 +39,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -379,6 +379,11 @@ FEED_TEMPLATES = [
     "https://rsshub.rssforever.com/twitter/user/{username}",
     "https://rsshub.app/twitter/user/{username}",
 ]
+HTML_FALLBACK_TEMPLATES = [
+    "https://nitter.net/{username}",
+    "https://twiiit.com/{username}",
+    "https://lightbrd.com/{username}",
+]
 EXTRA_FEED_TEMPLATES = [
     template.strip()
     for template in re.split(r"[\n,]+", os.environ.get("EXTRA_FEED_TEMPLATES", ""))
@@ -390,6 +395,8 @@ MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCO
 RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "3"))
 RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
 RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2"))
+RSS_HTML_FALLBACK_ENABLED = os.environ.get("RSS_HTML_FALLBACK_ENABLED", "1") == "1"
+RSS_RETRY_ALL_KNOWN_SOURCES_ON_EMPTY = os.environ.get("RSS_RETRY_ALL_KNOWN_SOURCES_ON_EMPTY", "1") == "1"
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
@@ -1613,6 +1620,96 @@ def fetch_feed(username: str, template: str) -> list[Post]:
         return parse_posts(username, http_get_feed(url), source_name)
 
 
+def parse_nitter_html_datetime(value: str) -> float | None:
+    cleaned = html.unescape(value or "").replace("\u00b7", " ").replace(",", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    for fmt in ("%b %d %Y %I:%M %p %Z", "%d %b %Y %H:%M:%S %Z", "%b %d %Y %H:%M:%S %Z"):
+        try:
+            dt = datetime.strptime(cleaned, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_posts_from_nitter_html(username: str, html_bytes: bytes, source_name: str) -> list[Post]:
+    page = html_bytes.decode("utf-8", errors="replace")
+    posts: list[Post] = []
+    status_re = re.compile(rf'href="/{re.escape(username)}/status/(\d+)[^"]*"', re.IGNORECASE)
+    chunks = re.split(r'<div[^>]+class="[^"]*\btimeline-item\b[^"]*"[^>]*>', page)
+    for chunk in chunks[1:]:
+        status_match = status_re.search(chunk)
+        if not status_match:
+            continue
+        date_match = re.search(r'<span[^>]+class="[^"]*\btweet-date\b[^"]*"[^>]*>.*?<a[^>]+title="([^"]+)"', chunk, re.DOTALL | re.IGNORECASE)
+        published_ts = parse_nitter_html_datetime(date_match.group(1)) if date_match else None
+        if published_ts is None:
+            continue
+        content_match = re.search(r'<div[^>]+class="[^"]*\btweet-content\b[^"]*"[^>]*>(.*?)</div>', chunk, re.DOTALL | re.IGNORECASE)
+        if not content_match:
+            continue
+        raw_text = html.unescape(re.sub(r"<[^>]+>", " ", content_match.group(1)))
+        text, quoted_author, quoted_text = split_primary_and_quoted_text(clean_text(raw_text))
+        if not text:
+            continue
+        status_id = status_match.group(1)
+        link = f"https://x.com/{username}/status/{status_id}"
+        post_id = canonical_post_id(username, status_id, link, text)
+        dedupe_ids = list(
+            dict.fromkeys(
+                item
+                for item in [
+                    post_id,
+                    f"{username}:{status_id}",
+                    f"{username}:{link}",
+                    post_content_signature(username, text, quoted_text),
+                ]
+                if item
+            )
+        )
+        posts.append(
+            Post(
+                post_id=post_id,
+                username=username,
+                text=text,
+                link=link,
+                image_urls=[],
+                video_urls=[],
+                has_video=False,
+                primary_has_video=False,
+                quoted_has_video=False,
+                quoted_author=quoted_author,
+                quoted_text=quoted_text,
+                published_ts=published_ts,
+                dedupe_ids=dedupe_ids,
+                source_name=f"{source_name} html",
+            )
+        )
+    posts.sort(key=lambda post: post.published_ts, reverse=True)
+    return posts
+
+
+def fetch_html_fallback_posts(username: str) -> list[Post]:
+    all_posts: dict[str, Post] = {}
+    for template in HTML_FALLBACK_TEMPLATES:
+        source_name = feed_source_name(template)
+        url = template.format(username=urllib.parse.quote(username))
+        try:
+            with feed_source_semaphore(source_name):
+                for post in parse_posts_from_nitter_html(username, http_get_feed(url), source_name):
+                    all_posts.setdefault(post.post_id, post)
+        except Exception as exc:
+            logging.debug("RSS HTML fallback failed for @%s via %s: %s", username, source_name, short_error(exc))
+            continue
+        if all_posts:
+            break
+    posts = list(all_posts.values())
+    posts.sort(key=lambda post: post.published_ts, reverse=True)
+    return posts
+
+
 def active_feed_templates() -> list[str]:
     if MAX_FEED_TEMPLATES_PER_ACCOUNT <= 0:
         return FEED_TEMPLATES
@@ -1780,12 +1877,16 @@ def fetch_posts(username: str) -> list[Post]:
         retry_posts: list[Post] = []
         retry_errors: list[str] = []
         if os.environ.get("RSS_RETRY_EACH_SOURCE_ON_EMPTY", "1") == "1":
-            for template in checked_templates:
+            retry_templates = checked_templates
+            if RSS_RETRY_ALL_KNOWN_SOURCES_ON_EMPTY:
+                retry_templates = list(dict.fromkeys(checked_templates + FEED_TEMPLATES))
+            for template in retry_templates:
                 source_name = feed_source_name(template)
                 try:
                     retry_posts.extend(fetch_feed(username, template))
                 except Exception as exc:
                     retry_errors.append(f"{source_name}: {type(exc).__name__}: {short_error(exc)}")
+            checked_templates = retry_templates
             if retry_posts:
                 merged: dict[str, Post] = {}
                 for post in retry_posts:
@@ -1796,6 +1897,13 @@ def fetch_posts(username: str) -> list[Post]:
                 send_rss_stale_latest_alert_if_needed(username, posts)
                 logging.debug("RSS retry recovered %s posts for @%s after empty parallel fetch.", len(posts), username)
                 return posts
+        if RSS_HTML_FALLBACK_ENABLED:
+            html_posts = fetch_html_fallback_posts(username)
+            if html_posts:
+                FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
+                send_rss_stale_latest_alert_if_needed(username, html_posts)
+                logging.info("🔁 RSS HTML fallback recovered %s posts for @%s via %s.", len(html_posts), username, html_posts[0].source_name)
+                return html_posts
         checked_sources = ", ".join(feed_source_name(template) for template in checked_templates)
         all_errors = feed_errors + fallback_errors + retry_errors
         all_timeouts = timed_out_sources + fallback_timeouts
@@ -2048,8 +2156,8 @@ def _onoff_label(text: str, state: dict[str, Any], key: str) -> str:
     return f"{text}: {_flag_status(state, key)}"
 
 
-CONTROL_BUTTON_TEXT_WIDTH = int(os.environ.get("CONTROL_BUTTON_TEXT_WIDTH", "26"))
-CONTROL_BUTTON_PAD = "\u2007"
+CONTROL_BUTTON_TEXT_WIDTH = int(os.environ.get("CONTROL_BUTTON_TEXT_WIDTH", "30"))
+CONTROL_BUTTON_PAD = "\u2800"
 
 
 def stable_button_label(text: str) -> str:
@@ -2058,8 +2166,10 @@ def stable_button_label(text: str) -> str:
     visible_len = len(re.sub(r"[\ufe0f\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", label))
     if visible_len >= CONTROL_BUTTON_TEXT_WIDTH:
         return label
-    pad = CONTROL_BUTTON_PAD * (CONTROL_BUTTON_TEXT_WIDTH - visible_len)
-    return f"{pad}{label}{pad}"
+    missing = CONTROL_BUTTON_TEXT_WIDTH - visible_len
+    left_pad = CONTROL_BUTTON_PAD * (missing // 2)
+    right_pad = CONTROL_BUTTON_PAD * (missing - (missing // 2))
+    return f"{left_pad}{label}{right_pad}"
 
 
 def stable_reply_markup(keyboard: list[list[dict[str, str]]]) -> dict[str, Any]:
