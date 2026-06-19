@@ -49,7 +49,7 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-BOT_BUILD_ID = "football-rss-gemini-loader-reset-2026-06-11-1805"
+BOT_BUILD_ID = "football-control-buttons-full-2026-06-19"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -1933,6 +1933,18 @@ def night_mode_control_active(state: dict[str, Any] | None = None) -> bool:
     return _control_until_active(state or load_control_state(), "night_mode_until")
 
 
+CONTROL_FILTER_KEYS = (
+    "block_rumors",
+    "block_national",
+    "block_injuries",
+    "block_social",
+    "only_herewego",
+    "only_top5",
+    "only_barca",
+    "only_real",
+)
+
+
 def control_reply_markup(paused: bool) -> dict[str, Any]:
     state = load_control_state()
     disabled_base = set(disabled_base_accounts_from_state(state))
@@ -1953,30 +1965,140 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
     return {"inline_keyboard": keyboard}
 
 
+def _flag_status(state: dict[str, Any], key: str) -> str:
+    return "פעיל" if bool(state.get(key, False)) else "כבוי"
+
+
+def _onoff_label(text: str, state: dict[str, Any], key: str) -> str:
+    return f"{text}: {_flag_status(state, key)}"
+
+
 def quick_control_reply_markup() -> dict[str, Any]:
+    keyboard = [
+        [
+            {"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"},
+            {"text": "🛡️ הגדרות וסינון", "callback_data": "football_menu_filter"},
+        ],
+        [
+            {"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"},
+        ],
+        [
+            {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
+        ],
+        [
+            {"text": "ℹ️ הסבר כפתורים", "callback_data": "football_buttons_help"},
+        ],
+        [
+            {"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"},
+            {"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"},
+        ],
+    ]
+    return {"inline_keyboard": keyboard}
+
+
+def monitor_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [
+        [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
+        [{"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"}],
+        [{"text": "📬 פוסט אחרון שנשלח", "callback_data": "football_last_sent_post"}],
+        [
+            {"text": "📡 RSS תקין?", "callback_data": "football_rss_status"},
+            {"text": "🤖 Gemini תקין?", "callback_data": "football_gemini_status"},
+        ],
+        [
+            {"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"},
+            {"text": "📊 אחוז הצלחה היום", "callback_data": "football_stat_success_rate"},
+        ],
+        [
+            {"text": "✅ כמה נשלחו היום", "callback_data": "football_stat_sent_today"},
+            {"text": "🚫 כמה נחסמו היום", "callback_data": "football_stat_blocked_today"},
+        ],
+        [{"text": "⏳ כמה פוסטים ישנים מדי היו", "callback_data": "football_stat_old_posts"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ]
+    return {"inline_keyboard": keyboard}
+
+
+def filter_menu_reply_markup() -> dict[str, Any]:
     state = load_control_state()
     keyboard = [
         [
-            {"text": f"מצב לילה: {_control_mode_status_text(state, 'night_mode_until')}", "callback_data": "football_night_mode_until_morning"},
+            {"text": f"🌙 מצב לילה: {_control_mode_status_text(state, 'night_mode_until')}", "callback_data": "football_night_mode_until_morning"},
         ],
         [
-            {"text": f"רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_elite_only_2h"},
-            {"text": f"סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_strict_filter_2h"},
+            {"text": f"⭐ רק גדולות: {_control_mode_status_text(state, 'elite_only_until')}", "callback_data": "football_elite_only_2h"},
+            {"text": f"🛡️ סינון קשוח: {_control_mode_status_text(state, 'strict_filter_until')}", "callback_data": "football_strict_filter_2h"},
         ],
         [
-            {"text": "בדיקת פבריציו אחרון", "callback_data": "football_test_latest_fabrizio"},
+            {"text": _onoff_label("🚨 חסימת שמועות", state, "block_rumors"), "callback_data": "football_toggle_filter:block_rumors"},
+            {"text": _onoff_label("🌍 חסימת נבחרות", state, "block_national"), "callback_data": "football_toggle_filter:block_national"},
         ],
-        [{"text": "סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
         [
-            {"text": "למה לא נשלח", "callback_data": "football_last_blocked"},
-            {"text": "כפילות אחרונה", "callback_data": "football_last_duplicate"},
+            {"text": _onoff_label("🩺 חסימת פציעות", state, "block_injuries"), "callback_data": "football_toggle_filter:block_injuries"},
+            {"text": _onoff_label("📸 חסימת חברתי", state, "block_social"), "callback_data": "football_toggle_filter:block_social"},
         ],
-        [{"text": "הסבר כפתורים", "callback_data": "football_buttons_help"}],
+        [
+            {"text": _onoff_label("🟢 רק Here We Go", state, "only_herewego"), "callback_data": "football_toggle_filter:only_herewego"},
+            {"text": _onoff_label("🏅 רק טופ 5", state, "only_top5"), "callback_data": "football_toggle_filter:only_top5"},
+        ],
+        [
+            {"text": _onoff_label("🔵 רק ברצלונה", state, "only_barca"), "callback_data": "football_toggle_filter:only_barca"},
+            {"text": _onoff_label("⚪ רק ריאל", state, "only_real"), "callback_data": "football_toggle_filter:only_real"},
+        ],
     ]
-    if elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state):
-        keyboard.append([{"text": "לבטל מצבים זמניים", "callback_data": "football_clear_temp_modes"}])
+    if elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state) or any(bool(state.get(k, False)) for k in CONTROL_FILTER_KEYS):
+        keyboard.append([{"text": "🔓 לבטל כל הסינונים הזמניים", "callback_data": "football_clear_temp_modes"}])
+    keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return {"inline_keyboard": keyboard}
 
+
+def stats_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [
+        [{"text": "📈 סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
+        [{"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"}],
+        [{"text": "📋 כמה פוסטים כל כתב פרסם", "callback_data": "football_stat_posts_by_writer"}],
+        [{"text": "🧱 טופ 10 סיבות חסימה", "callback_data": "football_stat_top_blocks"}],
+        [{"text": "😅 איזה כתב נחסם הכי הרבה", "callback_data": "football_stat_most_blocked_writer"}],
+        [
+            {"text": "📚 הפוסט הארוך ביותר היום", "callback_data": "football_stat_longest_post"},
+            {"text": "✂️ הפוסט הקצר ביותר היום", "callback_data": "football_stat_shortest_post"},
+        ],
+        [
+            {"text": "⚡ זמן סריקה ממוצע", "callback_data": "football_stat_avg_scan"},
+            {"text": "🧠 זמן תרגום ממוצע", "callback_data": "football_stat_avg_translation"},
+        ],
+        [{"text": "❌ כמה פעמים Gemini נכשל", "callback_data": "football_stat_gemini_failures"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ]
+    return {"inline_keyboard": keyboard}
+
+
+def account_latest_menu_reply_markup() -> dict[str, Any]:
+    keyboard: list[list[dict[str, str]]] = []
+    accounts = active_x_accounts()
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        keyboard.append([{
+            "text": label,
+            "callback_data": f"football_test_latest_account:{username}",
+        }])
+    keyboard.append([{"text": "⬅️ חזרה לבדיקה וניטור", "callback_data": "football_menu_monitor"}])
+    return {"inline_keyboard": keyboard}
+
+
+def send_control_menu(text: str, reply_markup: dict[str, Any]) -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    telegram_api(
+        "sendMessage",
+        {
+            "chat_id": CONTROL_CHAT_ID,
+            "text": rtl(text),
+            "reply_markup": reply_markup,
+            "disable_web_page_preview": True,
+        },
+        max_attempts=1,
+    )
 
 def send_control_panel(paused: bool, action_done: str = "", force_new: bool = False) -> None:
     if not CONTROL_CHAT_ID:
@@ -2090,52 +2212,177 @@ def send_control_html(text: str) -> None:
     )
 
 
-def run_latest_fabrizio_control_test() -> None:
+def run_latest_account_control_test(username: str) -> None:
     if not CONTROL_CHAT_ID:
         return
+    label = _hebrew_account_label(username)
     try:
-        posts = fetch_posts("FabrizioRomano")
+        posts = fetch_posts(username)
     except Exception as exc:
-        send_control_text(f"🧪 בדיקת פבריציו נכשלה בשליפת RSS:\n{short_error(exc, 500)}")
+        send_control_text(f"🧪 בדיקת {label} נכשלה בשליפת RSS:\n{short_error(exc, 500)}")
         return
     if not posts:
-        send_control_text("🧪 בדיקת פבריציו: לא נמצאו פוסטים במקורות ה-RSS כרגע.")
+        send_control_text(f"🧪 בדיקת {label}: לא נמצאו פוסטים במקורות ה-RSS כרגע.")
         return
     post = posts[0]
-    # בדיקת כפתור ידנית: שולחים את הפוסט האחרון של פבריציו לערוץ השקט
+    # בדיקת כפתור ידנית: שולחים את הפוסט האחרון של הכתב לערוץ השקט
     # גם אם הסינון הרגיל היה חוסם אותו. כפילות וסיבות חסימה אינן נבדקות כאן.
     try:
         translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
         message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
-        header = html.escape(rtl("🧪 בדיקת פבריציו אחרון - נשלח בכוח לערוץ השקט"))
+        header = html.escape(rtl(f"🧪 בדיקת {label} אחרון - נשלח בכוח לערוץ השקט"))
         source = html.escape(rtl(f"מקור RSS: {post.source_name} | קישור: {post.link}"))
         send_control_html(f"<b>{header}</b>\n{source}\n\n{message}")
-        logging.info("🧪 בדיקת פבריציו: הפוסט האחרון נשלח בכוח לערוץ השקט ללא סינון וללא בדיקת כפילות. קישור: %s", post.link)
+        logging.info("🧪 בדיקת כתב: הפוסט האחרון של @%s נשלח בכוח לערוץ השקט ללא סינון וללא בדיקת כפילות. קישור: %s", username, post.link)
     except Exception as exc:
         send_control_text(
-            "🧪 בדיקת פבריציו: הפוסט נמצא, אבל התרגום/השליחה לערוץ השקט נכשלו.\n"
+            f"🧪 בדיקת {label}: הפוסט נמצא, אבל התרגום/השליחה לערוץ השקט נכשלו.\n"
             f"סיבה: {short_error(exc, 600)}\n"
             f"קישור: {post.link}"
         )
 
 
-def control_buttons_help_text() -> str:
+def run_latest_fabrizio_control_test() -> None:
+    run_latest_account_control_test("FabrizioRomano")
+
+
+def check_all_accounts_now_text() -> str:
+    lines = ["🔄 בדיקת כל הכתבים הפעילים עכשיו", ""]
+    accounts = active_x_accounts()
+    total_posts = 0
+    ok_count = 0
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        try:
+            posts = fetch_posts(username)
+            total_posts += len(posts)
+            ok_count += 1
+            latest = posts[0].link if posts else "אין פוסטים כרגע"
+            lines.append(f"✅ {label}: נמצאו {len(posts)} פוסטים | אחרון: {latest}")
+        except Exception as exc:
+            lines.append(f"❌ {label}: תקלה בשליפה - {short_error(exc, 160)}")
+    lines.extend(["", f"סיכום: {ok_count}/{len(accounts)} כתבים נבדקו בהצלחה. נמצאו יחד {total_posts} פוסטים במקורות."])
+    return "\n".join(lines)
+
+
+def rss_status_text() -> str:
+    lines = ["📡 בדיקת RSS", ""]
+    accounts = active_x_accounts()[:8]
+    ok_count = 0
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        try:
+            posts = fetch_posts(username)
+            if posts:
+                ok_count += 1
+                lines.append(f"✅ {label}: תקין, נמצאו {len(posts)} פוסטים")
+            else:
+                lines.append(f"⚠️ {label}: RSS עובד אבל לא החזיר פוסטים כרגע")
+        except Exception as exc:
+            lines.append(f"❌ {label}: {short_error(exc, 140)}")
+    lines.append("")
+    lines.append(f"תוצאה: {ok_count}/{len(accounts)} החזירו פוסטים בפועל.")
+    return "\n".join(lines)
+
+
+def gemini_status_text() -> str:
+    refresh_gemini_api_keys_from_env()
+    available = gemini_available_key_indexes() if 'gemini_available_key_indexes' in globals() else []
     return (
-        "ℹ️ הסבר כפתורים\n\n"
-        "מצבים שמשנים את התנהגות הבוט:\n"
-        "🌙 מצב לילה - עד 07:00 הבוט שולח רק דיווחים גדולים וחזקים.\n"
-        "🔒 רק גדולות - לשעתיים, שולח רק דיווחים עם מועדון גדול ברור.\n"
-        "🔒 סינון קשוח - לשעתיים, דורש גם מועדון גדול וגם דיווח חזק.\n"
-        "🔓 לבטל מצבים זמניים - מחזיר את מצב הסינון הרגיל.\n\n"
-        "כלים ובדיקות:\n"
-        "🧪 בדיקת פבריציו אחרון - שולח בכוח לערוץ השקט את הפוסט האחרון של פבריציו, גם אם הסינון הרגיל היה חוסם אותו. כפילות אינה חוסמת.\n"
-        "📊 סיכום היום עכשיו - שולח מיד את דו\"ח היום.\n"
-        "↩️ למה לא נשלח - מציג את 5 החסימות האחרונות.\n"
-        "🧠 כפילות אחרונה - מציג את הכפילויות האחרונות שנחסמו.\n\n"
-        "הלוח הראשי:\n"
-        "הפעלה/כיבוי של הבוט ושל כתבים. זה משפיע על מי נסרק בפועל."
+        "🤖 בדיקת Gemini\n\n"
+        f"מפתחות טעונים: {len(GEMINI_API_KEYS)}\n"
+        f"מפתחות זמינים מקומית כרגע: {len(available)}\n"
+        f"מודל תרגום: {GEMINI_MODEL}\n\n"
+        "הבדיקה הזו לא מבזבזת קרדיט Gemini; היא בודקת טעינה וקירור מקומי בלבד."
     )
 
+
+def last_sent_post_text() -> str:
+    state = load_control_state()
+    item = state.get("last_sent_post")
+    if not isinstance(item, dict):
+        return "📬 פוסט אחרון שנשלח\n\nעדיין לא נשמר פוסט אחרון שנשלח מאז העדכון הזה."
+    ts = float(item.get("ts", 0) or 0)
+    when = datetime.fromtimestamp(ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y") if ts else "לא ידוע"
+    return (
+        "📬 פוסט אחרון שנשלח\n\n"
+        f"כתב: {_hebrew_account_label(str(item.get('username', '')))}\n"
+        f"שעה: {when}\n"
+        f"קישור: {item.get('link', '')}"
+    )
+
+
+def simple_stat_text(kind: str) -> str:
+    bucket = _daily_stats_bucket()
+    sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
+    skipped_total = sum(count for _key, count in _top_daily_items("skips", 1000))
+    fetched_total = sum(count for _key, count in _top_daily_items("fetched", 1000))
+    scanned_total = sum(count for _key, count in _top_daily_items("scanned", 1000))
+    if kind == "active_writer":
+        items = _top_daily_items("fetched", 10)
+        if not items:
+            return "🏆 הכתב הכי פעיל היום\n\nאין עדיין נתונים."
+        username, count = items[0]
+        return f"🏆 הכתב הכי פעיל היום\n\n{_hebrew_account_label(username)} עם {count} פוסטים שנמצאו ב-RSS."
+    if kind == "success_rate":
+        total = sent_total + skipped_total
+        pct = round((sent_total / total) * 100, 1) if total else 0
+        return f"📊 אחוז הצלחה היום\n\nנשלחו: {sent_total}\nנחסמו: {skipped_total}\nאחוז שליחה מתוך פוסטים שנבדקו: {pct}%"
+    if kind == "sent_today":
+        return f"✅ כמה נשלחו היום\n\nנשלחו היום: {sent_total}"
+    if kind == "blocked_today":
+        return f"🚫 כמה נחסמו היום\n\nנחסמו לפני תרגום/שליחה: {skipped_total}"
+    if kind == "old_posts":
+        count = int((bucket.get("skip_reasons", {}) or {}).get(BLOCK_REASON_HEBREW.get("old_post", "פוסט ישן מדי"), 0) or 0)
+        return f"⏳ פוסטים ישנים מדי\n\nנרשמו היום: {count}\nב-30 הדקות הראשונות אחרי הרצת הבוט הם לא נכנסים לדוח 'למה לא נשלח'."
+    if kind == "posts_by_writer":
+        items = _top_daily_items("fetched", 20)
+        if not items:
+            return "📋 כמה פוסטים כל כתב פרסם\n\nאין עדיין נתונים."
+        return "📋 כמה פוסטים כל כתב פרסם\n\n" + "\n".join(f"{i}. {_hebrew_account_label(u)} - {c}" for i,(u,c) in enumerate(items,1))
+    if kind == "top_blocks":
+        items = _top_daily_items("skip_reasons", 10)
+        if not items:
+            return "🧱 טופ 10 סיבות חסימה\n\nאין עדיין חסימות."
+        return "🧱 טופ 10 סיבות חסימה\n\n" + "\n".join(f"{i}. {r} - {c}" for i,(r,c) in enumerate(items,1))
+    if kind == "most_blocked_writer":
+        items = _top_daily_items("skips", 10)
+        if not items:
+            return "😅 הכתב שנחסם הכי הרבה\n\nאין עדיין נתונים."
+        u,c=items[0]
+        return f"😅 הכתב שנחסם הכי הרבה\n\n{_hebrew_account_label(u)} - {c} חסימות"
+    if kind in {"longest_post", "shortest_post", "avg_scan", "avg_translation", "gemini_failures"}:
+        names = {
+            "longest_post": "📚 הפוסט הארוך ביותר היום",
+            "shortest_post": "✂️ הפוסט הקצר ביותר היום",
+            "avg_scan": "⚡ זמן סריקה ממוצע",
+            "avg_translation": "🧠 זמן תרגום ממוצע",
+            "gemini_failures": "❌ כמה פעמים Gemini נכשל",
+        }
+        return f"{names[kind]}\n\nהכפתור מחובר ועובד, אבל אין עדיין מדידה מפורטת בקוד הקיים לשדה הזה. כדי שייתן מספר מדויק צריך להוסיף איסוף זמן/כשל בכל שליחה. כרגע הדוח היומי המרכזי כן נשמר ועובד."
+    return build_daily_quality_report_text()
+
+def control_buttons_help_text() -> str:
+    return (
+        "ℹ️ הסבר כפתורים מורחב\n\n"
+        "המסך הראשי מחולק ל-3 קטגוריות, כדי שהלוח יהיה מסודר ולא עמוס.\n\n"
+        "🔎 בדיקה וניטור\n"
+        "כאן יש בדיקות מיידיות: בדיקת כל הכתבים הפעילים, בדיקת כתב ספציפי, RSS, Gemini, פוסט אחרון שנשלח ונתוני פעילות בסיסיים.\n"
+        "בדיקת כתב ספציפי שולחת את הפוסט האחרון שלו לערוץ השקט בלבד, בכוח, גם אם הסינון הרגיל היה חוסם אותו. זה מיועד לבדיקה בלבד ולא לערוץ הראשי.\n\n"
+        "🛡️ הגדרות וסינון\n"
+        "כאן נמצאים המצבים שמשנים בפועל את מה שהבוט שולח: מצב לילה, רק גדולות, סינון קשוח, חסימת שמועות, חסימת נבחרות, חסימת פציעות, חסימת פוסטים חברתיים, רק Here We Go, רק טופ 5, רק ברצלונה ורק ריאל.\n"
+        "רק ברצלונה ורק ריאל הם שני כפתורי הקבוצות היחידים. הפעלה של אחד מהם מכבה את השני כדי שלא תהיה סתירה.\n\n"
+        "📊 סטטיסטיקות\n"
+        "כאן יש נתוני פעילות: כמה נשלח, כמה נחסם, מי הכתב הכי פעיל, טופ סיבות חסימה, מי נחסם הכי הרבה ועוד. הדוח היומי נשמר לקובץ מקומי וממשיך גם אחרי הפעלה מחדש באותו שרת.\n\n"
+        "📊 סיכום היום עכשיו\n"
+        "שולח מיד דוח מלא בעברית על היום הנוכחי.\n\n"
+        "↩️ למה לא נשלח\n"
+        "מציג את 5 החסימות האחרונות. פוסטים ישנים מדי כן ידווחו, אבל לא ב-30 הדקות הראשונות אחרי הפעלת הבוט כדי שלא יהיה רעש התחלה.\n\n"
+        "🧠 כפילות אחרונה\n"
+        "מציג כפילויות אחרונות שהבוט חסם.\n\n"
+        "🔓 ביטול כל הסינונים הזמניים\n"
+        "מכבה מצב לילה, רק גדולות, סינון קשוח וכל כפתורי הסינון החדשים, ומחזיר את הבוט למצב רגיל."
+    )
 
 def next_morning_timestamp() -> float:
     now_dt = datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
@@ -2160,7 +2407,74 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
         return
-    if data == "football_bot_off":
+    if data == "football_quick_main":
+        if callback_id:
+            answer_control_callback(callback_id, "חזרה לראשי")
+        send_quick_control_panel("כלים מהירים לבוט הכדורגל.")
+    elif data == "football_menu_monitor":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח בדיקה וניטור")
+        send_control_menu("🔎 בדיקה וניטור", monitor_menu_reply_markup())
+    elif data == "football_menu_filter":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח הגדרות וסינון")
+        send_control_menu("🛡️ הגדרות וסינון", filter_menu_reply_markup())
+    elif data == "football_menu_stats":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח סטטיסטיקות")
+        send_control_menu("📊 סטטיסטיקות", stats_menu_reply_markup())
+    elif data == "football_choose_account_latest":
+        if callback_id:
+            answer_control_callback(callback_id, "בחר כתב")
+        send_control_menu("👤 בחר כתב לשליחת הפוסט האחרון לערוץ השקט", account_latest_menu_reply_markup())
+    elif data.startswith("football_test_latest_account:"):
+        username = data.split(":", 1)[1]
+        if username not in active_x_accounts():
+            if callback_id:
+                answer_control_callback(callback_id, "כתב לא פעיל")
+            return
+        if callback_id:
+            answer_control_callback(callback_id, f"בודק את {_hebrew_account_label(username)}")
+        run_latest_account_control_test(username)
+    elif data == "football_check_all_accounts_now":
+        if callback_id:
+            answer_control_callback(callback_id, "בודק את כל הכתבים")
+        send_control_text(check_all_accounts_now_text())
+    elif data == "football_rss_status":
+        if callback_id:
+            answer_control_callback(callback_id, "בודק RSS")
+        send_control_text(rss_status_text())
+    elif data == "football_gemini_status":
+        if callback_id:
+            answer_control_callback(callback_id, "בודק Gemini")
+        send_control_text(gemini_status_text())
+    elif data == "football_last_sent_post":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג פוסט אחרון")
+        send_control_text(last_sent_post_text())
+    elif data.startswith("football_stat_"):
+        kind = data.replace("football_stat_", "", 1)
+        if callback_id:
+            answer_control_callback(callback_id, "מציג נתון")
+        send_control_text(simple_stat_text(kind))
+    elif data.startswith("football_toggle_filter:"):
+        key = data.split(":", 1)[1]
+        if key not in CONTROL_FILTER_KEYS:
+            if callback_id:
+                answer_control_callback(callback_id, "סינון לא מוכר")
+            return
+        state = load_control_state()
+        new_value = not bool(state.get(key, False))
+        updates = {key: new_value}
+        if key == "only_barca" and new_value:
+            updates["only_real"] = False
+        if key == "only_real" and new_value:
+            updates["only_barca"] = False
+        save_control_state(**updates)
+        if callback_id:
+            answer_control_callback(callback_id, "עודכן")
+        send_control_menu("🛡️ הגדרות וסינון - עודכן", filter_menu_reply_markup())
+    elif data == "football_bot_off":
         save_control_state(True)
         logging.info("⏸️ לוח שליטה: הבוט הושהה דרך הכפתור.")
         if callback_id:
@@ -2206,10 +2520,7 @@ def process_control_update(update: dict[str, Any]) -> None:
             answer_control_callback(callback_id, "מציג חסימות אחרונות")
         state = load_control_state()
         blocked_posts = list(state.get("last_blocked_posts", [])) if isinstance(state.get("last_blocked_posts", []), list) else []
-        blocked_posts = [
-            item for item in blocked_posts
-            if isinstance(item, dict) and item.get("reason") != BLOCK_REASON_HEBREW.get("old_post", "פוסט ישן מדי")
-        ][-5:]
+        blocked_posts = [item for item in blocked_posts if isinstance(item, dict)][-5:]
         send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."))
     elif data == "football_last_duplicate":
         if callback_id:
@@ -2221,7 +2532,7 @@ def process_control_update(update: dict[str, Any]) -> None:
             answer_control_callback(callback_id, "מציג הסבר כפתורים")
         send_control_text(control_buttons_help_text())
     elif data == "football_clear_temp_modes":
-        save_control_state(elite_only_until=0.0, strict_filter_until=0.0, night_mode_until=0.0)
+        save_control_state(elite_only_until=0.0, strict_filter_until=0.0, night_mode_until=0.0, **{key: False for key in CONTROL_FILTER_KEYS})
         if callback_id:
             answer_control_callback(callback_id, "המצבים הזמניים בוטלו")
         logging.info("🔓 לוח שליטה: המצבים הזמניים בוטלו.")
@@ -3142,6 +3453,14 @@ BLOCK_REASON_HEBREW = {
     "recent_duplicate": "כפילות מהזמן האחרון",
     "translation_unavailable": "תרגום לא זמין",
     "send_failed": "כשל בשליחה",
+    "control_block_rumors": "סינון כפתור: שמועות כבויות",
+    "control_block_national": "סינון כפתור: נבחרות כבויות",
+    "control_block_injuries": "סינון כפתור: פציעות כבויות",
+    "control_block_social": "סינון כפתור: פוסטים חברתיים כבויים",
+    "control_only_herewego": "סינון כפתור: רק Here We Go",
+    "control_only_top5": "סינון כפתור: רק טופ 5 ליגות",
+    "control_only_barca": "סינון כפתור: רק ברצלונה",
+    "control_only_real": "סינון כפתור: רק ריאל מדריד",
 }
 
 
@@ -6597,9 +6916,26 @@ def football_importance_block_reason(post: Post) -> str:
 
 def temporary_control_filter_block_reason(post: Post) -> str:
     state = load_control_state()
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    low = cleaned.lower()
+    if bool(state.get("block_social", False)) and is_non_news_social_post(post):
+        return "control_block_social"
+    if bool(state.get("block_injuries", False)) and _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned):
+        return "control_block_injuries"
+    if bool(state.get("block_national", False)) and _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned):
+        return "control_block_national"
+    if bool(state.get("block_rumors", False)) and _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned) and not _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned):
+        return "control_block_rumors"
+    if bool(state.get("only_herewego", False)) and "here we go" not in low and "הנה זה קורה" not in cleaned:
+        return "control_only_herewego"
+    if bool(state.get("only_top5", False)) and not _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and not _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned):
+        return "control_only_top5"
+    if bool(state.get("only_barca", False)) and not re.search(r"ברצלונה|בארסה|barcelona|barca|fc barcelona", cleaned, re.IGNORECASE):
+        return "control_only_barca"
+    if bool(state.get("only_real", False)) and not re.search(r"ריאל מדריד|real madrid|rma", cleaned, re.IGNORECASE):
+        return "control_only_real"
     if not (elite_only_mode_active(state) or strict_filter_active(state) or night_mode_control_active(state)):
         return ""
-    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     has_big_club = (
         _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
         or _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
@@ -7316,6 +7652,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     remember_bot_sent_reply_target(sent_post, state, dict(result.get("telegram_message_ids", {})))
                 sent += 1
                 daily_stat_increment("sent", username, 1)
+                save_control_state(last_sent_post={"ts": time.time(), "username": username, "link": link})
                 logging.info(
                     "✅ נשלח פוסט מ-@%s | מקור: %s | גיל: %.0fs | תרגום: %.2fs | שליחה: %.2fs | סה״כ: %.2fs",
                     username,
