@@ -224,7 +224,7 @@ OPTIONAL_CONTROLLED_ACCOUNTS = [
 ]
 
 DEFAULT_ENABLED_OPTIONAL_ACCOUNTS = {"Plettigoal"}
-ALWAYS_ENABLED_OPTIONAL_ACCOUNTS: set[str] = set()
+ALWAYS_ENABLED_OPTIONAL_ACCOUNTS: set[str] = {"MatteMoretto"}
 
 OPTIONAL_CONTROLLED_ACCOUNT_LABELS = {
     "Plettigoal": "פלוריאן פלטנברג",
@@ -347,7 +347,7 @@ CONTROL_CHAT_ID = required_env_any(
 )
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = float(os.environ.get("CONTROL_POLL_SECONDS", "0.25"))
-TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS = float(os.environ.get("TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS", "2.5"))
+TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS = float(os.environ.get("TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS", "1.2"))
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
 CONTROL_TEMP_MODE_SECONDS = int(os.environ.get("CONTROL_TEMP_MODE_SECONDS", str(2 * 60 * 60)))
 CONTROL_PANEL_MESSAGES_ENABLED = os.environ.get("CONTROL_PANEL_MESSAGES_ENABLED", "1") == "1"
@@ -375,22 +375,18 @@ SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://nitter.net/{username}/rss",
-    "https://twiiit.com/{username}/rss",
-    "https://lightbrd.com/{username}/rss",
-    "https://rsshub.rssforever.com/twitter/user/{username}",
-    "https://rsshub.app/twitter/user/{username}",
 ]
 EXTRA_FEED_TEMPLATES = [
     template.strip()
     for template in re.split(r"[\n,]+", os.environ.get("EXTRA_FEED_TEMPLATES", ""))
-    if template.strip() and "{username}" in template
+    if os.environ.get("RSS_ALLOW_EXTRA_FEED_TEMPLATES", "0") == "1" and template.strip() and "{username}" in template
 ]
 if EXTRA_FEED_TEMPLATES:
     FEED_TEMPLATES = list(dict.fromkeys(FEED_TEMPLATES + EXTRA_FEED_TEMPLATES))
-MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
-RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "3"))
-RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
-RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2"))
+MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "1"))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
+RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "0") == "1"
+RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "0"))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
@@ -1009,6 +1005,8 @@ PLAYER_REPLACEMENTS = {
     "Harry Kane": "הארי קיין",
     "Lautaro Martinez": "לאוטרו מרטינס",
     "Lautaro Martínez": "לאוטרו מרטינס",
+    "Raphinha": "ראפיניה",
+    "Raphael Dias Belloli": "ראפיניה",
     "Rafael Leao": "רפאל לאאו",
     "Rafael Leão": "רפאל לאאו",
     "Xavi Simons": "צ'אבי סימונס",
@@ -1055,6 +1053,11 @@ HEBREW_FINAL_FIXES = {
     "ניקולו סקירה": "ניקולו שירה",
     "ניקולה סקירה": "ניקולו שירה",
     "ניקולבה סקירה": "ניקולו שירה",
+    "רפאלניה": "ראפיניה",
+    "רפאליניה": "ראפיניה",
+    "ראפליניה": "ראפיניה",
+    "רפליניה": "ראפיניה",
+    "רפה": "ראפיניה",
     "ק.ו.מ.": "קומו",
     "ק ו מ": "קומו",
     "ק. ו. מ.": "קומו",
@@ -2365,16 +2368,20 @@ TEAM_CATALOG.update({
 })
 
 NATIONAL_TEAM_HEBREW_NAMES = [
-    "ישראל", "צרפת", "ספרד", "ארגנטינה", "אנגליה", "פורטוגל", "ברזיל", "הולנד", "מרוקו", "בלגיה", "גרמניה", "איטליה",
-    "קרואטיה", "קולומביה", "סנגל", "מקסיקו", "ארצות הברית", "אורוגוואי", "יפן", "שווייץ", "דנמרק", "איראן", "טורקיה",
-    "אקוודור", "אוסטריה", "דרום קוריאה", "ניגריה", "אוסטרליה", "אלג'יריה", "מצרים", "קנדה", "נורבגיה", "אוקראינה",
-    "פנמה", "חוף השנהב", "פולין", "רוסיה", "וויילס", "שבדיה", "סרביה", "פרגוואי", "צ'כיה", "הונגריה", "סקוטלנד",
-    "תוניסיה", "קמרון", "קונגו", "יוון", "סלובקיה", "ונצואלה", "אוזבקיסטן", "קוסטה ריקה", "מאלי", "פרו", "צ'ילה",
-    "קטאר", "רומניה", "עיראק", "סלובניה", "אירלנד", "דרום אפריקה", "ערב הסעודית", "בורקינה פאסו", "ירדן", "אלבניה",
-    "בוסניה", "הונדורס", "צפון מקדוניה", "איחוד האמירויות", "כף ורדה", "צפון אירלנד", "גאנה", "גינאה", "גאבון",
-    "אנגולה", "זמביה", "גמביה", "גיאורגיה", "פינלנד", "איסלנד", "בולגריה", "מונטנגרו", "ארמניה", "קפריסין",
-    "בלארוס", "ליטא", "לטביה", "אסטוניה", "קוסובו", "לוקסמבורג", "מולדובה", "קזחסטן", "אזרבייג'ן", "סין",
-    "ניו זילנד", "ג'מייקה", "האיטי", "טרינידד וטובגו", "בוליביה", "גואטמלה", "אל סלבדור",
+    # 48 נבחרות מונדיאל 2026, ועוד איטליה וישראל.
+    "מקסיקו", "דרום אפריקה", "דרום קוריאה", "צ'כיה",
+    "קנדה", "קטאר", "שווייץ", "בוסניה",
+    "ברזיל", "מרוקו", "האיטי", "סקוטלנד",
+    "ארצות הברית", "אוסטרליה", "טורקיה", "פרגוואי",
+    "גרמניה", "קוראסאו", "חוף השנהב", "אקוודור",
+    "הולנד", "יפן", "שבדיה", "תוניסיה",
+    "בלגיה", "מצרים", "ניו זילנד", "איראן",
+    "ספרד", "כף ורדה", "ערב הסעודית", "אורוגוואי",
+    "צרפת", "סנגל", "עיראק", "נורבגיה",
+    "ארגנטינה", "אלג'יריה", "אוסטריה", "ירדן",
+    "פורטוגל", "קולומביה", "אוזבקיסטן", "קונגו",
+    "אנגליה", "קרואטיה", "גאנה", "פנמה",
+    "איטליה", "ישראל",
 ]
 
 for country in NATIONAL_TEAM_HEBREW_NAMES:
@@ -6774,6 +6781,7 @@ def normalize_exclusive_label(text: str) -> str:
 def normalize_breaking_label(text: str) -> str:
     label = (
         r"שובר\s+שוויון|"
+        r"שובר|"
         r"חדשות\s+מרעישות|"
         r"חדשות\s+מתפרצות|"
         r"ידיעה\s+מתפרצת|"
