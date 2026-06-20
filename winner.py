@@ -2167,14 +2167,30 @@ def stats_menu_reply_markup() -> dict[str, Any]:
 
 def teams_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
+        [{"text": "👀 צפייה ברשימות", "callback_data": "football_teams_group:view"}],
+        [{"text": "⚙️ פעולות", "callback_data": "football_teams_group:actions"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ]
+    return stable_reply_markup(keyboard)
+
+
+def teams_view_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [
         [{"text": "⭐ דרג א - קבוצות גדולות", "callback_data": "football_teams_list:tier1"}],
         [{"text": "✅ דרג ב - דיווחים סופיים", "callback_data": "football_teams_list:tier2"}],
         [{"text": "⚽ דרג ג - שאר ליגות בכירות", "callback_data": "football_teams_list:tier3"}],
         [{"text": "🌍 נבחרות", "callback_data": "football_teams_list:national"}],
+        [{"text": "⬅️ חזרה לניהול קבוצות", "callback_data": "football_menu_teams"}],
+    ]
+    return stable_reply_markup(keyboard)
+
+
+def teams_actions_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [
         [{"text": "➕ הוסף קבוצה/נבחרת", "callback_data": "football_teams_action:add"}],
         [{"text": "➖ הסר קבוצה/נבחרת", "callback_data": "football_teams_action:remove"}],
         [{"text": "🔁 העבר דרג", "callback_data": "football_teams_action:move"}],
-        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+        [{"text": "⬅️ חזרה לניהול קבוצות", "callback_data": "football_menu_teams"}],
     ]
     return stable_reply_markup(keyboard)
 
@@ -2187,6 +2203,19 @@ def team_tier_choice_reply_markup(action: str) -> dict[str, Any]:
         [{"text": "🌍 נבחרות", "callback_data": f"football_teams_pick_tier:{action}:national"}],
         [{"text": "⬅️ חזרה לניהול קבוצות", "callback_data": "football_menu_teams"}],
     ]
+    return stable_reply_markup(keyboard)
+
+
+def team_after_action_reply_markup(tier: str = "") -> dict[str, Any]:
+    keyboard: list[list[dict[str, str]]] = []
+    if tier in TEAM_TIER_LABELS:
+        keyboard.append([{"text": f"👀 צפה ב{TEAM_TIER_LABELS[tier]}", "callback_data": f"football_teams_list:{tier}"}])
+    keyboard.extend(
+        [
+            [{"text": "➕ הוסף עוד", "callback_data": "football_teams_action:add"}],
+            [{"text": "🏟️ חזרה לניהול קבוצות", "callback_data": "football_menu_teams"}],
+        ]
+    )
     return stable_reply_markup(keyboard)
 
 
@@ -2439,12 +2468,12 @@ def teams_help_text(_mode: str = "") -> str:
     )
 
 
-def apply_team_management_change(action: str, name: str, tier: str = "") -> str:
+def apply_team_management_change(action: str, name: str, tier: str = "") -> tuple[str, str]:
     key = resolve_team_catalog_key(name)
     if not key and action in {"add", "move"}:
         key = ensure_custom_team_key(name, tier)
     if not key:
-        return f"⚠️ השם לא נמצא במאגר\n\nשם שנשלח: {name}\nאפשר לכתוב שם מדויק בעברית כדי להוסיף אותו כמותאם אישית."
+        return f"⚠️ השם לא נמצא במאגר\n\nשם שנשלח: {name}\nאפשר לכתוב שם מדויק בעברית כדי להוסיף אותו כמותאם אישית.", ""
     catalog = all_team_catalog_items()
     team_name = str(catalog.get(key, {}).get("name", key))
     overrides = managed_team_overrides()
@@ -2452,17 +2481,19 @@ def apply_team_management_change(action: str, name: str, tier: str = "") -> str:
         old_tier = effective_team_tier(key)
         overrides[key] = "removed"
         save_control_state(team_tier_overrides=overrides, pending_team_action="", pending_team_tier="")
-        list_text = f"\n\n{team_tier_list_text(old_tier)}" if old_tier in TEAM_TIER_LABELS else ""
-        return f"✅ נקלט\n\nפעולה: הסרה\nשם: {team_name}\nמיקום קודם: {TEAM_TIER_LABELS.get(old_tier, 'לא ידוע')}{list_text}"
+        return f"✅ הקבוצה הוסרה בהצלחה\n\nשם: {team_name}\nמיקום קודם: {TEAM_TIER_LABELS.get(old_tier, 'לא ידוע')}", old_tier
     if tier not in TEAM_TIER_LABELS:
-        return "⚠️ דרג לא מוכר"
+        return "⚠️ דרג לא מוכר", ""
     overrides[key] = tier
     save_control_state(team_tier_overrides=overrides, pending_team_action="", pending_team_tier="")
-    verb = "נוספה" if action == "add" else "הועברה"
-    return f"✅ נקלט\n\nפעולה: {verb}\nשם: {team_name}\nמיקום: {TEAM_TIER_LABELS[tier]}\n\n{team_tier_list_text(tier)}"
+    if action == "add":
+        title = "✅ הקבוצה נוספה בהצלחה"
+    else:
+        title = "✅ הקבוצה הועברה בהצלחה"
+    return f"{title}\n\nשם: {team_name}\nמיקום: {TEAM_TIER_LABELS[tier]}", tier
 
 
-def handle_team_management_command(text: str) -> str | None:
+def handle_team_management_command(text: str) -> tuple[str, str] | None:
     state = load_control_state()
     pending_action = str(state.get("pending_team_action", "") or "")
     pending_tier = str(state.get("pending_team_tier", "") or "")
@@ -2475,13 +2506,13 @@ def handle_team_management_command(text: str) -> str | None:
     action = parts[0]
     if action.startswith("הסר"):
         if len(parts) < 2:
-            return teams_help_text("remove")
+            return teams_help_text("remove"), ""
         return apply_team_management_change("remove", parts[1])
     if len(parts) < 3:
-        return teams_help_text("add")
+        return teams_help_text("add"), ""
     tier = TEAM_TIER_ALIASES.get(normalize_team_key(parts[2]))
     if not tier:
-        return "⚠️ דרג לא מוכר\n\nאפשר לכתוב: דרג א, דרג ב, דרג ג, נבחרות"
+        return "⚠️ דרג לא מוכר\n\nאפשר לכתוב: דרג א, דרג ב, דרג ג, נבחרות", ""
     return apply_team_management_change("add" if action.startswith("הוסף") else "move", parts[1], tier)
 
 
@@ -3090,7 +3121,15 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "פותח ניהול קבוצות")
         save_control_state(pending_team_action="", pending_team_tier="")
-        send_control_menu("🏟️ ניהול קבוצות\nבחר פעולה בכפתורים. רק שם הקבוצה/נבחרת יוקלד ידנית.", teams_menu_reply_markup(), message.get("message_id"))
+        send_control_menu("🏟️ ניהול קבוצות\nבחר צפייה או פעולה.", teams_menu_reply_markup(), message.get("message_id"))
+    elif data == "football_teams_group:view":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח רשימות")
+        send_control_menu("👀 צפייה ברשימות\nבחר דרג.", teams_view_menu_reply_markup(), message.get("message_id"))
+    elif data == "football_teams_group:actions":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח פעולות")
+        send_control_menu("⚙️ פעולות ניהול\nבחר פעולה. רק את שם הקבוצה מקלידים ידנית.", teams_actions_menu_reply_markup(), message.get("message_id"))
     elif data.startswith("football_teams_list:"):
         tier = data.split(":", 1)[1]
         if callback_id:
@@ -3102,7 +3141,7 @@ def process_control_update(update: dict[str, Any]) -> None:
             save_control_state(pending_team_action="remove", pending_team_tier="")
             if callback_id:
                 answer_control_callback(callback_id, "כתוב שם להסרה")
-            send_control_text("➖ הסרת קבוצה/נבחרת\n\nעכשיו כתוב רק את השם המדויק להסרה.", message.get("message_id"), teams_menu_reply_markup())
+            send_control_text("➖ הסרת קבוצה/נבחרת\n\nעכשיו כתוב רק את השם המדויק להסרה.", message.get("message_id"), teams_actions_menu_reply_markup())
         elif action in {"add", "move"}:
             if callback_id:
                 answer_control_callback(callback_id, "בחר דרג")
@@ -3121,7 +3160,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "כתוב שם")
         action_he = "להוספה" if action == "add" else "להעברה"
-        send_control_text(f"✍️ כתוב שם {action_he}\n\nדרג יעד: {TEAM_TIER_LABELS[tier]}\nעכשיו כתוב רק את שם הקבוצה או הנבחרת.", message.get("message_id"), teams_menu_reply_markup())
+        send_control_text(f"✍️ כתוב שם {action_he}\n\nדרג יעד: {TEAM_TIER_LABELS[tier]}\nעכשיו כתוב רק את שם הקבוצה או הנבחרת.", message.get("message_id"), teams_actions_menu_reply_markup())
     elif data.startswith("football_teams_help:"):
         mode = data.split(":", 1)[1]
         if callback_id:
@@ -3324,6 +3363,8 @@ def process_channel_post_update(update: dict[str, Any]) -> None:
         return
     chat = message.get("chat", {}) or {}
     chat_id = str(chat.get("id", ""))
+    if CONTROL_CHAT_ID and chat_id == CONTROL_CHAT_ID:
+        return
     if chat_id not in set(TELEGRAM_CHAT_IDS):
         return
     text = str(message.get("text") or message.get("caption") or "").strip()
@@ -3346,7 +3387,7 @@ def process_channel_post_update(update: dict[str, Any]) -> None:
 
 
 def process_control_text_update(update: dict[str, Any]) -> None:
-    message = update.get("message") or {}
+    message = update.get("message") or update.get("channel_post") or update.get("edited_channel_post") or {}
     if not isinstance(message, dict):
         return
     chat = message.get("chat", {}) or {}
@@ -3356,10 +3397,11 @@ def process_control_text_update(update: dict[str, Any]) -> None:
     text = str(message.get("text") or "").strip()
     if not text:
         return
-    response = handle_team_management_command(text)
-    if response is None:
+    result = handle_team_management_command(text)
+    if result is None:
         return
-    send_control_text(response, None, teams_menu_reply_markup())
+    response, tier = result
+    send_control_text(response, None, team_after_action_reply_markup(tier))
 
 
 def is_getupdates_conflict(error: Exception) -> bool:
