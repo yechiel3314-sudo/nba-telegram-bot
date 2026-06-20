@@ -2073,6 +2073,9 @@ def quick_control_reply_markup() -> dict[str, Any]:
             {"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"},
         ],
         [
+            {"text": "🏟️ ניהול קבוצות", "callback_data": "football_menu_teams"},
+        ],
+        [
             {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
         ],
         [
@@ -2162,6 +2165,20 @@ def stats_menu_reply_markup() -> dict[str, Any]:
     return stable_reply_markup(keyboard)
 
 
+def teams_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [
+        [{"text": "⭐ דרג א - קבוצות גדולות", "callback_data": "football_teams_list:tier1"}],
+        [{"text": "✅ דרג ב - דיווחים סופיים", "callback_data": "football_teams_list:tier2"}],
+        [{"text": "🌍 נבחרות", "callback_data": "football_teams_list:national"}],
+        [{"text": "➕ איך מוסיפים קבוצה", "callback_data": "football_teams_help:add"}],
+        [{"text": "➖ איך מסירים קבוצה", "callback_data": "football_teams_help:remove"}],
+        [{"text": "🔁 איך מעבירים דרג", "callback_data": "football_teams_help:move"}],
+        [{"text": "ℹ️ הסבר ניהול קבוצות", "callback_data": "football_category_help:teams"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ]
+    return stable_reply_markup(keyboard)
+
+
 CONTROL_TEST_ACCOUNT_ORDER = [
     "FabrizioRomano",
     "David_Ornstein",
@@ -2199,6 +2216,178 @@ def recent_24h_posts(posts: list[Post]) -> list[Post]:
 
 def recent_24h_count(posts: list[Post]) -> int:
     return len(recent_24h_posts(posts))
+
+
+TEAM_TIER_LABELS = {
+    "tier1": "דרג א - קבוצות גדולות",
+    "tier2": "דרג ב - דיווחים סופיים",
+    "national": "נבחרות",
+}
+
+TEAM_TIER_ALIASES = {
+    "א": "tier1", "דרג א": "tier1", "גדולות": "tier1", "tier1": "tier1",
+    "ב": "tier2", "דרג ב": "tier2", "סופי": "tier2", "סופיים": "tier2", "tier2": "tier2",
+    "נבחרות": "national", "נבחרת": "national", "national": "national",
+}
+
+TEAM_CATALOG: dict[str, dict[str, Any]] = {
+    "real madrid": {"name": "ריאל מדריד", "tier": "tier1", "aliases": ["Real Madrid", "RMA", "ריאל מדריד"]},
+    "barcelona": {"name": "ברצלונה", "tier": "tier1", "aliases": ["Barcelona", "Barca", "Barça", "FC Barcelona", "ברצלונה", "בארסה"]},
+    "manchester city": {"name": "מנצ'סטר סיטי", "tier": "tier1", "aliases": ["Manchester City", "Man City", "MCFC", "מנצ'סטר סיטי"]},
+    "manchester united": {"name": "מנצ'סטר יונייטד", "tier": "tier1", "aliases": ["Manchester United", "Man United", "Man Utd", "MUFC", "מנצ'סטר יונייטד"]},
+    "liverpool": {"name": "ליברפול", "tier": "tier1", "aliases": ["Liverpool", "LFC", "ליברפול"]},
+    "chelsea": {"name": "צ'לסי", "tier": "tier1", "aliases": ["Chelsea", "CFC", "צ'לסי"]},
+    "arsenal": {"name": "ארסנל", "tier": "tier1", "aliases": ["Arsenal", "AFC", "ארסנל"]},
+    "bayern munich": {"name": "באיירן מינכן", "tier": "tier1", "aliases": ["Bayern Munich", "FC Bayern", "Bayern", "FCB", "באיירן מינכן", "באיירן"]},
+    "psg": {"name": "פריז סן ז'רמן", "tier": "tier1", "aliases": ["Paris Saint-Germain", "PSG", "פריז סן ז'רמן", "פ.ס.ז"]},
+    "juventus": {"name": "יובנטוס", "tier": "tier1", "aliases": ["Juventus", "Juve", "יובנטוס"]},
+    "ac milan": {"name": "מילאן", "tier": "tier1", "aliases": ["AC Milan", "Milan", "ACM", "מילאן", "איי סי מילאן"]},
+    "inter": {"name": "אינטר", "tier": "tier1", "aliases": ["Inter", "Inter Milan", "Internazionale", "אינטר", "אינטר מילאנו"]},
+    "borussia dortmund": {"name": "דורטמונד", "tier": "tier1", "aliases": ["Borussia Dortmund", "Dortmund", "BVB", "דורטמונד"]},
+    "atletico madrid": {"name": "אתלטיקו מדריד", "tier": "tier1", "aliases": ["Atletico Madrid", "Atlético Madrid", "Atleti", "ATM", "אתלטיקו מדריד"]},
+    "tottenham": {"name": "טוטנהאם", "tier": "tier2", "aliases": ["Tottenham", "Spurs", "THFC", "טוטנהאם", "ספרס"]},
+    "newcastle": {"name": "ניוקאסל", "tier": "tier2", "aliases": ["Newcastle", "Newcastle United", "NUFC", "ניוקאסל"]},
+    "aston villa": {"name": "אסטון וילה", "tier": "tier2", "aliases": ["Aston Villa", "AVFC", "אסטון וילה"]},
+    "west ham": {"name": "ווסטהאם", "tier": "tier2", "aliases": ["West Ham", "West Ham United", "WHUFC", "ווסטהאם"]},
+    "everton": {"name": "אברטון", "tier": "tier2", "aliases": ["Everton", "EFC", "אברטון"]},
+    "brighton": {"name": "ברייטון", "tier": "tier2", "aliases": ["Brighton", "BHAFC", "ברייטון"]},
+    "roma": {"name": "רומא", "tier": "tier2", "aliases": ["Roma", "רומא"]},
+    "napoli": {"name": "נאפולי", "tier": "tier2", "aliases": ["Napoli", "נאפולי"]},
+    "atalanta": {"name": "אטאלנטה", "tier": "tier2", "aliases": ["Atalanta", "אטאלנטה", "אטלנטה"]},
+    "lazio": {"name": "לאציו", "tier": "tier2", "aliases": ["Lazio", "לאציו"]},
+    "fiorentina": {"name": "פיורנטינה", "tier": "tier2", "aliases": ["Fiorentina", "פיורנטינה"]},
+    "bayer leverkusen": {"name": "באייר לברקוזן", "tier": "tier2", "aliases": ["Bayer Leverkusen", "Leverkusen", "B04", "לברקוזן"]},
+    "marseille": {"name": "מארסיי", "tier": "tier2", "aliases": ["Marseille", "Olympique Marseille", "OM", "מארסיי", "מרסיי"]},
+    "lyon": {"name": "ליון", "tier": "tier2", "aliases": ["Lyon", "Olympique Lyon", "OL", "ליון"]},
+    "monaco": {"name": "מונאקו", "tier": "tier2", "aliases": ["Monaco", "AS Monaco", "ASM", "מונאקו"]},
+    "ajax": {"name": "אייאקס", "tier": "tier2", "aliases": ["Ajax", "אייאקס"]},
+    "benfica": {"name": "בנפיקה", "tier": "tier2", "aliases": ["Benfica", "SL Benfica", "בנפיקה"]},
+    "porto": {"name": "פורטו", "tier": "tier2", "aliases": ["Porto", "FC Porto", "פורטו"]},
+    "sporting": {"name": "ספורטינג", "tier": "tier2", "aliases": ["Sporting CP", "Sporting Lisbon", "ספורטינג", "ספורטינג ליסבון"]},
+    "galatasaray": {"name": "גלאטסראיי", "tier": "tier2", "aliases": ["Galatasaray", "גלאטסראיי"]},
+    "fenerbahce": {"name": "פנרבחצ'ה", "tier": "tier2", "aliases": ["Fenerbahce", "Fenerbahçe", "פנרבחצ'ה"]},
+    "flamengo": {"name": "פלמנגו", "tier": "tier2", "aliases": ["Flamengo", "CR Flamengo", "פלמנגו"]},
+    "boca juniors": {"name": "בוקה ג'וניורס", "tier": "tier2", "aliases": ["Boca Juniors", "בוקה ג'וניורס"]},
+    "river plate": {"name": "ריבר פלייט", "tier": "tier2", "aliases": ["River Plate", "ריבר פלייט"]},
+    "inter miami": {"name": "אינטר מיאמי", "tier": "tier2", "aliases": ["Inter Miami", "Inter Miami CF", "אינטר מיאמי"]},
+}
+
+for country in ["ישראל", "צרפת", "ספרד", "ארגנטינה", "אנגליה", "פורטוגל", "ברזיל", "הולנד", "מרוקו", "בלגיה", "גרמניה", "איטליה", "קרואטיה", "קולומביה", "סנגל", "מקסיקו", "ארצות הברית", "אורוגוואי", "יפן", "שווייץ", "דנמרק", "טורקיה", "נורבגיה", "אוקראינה", "פולין", "שבדיה", "סרביה", "סקוטלנד", "מצרים", "קנדה", "ניגריה", "אוסטרליה"]:
+    TEAM_CATALOG[f"national:{country}"] = {"name": country, "tier": "national", "aliases": [country]}
+
+
+def normalize_team_key(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def resolve_team_catalog_key(name: str) -> str | None:
+    wanted = normalize_team_key(name)
+    for key, item in TEAM_CATALOG.items():
+        names = [str(item.get("name", "")), *[str(alias) for alias in item.get("aliases", [])]]
+        if any(normalize_team_key(candidate) == wanted for candidate in names):
+            return key
+    return None
+
+
+def managed_team_overrides(state: dict[str, Any] | None = None) -> dict[str, str]:
+    raw = (state or load_control_state()).get("team_tier_overrides", {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def effective_team_tier(key: str, state: dict[str, Any] | None = None) -> str:
+    value = str(managed_team_overrides(state).get(key, TEAM_CATALOG.get(key, {}).get("tier", "")))
+    return value if value in TEAM_TIER_LABELS else ""
+
+
+def team_catalog_keys_for_tier(tier: str, state: dict[str, Any] | None = None) -> list[str]:
+    state = state or load_control_state()
+    return sorted([key for key in TEAM_CATALOG if effective_team_tier(key, state) == tier], key=lambda key: str(TEAM_CATALOG[key].get("name", key)))
+
+
+def team_tier_list_text(tier: str) -> str:
+    keys = team_catalog_keys_for_tier(tier)
+    label = TEAM_TIER_LABELS.get(tier, "רשימת קבוצות")
+    lines = [f"🏟️ {label}", "", f"סה״כ: {len(keys)}"]
+    for index, key in enumerate(keys, 1):
+        item = TEAM_CATALOG[key]
+        aliases = [str(alias) for alias in item.get("aliases", [])[:2] if str(alias) != str(item.get("name", ""))]
+        suffix = f" ({', '.join(aliases)})" if aliases else ""
+        lines.append(f"{index}. {item.get('name', key)}{suffix}")
+    return "\n".join(lines)
+
+
+def teams_help_text(_mode: str = "") -> str:
+    return (
+        "🏟️ ניהול קבוצות\n\n"
+        "פקודות:\n"
+        "הוסף קבוצה | שם קבוצה | דרג א\n"
+        "הסר קבוצה | שם קבוצה\n"
+        "העבר קבוצה | שם קבוצה | דרג ב\n\n"
+        "דרגים אפשריים: דרג א, דרג ב, נבחרות.\n"
+        "השם חייב להופיע במאגר. אפשר לכתוב בעברית או באנגלית, למשל: Real Madrid או ריאל מדריד."
+    )
+
+
+def handle_team_management_command(text: str) -> str | None:
+    cleaned = text.strip()
+    if not cleaned.startswith(("הוסף קבוצה", "הסר קבוצה", "העבר קבוצה")):
+        return None
+    parts = [part.strip() for part in cleaned.split("|")]
+    action = parts[0]
+    if action.startswith("הסר"):
+        if len(parts) < 2:
+            return teams_help_text("remove")
+        key = resolve_team_catalog_key(parts[1])
+        if not key:
+            return f"⚠️ הקבוצה לא נמצאה במאגר\n\nשם שנשלח: {parts[1]}"
+        overrides = managed_team_overrides()
+        overrides[key] = "removed"
+        save_control_state(team_tier_overrides=overrides)
+        return f"✅ הוסר מהניהול הפעיל\n\n{TEAM_CATALOG[key].get('name', key)}"
+    if len(parts) < 3:
+        return teams_help_text("add")
+    key = resolve_team_catalog_key(parts[1])
+    tier = TEAM_TIER_ALIASES.get(normalize_team_key(parts[2]))
+    if not key:
+        return f"⚠️ הקבוצה לא נמצאה במאגר\n\nשם שנשלח: {parts[1]}"
+    if not tier:
+        return "⚠️ דרג לא מוכר\n\nאפשר לכתוב: דרג א, דרג ב, נבחרות"
+    overrides = managed_team_overrides()
+    overrides[key] = tier
+    save_control_state(team_tier_overrides=overrides)
+    verb = "נוספה" if action.startswith("הוסף") else "הועברה"
+    return f"✅ {verb}\n\n{TEAM_CATALOG[key].get('name', key)} -> {TEAM_TIER_LABELS[tier]}"
+
+
+def managed_team_patterns_for_tier(tier: str) -> tuple[str, ...]:
+    aliases: list[str] = []
+    state = load_control_state()
+    for key in team_catalog_keys_for_tier(tier, state):
+        item = TEAM_CATALOG[key]
+        aliases.extend(str(alias) for alias in item.get("aliases", []) if str(alias).strip())
+        name = str(item.get("name", "")).strip()
+        if name:
+            aliases.append(name)
+    if not aliases:
+        return ()
+    escaped = sorted({re.escape(alias) for alias in aliases}, key=len, reverse=True)
+    return (r"(?:%s)" % "|".join(escaped),)
+
+
+def matches_managed_team_tier(tier: str, text: str) -> bool:
+    return _matches_any(managed_team_patterns_for_tier(tier), text)
+
+
+def live_recent_snapshot_from_rss() -> dict[str, int]:
+    snapshot: dict[str, int] = {}
+    for username in all_control_test_accounts():
+        try:
+            snapshot[username] = len(recent_24h_posts(fetch_posts(username)))
+        except Exception as exc:
+            logging.warning("⚠️ בדיקת RSS לסטטיסטיקת כתבים נכשלה עבור @%s: %s", username, exc)
+            snapshot[username] = 0
+    daily_stat_replace_table("fetched_recent_24h_snapshot", snapshot)
+    return snapshot
 
 
 def account_latest_menu_reply_markup() -> dict[str, Any]:
@@ -2598,7 +2787,10 @@ def simple_stat_text(kind: str) -> str:
     bucket = _daily_stats_bucket()
     sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
     skipped_total = sum(count for _key, count in _top_daily_items("skips", 1000))
-    recent_snapshot = bucket.get("fetched_recent_24h_snapshot", {})
+    if kind in {"active_writer", "posts_by_writer"}:
+        recent_snapshot = live_recent_snapshot_from_rss()
+    else:
+        recent_snapshot = bucket.get("fetched_recent_24h_snapshot", {})
     if not isinstance(recent_snapshot, dict) or not recent_snapshot:
         recent_snapshot = bucket.get("fetched_recent_24h", {})
     if not isinstance(recent_snapshot, dict):
@@ -2608,7 +2800,7 @@ def simple_stat_text(kind: str) -> str:
         if not items:
             return "🏆 הכתב הכי פעיל ביממה האחרונה\n\nאין עדיין נתונים מהיממה האחרונה."
         username, count = items[0]
-        return f"🏆 הכתב הכי פעיל ביממה האחרונה\n\n{_hebrew_account_label(username)} עם {count} פוסטים שפורסמו ב-24 השעות האחרונות לפי תמונת ה-RSS האחרונה.\n\nזה לא אומר שכולם יישלחו: אחרי זה עדיין יש סינון, כפילויות ובדיקת פוסטים שכבר סומנו."
+        return f"🏆 הכתב הכי פעיל ביממה האחרונה\n\n{_hebrew_account_label(username)} עם {count} פוסטים שפורסמו ב-24 השעות האחרונות לפי בדיקת RSS חיה.\n\nזה לא אומר שכולם יישלחו: אחרי זה עדיין יש סינון, כפילויות ובדיקת פוסטים שכבר סומנו."
     if kind == "success_rate":
         total = sent_total + skipped_total
         pct = round((sent_total / total) * 100, 1) if total else 0
@@ -2624,7 +2816,7 @@ def simple_stat_text(kind: str) -> str:
         lines = []
         for i, username in enumerate(all_control_test_accounts(), 1):
             lines.append(f"{i}. {_hebrew_account_label(username)} - {int(recent_snapshot.get(username, 0) or 0)}")
-        return "📋 כמה פוסטים כל כתב פרסם ביממה האחרונה\n\nלפי תמונת ה-RSS האחרונה, לא לפי צבירה של כל סריקה.\n\n" + "\n".join(lines)
+        return "📋 כמה פוסטים כל כתב פרסם ביממה האחרונה\n\nלפי בדיקת RSS חיה, באותה דרך של כפתור בדיקת כל הכתבים.\n\n" + "\n".join(lines)
     if kind == "top_blocks":
         items = _top_daily_items("skip_reasons", 10)
         if not items:
@@ -2692,6 +2884,8 @@ def category_help_text(category: str) -> str:
             "😅 מי נחסם הכי הרבה — לפי הסטטיסטיקה היומית.\n"
             "מדדי הזמן, כשלי Gemini והפוסט הארוך/קצר נאספים בזמן אמת מתוך הסריקות והשליחות בפועל."
         )
+    if category == "teams":
+        return teams_help_text("menu")
     if category == "account_latest":
         return (
             "ℹ️ הסבר בדיקת כתב ספציפי\n\n"
@@ -2714,6 +2908,8 @@ def control_buttons_help_text() -> str:
         "רק ברצלונה ורק ריאל הם שני כפתורי הקבוצות היחידים. הפעלה של אחד מהם מכבה את השני כדי שלא תהיה סתירה.\n\n"
         "📊 סטטיסטיקות\n"
         "כאן יש נתוני פעילות: כמה נשלח, כמה נחסם, מי הכתב הכי פעיל, טופ סיבות חסימה, מי נחסם הכי הרבה ועוד. הדוח היומי נשמר לקובץ מקומי וממשיך גם אחרי הפעלה מחדש באותו שרת.\n\n"
+        "🏟️ ניהול קבוצות\n"
+        "מציג את דרגי הקבוצות והנבחרות, ומאפשר להוסיף, להסיר או להעביר קבוצה בין דרגים בעזרת פקודת טקסט.\n\n"
         "📊 סיכום היום עכשיו\n"
         "שולח מיד דוח מלא בעברית על היום הנוכחי.\n\n"
         "↩️ למה לא נשלח\n"
@@ -2763,6 +2959,20 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "פותח סטטיסטיקות")
         send_control_menu("📊 סטטיסטיקות\nנתונים שנאספו ונשמרו. אין כאן שימוש ב-Gemini.", stats_menu_reply_markup(), message.get("message_id"))
+    elif data == "football_menu_teams":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח ניהול קבוצות")
+        send_control_menu("🏟️ ניהול קבוצות\nבחר דרג להצגה, או שלח פקודת הוספה/הסרה/העברה לפי ההסבר.", teams_menu_reply_markup(), message.get("message_id"))
+    elif data.startswith("football_teams_list:"):
+        tier = data.split(":", 1)[1]
+        if callback_id:
+            answer_control_callback(callback_id, "מציג רשימה")
+        send_control_text(team_tier_list_text(tier), message.get("message_id"), teams_menu_reply_markup())
+    elif data.startswith("football_teams_help:"):
+        mode = data.split(":", 1)[1]
+        if callback_id:
+            answer_control_callback(callback_id, "מציג הסבר")
+        send_control_text(teams_help_text(mode), message.get("message_id"), teams_menu_reply_markup())
     elif data == "football_choose_account_latest":
         if callback_id:
             answer_control_callback(callback_id, "בחר כתב")
@@ -2885,6 +3095,7 @@ def process_control_update(update: dict[str, Any]) -> None:
             monitor_menu_reply_markup() if category == "monitor" else
             filter_menu_reply_markup() if category == "filter" else
             stats_menu_reply_markup() if category == "stats" else
+            teams_menu_reply_markup() if category == "teams" else
             account_latest_menu_reply_markup() if category == "account_latest" else
             quick_control_reply_markup()
         )
@@ -2980,6 +3191,23 @@ def process_channel_post_update(update: dict[str, Any]) -> None:
         logging.debug("זיכרון כפילויות מהערוץ נכשל: %s", exc)
 
 
+def process_control_text_update(update: dict[str, Any]) -> None:
+    message = update.get("message") or {}
+    if not isinstance(message, dict):
+        return
+    chat = message.get("chat", {}) or {}
+    chat_id = str(chat.get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != CONTROL_CHAT_ID:
+        return
+    text = str(message.get("text") or "").strip()
+    if not text:
+        return
+    response = handle_team_management_command(text)
+    if response is None:
+        return
+    send_control_text(response, None, teams_menu_reply_markup())
+
+
 def is_getupdates_conflict(error: Exception) -> bool:
     error_text = str(error).lower()
     return "409" in error_text and "getupdates" in error_text
@@ -3040,13 +3268,14 @@ def control_loop() -> None:
                 {
                     "offset": offset,
                     "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "10")),
-                    "allowed_updates": ["callback_query", "channel_post", "edited_channel_post"],
+                    "allowed_updates": ["callback_query", "message", "channel_post", "edited_channel_post"],
                 },
             )
             for update in response.get("result", []):
                 offset = max(offset, int(update.get("update_id", 0)) + 1)
                 save_control_state(control_update_offset=offset)
                 process_control_update(update)
+                process_control_text_update(update)
                 process_channel_post_update(update)
         except Exception as exc:
             if is_getupdates_conflict(exc):
@@ -4164,13 +4393,37 @@ def skip_reason_category_he(reason: str) -> str:
     return "אחר"
 
 
+def display_skip_reason_he(reason: str) -> str:
+    text = str(reason or "").strip()
+    lowered = text.lower()
+    replacements = {
+        "top5 club but no transfer or coach context": "קבוצת טופ 5, אבל בלי הקשר העברה או מאמן",
+        "not connected to tracked club": "לא קשור לקבוצה במעקב",
+        "final only club not strict final": "קבוצת דרג ב בלי דיווח סופי מספיק",
+        "low interest club strong move not enough": "קבוצה פחות חשובה בלי דיווח חזק מספיק",
+    }
+    for source, target in replacements.items():
+        if source in lowered:
+            return target
+    if re.search(r"[A-Za-z]", text):
+        text = text.replace("_", " ")
+        text = re.sub(r"\btop5\b", "טופ 5", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bclub\b", "קבוצה", text, flags=re.IGNORECASE)
+        text = re.sub(r"\btransfer\b", "העברה", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bcoach\b", "מאמן", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bcontext\b", "הקשר", text, flags=re.IGNORECASE)
+        text = re.sub(r"\bduplicate\b", "כפילות", text, flags=re.IGNORECASE)
+    return text
+
+
 def grouped_skip_reason_lines(limit_per_category: int = 4) -> list[str]:
     reason_items = _top_daily_items("skip_reasons", 1000)
     if not reason_items:
         return ["- אין חסימות שנרשמו מאז ההפעלה"]
     grouped: dict[str, list[tuple[str, int]]] = {}
     for reason, count in reason_items:
-        grouped.setdefault(skip_reason_category_he(reason), []).append((reason, count))
+        reason_he = display_skip_reason_he(reason)
+        grouped.setdefault(skip_reason_category_he(reason_he), []).append((reason_he, count))
     lines: list[str] = []
     for category, items in sorted(grouped.items(), key=lambda item: -sum(count for _reason, count in item[1])):
         total = sum(count for _reason, count in items)
@@ -4184,7 +4437,7 @@ def build_daily_quality_report_text() -> str:
     bucket = _daily_stats_bucket()
     sent_total = sum(count for _key, count in _top_daily_items("sent", 1000))
     skipped_total = sum(count for _key, count in _top_daily_items("skips", 1000))
-    recent_snapshot = bucket.get("fetched_recent_24h_snapshot", {})
+    recent_snapshot = live_recent_snapshot_from_rss()
     if not isinstance(recent_snapshot, dict) or not recent_snapshot:
         recent_snapshot = bucket.get("fetched_recent_24h", {})
     fetched_total = sum(int(value or 0) for value in (recent_snapshot or {}).values()) if isinstance(recent_snapshot, dict) else 0
@@ -4197,22 +4450,26 @@ def build_daily_quality_report_text() -> str:
 
     lines = [
         "📊 דוח יומי - בוט כדורגל",
+        "━━━━━━━━━━━━",
         f"📅 תאריך: {report_date}",
         "",
         "📌 תמונת מצב",
+        "────────────",
         f"✅ הודעות שנשלחו: {sent_total}",
         f"👥 כתבים פעילים: {active_accounts_count}",
         f"🔎 סריקות כתבים שבוצעו: {scanned_total}",
         f"📥 פוסטים מהיממה האחרונה שנמצאו במקורות: {fetched_total}",
         f"🆕 פוסטים חדשים לפני סינון: {new_total}",
         f"↩️ פוסטים שנעצרו לפני תרגום/שליחה: {skipped_total}",
-        f"⚡ זמן סריקה ממוצע: {avg_scan:.2f}s ({scan_count} מדידות, שיא {max_scan:.2f}s)",
-        f"🧠 זמן תרגום ממוצע: {avg_translation:.2f}s ({translation_count} מדידות, שיא {max_translation:.2f}s)",
+        f"⚡ זמן סריקה ממוצע: {avg_scan:.2f} שניות ({scan_count} מדידות, שיא {max_scan:.2f} שניות)",
+        f"🧠 זמן תרגום ממוצע: {avg_translation:.2f} שניות ({translation_count} מדידות, שיא {max_translation:.2f} שניות)",
         "",
         "💰 חיסכון",
+        "────────────",
         f"נחסכו בערך {skipped_total} פעולות תרגום/שליחה, כי הפוסטים נעצרו בסינון המוקדם.",
         "",
         "🧠 כתבים שמהם נשלחו הכי הרבה הודעות",
+        "────────────",
     ]
     sent_items = _top_daily_items("sent", 5)
     if sent_items:
@@ -4223,6 +4480,7 @@ def build_daily_quality_report_text() -> str:
 
     lines.append("")
     lines.append("🧹 למה פוסטים לא נשלחו")
+    lines.append("────────────")
     lines.extend(grouped_skip_reason_lines())
     lines.append("")
     lines.append("💾 הדוח נשמר בזיכרון מקומי, לכן הנתונים נשמרים גם אחרי הפעלה מחדש באותו שרת.")
@@ -6940,13 +7198,17 @@ def post_filter_text(post: Post) -> str:
 
 def contains_allowed_national_team(post: Post) -> bool:
     cleaned = post_filter_text(post)
-    return _matches_any(ALLOWED_NATIONAL_TEAM_PATTERNS, cleaned) and _matches_any(NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
+    return (
+        (_matches_any(ALLOWED_NATIONAL_TEAM_PATTERNS, cleaned) or matches_managed_team_tier("national", cleaned))
+        and _matches_any(NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
+    )
 
 
 def contains_allowed_club_or_israeli_league(post: Post) -> bool:
     cleaned = post_filter_text(post)
     return (
         _matches_any(ALLOWED_CLUB_PATTERNS, cleaned)
+        or matches_managed_team_tier("tier1", cleaned)
         or _matches_any(ISRAELI_LEAGUE_PATTERNS, cleaned)
         or contains_allowed_national_team(post)
     )
@@ -6958,6 +7220,8 @@ def contains_tracked_club_or_israeli_league(post: Post) -> bool:
     return (
         _matches_any(ALLOWED_CLUB_PATTERNS, cleaned)
         or _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
+        or matches_managed_team_tier("tier1", cleaned)
+        or matches_managed_team_tier("tier2", cleaned)
         or _matches_any(ISRAELI_LEAGUE_PATTERNS, cleaned)
         or contains_allowed_national_team(post)
     )
@@ -7231,7 +7495,8 @@ def ai_affiliation_fallback_allows(post: Post) -> bool:
 
 def contains_final_only_allowed_club(post: Post) -> bool:
     text = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
-    return _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, clean_for_ai_translation(text))
+    cleaned = clean_for_ai_translation(text)
+    return _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned)
 
 
 def contains_final_or_near_final_signal(post: Post) -> bool:
@@ -7288,10 +7553,10 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if is_writer_profile_noise_post(post):
         return False, "writer_profile_noise", 0, ["writer_profile_noise"]
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
-    has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
+    has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned)
     has_big_club_main_buyer = has_big_club_as_main_buyer(cleaned)
-    has_big_rumor_club = _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and (not has_final_only_club or has_big_club_main_buyer)
-    has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
+    has_big_rumor_club = (_matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) or matches_managed_team_tier("tier1", cleaned)) and (not has_final_only_club or has_big_club_main_buyer)
+    has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned)
     has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
     has_low_interest_german_update = _matches_any(LOW_INTEREST_GERMAN_UPDATE_PATTERNS, cleaned)
@@ -7306,12 +7571,12 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_strong_move = _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
     has_clear_departure = is_clear_player_departure_post(post)
     has_coach_news = _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
-    has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
+    has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned) or matches_managed_team_tier("tier1", cleaned)
     has_pure_admin_appointment = _matches_any(PURE_ADMIN_APPOINTMENT_PATTERNS, cleaned)
     has_injury = _matches_any(INJURY_PATTERNS, cleaned)
     has_serious_injury = _matches_any(SERIOUS_INJURY_PATTERNS, cleaned)
     has_injury_or_fitness_update = _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned)
-    has_major_national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
+    has_major_national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned) or matches_managed_team_tier("national", cleaned)
     has_final_or_near_final = _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
     has_final_only_strict = _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
 
