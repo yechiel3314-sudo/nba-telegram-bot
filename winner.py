@@ -347,7 +347,7 @@ CONTROL_CHAT_ID = required_env_any(
 )
 CONTROL_STATE_FILE = "football_control_state.json"
 CONTROL_POLL_SECONDS = float(os.environ.get("CONTROL_POLL_SECONDS", "0.25"))
-TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS = float(os.environ.get("TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS", "4"))
+TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS = float(os.environ.get("TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS", "2.5"))
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
 CONTROL_TEMP_MODE_SECONDS = int(os.environ.get("CONTROL_TEMP_MODE_SECONDS", str(2 * 60 * 60)))
 CONTROL_PANEL_MESSAGES_ENABLED = os.environ.get("CONTROL_PANEL_MESSAGES_ENABLED", "1") == "1"
@@ -2169,12 +2169,24 @@ def teams_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
         [{"text": "⭐ דרג א - קבוצות גדולות", "callback_data": "football_teams_list:tier1"}],
         [{"text": "✅ דרג ב - דיווחים סופיים", "callback_data": "football_teams_list:tier2"}],
+        [{"text": "⚽ דרג ג - שאר ליגות בכירות", "callback_data": "football_teams_list:tier3"}],
         [{"text": "🌍 נבחרות", "callback_data": "football_teams_list:national"}],
-        [{"text": "➕ איך מוסיפים קבוצה", "callback_data": "football_teams_help:add"}],
-        [{"text": "➖ איך מסירים קבוצה", "callback_data": "football_teams_help:remove"}],
-        [{"text": "🔁 איך מעבירים דרג", "callback_data": "football_teams_help:move"}],
+        [{"text": "➕ הוסף קבוצה/נבחרת", "callback_data": "football_teams_action:add"}],
+        [{"text": "➖ הסר קבוצה/נבחרת", "callback_data": "football_teams_action:remove"}],
+        [{"text": "🔁 העבר דרג", "callback_data": "football_teams_action:move"}],
         [{"text": "ℹ️ הסבר ניהול קבוצות", "callback_data": "football_category_help:teams"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ]
+    return stable_reply_markup(keyboard)
+
+
+def team_tier_choice_reply_markup(action: str) -> dict[str, Any]:
+    keyboard = [
+        [{"text": "⭐ דרג א - קבוצות גדולות", "callback_data": f"football_teams_pick_tier:{action}:tier1"}],
+        [{"text": "✅ דרג ב - דיווחים סופיים", "callback_data": f"football_teams_pick_tier:{action}:tier2"}],
+        [{"text": "⚽ דרג ג - שאר ליגות בכירות", "callback_data": f"football_teams_pick_tier:{action}:tier3"}],
+        [{"text": "🌍 נבחרות", "callback_data": f"football_teams_pick_tier:{action}:national"}],
+        [{"text": "⬅️ חזרה לניהול קבוצות", "callback_data": "football_menu_teams"}],
     ]
     return stable_reply_markup(keyboard)
 
@@ -2221,12 +2233,14 @@ def recent_24h_count(posts: list[Post]) -> int:
 TEAM_TIER_LABELS = {
     "tier1": "דרג א - קבוצות גדולות",
     "tier2": "דרג ב - דיווחים סופיים",
+    "tier3": "דרג ג - שאר ליגות בכירות",
     "national": "נבחרות",
 }
 
 TEAM_TIER_ALIASES = {
     "א": "tier1", "דרג א": "tier1", "גדולות": "tier1", "tier1": "tier1",
     "ב": "tier2", "דרג ב": "tier2", "סופי": "tier2", "סופיים": "tier2", "tier2": "tier2",
+    "ג": "tier3", "דרג ג": "tier3", "ליגות בכירות": "tier3", "שאר ליגות בכירות": "tier3", "tier3": "tier3",
     "נבחרות": "national", "נבחרת": "national", "national": "national",
 }
 
@@ -2272,6 +2286,56 @@ TEAM_CATALOG: dict[str, dict[str, Any]] = {
     "inter miami": {"name": "אינטר מיאמי", "tier": "tier2", "aliases": ["Inter Miami", "Inter Miami CF", "אינטר מיאמי"]},
 }
 
+TEAM_CATALOG.update({
+    "bournemouth": {"name": "בורנמות", "tier": "tier3", "aliases": ["Bournemouth", "AFC Bournemouth", "בורנמות"]},
+    "brentford": {"name": "ברנטפורד", "tier": "tier3", "aliases": ["Brentford", "ברנטפורד"]},
+    "fulham": {"name": "פולהאם", "tier": "tier3", "aliases": ["Fulham", "פולהאם"]},
+    "wolves": {"name": "וולבס", "tier": "tier3", "aliases": ["Wolves", "Wolverhampton", "וולבס"]},
+    "crystal palace": {"name": "קריסטל פאלאס", "tier": "tier3", "aliases": ["Crystal Palace", "קריסטל פאלאס"]},
+    "nottingham forest": {"name": "נוטינגהאם פורסט", "tier": "tier3", "aliases": ["Nottingham Forest", "Forest", "נוטינגהאם", "נוטינגהאם פורסט"]},
+    "leeds": {"name": "לידס", "tier": "tier3", "aliases": ["Leeds", "Leeds United", "לידס"]},
+    "sunderland": {"name": "סנדרלנד", "tier": "tier3", "aliases": ["Sunderland", "סנדרלנד"]},
+    "leicester": {"name": "לסטר", "tier": "tier3", "aliases": ["Leicester", "Leicester City", "לסטר"]},
+    "southampton": {"name": "סאות'המפטון", "tier": "tier3", "aliases": ["Southampton", "סאות'המפטון"]},
+    "burnley": {"name": "ברנלי", "tier": "tier3", "aliases": ["Burnley", "ברנלי"]},
+    "ipswich": {"name": "איפסוויץ'", "tier": "tier3", "aliases": ["Ipswich", "Ipswich Town", "איפסוויץ'"]},
+    "sheffield united": {"name": "שפילד יונייטד", "tier": "tier3", "aliases": ["Sheffield United", "שפילד יונייטד"]},
+    "luton": {"name": "לוטון", "tier": "tier3", "aliases": ["Luton", "Luton Town", "לוטון"]},
+    "bologna": {"name": "בולוניה", "tier": "tier3", "aliases": ["Bologna", "בולוניה"]},
+    "torino": {"name": "טורינו", "tier": "tier3", "aliases": ["Torino", "טורינו"]},
+    "udinese": {"name": "אודינזה", "tier": "tier3", "aliases": ["Udinese", "אודינזה"]},
+    "sassuolo": {"name": "ססואולו", "tier": "tier3", "aliases": ["Sassuolo", "ססואולו"]},
+    "como": {"name": "קומו", "tier": "tier3", "aliases": ["Como", "קומו"]},
+    "parma": {"name": "פארמה", "tier": "tier3", "aliases": ["Parma", "פארמה"]},
+    "verona": {"name": "ורונה", "tier": "tier3", "aliases": ["Verona", "Hellas Verona", "ורונה"]},
+    "genoa": {"name": "גנואה", "tier": "tier3", "aliases": ["Genoa", "גנואה"]},
+    "cagliari": {"name": "קליארי", "tier": "tier3", "aliases": ["Cagliari", "קליארי"]},
+    "lecce": {"name": "לצ'ה", "tier": "tier3", "aliases": ["Lecce", "לצ'ה"]},
+    "empoli": {"name": "אמפולי", "tier": "tier3", "aliases": ["Empoli", "אמפולי"]},
+    "girona": {"name": "ג'ירונה", "tier": "tier3", "aliases": ["Girona", "ג'ירונה"]},
+    "getafe": {"name": "חטאפה", "tier": "tier3", "aliases": ["Getafe", "חטאפה"]},
+    "osasuna": {"name": "אוססונה", "tier": "tier3", "aliases": ["Osasuna", "אוססונה"]},
+    "mallorca": {"name": "מיורקה", "tier": "tier3", "aliases": ["Mallorca", "מיורקה"]},
+    "rayo vallecano": {"name": "ראיו וייקאנו", "tier": "tier3", "aliases": ["Rayo Vallecano", "Rayo", "ראיו", "ראיו וייקאנו"]},
+    "celta vigo": {"name": "סלטה ויגו", "tier": "tier3", "aliases": ["Celta Vigo", "Celta", "סלטה", "סלטה ויגו"]},
+    "espanyol": {"name": "אספניול", "tier": "tier3", "aliases": ["Espanyol", "אספניול"]},
+    "nice": {"name": "ניס", "tier": "tier3", "aliases": ["Nice", "OGC Nice", "ניס"]},
+    "rennes": {"name": "רן", "tier": "tier3", "aliases": ["Rennes", "רן"]},
+    "strasbourg": {"name": "שטרסבורג", "tier": "tier3", "aliases": ["Strasbourg", "שטרסבורג"]},
+    "brest": {"name": "ברסט", "tier": "tier3", "aliases": ["Brest", "ברסט"]},
+    "nantes": {"name": "נאנט", "tier": "tier3", "aliases": ["Nantes", "נאנט"]},
+    "toulouse": {"name": "טולוז", "tier": "tier3", "aliases": ["Toulouse", "טולוז"]},
+    "montpellier": {"name": "מונפלייה", "tier": "tier3", "aliases": ["Montpellier", "מונפלייה"]},
+    "reims": {"name": "ריימס", "tier": "tier3", "aliases": ["Reims", "ריימס"]},
+    "freiburg": {"name": "פרייבורג", "tier": "tier3", "aliases": ["Freiburg", "פרייבורג"]},
+    "wolfsburg": {"name": "וולפסבורג", "tier": "tier3", "aliases": ["Wolfsburg", "וולפסבורג"]},
+    "werder bremen": {"name": "ורדר ברמן", "tier": "tier3", "aliases": ["Werder Bremen", "ורדר ברמן"]},
+    "hoffenheim": {"name": "הופנהיים", "tier": "tier3", "aliases": ["Hoffenheim", "הופנהיים"]},
+    "mainz": {"name": "מיינץ", "tier": "tier3", "aliases": ["Mainz", "מיינץ"]},
+    "augsburg": {"name": "אוגסבורג", "tier": "tier3", "aliases": ["Augsburg", "אוגסבורג"]},
+    "union berlin": {"name": "אוניון ברלין", "tier": "tier3", "aliases": ["Union Berlin", "אוניון ברלין"]},
+})
+
 for country in ["ישראל", "צרפת", "ספרד", "ארגנטינה", "אנגליה", "פורטוגל", "ברזיל", "הולנד", "מרוקו", "בלגיה", "גרמניה", "איטליה", "קרואטיה", "קולומביה", "סנגל", "מקסיקו", "ארצות הברית", "אורוגוואי", "יפן", "שווייץ", "דנמרק", "טורקיה", "נורבגיה", "אוקראינה", "פולין", "שבדיה", "סרביה", "סקוטלנד", "מצרים", "קנדה", "ניגריה", "אוסטרליה"]:
     TEAM_CATALOG[f"national:{country}"] = {"name": country, "tier": "national", "aliases": [country]}
 
@@ -2282,11 +2346,44 @@ def normalize_team_key(text: str) -> str:
 
 def resolve_team_catalog_key(name: str) -> str | None:
     wanted = normalize_team_key(name)
-    for key, item in TEAM_CATALOG.items():
+    for key, item in all_team_catalog_items().items():
         names = [str(item.get("name", "")), *[str(alias) for alias in item.get("aliases", [])]]
         if any(normalize_team_key(candidate) == wanted for candidate in names):
             return key
     return None
+
+
+def is_reasonable_hebrew_team_name(name: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", (name or "").strip())
+    return bool(2 <= len(cleaned) <= 60 and re.search(r"[\u0590-\u05ff]", cleaned))
+
+
+def ensure_custom_team_key(name: str, tier: str) -> str | None:
+    existing = resolve_team_catalog_key(name)
+    if existing:
+        return existing
+    if tier not in TEAM_TIER_LABELS or not is_reasonable_hebrew_team_name(name):
+        return None
+    key = "custom:" + hashlib.sha1(normalize_team_key(name).encode("utf-8", errors="ignore")).hexdigest()[:16]
+    overrides = managed_team_overrides()
+    custom = load_control_state().get("custom_team_catalog", {})
+    if not isinstance(custom, dict):
+        custom = {}
+    custom[key] = {"name": re.sub(r"\s+", " ", name.strip()), "tier": tier, "aliases": [re.sub(r"\s+", " ", name.strip())]}
+    overrides[key] = tier
+    save_control_state(custom_team_catalog=custom, team_tier_overrides=overrides)
+    return key
+
+
+def all_team_catalog_items(state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    state = state or load_control_state()
+    catalog = dict(TEAM_CATALOG)
+    custom = state.get("custom_team_catalog", {})
+    if isinstance(custom, dict):
+        for key, value in custom.items():
+            if isinstance(value, dict) and str(value.get("name", "")).strip():
+                catalog[str(key)] = value
+    return catalog
 
 
 def managed_team_overrides(state: dict[str, Any] | None = None) -> dict[str, str]:
@@ -2295,21 +2392,24 @@ def managed_team_overrides(state: dict[str, Any] | None = None) -> dict[str, str
 
 
 def effective_team_tier(key: str, state: dict[str, Any] | None = None) -> str:
-    value = str(managed_team_overrides(state).get(key, TEAM_CATALOG.get(key, {}).get("tier", "")))
+    catalog = all_team_catalog_items(state)
+    value = str(managed_team_overrides(state).get(key, catalog.get(key, {}).get("tier", "")))
     return value if value in TEAM_TIER_LABELS else ""
 
 
 def team_catalog_keys_for_tier(tier: str, state: dict[str, Any] | None = None) -> list[str]:
     state = state or load_control_state()
-    return sorted([key for key in TEAM_CATALOG if effective_team_tier(key, state) == tier], key=lambda key: str(TEAM_CATALOG[key].get("name", key)))
+    catalog = all_team_catalog_items(state)
+    return sorted([key for key in catalog if effective_team_tier(key, state) == tier], key=lambda key: str(catalog[key].get("name", key)))
 
 
 def team_tier_list_text(tier: str) -> str:
     keys = team_catalog_keys_for_tier(tier)
+    catalog = all_team_catalog_items()
     label = TEAM_TIER_LABELS.get(tier, "רשימת קבוצות")
     lines = [f"🏟️ {label}", "", f"סה״כ: {len(keys)}"]
     for index, key in enumerate(keys, 1):
-        item = TEAM_CATALOG[key]
+        item = catalog[key]
         aliases = [str(alias) for alias in item.get("aliases", [])[:2] if str(alias) != str(item.get("name", ""))]
         suffix = f" ({', '.join(aliases)})" if aliases else ""
         lines.append(f"{index}. {item.get('name', key)}{suffix}")
@@ -2319,17 +2419,42 @@ def team_tier_list_text(tier: str) -> str:
 def teams_help_text(_mode: str = "") -> str:
     return (
         "🏟️ ניהול קבוצות\n\n"
-        "פקודות:\n"
-        "הוסף קבוצה | שם קבוצה | דרג א\n"
-        "הסר קבוצה | שם קבוצה\n"
-        "העבר קבוצה | שם קבוצה | דרג ב\n\n"
-        "דרגים אפשריים: דרג א, דרג ב, נבחרות.\n"
-        "השם חייב להופיע במאגר. אפשר לכתוב בעברית או באנגלית, למשל: Real Madrid או ריאל מדריד."
+        "הכול עובד בכפתורים:\n"
+        "1. בוחרים הוסף, הסר או העבר.\n"
+        "2. אם צריך, בוחרים דרג יעד.\n"
+        "3. מקלידים רק את שם הקבוצה או הנבחרת.\n\n"
+        "אפשר להקליד שם מדויק בעברית או באנגלית. אם השם בעברית ולא קיים במאגר, הוא יתווסף כקבוצה/נבחרת מותאמת אישית."
     )
 
 
+def apply_team_management_change(action: str, name: str, tier: str = "") -> str:
+    key = resolve_team_catalog_key(name)
+    if not key and action in {"add", "move"}:
+        key = ensure_custom_team_key(name, tier)
+    if not key:
+        return f"⚠️ השם לא נמצא במאגר\n\nשם שנשלח: {name}\nאפשר לכתוב שם מדויק בעברית כדי להוסיף אותו כמותאם אישית."
+    catalog = all_team_catalog_items()
+    team_name = str(catalog.get(key, {}).get("name", key))
+    overrides = managed_team_overrides()
+    if action == "remove":
+        overrides[key] = "removed"
+        save_control_state(team_tier_overrides=overrides, pending_team_action="", pending_team_tier="")
+        return f"✅ הוסר מהניהול הפעיל\n\n{team_name}"
+    if tier not in TEAM_TIER_LABELS:
+        return "⚠️ דרג לא מוכר"
+    overrides[key] = tier
+    save_control_state(team_tier_overrides=overrides, pending_team_action="", pending_team_tier="")
+    verb = "נוספה" if action == "add" else "הועברה"
+    return f"✅ {verb}\n\n{team_name} -> {TEAM_TIER_LABELS[tier]}"
+
+
 def handle_team_management_command(text: str) -> str | None:
+    state = load_control_state()
+    pending_action = str(state.get("pending_team_action", "") or "")
+    pending_tier = str(state.get("pending_team_tier", "") or "")
     cleaned = text.strip()
+    if pending_action in {"add", "move", "remove"}:
+        return apply_team_management_change(pending_action, cleaned, pending_tier)
     if not cleaned.startswith(("הוסף קבוצה", "הסר קבוצה", "העבר קבוצה")):
         return None
     parts = [part.strip() for part in cleaned.split("|")]
@@ -2337,33 +2462,21 @@ def handle_team_management_command(text: str) -> str | None:
     if action.startswith("הסר"):
         if len(parts) < 2:
             return teams_help_text("remove")
-        key = resolve_team_catalog_key(parts[1])
-        if not key:
-            return f"⚠️ הקבוצה לא נמצאה במאגר\n\nשם שנשלח: {parts[1]}"
-        overrides = managed_team_overrides()
-        overrides[key] = "removed"
-        save_control_state(team_tier_overrides=overrides)
-        return f"✅ הוסר מהניהול הפעיל\n\n{TEAM_CATALOG[key].get('name', key)}"
+        return apply_team_management_change("remove", parts[1])
     if len(parts) < 3:
         return teams_help_text("add")
-    key = resolve_team_catalog_key(parts[1])
     tier = TEAM_TIER_ALIASES.get(normalize_team_key(parts[2]))
-    if not key:
-        return f"⚠️ הקבוצה לא נמצאה במאגר\n\nשם שנשלח: {parts[1]}"
     if not tier:
-        return "⚠️ דרג לא מוכר\n\nאפשר לכתוב: דרג א, דרג ב, נבחרות"
-    overrides = managed_team_overrides()
-    overrides[key] = tier
-    save_control_state(team_tier_overrides=overrides)
-    verb = "נוספה" if action.startswith("הוסף") else "הועברה"
-    return f"✅ {verb}\n\n{TEAM_CATALOG[key].get('name', key)} -> {TEAM_TIER_LABELS[tier]}"
+        return "⚠️ דרג לא מוכר\n\nאפשר לכתוב: דרג א, דרג ב, דרג ג, נבחרות"
+    return apply_team_management_change("add" if action.startswith("הוסף") else "move", parts[1], tier)
 
 
 def managed_team_patterns_for_tier(tier: str) -> tuple[str, ...]:
     aliases: list[str] = []
     state = load_control_state()
+    catalog = all_team_catalog_items(state)
     for key in team_catalog_keys_for_tier(tier, state):
-        item = TEAM_CATALOG[key]
+        item = catalog[key]
         aliases.extend(str(alias) for alias in item.get("aliases", []) if str(alias).strip())
         name = str(item.get("name", "")).strip()
         if name:
@@ -2899,7 +3012,7 @@ def category_help_text(category: str) -> str:
 def control_buttons_help_text() -> str:
     return (
         "ℹ️ הסבר כפתורים מורחב\n\n"
-        "המסך הראשי מחולק ל-3 קטגוריות, ובנוסף יש בו בדיקת כתב ספציפי, סיכום היום עכשיו והסבר כפתורים.\n\n"
+        "המסך הראשי מחולק לקטגוריות, ובנוסף יש בו בדיקת כתב ספציפי, סיכום היום עכשיו והסבר כפתורים.\n\n"
         "🔎 בדיקה וניטור\n"
         "כאן יש בדיקות מיידיות: בדיקת כל הכתבים הפעילים, בדיקת כתב ספציפי, RSS, Gemini, פוסט אחרון שנשלח ונתוני פעילות בסיסיים.\n"
         "בדיקת כתב ספציפי שולחת את הפוסט האחרון שלו לערוץ השקט בלבד, בכוח, גם אם הסינון הרגיל היה חוסם אותו. זה מיועד לבדיקה בלבד ולא לערוץ הראשי.\n\n"
@@ -2909,7 +3022,7 @@ def control_buttons_help_text() -> str:
         "📊 סטטיסטיקות\n"
         "כאן יש נתוני פעילות: כמה נשלח, כמה נחסם, מי הכתב הכי פעיל, טופ סיבות חסימה, מי נחסם הכי הרבה ועוד. הדוח היומי נשמר לקובץ מקומי וממשיך גם אחרי הפעלה מחדש באותו שרת.\n\n"
         "🏟️ ניהול קבוצות\n"
-        "מציג את דרגי הקבוצות והנבחרות, ומאפשר להוסיף, להסיר או להעביר קבוצה בין דרגים בעזרת פקודת טקסט.\n\n"
+        "מציג את דרגי הקבוצות והנבחרות. הוספה, הסרה והעברה נעשות בכפתורים; מקלידים ידנית רק את שם הקבוצה או הנבחרת.\n\n"
         "📊 סיכום היום עכשיו\n"
         "שולח מיד דוח מלא בעברית על היום הנוכחי.\n\n"
         "↩️ למה לא נשלח\n"
@@ -2962,12 +3075,39 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_menu_teams":
         if callback_id:
             answer_control_callback(callback_id, "פותח ניהול קבוצות")
-        send_control_menu("🏟️ ניהול קבוצות\nבחר דרג להצגה, או שלח פקודת הוספה/הסרה/העברה לפי ההסבר.", teams_menu_reply_markup(), message.get("message_id"))
+        save_control_state(pending_team_action="", pending_team_tier="")
+        send_control_menu("🏟️ ניהול קבוצות\nבחר פעולה בכפתורים. רק שם הקבוצה/נבחרת יוקלד ידנית.", teams_menu_reply_markup(), message.get("message_id"))
     elif data.startswith("football_teams_list:"):
         tier = data.split(":", 1)[1]
         if callback_id:
             answer_control_callback(callback_id, "מציג רשימה")
         send_control_text(team_tier_list_text(tier), message.get("message_id"), teams_menu_reply_markup())
+    elif data.startswith("football_teams_action:"):
+        action = data.split(":", 1)[1]
+        if action == "remove":
+            save_control_state(pending_team_action="remove", pending_team_tier="")
+            if callback_id:
+                answer_control_callback(callback_id, "כתוב שם להסרה")
+            send_control_text("➖ הסרת קבוצה/נבחרת\n\nעכשיו כתוב רק את השם המדויק להסרה.", message.get("message_id"), teams_menu_reply_markup())
+        elif action in {"add", "move"}:
+            if callback_id:
+                answer_control_callback(callback_id, "בחר דרג")
+            title = "הוספה" if action == "add" else "העברת דרג"
+            send_control_menu(f"{'➕' if action == 'add' else '🔁'} {title}\nבחר דרג יעד, ואז תתבקש להקליד שם.", team_tier_choice_reply_markup(action), message.get("message_id"))
+        else:
+            if callback_id:
+                answer_control_callback(callback_id, "פעולה לא מוכרת")
+    elif data.startswith("football_teams_pick_tier:"):
+        _prefix, action, tier = data.split(":", 2)
+        if action not in {"add", "move"} or tier not in TEAM_TIER_LABELS:
+            if callback_id:
+                answer_control_callback(callback_id, "בחירה לא מוכרת")
+            return
+        save_control_state(pending_team_action=action, pending_team_tier=tier)
+        if callback_id:
+            answer_control_callback(callback_id, "כתוב שם")
+        action_he = "להוספה" if action == "add" else "להעברה"
+        send_control_text(f"✍️ כתוב שם {action_he}\n\nדרג יעד: {TEAM_TIER_LABELS[tier]}\nעכשיו כתוב רק את שם הקבוצה או הנבחרת.", message.get("message_id"), teams_menu_reply_markup())
     elif data.startswith("football_teams_help:"):
         mode = data.split(":", 1)[1]
         if callback_id:
@@ -7222,6 +7362,7 @@ def contains_tracked_club_or_israeli_league(post: Post) -> bool:
         or _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
         or matches_managed_team_tier("tier1", cleaned)
         or matches_managed_team_tier("tier2", cleaned)
+        or matches_managed_team_tier("tier3", cleaned)
         or _matches_any(ISRAELI_LEAGUE_PATTERNS, cleaned)
         or contains_allowed_national_team(post)
     )
@@ -7556,7 +7697,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned)
     has_big_club_main_buyer = has_big_club_as_main_buyer(cleaned)
     has_big_rumor_club = (_matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) or matches_managed_team_tier("tier1", cleaned)) and (not has_final_only_club or has_big_club_main_buyer)
-    has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned)
+    has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned) or matches_managed_team_tier("tier3", cleaned)
     has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
     has_low_interest_german_update = _matches_any(LOW_INTEREST_GERMAN_UPDATE_PATTERNS, cleaned)
@@ -7745,7 +7886,7 @@ def temporary_control_filter_block_reason(post: Post) -> str:
         return "control_block_rumors"
     if bool(state.get("only_herewego", False)) and "here we go" not in low and "הנה זה קורה" not in cleaned:
         return "control_only_herewego"
-    if bool(state.get("only_top5", False)) and not _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and not _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned):
+    if bool(state.get("only_top5", False)) and not _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) and not _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) and not matches_managed_team_tier("tier3", cleaned):
         return "control_only_top5"
     if bool(state.get("only_real_barca", False)) and not re.search(r"ברצלונה|בארסה|barcelona|barca|fc barcelona|ריאל מדריד|real madrid|rma", cleaned, re.IGNORECASE):
         return "control_only_real_barca"
@@ -7819,7 +7960,7 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return temporary_block_reason
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if (
-        _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
+        (_matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned))
         and not _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
         and not has_big_club_as_main_buyer(cleaned)
     ):
@@ -7839,6 +7980,7 @@ def pre_send_final_local_block_reason(post: Post) -> str:
             _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
             or _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
             or _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned)
+            or matches_managed_team_tier("tier3", cleaned)
             or _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
         )
     ):
