@@ -2174,7 +2174,6 @@ def teams_menu_reply_markup() -> dict[str, Any]:
         [{"text": "➕ הוסף קבוצה/נבחרת", "callback_data": "football_teams_action:add"}],
         [{"text": "➖ הסר קבוצה/נבחרת", "callback_data": "football_teams_action:remove"}],
         [{"text": "🔁 העבר דרג", "callback_data": "football_teams_action:move"}],
-        [{"text": "ℹ️ הסבר ניהול קבוצות", "callback_data": "football_category_help:teams"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
     return stable_reply_markup(keyboard)
@@ -2336,7 +2335,20 @@ TEAM_CATALOG.update({
     "union berlin": {"name": "אוניון ברלין", "tier": "tier3", "aliases": ["Union Berlin", "אוניון ברלין"]},
 })
 
-for country in ["ישראל", "צרפת", "ספרד", "ארגנטינה", "אנגליה", "פורטוגל", "ברזיל", "הולנד", "מרוקו", "בלגיה", "גרמניה", "איטליה", "קרואטיה", "קולומביה", "סנגל", "מקסיקו", "ארצות הברית", "אורוגוואי", "יפן", "שווייץ", "דנמרק", "טורקיה", "נורבגיה", "אוקראינה", "פולין", "שבדיה", "סרביה", "סקוטלנד", "מצרים", "קנדה", "ניגריה", "אוסטרליה"]:
+NATIONAL_TEAM_HEBREW_NAMES = [
+    "ישראל", "צרפת", "ספרד", "ארגנטינה", "אנגליה", "פורטוגל", "ברזיל", "הולנד", "מרוקו", "בלגיה", "גרמניה", "איטליה",
+    "קרואטיה", "קולומביה", "סנגל", "מקסיקו", "ארצות הברית", "אורוגוואי", "יפן", "שווייץ", "דנמרק", "איראן", "טורקיה",
+    "אקוודור", "אוסטריה", "דרום קוריאה", "ניגריה", "אוסטרליה", "אלג'יריה", "מצרים", "קנדה", "נורבגיה", "אוקראינה",
+    "פנמה", "חוף השנהב", "פולין", "רוסיה", "וויילס", "שבדיה", "סרביה", "פרגוואי", "צ'כיה", "הונגריה", "סקוטלנד",
+    "תוניסיה", "קמרון", "קונגו", "יוון", "סלובקיה", "ונצואלה", "אוזבקיסטן", "קוסטה ריקה", "מאלי", "פרו", "צ'ילה",
+    "קטאר", "רומניה", "עיראק", "סלובניה", "אירלנד", "דרום אפריקה", "ערב הסעודית", "בורקינה פאסו", "ירדן", "אלבניה",
+    "בוסניה", "הונדורס", "צפון מקדוניה", "איחוד האמירויות", "כף ורדה", "צפון אירלנד", "גאנה", "גינאה", "גאבון",
+    "אנגולה", "זמביה", "גמביה", "גיאורגיה", "פינלנד", "איסלנד", "בולגריה", "מונטנגרו", "ארמניה", "קפריסין",
+    "בלארוס", "ליטא", "לטביה", "אסטוניה", "קוסובו", "לוקסמבורג", "מולדובה", "קזחסטן", "אזרבייג'ן", "סין",
+    "ניו זילנד", "ג'מייקה", "האיטי", "טרינידד וטובגו", "בוליביה", "גואטמלה", "אל סלבדור",
+]
+
+for country in NATIONAL_TEAM_HEBREW_NAMES:
     TEAM_CATALOG[f"national:{country}"] = {"name": country, "tier": "national", "aliases": [country]}
 
 
@@ -2437,15 +2449,17 @@ def apply_team_management_change(action: str, name: str, tier: str = "") -> str:
     team_name = str(catalog.get(key, {}).get("name", key))
     overrides = managed_team_overrides()
     if action == "remove":
+        old_tier = effective_team_tier(key)
         overrides[key] = "removed"
         save_control_state(team_tier_overrides=overrides, pending_team_action="", pending_team_tier="")
-        return f"✅ הוסר מהניהול הפעיל\n\n{team_name}"
+        list_text = f"\n\n{team_tier_list_text(old_tier)}" if old_tier in TEAM_TIER_LABELS else ""
+        return f"✅ נקלט\n\nפעולה: הסרה\nשם: {team_name}\nמיקום קודם: {TEAM_TIER_LABELS.get(old_tier, 'לא ידוע')}{list_text}"
     if tier not in TEAM_TIER_LABELS:
         return "⚠️ דרג לא מוכר"
     overrides[key] = tier
     save_control_state(team_tier_overrides=overrides, pending_team_action="", pending_team_tier="")
     verb = "נוספה" if action == "add" else "הועברה"
-    return f"✅ {verb}\n\n{team_name} -> {TEAM_TIER_LABELS[tier]}"
+    return f"✅ נקלט\n\nפעולה: {verb}\nשם: {team_name}\nמיקום: {TEAM_TIER_LABELS[tier]}\n\n{team_tier_list_text(tier)}"
 
 
 def handle_team_management_command(text: str) -> str | None:
