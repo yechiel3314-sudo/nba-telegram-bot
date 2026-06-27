@@ -7,7 +7,8 @@ Run:
 
 What this version does:
 - Scans all accounts in parallel with a server-credit-saving cadence.
-- Checks several public RSS mirrors for each account and merges the results.
+- Checks nitter.net RSS for each account by default. Extra mirrors stay disabled
+  unless RSS_ALLOW_EXTRA_FEED_TEMPLATES=1 is explicitly set.
 - Sends photos together with the Telegram message caption.
 - Does not upload videos by default, to avoid extra video lookup requests.
 - Removes all links from the post body. Only the final X post link is kept.
@@ -312,14 +313,15 @@ BOT_DATA_DIR = os.environ.get("FOOTBALL_BOT_DATA_DIR") or os.environ.get("BOT_DA
 APP_DATA_DIR_CACHE: Path | None = None
 HTTP_RETRIES = 3
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "5"))
+FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "4"))
 FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
 FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "7"))
-MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "3"))
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "2"))
-MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 20
-MAX_POSTS_SENT_PER_CYCLE = 4
-MAX_POST_AGE_SECONDS = 30 * 60
+MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "6"))
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = int(os.environ.get("MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK", "20"))
+MAX_POSTS_SENT_PER_CYCLE = int(os.environ.get("MAX_POSTS_SENT_PER_CYCLE", "6"))
+MAX_POST_AGE_SECONDS = int(os.environ.get("MAX_POST_AGE_SECONDS", str(2 * 60 * 60)))
+MIN_TRANSFER_FEE_MILLIONS_TO_SEND = float(os.environ.get("MIN_TRANSFER_FEE_MILLIONS_TO_SEND", "15"))
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
@@ -398,7 +400,7 @@ RSS_CONTROL_ALERT_LAST_SENT_AT: dict[str, float] = {}
 RSS_STALE_LATEST_ALERT_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_SECONDS", "0"))
 RSS_STALE_LATEST_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_EVERY_SECONDS", str(6 * 60 * 60)))
 RSS_STALE_LATEST_ALERT_LAST_SENT_AT: dict[str, float] = {}
-FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
+FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "6"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
 
@@ -807,7 +809,7 @@ TEAM_REPLACEMENTS = {
     "Arsenal": "ארסנל",
     "Tottenham Hotspur": "טוטנהאם",
     "Tottenham": "טוטנהאם",
-    "Spurs": "ספרס",
+    "Spurs": "טוטנהאם",
     "Newcastle United": "ניוקאסל",
     "Newcastle": "ניוקאסל",
     "Aston Villa": "אסטון וילה",
@@ -1501,7 +1503,26 @@ def post_content_signature(username: str, text: str, quoted_text: str) -> str:
 
 
 def is_too_old_post(post: Post) -> bool:
-    return bool(post.published_ts and time.time() - post.published_ts > MAX_POST_AGE_SECONDS)
+    return bool(MAX_POST_AGE_SECONDS > 0 and post.published_ts and time.time() - post.published_ts > MAX_POST_AGE_SECONDS)
+
+
+def post_age_text(post: Post) -> str:
+    if not getattr(post, "published_ts", 0.0):
+        return "גיל לא ידוע"
+    seconds = max(0.0, time.time() - float(post.published_ts or 0.0))
+    if seconds < 60:
+        return f"{seconds:.0f} שניות"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f} דקות"
+    return f"{seconds / 3600:.1f} שעות"
+
+
+def max_post_age_text() -> str:
+    if MAX_POST_AGE_SECONDS <= 0:
+        return "ללא הגבלה"
+    if MAX_POST_AGE_SECONDS < 3600:
+        return f"{MAX_POST_AGE_SECONDS / 60:.0f} דקות"
+    return f"{MAX_POST_AGE_SECONDS / 3600:.1f} שעות"
 
 
 def parse_timestamp(item: ET.Element) -> float:
@@ -1928,6 +1949,41 @@ def enabled_optional_accounts_from_state(state: dict[str, Any] | None = None) ->
     return [username for username in OPTIONAL_CONTROLLED_ACCOUNTS if username in allowed and username in enabled]
 
 
+def account_enabled_at_from_state(state: dict[str, Any] | None = None) -> dict[str, float]:
+    state = state or load_control_state()
+    raw = state.get("account_enabled_at", {})
+    if not isinstance(raw, dict):
+        return {}
+    allowed = set(X_ACCOUNTS) | set(OPTIONAL_CONTROLLED_ACCOUNTS)
+    result: dict[str, float] = {}
+    for username, value in raw.items():
+        if username not in allowed:
+            continue
+        try:
+            timestamp = float(value or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if timestamp > 0:
+            result[str(username)] = timestamp
+    return result
+
+
+def mark_account_enabled_at(state: dict[str, Any], username: str) -> dict[str, float]:
+    enabled_at = account_enabled_at_from_state(state)
+    enabled_at[username] = time.time()
+    return enabled_at
+
+
+def remove_account_enabled_at(state: dict[str, Any], username: str) -> dict[str, float]:
+    enabled_at = account_enabled_at_from_state(state)
+    enabled_at.pop(username, None)
+    return enabled_at
+
+
+def account_enabled_since(username: str, state: dict[str, Any] | None = None) -> float:
+    return float(account_enabled_at_from_state(state).get(username, 0.0) or 0.0)
+
+
 def disabled_base_accounts_from_state(state: dict[str, Any] | None = None) -> list[str]:
     state = state or load_control_state()
     raw_accounts = state.get("disabled_base_accounts", [])
@@ -2020,9 +2076,16 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
         keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_base_account:{username}"}])
     for username in OPTIONAL_CONTROLLED_ACCOUNTS:
         label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
-        status = "פעיל" if username in enabled_optional else "כבוי"
+        status = "פעיל קבוע" if username in ALWAYS_ENABLED_OPTIONAL_ACCOUNTS else ("פעיל" if username in enabled_optional else "כבוי")
         keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_account:{username}"}])
     return stable_reply_markup(keyboard)
+
+
+def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
+    markup = control_reply_markup(paused)
+    keyboard = list(markup.get("inline_keyboard", []))
+    keyboard.append([{"text": stable_button_label("⬅️ חזרה לראשי"), "callback_data": "football_quick_main"}])
+    return {"inline_keyboard": keyboard}
 
 
 def _flag_status(state: dict[str, Any], key: str) -> str:
@@ -2070,6 +2133,9 @@ def quick_control_reply_markup() -> dict[str, Any]:
             {"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"},
         ],
         [
+            {"text": "👥 ניהול כתבים", "callback_data": "football_menu_writers"},
+        ],
+        [
             {"text": "🛡️ הגדרות וסינון", "callback_data": "football_menu_filter"},
         ],
         [
@@ -2091,6 +2157,7 @@ def quick_control_reply_markup() -> dict[str, Any]:
 def monitor_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
         [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
+        [{"text": "👥 כתבים פעילים בפועל", "callback_data": "football_active_accounts_status"}],
         [{"text": "📬 פוסט אחרון שנשלח", "callback_data": "football_last_sent_post"}],
         [{"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"}],
         [{"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"}],
@@ -2543,14 +2610,32 @@ def matches_managed_team_tier(tier: str, text: str) -> bool:
     return _matches_any(managed_team_patterns_for_tier(tier), text)
 
 
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    try:
+        return username, fetch_posts(username), None
+    except Exception as exc:
+        logging.warning("⚠️ בדיקת RSS ידנית נכשלה עבור @%s: %s", username, exc)
+        return username, [], exc
+
+
+def fetch_control_posts_for_accounts(accounts: list[str]) -> dict[str, tuple[list[Post], Exception | None]]:
+    results: dict[str, tuple[list[Post], Exception | None]] = {username: ([], None) for username in accounts}
+    if not accounts:
+        return results
+    workers = min(current_max_parallel_account_checks(), max(1, len(accounts)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(fetch_control_posts, username): username for username in accounts}
+        for future in as_completed(future_map):
+            username, posts, error = future.result()
+            results[username] = (posts, error)
+    return results
+
+
 def live_recent_snapshot_from_rss() -> dict[str, int]:
     snapshot: dict[str, int] = {}
-    for username in all_control_test_accounts():
-        try:
-            snapshot[username] = len(recent_24h_posts(fetch_posts(username)))
-        except Exception as exc:
-            logging.warning("⚠️ בדיקת RSS לסטטיסטיקת כתבים נכשלה עבור @%s: %s", username, exc)
-            snapshot[username] = 0
+    accounts = all_control_test_accounts()
+    for username, (posts, error) in fetch_control_posts_for_accounts(accounts).items():
+        snapshot[username] = 0 if error else len(recent_24h_posts(posts))
     daily_stat_replace_table("fetched_recent_24h_snapshot", snapshot)
     return snapshot
 
@@ -2783,25 +2868,26 @@ def check_all_accounts_now_text() -> str:
     total_recent_posts = 0
     ok_count = 0
     recent_snapshot: dict[str, int] = {}
+    fetched_by_account = fetch_control_posts_for_accounts(accounts)
     for username in accounts:
         label = _hebrew_account_label(username)
-        try:
-            posts = fetch_posts(username)
-            recent = recent_24h_posts(posts)
-            recent_snapshot[username] = len(recent)
-            total_recent_posts += len(recent)
-            ok_count += 1
-            if recent:
-                latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
-                latest = f"{latest_dt} | {recent[0].link}"
-            elif posts:
-                latest = "יש פוסטים ב-RSS, אבל אין פוסטים מהיממה האחרונה"
-            else:
-                latest = "אין פוסטים כרגע"
-            lines.append(f"✅ {label}: {len(recent)} פוסטים ביממה האחרונה | אחרון: {latest}")
-        except Exception as exc:
+        posts, error = fetched_by_account.get(username, ([], None))
+        if error:
             recent_snapshot[username] = 0
-            lines.append(f"❌ {label}: תקלה בשליפה - {short_error(exc, 160)}")
+            lines.append(f"❌ {label}: תקלה בשליפה - {short_error(error, 160)}")
+            continue
+        recent = recent_24h_posts(posts)
+        recent_snapshot[username] = len(recent)
+        total_recent_posts += len(recent)
+        ok_count += 1
+        if recent:
+            latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+            latest = f"{latest_dt} | {recent[0].link}"
+        elif posts:
+            latest = "יש פוסטים ב-RSS, אבל אין פוסטים מהיממה האחרונה"
+        else:
+            latest = "אין פוסטים כרגע"
+        lines.append(f"✅ {label}: {len(recent)} פוסטים ביממה האחרונה | אחרון: {latest}")
     daily_stat_replace_table("fetched_recent_24h_snapshot", recent_snapshot)
     lines.extend(["", f"סיכום: {ok_count}/{len(accounts)} כתבים פעילים נבדקו. נמצאו יחד {total_recent_posts} פוסטים מהיממה האחרונה."])
     return "\n".join(lines)
@@ -2818,24 +2904,25 @@ def rss_status_text() -> str:
     accounts = all_control_test_accounts()
     ok_count = 0
     recent_total = 0
+    fetched_by_account = fetch_control_posts_for_accounts(accounts)
     for username in accounts:
         label = _hebrew_account_label(username)
-        try:
-            posts = fetch_posts(username)
-            recent = recent_24h_posts(posts)
-            recent_total += len(recent)
-            if posts:
-                ok_count += 1
-                source = posts[0].source_name or "לא ידוע"
-                if recent:
-                    latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
-                    lines.append(f"✅ {label}: RSS תקין | {len(recent)} פוסטים ביממה | מקור אחרון: {source} | אחרון: {latest_dt}")
-                else:
-                    lines.append(f"⚠️ {label}: RSS מחזיר פוסטים, אבל כולם ישנים מ-24 שעות | מקור אחרון: {source}")
+        posts, error = fetched_by_account.get(username, ([], None))
+        if error:
+            lines.append(f"❌ {label}: תקלה במקורות RSS - {short_error(error, 140)}")
+            continue
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        if posts:
+            ok_count += 1
+            source = posts[0].source_name or "לא ידוע"
+            if recent:
+                latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+                lines.append(f"✅ {label}: RSS תקין | {len(recent)} פוסטים ביממה | מקור אחרון: {source} | אחרון: {latest_dt}")
             else:
-                lines.append(f"⚠️ {label}: RSS עובד/נבדק, אבל לא החזיר פוסטים כרגע")
-        except Exception as exc:
-            lines.append(f"❌ {label}: תקלה במקורות RSS - {short_error(exc, 140)}")
+                lines.append(f"⚠️ {label}: RSS מחזיר פוסטים, אבל כולם ישנים מ-24 שעות | מקור אחרון: {source}")
+        else:
+            lines.append(f"⚠️ {label}: RSS עובד/נבדק, אבל לא החזיר פוסטים כרגע")
     lines.append("")
     lines.append(f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים כלשהם. פוסטים מהיממה האחרונה: {recent_total}.")
     return "\n".join(lines)
@@ -2933,6 +3020,48 @@ def gemini_status_text() -> str:
         "אם נגמרה מכסה: הפעל עצירת בקשות Gemini. כשהמכסה מתמלאת או כשמוסיפים מפתח חדש, לחץ שחרור Gemini אחרי שהתמלא."
     )
 
+
+def active_accounts_status_text() -> str:
+    state = load_control_state()
+    active = active_x_accounts()
+    active_set = set(active)
+    disabled_base = set(disabled_base_accounts_from_state(state))
+    enabled_optional = set(enabled_optional_accounts_from_state(state))
+    enabled_at = account_enabled_at_from_state(state)
+
+    def since_text(username: str) -> str:
+        timestamp = enabled_at.get(username, 0.0)
+        if not timestamp:
+            return ""
+        when = datetime.fromtimestamp(timestamp, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+        return f" | הופעל בכפתור: {when}"
+
+    lines = [
+        "👥 כתבים פעילים בפועל",
+        "",
+        "הבדיקה הזו לא עושה RSS ולא משתמשת ב-Gemini. היא מציגה את רשימת הסריקה לפי מצב הכפתורים שנשמר.",
+        "",
+        f"ייכנסו לסריקה עכשיו: {len(active)} כתבים",
+        ", ".join(_hebrew_account_label(username) for username in active) if active else "אין כתבים פעילים",
+        "",
+        "כתבים ראשיים:",
+    ]
+    for username in X_ACCOUNTS:
+        status = "כבוי" if username in disabled_base else "פעיל"
+        marker = "✅" if username in active_set else "⛔"
+        lines.append(f"{marker} {_hebrew_account_label(username)}: {status}{since_text(username)}")
+
+    lines.extend(["", "כתבים אופציונליים:"])
+    for username in OPTIONAL_CONTROLLED_ACCOUNTS:
+        if username in ALWAYS_ENABLED_OPTIONAL_ACCOUNTS:
+            status = "פעיל קבוע"
+        else:
+            status = "פעיל" if username in enabled_optional else "כבוי"
+        marker = "✅" if username in active_set else "⛔"
+        lines.append(f"{marker} {_hebrew_account_label(username)}: {status}{since_text(username)}")
+    return "\n".join(lines)
+
+
 def last_sent_post_text() -> str:
     state = load_control_state()
     item = state.get("last_sent_post")
@@ -2976,7 +3105,7 @@ def simple_stat_text(kind: str) -> str:
         return f"🚫 כמה נחסמו היום\n\nנחסמו לפני תרגום/שליחה: {skipped_total}"
     if kind == "old_posts":
         count = int((bucket.get("skip_reasons", {}) or {}).get(BLOCK_REASON_HEBREW.get("old_post", "פוסט ישן מדי"), 0) or 0)
-        return f"⏳ פוסטים ישנים מדי\n\nנרשמו היום: {count}\nב-30 הדקות הראשונות אחרי הרצת הבוט הם לא נכנסים לדוח 'למה לא נשלח'."
+        return f"⏳ פוסטים ישנים מדי\n\nנרשמו היום: {count}\nחלון הגיל שמותר לשליחה כרגע: {max_post_age_text()}.\nבזמן ההפעלה הראשוני הם לא נכנסים לדוח 'למה לא נשלח' כדי שלא יהיה רעש התחלה."
     if kind == "posts_by_writer":
         lines = []
         for i, username in enumerate(all_control_test_accounts(), 1):
@@ -3019,6 +3148,7 @@ def category_help_text(category: str) -> str:
             "ℹ️ הסבר בדיקה וניטור\n\n"
             "הקטגוריה הזו מיועדת לבדיקות מצב בלבד. הכפתורים כאן לא מתרגמים פוסטים ולא משתמשים ב-Gemini.\n\n"
             "🔄 בדוק את כל הכתבים עכשיו — עושה שליפת RSS לכל הכתבים הפעילים ומחזיר כמה פוסטים נמצאו. לא שולח פוסטים ולא מפעיל תרגום.\n"
+            "👥 כתבים פעילים בפועל — מציג מי באמת נכנס לסריקה לפי מצב הכפתורים שנשמר. לא עושה RSS ולא משתמש ב-Gemini.\n"
             "📬 פוסט אחרון שנשלח — מציג את הפוסט האחרון שהבוט שמר כשליחה. לא עושה שליפה חדשה.\n"
             "↩️ למה לא נשלח — מציג חסימות אחרונות.\n"
             "🧠 כפילות אחרונה — מציג כפילויות שנחסמו.\n"
@@ -3078,7 +3208,7 @@ def control_buttons_help_text() -> str:
         "📊 סיכום היום עכשיו\n"
         "שולח מיד דוח מלא בעברית על היום הנוכחי.\n\n"
         "↩️ למה לא נשלח\n"
-        "מציג את 5 החסימות האחרונות. פוסטים ישנים מדי כן ידווחו, אבל לא ב-30 הדקות הראשונות אחרי הפעלת הבוט כדי שלא יהיה רעש התחלה.\n\n"
+        "מציג את 5 החסימות האחרונות. פוסטים ישנים מדי כן ידווחו, אבל בזמן ההפעלה הראשוני הם מוסתרים כדי שלא יהיה רעש התחלה.\n\n"
         "🧠 כפילות אחרונה\n"
         "מציג כפילויות אחרונות שהבוט חסם.\n\n"
         "🔓 ביטול כל הסינונים הזמניים\n"
@@ -3116,6 +3246,10 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "פותח בדיקה וניטור")
         send_control_menu("🔎 בדיקה וניטור\nבחר פעולה. הכל כאן ללא Gemini וללא שליחת פוסטים.", monitor_menu_reply_markup(), message.get("message_id"))
+    elif data == "football_menu_writers":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח ניהול כתבים")
+        send_control_menu("👥 ניהול כתבים\nכאן מפעילים או מכבים כתבים. הרשימה הזו היא המקור לרשימת הסריקה בפועל.", writers_management_reply_markup(is_control_paused()), message.get("message_id"))
     elif data == "football_menu_filter":
         if callback_id:
             answer_control_callback(callback_id, "פותח הגדרות וסינון")
@@ -3190,6 +3324,10 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "בודק את כל הכתבים")
         send_control_text(check_all_accounts_now_text(), message.get("message_id"), monitor_menu_reply_markup())
+    elif data == "football_active_accounts_status":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג כתבים פעילים")
+        send_control_text(active_accounts_status_text(), message.get("message_id"), monitor_menu_reply_markup())
     elif data == "football_rss_status":
         if callback_id:
             answer_control_callback(callback_id, "בודק RSS")
@@ -3331,16 +3469,19 @@ def process_control_update(update: dict[str, Any]) -> None:
         label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
         if username in enabled:
             enabled.remove(username)
+            enabled_at = remove_account_enabled_at(state, username)
             action_text = f"{label} כובה"
             logging.info("⏸️ לוח שליטה: הכתב האופציונלי @%s כובה בכפתור ולא ייסרק.", username)
         else:
             enabled.add(username)
+            enabled_at = mark_account_enabled_at(state, username)
             action_text = f"{label} הופעל"
             logging.info("▶️ לוח שליטה: הכתב האופציונלי @%s הופעל בכפתור וייכנס לסריקה.", username)
-        save_control_state(enabled_optional_accounts=[account for account in OPTIONAL_CONTROLLED_ACCOUNTS if account in enabled])
+        save_control_state(enabled_optional_accounts=[account for account in OPTIONAL_CONTROLLED_ACCOUNTS if account in enabled], account_enabled_at=enabled_at)
         if callback_id:
             answer_control_callback(callback_id, action_text)
-        send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.")
+        suffix = " פוסטים שיפורסמו אחרי ההפעלה ייבדקו בסריקה הבאה." if username in enabled else ""
+        send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.{suffix}")
     elif data.startswith("football_base_account:"):
         username = data.split(":", 1)[1]
         if username not in X_ACCOUNTS:
@@ -3352,16 +3493,19 @@ def process_control_update(update: dict[str, Any]) -> None:
         label = CONTROLLED_BASE_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
         if username in disabled:
             disabled.remove(username)
+            enabled_at = mark_account_enabled_at(state, username)
             action_text = f"{label} הופעל"
             logging.info("▶️ לוח שליטה: הכתב @%s הופעל מחדש בכפתור.", username)
         else:
             disabled.add(username)
+            enabled_at = remove_account_enabled_at(state, username)
             action_text = f"{label} כובה"
             logging.info("⏸️ לוח שליטה: הכתב @%s כובה בכפתור ולא ייסרק עד להפעלה מחדש.", username)
-        save_control_state(disabled_base_accounts=[account for account in X_ACCOUNTS if account in disabled])
+        save_control_state(disabled_base_accounts=[account for account in X_ACCOUNTS if account in disabled], account_enabled_at=enabled_at)
         if callback_id:
             answer_control_callback(callback_id, action_text)
-        send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.")
+        suffix = " פוסטים שיפורסמו אחרי ההפעלה ייבדקו בסריקה הבאה." if username not in disabled else ""
+        send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.{suffix}")
 
 
 def process_channel_post_update(update: dict[str, Any]) -> None:
@@ -3731,8 +3875,25 @@ MATCH_CONTEXT_NOISE_PATTERNS = (
 )
 
 AUDIENCE_OR_QUESTION_PATTERNS = (
-    r"\b(?:who was your|your player of the match|what do you think|thoughts\?|would you|should he|should they|poll|vote|question)\b",
-    r"מי היה|מה דעתכם|מה אתם חושבים|הייתם|צריך לדעתכם|סקר|הצביעו|שאלה",
+    r"\b(?:who was your|your player of the match|what do you think|thoughts\?|would you|should he|should they|poll|vote|votes?|voting|question|who wins?|who goes through)\b",
+    r"מי היה|מה דעתכם|מה אתם חושבים|הייתם|צריך לדעתכם|סקר|הצביעו|הצבעה|הצבעות|שאלה|מי עולה|מי מנצח",
+)
+
+LINEUP_OR_TEAMSHEET_PATTERNS = (
+    r"\b(?:official\s+)?(?:line[- ]?ups?|starting XI|starting eleven|probable XI|predicted XI|team sheets?|teamsheet|confirmed XI)\b",
+    r"הרכבים?\s+רשמיים|ההרכבים?\s+הרשמיים|הרכב\s+רשמי|ההרכב\s+הרשמי|הרכב\s+פותח|פותחים\s+ב|ההרכבים?\s+למשחק",
+)
+
+POLL_OR_AUDIENCE_PATTERNS = (
+    r"\b(?:poll|vote|votes?|voting|who wins?|who goes through|question)\b|(?:\d{1,3}%.*\d{1,3}%|votes?\s*[•-])",
+    r"סקר|הצביעו|הצבעה|הצבעות|מי עולה|מי מנצח|\d{1,3}%.*\d{1,3}%|\d[\d,\.]*\s+הצבעות",
+)
+
+WORLD_CUP_BRACKET_NOISE_PATTERNS = (
+    r"\b(?:World Cup|FIFA World Cup)\b.{0,120}\b(?:round of 32|round of 16|last 32|last 16|knockout|qualified|qualifies|advanced|advances|vs\.?|v)\b",
+    r"\b(?:round of 32|round of 16|last 32|last 16|knockout|qualified|qualifies|advanced|advances|vs\.?|v)\b.{0,120}\b(?:World Cup|FIFA World Cup)\b",
+    r"(?:מונדיאל|גביע העולם).{0,120}(?:שמינית|שלב\s+32|נוקאאוט|העפיל|העפילה|העפילו|נגד|🆚|מי עולה)",
+    r"(?:שמינית|שלב\s+32|נוקאאוט|העפיל|העפילה|העפילו|נגד|🆚|מי עולה).{0,120}(?:מונדיאל|גביע העולם)",
 )
 
 LIVE_GOAL_OR_MATCH_MOMENT_PATTERNS = (
@@ -3877,6 +4038,16 @@ def is_match_context_noise_post(post: Post) -> bool:
     return _matches_any(MATCH_CONTEXT_NOISE_PATTERNS, cleaned) or _matches_any(AUDIENCE_OR_QUESTION_PATTERNS, cleaned)
 
 
+def is_lineup_or_teamsheet_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    return bool(cleaned and _matches_any(LINEUP_OR_TEAMSHEET_PATTERNS, cleaned))
+
+
+def is_poll_or_audience_post(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    return bool(cleaned and _matches_any(POLL_OR_AUDIENCE_PATTERNS, cleaned))
+
+
 def has_news_action_signal(post: Post) -> bool:
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     return bool(
@@ -3887,6 +4058,66 @@ def has_news_action_signal(post: Post) -> bool:
         or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
         or _matches_any(ADMIN_PERSON_EXIT_OR_STATUS_PATTERNS, cleaned)
     )
+
+
+def is_world_cup_bracket_or_qualification_noise(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    if _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, cleaned):
+        return False
+    if (
+        _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned)
+        or _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
+        or _matches_any(ADMIN_PERSON_EXIT_OR_STATUS_PATTERNS, cleaned)
+    ):
+        return False
+    return _matches_any(WORLD_CUP_BRACKET_NOISE_PATTERNS, cleaned)
+
+
+def has_small_total_transfer_fee(post: Post) -> bool:
+    text = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not text or MIN_TRANSFER_FEE_MILLIONS_TO_SEND <= 0:
+        return False
+    lowered = text.lower()
+    if re.search(r"\b(?:salary|wages|per season|per year|annual|release clause|clause)\b|שכר|לעונה|לשנה|שנתי|סעיף\s+שחרור", lowered, re.IGNORECASE):
+        return False
+    if not re.search(r"\b(?:fee|package|deal worth|transfer fee|for|from)\b|תמורת|דמי\s+העברה|עסקה|בונוסים\s+כלולים|מ-|\bfrom\b", text, re.IGNORECASE):
+        return False
+    amount_patterns = (
+        r"(?i)(?:€|£|\$)\s*(\d+(?:[.,]\d+)?)\s*(?:m|million|מיליון)?",
+        r"(?i)\b(\d+(?:[.,]\d+)?)\s*(?:m|million|מיליון)\s*(?:€|£|\$|אירו|יורו|ליש\"?ט|דולר)?",
+    )
+    for pattern in amount_patterns:
+        for match in re.finditer(pattern, text):
+            try:
+                amount = float(match.group(1).replace(",", "."))
+            except Exception:
+                continue
+            if 0 < amount < MIN_TRANSFER_FEE_MILLIONS_TO_SEND:
+                return True
+    return False
+
+
+def is_minor_destination_from_big_club_source(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    if has_big_club_as_main_buyer(cleaned):
+        return False
+    source_big_club = re.search(
+        r"\bfrom\s+(?:Inter|AS Roma|Roma|Juventus|AC Milan|Milan|Chelsea|Manchester City|Man City|Manchester United|Man United|Barcelona|Real Madrid)\b|"
+        r"מ(?:אינטר|רומא|AS רומא|יובנטוס|מילאן|צ'לסי|מנצ'סטר סיטי|מנצ'סטר יונייטד|ברצלונה|ריאל מדריד)",
+        cleaned,
+        re.IGNORECASE,
+    )
+    weak_destination_action = re.search(
+        r"\b(?:asked|requested|want(?:s)?|loan|on loan|signs? for|joins?|lands? at|to)\b|"
+        r"ביקשו|מבקשת|מעוניינת|בהשאלה|מושאל|חתם\s+ב|נחת\s+ב|לספסל\s+של|ל(?:-|\s)?[א-תA-Za-z]",
+        cleaned,
+        re.IGNORECASE,
+    )
+    return bool(source_big_club and weak_destination_action)
 
 
 def is_media_without_report_post(post: Post) -> bool:
@@ -4234,7 +4465,13 @@ BLOCK_REASON_HEBREW = {
     "unclear_subject_news": "דיווח בלי שם/קבוצה ברורים",
     "live_goal_or_match_moment": "עדכון שער או מהלך משחק",
     "match_result_or_engagement": "תוצאה/שאלת מעורבות/עדכון משחק",
+    "lineup_or_teamsheet": "הרכבים/הרכב רשמי",
+    "poll_or_audience": "סקר/הצבעת קהל",
+    "world_cup_bracket_noise": "דיווח מונדיאל סתמי",
     "final_only_club_not_strict_final": "קבוצת דרג ב שמותרת רק בדיווח סופי",
+    "tier3_weak_interest": "דרג ג עם התעניינות חלשה",
+    "minor_destination_from_big_club": "יעד קטן דרך קבוצה גדולה",
+    "small_transfer_fee": "עסקה קטנה מתחת לרף",
     "admin_or_backroom_only_barca_real_allowed": "דיווח ניהולי שלא קשור לריאל/ברצלונה",
     "low_interest_stay_renewal": "הישארות/חידוש חוזה לא מספיק מעניין",
     "low_interest_non_europe_contract": "חוזה בליגה לא מספיק מעניינת",
@@ -5083,6 +5320,39 @@ def _event_similarity(current: dict[str, Any], previous: dict[str, Any]) -> floa
     return score
 
 
+def strict_duplicate_match(
+    current: dict[str, Any],
+    previous: dict[str, Any],
+    score: float,
+    local: str = "BORDERLINE",
+) -> bool:
+    """Return True only when two posts are genuinely the same report."""
+    if local == "SAME_DUPLICATE":
+        return True
+    if local in {"ADVANCED_NEW", "DIFFERENT"}:
+        return False
+
+    current_entities = set(current.get("entities", []))
+    previous_entities = set(previous.get("entities", []))
+    current_actions = set(current.get("actions", []))
+    previous_actions = set(previous.get("actions", []))
+    current_tokens = set(current.get("tokens", []))
+    previous_tokens = set(previous.get("tokens", []))
+
+    entity_overlap = len(current_entities & previous_entities)
+    action_overlap = len(current_actions & previous_actions)
+    token_overlap = len(current_tokens & previous_tokens)
+    number_overlap = len({token for token in current_tokens if token.isdigit()} & {token for token in previous_tokens if token.isdigit()})
+
+    if score >= 0.94 and entity_overlap >= 2 and action_overlap >= 1:
+        return True
+    if score >= 0.90 and entity_overlap >= 3 and (action_overlap >= 1 or number_overlap >= 1):
+        return True
+    if score >= 0.88 and entity_overlap >= 2 and action_overlap >= 2 and token_overlap >= 7:
+        return True
+    return False
+
+
 def cleanup_recent_news_events(state: dict[str, Any], now: float | None = None) -> list[dict[str, Any]]:
     now = now or time.time()
     recent_raw = state.get(RECENT_NEWS_STATE_KEY, [])
@@ -5106,12 +5376,12 @@ def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, 
         local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
         if local in {"ADVANCED_NEW", "DIFFERENT"}:
             continue
-        if local == "SAME_DUPLICATE" or score >= 0.74:
+        if strict_duplicate_match(current, previous, score, local):
             return item
     return None
 
 
-def remember_recent_news_event(post: Post, state: dict[str, Any]) -> None:
+def remember_recent_news_event(post: Post, state: dict[str, Any], pending: bool = False) -> None:
     recent = cleanup_recent_news_events(state)
     recent.append(
         {
@@ -5119,11 +5389,41 @@ def remember_recent_news_event(post: Post, state: dict[str, Any]) -> None:
             "username": post.username,
             "priority": SOURCE_PRIORITY.get(post.username, 0),
             "link": post.link,
+            "pending": bool(pending),
             "ai_text": _ai_duplicate_text_from_post(post) if "_ai_duplicate_text_from_post" in globals() else _news_duplicate_clean_text(post),
             "signature": news_event_signature(post),
         }
     )
     state[RECENT_NEWS_STATE_KEY] = recent[-700:]
+
+
+def confirm_recent_news_event(post: Post, state: dict[str, Any]) -> None:
+    recent = cleanup_recent_news_events(state)
+    for item in reversed(recent):
+        if isinstance(item, dict) and item.get("link") == post.link and item.get("username") == post.username:
+            item["pending"] = False
+            item["ts"] = time.time()
+            return
+    remember_recent_news_event(post, state, pending=False)
+
+
+def forget_pending_recent_news_event(post: Post, state: dict[str, Any]) -> None:
+    recent = cleanup_recent_news_events(state)
+    state[RECENT_NEWS_STATE_KEY] = [
+        item
+        for item in recent
+        if not (
+            isinstance(item, dict)
+            and bool(item.get("pending", False))
+            and item.get("link") == post.link
+            and item.get("username") == post.username
+        )
+    ][-700:]
+
+
+def drop_unconfirmed_recent_news_events(state: dict[str, Any]) -> None:
+    recent = cleanup_recent_news_events(state)
+    state[RECENT_NEWS_STATE_KEY] = [item for item in recent if not bool(item.get("pending", False))][-700:]
 
 
 def channel_duplicate_text_to_post(text: str, message_id: str = "") -> Post:
@@ -5202,7 +5502,7 @@ def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str,
         local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
         if local in {"ADVANCED_NEW", "DIFFERENT"}:
             continue
-        if local == "SAME_DUPLICATE" or score >= 0.76:
+        if strict_duplicate_match(current, previous, score, local):
             return item
     return None
 
@@ -5713,8 +6013,9 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
         not same_author
         and distinctive_overlap >= 2
         and family_overlap
-        and current_rank < previous_rank + 20
-        and detail_delta <= 2
+        and score >= 0.58
+        and current_rank < previous_rank + 10
+        and detail_delta <= 1
     ):
         return "SAME_DUPLICATE"
 
@@ -5725,10 +6026,11 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     if (
         not same_author
         and shared_big_club_groups >= 1
-        and distinctive_overlap >= 1
+        and distinctive_overlap >= 2
         and family_overlap
-        and current_rank < previous_rank + 25
-        and detail_delta <= 2
+        and score >= 0.50
+        and current_rank < previous_rank + 10
+        and detail_delta <= 1
     ):
         return "SAME_DUPLICATE"
 
@@ -5747,17 +6049,18 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
         not same_author
         and distinctive_overlap >= 2
         and family_overlap
-        and current_rank < previous_rank + 20
-        and detail_delta <= 2
+        and score >= 0.58
+        and current_rank < previous_rank + 10
+        and detail_delta <= 1
     ):
         return "SAME_DUPLICATE"
     if (
         not same_author
-        and distinctive_overlap >= 1
+        and distinctive_overlap >= 2
         and family_overlap
         and action_overlap >= 2
-        and score >= 0.30
-        and current_rank < previous_rank + 20
+        and score >= 0.60
+        and current_rank < previous_rank + 10
         and detail_delta <= 1
     ):
         return "SAME_DUPLICATE"
@@ -5768,7 +6071,8 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
         and current_stage == "medical_or_final_steps"
         and "medical" not in cur_text
         and previous_rank >= 50
-        and detail_delta <= 2
+        and score >= 0.58
+        and detail_delta <= 1
     ):
         return "SAME_DUPLICATE"
 
@@ -5784,29 +6088,31 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     if (
         not same_author
         and distinctive_overlap >= 2
-        and (action_overlap >= 1 or score >= 0.35)
-        and current_rank < previous_rank + 20
-        and detail_delta <= 2
+        and (action_overlap >= 1 or family_overlap)
+        and score >= 0.60
+        and current_rank < previous_rank + 10
+        and detail_delta <= 1
     ):
         return "SAME_DUPLICATE"
     if (
         not same_author
         and entity_overlap >= 2
-        and distinctive_overlap >= 1
+        and distinctive_overlap >= 2
         and action_overlap >= 1
-        and current_rank < previous_rank + 20
-        and detail_delta <= 2
+        and score >= 0.72
+        and current_rank < previous_rank + 10
+        and detail_delta <= 1
     ):
         return "SAME_DUPLICATE"
 
     # Very strong same-event match with no higher stage: skip locally, no Gemini needed.
-    if score >= AI_DUPLICATE_AUTO_SKIP_SIMILARITY and current_rank <= previous_rank and detail_delta == 0:
+    if score >= AI_DUPLICATE_AUTO_SKIP_SIMILARITY and entity_overlap >= 2 and action_overlap >= 1 and current_rank <= previous_rank and detail_delta == 0:
         return "SAME_DUPLICATE"
-    if entity_overlap >= 3 and action_overlap >= 1 and score >= 0.80 and current_rank <= previous_rank and detail_delta <= 1:
+    if entity_overlap >= 3 and action_overlap >= 1 and distinctive_overlap >= 2 and score >= 0.86 and current_rank <= previous_rank and detail_delta <= 1:
         return "SAME_DUPLICATE"
 
     # Same entity but stronger trusted source: usually same duplicate unless it materially advances.
-    if entity_overlap >= 2 and score >= 0.82 and SOURCE_PRIORITY.get(current_post.username, 0) > int(previous_item.get("priority", 0) or 0) and current_rank <= previous_rank and detail_delta <= 1:
+    if entity_overlap >= 2 and action_overlap >= 1 and distinctive_overlap >= 2 and score >= 0.90 and SOURCE_PRIORITY.get(current_post.username, 0) > int(previous_item.get("priority", 0) or 0) and current_rank <= previous_rank and detail_delta <= 1:
         return "SAME_DUPLICATE"
 
     return "BORDERLINE"
@@ -5935,6 +6241,7 @@ def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> d
     """Final duplicate gate. Cheap local rules first, Gemini only for borderline near-matches."""
     recent = list(reversed(cleanup_recent_news_events(state)))
     fallback_duplicate: dict[str, Any] | None = None
+    current_sig = news_event_signature(post)
     for item in recent:
         if not isinstance(item, dict):
             continue
@@ -5953,7 +6260,8 @@ def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> d
             return item
         if verdict in {"ADVANCED_NEW", "DIFFERENT"}:
             continue
-        if score >= 0.78 and fallback_duplicate is None:
+        previous_sig = item.get("signature", {}) if isinstance(item.get("signature", {}), dict) else {}
+        if previous_sig and strict_duplicate_match(current_sig, previous_sig, score, local) and fallback_duplicate is None:
             fallback_duplicate = item
     return fallback_duplicate
 
@@ -6221,13 +6529,13 @@ def remove_dangling_source_attribution(text: str) -> str:
         r"@?[A-Za-z0-9_]{3,40}|"
         r"Fabrizio\s+Romano|David\s+Ornstein|Gianluca\s+Di\s+Marzio|Di\s+Marzio|Nicol[oò]\s+Schira|"
         r"Matteo\s+Moretto|Ben\s+Jacobs|Florian\s+Plettenberg|Fernando\s+Polo|Gerard\s+Romero|"
-        r"פבריציו\s+רומאנו|דיוויד\s+אורנשטיין|ג'אנלוקה\s+די\s+מרציו|ניקולו\s+שירה|מתאו\s+מורטו|בן\s+ג'ייקובס"
+        r"פבריציו\s+רומאנו|דיוויד\s+אורנשטיין|ג'אנלוקה\s+די\s+מרציו|ניקולו\s+שירה|מתאו\s+מורטו|בן\s+ג'ייקובס|פלוריאן\s+פלטנברג"
     )
     empty_tail = r"(?:\s*(?:[.,;:!?]|$))"
     patterns = (
         rf"(?iu)\s*,?\s*(?:as\s+(?:first\s+)?reported|as\s+revealed|as\s+told|reported)\s+by\s*(?:{source_names})?{empty_tail}",
         rf"(?iu)\s*,?\s*(?:via|h/t|credit(?:s)?\s+to)\s*(?:{source_names}){empty_tail}",
-        rf"(?iu)\s*,?\s*(?:כפי\s+ש(?:דווח|נחשף|פורסם)|כמו\s+ש(?:דווח|פורסם)|לפי\s+הדיווח)\s+(?:על\s+ידי|בידי|אצל|של)?\s*(?:{source_names})?{empty_tail}",
+        rf"(?iu)\s*,?\s*(?:כפי\s+ש(?:דווח|מדווח|מדווחת|נחשף|פורסם)|כמו\s+ש(?:דווח|פורסם)|לפי\s+הדיווח)\s+(?:על\s+ידי|בידי|אצל|של)?\s*(?:{source_names})?{empty_tail}",
         rf"(?iu)\s*,?\s*(?:דווח|פורסם|נחשף)\s+(?:על\s+ידי|בידי|אצל)\s*(?:{source_names})?{empty_tail}",
     )
     for pattern in patterns:
@@ -6239,6 +6547,65 @@ def remove_dangling_source_attribution(text: str) -> str:
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n+ *", "\n", text)
     return text.strip(" \t,;:")
+
+
+def remove_writer_brag_phrases(text: str) -> str:
+    text = text or ""
+    patterns = (
+        r"(?iu)\s*(?:אין\s+הפתעות\s+כאן|אין\s+הפתעות|לא\s+היו\s+הפתעות)\s*(?:ו|,|\.)?\s*(?:זה\s+)?(?:אושר|מאושר|מאומת|ידוע|נחשף|דווח|פורסם)?\s*(?:מאז|כבר\s+מאז)?\s*(?:ה-?\d{1,2}\s+ב[א-ת]+|\d{1,2}/\d{1,2}(?:/\d{2,4})?|[A-Za-z]+\s+\d{1,2})?\s*[.!?]?",
+        r"(?iu)\s*(?:וזה\s+)?(?:אושר|מאומת|ידוע|נחשף|דווח|פורסם)\s+(?:כבר\s+)?מאז\s+(?:ה-?\d{1,2}\s+ב[א-ת]+|\d{1,2}/\d{1,2}(?:/\d{2,4})?|[A-Za-z]+\s+\d{1,2})\s*[.!?]?",
+        r"(?iu)\s*(?:confirmed|verified|reported|revealed)\s+since\s+(?:last\s+)?(?:\d{1,2}\s+[A-Za-z]+|[A-Za-z]+\s+\d{1,2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*[.!?]?",
+        r"(?iu)\s*(?:no\s+surprises?\s+here|no\s+surprise)\s*[.!?]?",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, ".", text)
+    text = re.sub(
+        r"(?iu)\s*(?:אין\s+הפתעות(?:\s+כאן)?|לא\s+היו\s+הפתעות)(?:\s*(?:ו|,|\.))?\s*(?:זה\s+)?(?:אושר|מאושר|מאומת|ידוע|נחשף|דווח|פורסם)?\s*(?:כבר\s+)?מאז[^.!?\n]*(?:האחרון)?[.!?]?",
+        ".",
+        text,
+    )
+    text = re.sub(
+        r"(?iu)\s*(?:וזה\s+)?(?:אושר|מאושר|מאומת|ידוע|נחשף|דווח|פורסם)\s+(?:כבר\s+)?מאז[^.!?\n]*(?:האחרון)?[.!?]?",
+        ".",
+        text,
+    )
+    text = re.sub(r"(?iu)\.?\s*האחרון[.!?]?", ".", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"\.{2,}", ".", text)
+    return text.strip()
+
+
+def _known_team_display_names() -> list[str]:
+    names: set[str] = set()
+    for item in all_team_catalog_items().values():
+        name = str(item.get("name", "")).strip()
+        if name:
+            names.add(name)
+        for alias in item.get("aliases", []) or []:
+            alias_text = str(alias).strip()
+            if re.search(r"[א-ת]", alias_text):
+                names.add(alias_text)
+    names.update({"מנצ'סטר סיטי", "מנצ'סטר יונייטד", "צ'לסי", "טוטנהאם", "ארסנל", "ליברפול", "באיירן", "ריאל מדריד", "ברצלונה"})
+    return sorted(names, key=len, reverse=True)
+
+
+def remove_trailing_duplicate_team_tags(text: str) -> str:
+    value = text or ""
+    team_names = _known_team_display_names()
+    if not team_names:
+        return value.strip()
+    team_alt = "|".join(re.escape(name) for name in team_names if name)
+    for _ in range(3):
+        match = re.search(rf"(?s)(.*?)(?:[.!?]\s+)((?:(?:{team_alt})(?:\s+(?:{team_alt}))*))\s*[.!?]?\s*$", value)
+        if not match:
+            break
+        before = match.group(1).strip()
+        tail = match.group(2).strip()
+        tail_names = [name for name in team_names if re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", tail)]
+        if not tail_names or not all(re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", before) for name in tail_names):
+            break
+        value = before.strip()
+    return value.strip()
 
 
 def remove_junk_topic_tags(text: str) -> str:
@@ -6804,6 +7171,7 @@ def final_hebrew_polish(text: str) -> str:
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
     text = remove_dangling_source_attribution(text)
+    text = remove_writer_brag_phrases(text)
     text = convert_hashtags_to_text(text)
     for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, FOOTBALL_TERMS, HEBREW_FINAL_FIXES):
         text = apply_phrase_replacements(text, replacements)
@@ -6824,12 +7192,41 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_junk_tail_lines(text)
     text = remove_israel_time_additions(text)
     text = remove_dangling_source_attribution(text)
+    text = remove_writer_brag_phrases(text)
+    text = remove_trailing_duplicate_team_tags(text)
     text = normalize_exclusive_label(text)
     text = normalize_breaking_label(text)
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
     text = re.sub(r"(?im)^בלעדי\s*[-:–—]\s*", "בלעדי: ", text)
     text = final_visual_cleanup(text)
     return text.strip()
+
+
+def format_news_paragraphs(text: str) -> str:
+    value = (text or "").strip()
+    if not value or "\n\n" in value or len(value) < 170:
+        return value
+    sentences = re.split(r"(?<=[.!?])\s+", value)
+    if len(sentences) <= 2:
+        return value
+    paragraphs: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        current.append(sentence)
+        current_len += len(sentence)
+        if len(current) >= 2 or current_len >= 230:
+            paragraphs.append(" ".join(current).strip())
+            current = []
+            current_len = 0
+    if current:
+        paragraphs.append(" ".join(current).strip())
+    if len(paragraphs) <= 1:
+        return value
+    return "\n\n".join(paragraphs)
 
 
 def translation_contradicts_source(original: str, translated: str) -> bool:
@@ -7087,9 +7484,32 @@ def polish_team_names_with_original_context(post: Post, text: str) -> str:
     original = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     original_has_tottenham = bool(re.search(r"\bTottenham(?:\s+Hotspur)?\b|טוטנהאם", original, re.IGNORECASE))
     original_has_spurs = bool(re.search(r"\bSpurs\b|ספרס", original, re.IGNORECASE))
-    if original_has_tottenham and not original_has_spurs:
+    if original_has_tottenham or original_has_spurs:
         value = re.sub(r"(?iu)\bה?ספרס\b", "טוטנהאם", value)
+    value = re.sub(r"(?iu)(?<![\wא-ת])ספרס(?![\wא-ת])", "טוטנהאם", value)
+    value = re.sub(r"(?iu)וספרס\b", "וטוטנהאם", value)
+    if re.search(r"(?iu)\bround\s+of\s+32\b|last\s+32|שלב\s+32", original):
+        value = re.sub(r"(?iu)שמינית\s+גמר(?:\s+המונדיאל|\s+גביע\s+העולם)?", "שלב 32 הגדולות", value)
     return value
+
+
+def should_hide_writer_header(post: Post, translated: str) -> bool:
+    source = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or "", translated or ""])))
+    if not source:
+        return False
+    if is_world_cup_bracket_or_qualification_noise(post):
+        return True
+    national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, source) or matches_managed_team_tier("national", source)
+    club_context = (
+        _matches_any(ALLOWED_CLUB_PATTERNS, source)
+        or _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, source)
+        or matches_managed_team_tier("tier1", source)
+        or matches_managed_team_tier("tier2", source)
+        or matches_managed_team_tier("tier3", source)
+        or _matches_any(ISRAELI_LEAGUE_PATTERNS, source)
+    )
+    transfer_or_club_news = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, source) or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, source) or _matches_any(COACH_IMPORTANT_PATTERNS, source)
+    return bool(national_context and not club_context and not transfer_or_club_news)
 
 
 def has_meaningful_text(text: str) -> bool:
@@ -7235,6 +7655,7 @@ def build_message(
     quoted_translated = tidy_translated_text(quoted_translated)
     translated = polish_team_names_with_original_context(post, translated)
     quoted_translated = polish_team_names_with_original_context(post, quoted_translated)
+    translated = format_news_paragraphs(translated)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
 
     safe_account = html.escape(rtl(f"{display_name}:"))
@@ -7244,7 +7665,10 @@ def build_message(
     quote_label = f"<b>{html.escape(rtl('פוסט מצוטט:'))}</b>"
     signature = f'<a href="{html.escape(SIGNATURE_LINK)}">{html.escape(rtl(SIGNATURE_TEXT))}</a>'
 
-    parts = [f"<b>{safe_account}</b>", "", safe_body]
+    if should_hide_writer_header(post, translated):
+        parts = [safe_body]
+    else:
+        parts = [f"<b>{safe_account}</b>", "", safe_body]
 
     if safe_quoted_body:
         parts.append("")
@@ -7255,6 +7679,18 @@ def build_message(
     parts.extend(["", signature])
 
     return "\n".join(parts)
+
+
+def selected_post_images(post: Post) -> list[str]:
+    if post.has_video:
+        return []
+    images = list(dict.fromkeys(post.image_urls))[:MAX_IMAGES_PER_POST]
+    if len(images) <= 1:
+        return images
+    text = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if _matches_any(FINAL_ONLY_STRICT_PATTERNS, text) or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, text):
+        return images[:1]
+    return images
 
 
 
@@ -7322,7 +7758,7 @@ FINAL_OR_NEAR_FINAL_PATTERNS = (
 
 FINAL_ONLY_STRICT_PATTERNS = (
     r"\b(?:official|confirmed|announced|announcement|club statement|signed|has signed|done deal|deal done|deal agreed|agreement reached|full agreement|documents signed|contracts signed|completed|sealed|approved|accepted bid|bid accepted)\b",
-    r"׳¨׳©׳׳™|׳׳•׳©׳¨|׳׳™׳©׳¨|׳׳™׳©׳¨׳”|׳”׳•׳“׳™׳¢|׳”׳•׳“׳™׳¢׳”|׳”׳•׳“׳¢׳” ׳¨׳©׳׳™׳×|׳—׳×׳|׳—׳×׳׳”|׳”׳¢׳¡׳§׳” ׳¡׳’׳•׳¨׳”|׳¢׳¡׳§׳” ׳¡׳’׳•׳¨׳”|׳”׳¢׳¡׳§׳” ׳”׳•׳©׳׳׳”|׳”׳¢׳¡׳§׳” ׳¡׳•׳›׳׳”|׳¡׳•׳›׳׳” ׳”׳¢׳¡׳§׳”|׳¡׳™׳›׳•׳ ׳׳׳|׳”׳•׳©׳’ ׳¡׳™׳›׳•׳|׳׳¡׳׳›׳™׳ ׳ ׳—׳×׳׳•|׳—׳•׳–׳™׳ ׳ ׳—׳×׳׳•|׳”׳•׳©׳׳|׳”׳•׳©׳׳׳”|׳ ׳¡׳’׳¨|׳ ׳¡׳’׳¨׳”|׳”׳¦׳¢׳” ׳”׳×׳§׳‘׳׳”|׳”׳”׳¦׳¢׳” ׳”׳×׳§׳‘׳׳”",
+    r"רשמי|אושר|אישר|אישרה|הודיע|הודיעה|הודעה רשמית|חתם|חתמה|חתמו|חתימה רשמית|העסקה סגורה|עסקה סגורה|העסקה הושלמה|העסקה סוכמה|סוכמה העסקה|סיכום מלא|הושג סיכום|מסמכים נחתמו|חוזים נחתמו|הושלם|הושלמה|נסגר|נסגרה|הצעה התקבלה|ההצעה התקבלה",
 )
 
 ISRAELI_LEAGUE_PATTERNS = (
@@ -7548,8 +7984,8 @@ ADMIN_PERSON_EXIT_OR_STATUS_PATTERNS = (
 )
 
 WEAK_INTEREST_PATTERNS = (
-    r"\b(?:interest|interested|monitoring|tracking|keeping tabs|admire|considering|could|might|eyeing|linked with|on the list|shortlist|inquired|enquired|exploring|watching|following)\b",
-    r"מתעניין|מתעניינת|הביע(?:ו)? עניין|עוקב(?:ת|ים)?|שוקל(?:ת|ים)?|עשוי|יכולה|מקושר|ברשימה|ברשימת המועמדים|בירר(?:ה|ו)?|בודק(?:ת|ים)?|נמצא במעקב",
+    r"\b(?:interest|interested|monitoring|tracking|keeping tabs|admire|considering|could|might|eyeing|linked with|on the list|shortlist|inquired|enquired|exploring|watching|following|asked for|requested|no agreement|no deal|talks stalled)\b",
+    r"מתעניין|מתעניינת|מעוניין|מעוניינת|הביע(?:ו)? עניין|עוקב(?:ת|ים)?|שוקל(?:ת|ים)?|עשוי|יכולה|מקושר|ברשימה|ברשימת המועמדים|בירר(?:ה|ו)?|בודק(?:ת|ים)?|נמצא במעקב|ביקשו|מבקשת|אין הסכמה|אין עסקה|השיחות נתקעו",
 )
 
 # Weak/quote reports around big clubs should pass only when the text itself is
@@ -7741,6 +8177,10 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "youth_or_academy", 0, ["youth_or_academy"]
     if is_interview_post(post):
         return False, "interview_blocked", 0, ["interview"]
+    if is_lineup_or_teamsheet_post(post):
+        return False, "lineup_or_teamsheet", 0, ["lineup"]
+    if is_poll_or_audience_post(post):
+        return False, "poll_or_audience", 0, ["poll_or_audience"]
     if is_live_goal_or_match_moment_post(post):
         return False, "live_goal_or_match_moment", 0, ["live_goal_or_match_moment"]
     if is_match_context_noise_post(post):
@@ -7759,6 +8199,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "writer_profile_noise", 0, ["writer_profile_noise"]
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
     has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned)
+    has_tier3_club = matches_managed_team_tier("tier3", cleaned)
     has_big_club_main_buyer = has_big_club_as_main_buyer(cleaned)
     has_big_rumor_club = (_matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) or matches_managed_team_tier("tier1", cleaned)) and (not has_final_only_club or has_big_club_main_buyer)
     has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned) or matches_managed_team_tier("tier3", cleaned)
@@ -7785,11 +8226,20 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_final_or_near_final = _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
     has_final_only_strict = _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
 
+    if has_small_total_transfer_fee(post):
+        return False, "small_transfer_fee", 0, ["small_transfer_fee"]
+
+    if is_minor_destination_from_big_club_source(post):
+        return False, "minor_destination_from_big_club", 0, ["minor_destination_from_big_club"]
+
     # For the user's lower-priority club group, block pure rumours/loose interest.
     # Keep normal rules if a major club is also part of the same report, or when the
     # post is really about a national team / country squad.
     if has_final_only_club and not has_final_only_strict and not has_big_club_main_buyer:
         return False, "final_only_club_not_strict_final", 0, ["final_only_club", "not_strict_final"]
+
+    if has_tier3_club and has_weak_interest and not (has_big_club_main_buyer or has_big_club_context or has_final_only_strict):
+        return False, "tier3_weak_interest", 0, ["tier3", "weak_interest"]
 
     score = 0
     signals: list[str] = []
@@ -7995,6 +8445,14 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "youth_or_academy"
     if is_interview_post(post):
         return "interview_blocked"
+    if is_lineup_or_teamsheet_post(post):
+        return "lineup_or_teamsheet"
+    if is_poll_or_audience_post(post):
+        return "poll_or_audience"
+    if has_small_total_transfer_fee(post):
+        return "small_transfer_fee"
+    if is_minor_destination_from_big_club_source(post):
+        return "minor_destination_from_big_club"
     if is_contextless_teaser_post(post):
         return "contextless_teaser"
     if is_unclear_subject_news_post(post):
@@ -8029,6 +8487,17 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         and not has_big_club_as_main_buyer(cleaned)
     ):
         return "final_only_club_not_strict_final"
+    if (
+        matches_managed_team_tier("tier3", cleaned)
+        and _matches_any(WEAK_INTEREST_PATTERNS, cleaned)
+        and not (
+            has_big_club_as_main_buyer(cleaned)
+            or _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
+            or matches_managed_team_tier("tier1", cleaned)
+            or _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
+        )
+    ):
+        return "tier3_weak_interest"
     if is_known_admin_person_status_post(cleaned) and not _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned):
         return "admin_or_backroom_only_barca_real_allowed"
     if _matches_any(LOW_INTEREST_STAY_RENEWAL_PATTERNS, cleaned):
@@ -8255,7 +8724,7 @@ def send_post(post: Post, reply_message_ids: dict[str, int] | None = None) -> di
         include_video_link=False,
     )
     timings["channel_memory_text"] = message
-    images = [] if post.has_video else post.image_urls[:MAX_IMAGES_PER_POST]
+    images = selected_post_images(post)
     timings["prepare_seconds"] = time.perf_counter() - prepare_started
 
     if video_url:
@@ -8393,6 +8862,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     first_run = not any(state.values())
     sent = 0
     accounts = active_x_accounts()
+    control_state_for_cycle = load_control_state()
     fetch_workers = min(current_max_parallel_account_checks(), max(1, len(accounts)))
     send_executor = ThreadPoolExecutor(max_workers=current_max_parallel_post_sends())
     send_futures = []
@@ -8435,14 +8905,57 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 recent_count = recent_24h_count(posts)
                 recent_24h_snapshot[username] = recent_count
                 daily_stat_set("fetched_recent_24h", username, recent_count)
+                enabled_since_ts = account_enabled_since(username, control_state_for_cycle)
 
                 if not first_run and username not in state and not SEND_BACKLOG_FOR_NEW_ACCOUNTS:
-                    for post in posts:
-                        seen.update(post.dedupe_ids)
-                    state[username] = list(seen)[-500:]
-                    continue
+                    if enabled_since_ts > 0:
+                        new_posts = []
+                        skipped_before_enable = 0
+                        for post in posts:
+                            if post.published_ts and post.published_ts >= enabled_since_ts:
+                                new_posts.append(post)
+                            else:
+                                skipped_before_enable += 1
+                                seen.update(post.dedupe_ids)
+                        state[username] = list(seen)[-500:]
+                        if not new_posts:
+                            logging.info(
+                                "🔎 @%s הופעל בכפתור, אבל אין פוסטים חדשים אחרי זמן ההפעלה. סומנו %s פוסטים ישנים כנצפו.",
+                                username,
+                                skipped_before_enable,
+                            )
+                            continue
+                        logging.info(
+                            "▶️ @%s הופעל בכפתור: %s פוסטים אחרי זמן ההפעלה ייבדקו, %s פוסטים ישנים סומנו כנצפו.",
+                            username,
+                            len(new_posts),
+                            skipped_before_enable,
+                        )
+                    else:
+                        for post in posts:
+                            seen.update(post.dedupe_ids)
+                        state[username] = list(seen)[-500:]
+                        continue
+                else:
+                    new_posts = [post for post in posts if not any(post_id in seen for post_id in post.dedupe_ids)]
 
-                new_posts = [post for post in posts if not any(post_id in seen for post_id in post.dedupe_ids)]
+                if enabled_since_ts > 0 and not SEND_BACKLOG_FOR_NEW_ACCOUNTS:
+                    filtered_new_posts = []
+                    skipped_before_enable = 0
+                    for post in new_posts:
+                        if post.published_ts and post.published_ts >= enabled_since_ts:
+                            filtered_new_posts.append(post)
+                        else:
+                            skipped_before_enable += 1
+                            seen.update(post.dedupe_ids)
+                    if skipped_before_enable:
+                        state[username] = list(seen)[-500:]
+                        logging.info(
+                            "↩️ @%s: דולגו %s פוסטים מלפני זמן ההפעלה בכפתור; פוסטים חדשים אחרי ההפעלה נשארו לבדיקה.",
+                            username,
+                            skipped_before_enable,
+                        )
+                    new_posts = filtered_new_posts
                 new_posts_total += len(new_posts)
                 if new_posts:
                     daily_stat_increment("new", username, len(new_posts))
@@ -8489,18 +9002,49 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 for post in reversed(posts_to_consider):
                     if min_published_ts and post.published_ts and post.published_ts < min_published_ts:
                         seen.update(post.dedupe_ids)
-                        log_skip_once("old_post", post, "דילוג: פוסט ישן מטווח ההפעלה מחדש מ-@%s לא נשלח: %s", username, post.link)
+                        log_skip_once(
+                            "old_post",
+                            post,
+                            "דילוג: פוסט ישן מטווח ההפעלה מחדש מ-@%s לא נשלח: %s | גיל: %s",
+                            username,
+                            post.link,
+                            post_age_text(post),
+                        )
                         continue
                     if is_interview_post(post):
                         seen.update(post.dedupe_ids)
-                        log_skip_once("interview_blocked", post, "׳“׳™׳׳•׳’ ׳׳¡׳ ׳: ׳¨׳׳™׳•׳ ׳-@%s ׳׳ ׳ ׳©׳׳—: %s | ׳˜׳§׳¡׳˜: %s", username, post.link, filtered_post_text_preview(post))
+                        log_skip_once("interview_blocked", post, "דילוג מסנן: ראיון/ציטוט בלי חדשות מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_lineup_or_teamsheet_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("lineup_or_teamsheet", post, "דילוג מסנן: הרכב/הרכבים מ-@%s לא נשלחו: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_poll_or_audience_post(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("poll_or_audience", post, "דילוג מסנן: סקר/הצבעת קהל מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if has_small_total_transfer_fee(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("small_transfer_fee", post, "דילוג מסנן: עסקה קטנה מתחת לרף מ-@%s לא נשלחה: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
+                        continue
+                    if is_minor_destination_from_big_club_source(post):
+                        seen.update(post.dedupe_ids)
+                        log_skip_once("minor_destination_from_big_club", post, "דילוג מסנן: יעד קטן דרך קבוצה גדולה מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if getattr(post, "force_startup_send", False):
                         candidate_posts.append((username, post, time.perf_counter() - cycle_started))
                         continue
                     if is_too_old_post(post) and not (username == "FabrizioRomano" and startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
-                        log_skip_once("old_post", post, "דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s", username, post.link)
+                        log_skip_once(
+                            "old_post",
+                            post,
+                            "דילוג: פוסט ישן מדי מ-@%s לא נשלח: %s | גיל: %s | חלון מותר: %s",
+                            username,
+                            post.link,
+                            post_age_text(post),
+                            max_post_age_text(),
+                        )
                         continue
                     if any(post_id in queued_ids for post_id in post.dedupe_ids):
                         log_skip_once("queued_duplicate", post, "דילוג: כפילות באותו סבב מ-@%s לא נשלחה: %s", username, post.link)
@@ -8644,19 +9188,21 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 if try_keep_non_duplicate_report_lines(post, state):
                     duplicate_event = None
                 else:
-                    mark_candidate_seen(state, candidate)
+                    if not bool(duplicate_event.get("pending", False)):
+                        mark_candidate_seen(state, candidate)
                     duplicate_source = duplicate_event_source_he(duplicate_event)
                     duplicate_detail = duplicate_event_debug_he(post, duplicate_event)
                     log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה: אותו אירוע כבר נמצא בזיכרון מול %s. @%s לא נשלח: %s | %s", duplicate_source, username, post.link, duplicate_detail)
                     continue
             if duplicate_event:
-                mark_candidate_seen(state, candidate)
+                if not bool(duplicate_event.get("pending", False)):
+                    mark_candidate_seen(state, candidate)
                 duplicate_source = duplicate_event_source_he(duplicate_event)
                 duplicate_detail = duplicate_event_debug_he(post, duplicate_event)
                 log_skip_once("same_cycle_duplicate", post, "דילוג כפילות חכמה באותו סבב: אותו אירוע כבר נבחר ממקור עדיף/קודם מול %s. @%s לא נשלח: %s | %s", duplicate_source, username, post.link, duplicate_detail)
                 continue
             reply_message_ids = find_bot_reply_target_for_post(post, state)
-            remember_recent_news_event(post, state)
+            remember_recent_news_event(post, state, pending=True)
             if reply_message_ids:
                 logging.info("↩️ תגובה חכמה: הפוסט מ-@%s יישלח כתגובה להודעה קודמת של הבוט באותו אירוע.", username)
             send_futures.append(send_executor.submit(send_task, candidate, reply_message_ids))
@@ -8665,8 +9211,10 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
         for future in as_completed(send_futures):
             username, sent_post, post_ids, link, ok, result = future.result()
             if not ok:
+                forget_pending_recent_news_event(sent_post, state)
                 continue
             if result.get("sent"):
+                confirm_recent_news_event(sent_post, state)
                 seen = set(state.get(username, []))
                 seen.update(post_ids)
                 state[username] = list(seen)[-500:]
@@ -8694,6 +9242,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     result.get("total_seconds", 0.0),
                 )
             elif result.get("mode") == "no_news":
+                forget_pending_recent_news_event(sent_post, state)
                 seen = set(state.get(username, []))
                 seen.update(post_ids)
                 state[username] = list(seen)[-500:]
@@ -8703,6 +9252,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     result.get("source_name", "unknown"),
                 )
             else:
+                forget_pending_recent_news_event(sent_post, state)
                 logging.warning(
                     "⏳ פוסט מ-@%s לא נשלח ולכן לא סומן כנראה, יישאר לניסיון הבא: %s | מקור RSS: %s | מצב: %s",
                     username,
@@ -8710,6 +9260,7 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     result.get("source_name", "unknown"),
                     result.get("mode", "unknown"),
                 )
+        drop_unconfirmed_recent_news_events(state)
     finally:
         send_executor.shutdown(wait=True, cancel_futures=False)
 
