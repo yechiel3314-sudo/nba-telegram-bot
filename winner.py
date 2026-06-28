@@ -226,8 +226,9 @@ OPTIONAL_CONTROLLED_ACCOUNTS = [
 
 DEFAULT_ENABLED_OPTIONAL_ACCOUNTS = {"Plettigoal"}
 ALWAYS_ENABLED_OPTIONAL_ACCOUNTS: set[str] = set()
-LOCKED_DISABLED_BASE_ACCOUNTS = {"DiMarzio"}
+LOCKED_DISABLED_BASE_ACCOUNTS: set[str] = set()
 EXTRA_STRICT_SOURCE_ACCOUNTS = {"NicoSchira", "DiMarzio"}
+CONTROL_STATE_DIMARZIO_REENABLED_KEY = "dimarzio_reenabled_after_strict_filter"
 
 OPTIONAL_CONTROLLED_ACCOUNT_LABELS = {
     "Plettigoal": "פלוריאן פלטנברג",
@@ -1973,15 +1974,20 @@ def control_state_path() -> Path:
 def load_control_state() -> dict[str, Any]:
     path = control_state_path()
     if not path.exists():
-        return {"paused": False}
+        return {"paused": False, CONTROL_STATE_DIMARZIO_REENABLED_KEY: True}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"paused": False}
+            return {"paused": False, CONTROL_STATE_DIMARZIO_REENABLED_KEY: True}
         data["paused"] = bool(data.get("paused", False))
+        if not data.get(CONTROL_STATE_DIMARZIO_REENABLED_KEY):
+            raw_disabled = data.get("disabled_base_accounts", [])
+            if isinstance(raw_disabled, list):
+                data["disabled_base_accounts"] = [account for account in raw_disabled if account != "DiMarzio"]
+            data[CONTROL_STATE_DIMARZIO_REENABLED_KEY] = True
         return data
     except Exception:
-        return {"paused": False}
+        return {"paused": False, CONTROL_STATE_DIMARZIO_REENABLED_KEY: True}
 
 
 def enabled_optional_accounts_from_state(state: dict[str, Any] | None = None) -> list[str]:
