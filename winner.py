@@ -7238,8 +7238,37 @@ def final_hebrew_polish(text: str) -> str:
     return text.strip()
 
 
+LIST_STAT_ITEM_MARKERS = ("🥇", "🥈", "🥉", "✅", "🔹", "🔸", "▪️", "▫️", "•")
+
+
+def format_stat_list_lines(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        return value
+    marker_count = sum(value.count(marker) for marker in LIST_STAT_ITEM_MARKERS)
+    has_many_numbered_stats = len(re.findall(r"\(\d+\)", value)) >= 4 and re.search(r"הכי הרבה|most\s+", value, re.IGNORECASE)
+    if marker_count < 3 and not has_many_numbered_stats:
+        return value
+
+    value = re.sub(r"(?iu)(היום)\.\s+(?=[💥🔥⚽🥇🥈🥉✅🔹🔸▪▫•])", r"\1:\n", value)
+    value = re.sub(r"(?iu)\b(today)\.\s+(?=[💥🔥⚽🥇🥈🥉✅🔹🔸▪▫•])", r"\1:\n", value)
+    value = re.sub(r"(?<!\n)\s+(?=[💥🔥⚽]\s+)", "\n", value)
+    value = re.sub(r"(?<!\n)\s+(?=(?:🥇|🥈|🥉|✅|🔹|🔸|▪️|▫️|•)\s+)", "\n", value)
+    value = re.sub(r"(\(\d+\))\s+(לא רע\.)", r"\1\n\2", value)
+    value = re.sub(r"(?m)^((?:🥇|🥈|🥉)\s+.*?\(\d+\))\s+([^\n]{2,24}\.)$", r"\1\n\2", value)
+    value = re.sub(r"(?<=\S)\s+(לא רע\.?)(?=\s*(?:\n|$))", r"\n\1", value)
+    value = re.sub(r"(?<=\S)\s+(not bad\.?)(?=\s*(?:\n|$))", r"\n\1", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?<=\.)\s+(היום:)", r"\n\n\1", value, count=1)
+    value = re.sub(r"(?<=\.)\s+(today:)", r"\n\n\1", value, count=1, flags=re.IGNORECASE)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r" *\n+ *", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
 def format_news_paragraphs(text: str) -> str:
     value = (text or "").strip()
+    value = format_stat_list_lines(value)
     if not value or "\n\n" in value or len(value) < 170:
         return value
     sentences = re.split(r"(?<=[.!?])\s+", value)
@@ -7544,8 +7573,18 @@ def should_hide_writer_header(post: Post, translated: str) -> bool:
         or matches_managed_team_tier("tier3", source)
         or _matches_any(ISRAELI_LEAGUE_PATTERNS, source)
     )
-    transfer_or_club_news = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, source) or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, source) or _matches_any(COACH_IMPORTANT_PATTERNS, source)
-    return bool(national_context and not club_context and not transfer_or_club_news)
+    transfer_or_coach_news = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, source) or _matches_any(COACH_IMPORTANT_PATTERNS, source)
+    soft_national_update = bool(
+        national_context
+        and not transfer_or_coach_news
+        and (
+            _matches_any(MATCH_RESULT_OR_ENGAGEMENT_PATTERNS, source)
+            or _matches_any(INJURY_OR_FITNESS_UPDATE_PATTERNS, source)
+            or is_stats_only_post(source)
+            or re.search(r"(?iu)\b(?:player of the match|man of the match|motm|stats?)\b|שחקן מצטיין|איש המשחק|שער\s*\+\s*בישול|הכי הרבה|סטטיסט", source)
+        )
+    )
+    return bool((national_context and not club_context and not transfer_or_coach_news) or soft_national_update)
 
 
 def has_meaningful_text(text: str) -> bool:
