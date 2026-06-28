@@ -226,6 +226,8 @@ OPTIONAL_CONTROLLED_ACCOUNTS = [
 
 DEFAULT_ENABLED_OPTIONAL_ACCOUNTS = {"Plettigoal"}
 ALWAYS_ENABLED_OPTIONAL_ACCOUNTS: set[str] = set()
+LOCKED_DISABLED_BASE_ACCOUNTS = {"DiMarzio"}
+EXTRA_STRICT_SOURCE_ACCOUNTS = {"NicoSchira", "DiMarzio"}
 
 OPTIONAL_CONTROLLED_ACCOUNT_LABELS = {
     "Plettigoal": "פלוריאן פלטנברג",
@@ -2033,7 +2035,8 @@ def disabled_base_accounts_from_state(state: dict[str, Any] | None = None) -> li
     if not isinstance(raw_accounts, list):
         raw_accounts = []
     allowed = set(X_ACCOUNTS)
-    return [username for username in X_ACCOUNTS if username in allowed and username in raw_accounts]
+    disabled = set(raw_accounts) | LOCKED_DISABLED_BASE_ACCOUNTS
+    return [username for username in X_ACCOUNTS if username in allowed and username in disabled]
 
 
 def active_x_accounts() -> list[str]:
@@ -2115,7 +2118,7 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
         keyboard.append([{"text": "לכבות את הבוט", "callback_data": "football_bot_off"}])
     for username in X_ACCOUNTS:
         label = CONTROLLED_BASE_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
-        status = "כבוי" if username in disabled_base else "פעיל"
+        status = "כבוי קבוע" if username in LOCKED_DISABLED_BASE_ACCOUNTS else ("כבוי" if username in disabled_base else "פעיל")
         keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_base_account:{username}"}])
     for username in OPTIONAL_CONTROLLED_ACCOUNTS:
         label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
@@ -2354,7 +2357,7 @@ def all_control_test_accounts() -> list[str]:
     # הרשימה הקבועה במסך "בדוק כתב ספציפי".
     # היא כוללת בדיוק את הכתבים שמוגדרים בלוח הבקרה, גם אם כתב מסוים כבוי כרגע.
     # פתיחת התפריט אינה מבצעת שליפה ואינה משתמשת ב-Gemini.
-    return list(CONTROL_TEST_ACCOUNT_ORDER)
+    return [username for username in CONTROL_TEST_ACCOUNT_ORDER if username not in LOCKED_DISABLED_BASE_ACCOUNTS]
 
 
 def recent_24h_posts(posts: list[Post]) -> list[Post]:
@@ -2446,6 +2449,7 @@ TEAM_CATALOG.update({
     "como": {"name": "קומו", "tier": "tier3", "aliases": ["Como", "קומו"]},
     "parma": {"name": "פארמה", "tier": "tier3", "aliases": ["Parma", "פארמה"]},
     "verona": {"name": "ורונה", "tier": "tier3", "aliases": ["Verona", "Hellas Verona", "ורונה"]},
+    "venezia": {"name": "ונציה", "tier": "tier3", "aliases": ["Venezia", "Venezia FC", "Venice", "ונציה"]},
     "genoa": {"name": "גנואה", "tier": "tier3", "aliases": ["Genoa", "גנואה"]},
     "cagliari": {"name": "קליארי", "tier": "tier3", "aliases": ["Cagliari", "קליארי"]},
     "lecce": {"name": "לצ'ה", "tier": "tier3", "aliases": ["Lecce", "לצ'ה"]},
@@ -2489,6 +2493,43 @@ NATIONAL_TEAM_HEBREW_NAMES = [
 
 for country in NATIONAL_TEAM_HEBREW_NAMES:
     TEAM_CATALOG[f"national:{country}"] = {"name": country, "tier": "national", "aliases": [country]}
+
+CENTRAL_PLAYER_AFFILIATIONS: tuple[dict[str, Any], ...] = (
+    {"team_key": "real madrid", "aliases": ("Kylian Mbappe", "Kylian Mbappé", "Mbappe", "Mbappé", "קיליאן אמבפה", "אמבפה")},
+    {"team_key": "real madrid", "aliases": ("Vinicius Junior", "Vinícius Júnior", "Vinicius Jr", "Vini Jr", "ויניסיוס", "ויניסיוס ג'וניור")},
+    {"team_key": "real madrid", "aliases": ("Jude Bellingham", "Bellingham", "ג'וד בלינגהאם", "בלינגהאם")},
+    {"team_key": "real madrid", "aliases": ("Rodrygo", "Rodrygo Goes", "רודריגו")},
+    {"team_key": "real madrid", "aliases": ("Trent Alexander-Arnold", "Alexander-Arnold", "TAA", "טרנט אלכסנדר-ארנולד", "אלכסנדר-ארנולד")},
+    {"team_key": "barcelona", "aliases": ("Lamine Yamal", "Yamal", "לאמין ימאל", "ימאל")},
+    {"team_key": "barcelona", "aliases": ("Raphinha", "Raphael Dias Belloli", "ראפיניה")},
+    {"team_key": "manchester city", "aliases": ("Erling Haaland", "Haaland", "ארלינג הולאנד", "הולאנד")},
+    {"team_key": "manchester city", "aliases": ("Rodri", "Rodrigo Hernandez", "Rodrigo Hernández", "רודרי")},
+    {"team_key": "manchester city", "aliases": ("Phil Foden", "Foden", "פיל פודן", "פודן")},
+    {"team_key": "manchester city", "aliases": ("Bernardo Silva", "ברנרדו סילבה")},
+    {"team_key": "liverpool", "aliases": ("Mohamed Salah", "Mo Salah", "Salah", "מוחמד סלאח", "סלאח")},
+    {"team_key": "liverpool", "aliases": ("Virgil van Dijk", "Van Dijk", "וירג'יל ואן דייק", "ואן דייק")},
+    {"team_key": "liverpool", "aliases": ("Florian Wirtz", "Wirtz", "פלוריאן וירץ", "וירץ")},
+    {"team_key": "arsenal", "aliases": ("Bukayo Saka", "Saka", "בוקאיו סאקה", "סאקה")},
+    {"team_key": "arsenal", "aliases": ("Martin Odegaard", "Martin Ødegaard", "Odegaard", "Ødegaard", "מרטין אודגור", "אודגור")},
+    {"team_key": "chelsea", "aliases": ("Cole Palmer", "Palmer", "קול פאלמר", "פאלמר")},
+    {"team_key": "manchester united", "aliases": ("Bruno Fernandes", "ברונו פרננדש")},
+    {"team_key": "bayern munich", "aliases": ("Harry Kane", "Kane", "הארי קיין", "קיין")},
+    {"team_key": "bayern munich", "aliases": ("Jamal Musiala", "Musiala", "ג'מאל מוסיאלה", "מוסיאלה")},
+    {"team_key": "psg", "aliases": ("Ousmane Dembele", "Ousmane Dembélé", "Dembele", "Dembélé", "אוסמן דמבלה", "דמבלה")},
+    {"team_key": "psg", "aliases": ("Khvicha Kvaratskhelia", "Kvaratskhelia", "קווארצחליה", "חביצה קווארצחליה")},
+    {"team_key": "psg", "aliases": ("Vitinha", "ויטיניה")},
+    {"team_key": "inter", "aliases": ("Lautaro Martinez", "Lautaro Martínez", "Lautaro", "לאוטרו מרטינס", "לאוטרו")},
+    {"team_key": "ac milan", "aliases": ("Rafael Leao", "Rafael Leão", "Leao", "Leão", "רפאל לאאו", "לאאו")},
+    {"team_key": "atletico madrid", "aliases": ("Julian Alvarez", "Julián Álvarez", "Alvarez", "Álvarez", "חוליאן אלבארס", "אלבארס")},
+    {"team_key": "newcastle", "aliases": ("Alexander Isak", "Isak", "אלכסנדר איסאק", "איסאק")},
+    {"team_key": "inter miami", "aliases": ("Lionel Messi", "Messi", "לאו מסי", "ליאו מסי", "מסי")},
+    {"team_key": "juventus", "aliases": ("Dusan Vlahovic", "Dušan Vlahović", "Vlahovic", "Vlahović", "דושאן ולאחוביץ'", "ולאחוביץ'")},
+    {"team_key": "juventus", "aliases": ("Kenan Yildiz", "Kenan Yıldız", "Yildiz", "Yıldız", "קנאן ילדיז", "ילדיז")},
+    {"team_key": "napoli", "aliases": ("Kevin De Bruyne", "De Bruyne", "דה בריינה", "קווין דה בריינה")},
+    {"team_key": "napoli", "aliases": ("Scott McTominay", "McTominay", "סקוט מקטומיניי", "מקטומיניי")},
+    {"team_key": "roma", "aliases": ("Paulo Dybala", "Dybala", "פאולו דיבאלה", "דיבאלה")},
+    {"team_key": "atalanta", "aliases": ("Ademola Lookman", "Lookman", "אדמולה לוקמן", "לוקמן")},
+)
 
 
 def normalize_team_key(text: str) -> str:
@@ -2644,6 +2685,43 @@ def managed_team_patterns_for_tier(tier: str) -> tuple[str, ...]:
 
 def matches_managed_team_tier(tier: str, text: str) -> bool:
     return _matches_any(managed_team_patterns_for_tier(tier), text)
+
+
+def central_player_alias_matches(alias: str, text: str) -> bool:
+    alias = str(alias or "").strip()
+    if not alias:
+        return False
+    if re.search(r"[A-Za-z0-9]", alias):
+        pattern = r"(?<![A-Za-z0-9_])" + re.escape(alias) + r"(?![A-Za-z0-9_])"
+    elif re.search(r"[\u0590-\u05ff]", alias):
+        pattern = r"(?<![\u0590-\u05ff])" + re.escape(alias) + r"(?![\u0590-\u05ff])"
+    else:
+        pattern = re.escape(alias)
+    return bool(re.search(pattern, text or "", re.IGNORECASE))
+
+
+def central_player_affiliation_tiers(text: str) -> set[str]:
+    tiers: set[str] = set()
+    source = html.unescape(text or "")
+    if not source:
+        return tiers
+    for item in CENTRAL_PLAYER_AFFILIATIONS:
+        team_key = str(item.get("team_key", "")).strip()
+        if team_key not in all_team_catalog_items():
+            continue
+        aliases = item.get("aliases", ())
+        if not isinstance(aliases, (list, tuple, set)):
+            aliases = (aliases,)
+        if any(central_player_alias_matches(str(alias), source) for alias in aliases):
+            tier = effective_team_tier(team_key)
+            if tier:
+                tiers.add(tier)
+    return tiers
+
+
+def has_central_player_affiliation(text: str, tiers: set[str] | None = None) -> bool:
+    matched_tiers = central_player_affiliation_tiers(text)
+    return bool(matched_tiers if tiers is None else matched_tiers.intersection(tiers))
 
 
 def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
@@ -3086,7 +3164,7 @@ def active_accounts_status_text() -> str:
         "כתבים ראשיים:",
     ]
     for username in X_ACCOUNTS:
-        status = "כבוי" if username in disabled_base else "פעיל"
+        status = "כבוי קבוע" if username in LOCKED_DISABLED_BASE_ACCOUNTS else ("כבוי" if username in disabled_base else "פעיל")
         marker = "✅" if username in active_set else "⛔"
         lines.append(f"{marker} {_hebrew_account_label(username)}: {status}{since_text(username)}")
 
@@ -3517,6 +3595,11 @@ def process_control_update(update: dict[str, Any]) -> None:
         if username not in X_ACCOUNTS:
             if callback_id:
                 answer_control_callback(callback_id, "כתב לא מוכר")
+            return
+        if username in LOCKED_DISABLED_BASE_ACCOUNTS:
+            if callback_id:
+                answer_control_callback(callback_id, "הכתב נשאר כבוי לפי ההגדרה")
+            send_control_menu("👥 ניהול כתבים\nג'אנלוקה די מארציו נשאר כבוי ולא ייכנס לסריקה.", writers_management_reply_markup(is_control_paused()), message.get("message_id"))
             return
         state = load_control_state()
         disabled = set(disabled_base_accounts_from_state(state))
@@ -4132,6 +4215,27 @@ def is_minor_destination_from_big_club_source(post: Post) -> bool:
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if not cleaned:
         return False
+    big_source_names = r"(?:Inter|AS Roma|Roma|Juventus|AC Milan|Milan|Chelsea|Manchester City|Man City|Manchester United|Man United|Barcelona|Real Madrid)"
+    big_hebrew_source_names = r"(?:אינטר|רומא|AS רומא|יובנטוס|מילאן|צ'לסי|מנצ'סטר סיטי|מנצ'סטר יונייטד|ברצלונה|ריאל מדריד)"
+    lower_destination_queries_big_source = (
+        re.search(
+            rf"\b(?!{big_source_names}\b)[A-Z][A-Za-zÀ-ÿ'’.-]{{2,}}(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]{{2,}}){{0,2}}\s+(?:have|has)?\s*(?:asked|requested|want(?:s)?|seek(?:s)?|opened talks with|approached)\s+{big_source_names}\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+        or re.search(
+            rf"(?:ביקשו|ביקשה|מבקשת|מבקשים|פנו|פנתה|פתחו\s+שיחות).{{0,120}}מ{big_hebrew_source_names}",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+    big_club_querying_source = re.search(
+        rf"(?:{big_source_names}|{big_hebrew_source_names}).{{0,100}}(?:asked|requested|want(?:s)?|seek(?:s)?|opened talks with|approached|ביקשו|ביקשה|מבקשת|מבקשים|פנו|פנתה|פתחו\s+שיחות).{{0,100}}(?:{big_source_names}|מ{big_hebrew_source_names})",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if lower_destination_queries_big_source and not big_club_querying_source:
+        return True
     if has_big_club_as_main_buyer(cleaned):
         return False
     source_big_club = re.search(
@@ -4502,6 +4606,10 @@ BLOCK_REASON_HEBREW = {
     "world_cup_bracket_noise": "דיווח מונדיאל סתמי",
     "final_only_club_not_strict_final": "קבוצת דרג ב שמותרת רק בדיווח סופי",
     "tier3_weak_interest": "דרג ג עם התעניינות חלשה",
+    "tier3_not_final_enough": "דרג ג דורש דיווח סופי וברור",
+    "lower_tier_staff_or_coach_noise": "מאמן/צוות בדרג נמוך לא מספיק חשוב",
+    "strict_writer_not_strong_enough": "כתב קשוח: הדיווח לא מספיק חזק",
+    "strict_writer_staff_or_coach_noise": "כתב קשוח: דיווח צוות/מאמן לא מספיק חשוב",
     "non_elite_loose_transfer_talk": "שמועה/שיחות לקבוצה לא-עלית בלי התקדמות ממשית",
     "minor_destination_from_big_club": "יעד קטן דרך קבוצה גדולה",
     "small_transfer_fee": "עסקה קטנה מתחת לרף",
@@ -4526,6 +4634,7 @@ BLOCK_REASON_HEBREW = {
     "temporary_night_mode": "מצב לילה",
     "low_importance": "חשיבות נמוכה",
     "not_connected_to_tracked_club": "לא קשור לקבוצה במעקב",
+    "untracked_transfer_or_staff_news": "דיווח העברה/מאמן בלי קבוצה במעקב",
     "non_news_social": "פוסט חברתי/לא חדשותי",
     "official_on_minor": "דיווח רשמי על קבוצה פחות חשובה",
     "media_only": "תמונה/וידאו בלי דיווח חדשותי",
@@ -4788,6 +4897,9 @@ def record_skip_summary(reason: str, post: "Post", rendered: str, source_name: s
     source = getattr(post, "username", "unknown") or "unknown"
     base_reason = hebrew_block_reason(reason)
     daily_stat_skip(source, base_reason)
+    daily_stat_increment("skip_by_writer_reason", f"{source}|{base_reason}", 1)
+    if source in EXTRA_STRICT_SOURCE_ACCOUNTS:
+        daily_stat_increment("strict_writer_blocks", base_reason, 1)
     key = f"{source}|{base_reason}"
     item = SKIP_SUMMARY_COUNTS.setdefault(
         key,
@@ -7947,6 +8059,7 @@ def contains_allowed_club_or_israeli_league(post: Post) -> bool:
     return (
         _matches_any(ALLOWED_CLUB_PATTERNS, cleaned)
         or matches_managed_team_tier("tier1", cleaned)
+        or has_central_player_affiliation(cleaned, {"tier1"})
         or _matches_any(ISRAELI_LEAGUE_PATTERNS, cleaned)
         or contains_allowed_national_team(post)
     )
@@ -7961,6 +8074,7 @@ def contains_tracked_club_or_israeli_league(post: Post) -> bool:
         or matches_managed_team_tier("tier1", cleaned)
         or matches_managed_team_tier("tier2", cleaned)
         or matches_managed_team_tier("tier3", cleaned)
+        or has_central_player_affiliation(cleaned, {"tier1", "tier2", "tier3", "national"})
         or _matches_any(ISRAELI_LEAGUE_PATTERNS, cleaned)
         or contains_allowed_national_team(post)
     )
@@ -8117,7 +8231,7 @@ CLEAR_PLAYER_DEPARTURE_PATTERNS = (
 
 COACH_IMPORTANT_PATTERNS = (
     r"\b(?:head coach|manager|coach|appointed|set to be appointed|sacked|fired|dismissed|resigned|leaves role|new manager|new head coach)\b",
-    r"מאמן|מאמן ראשי|מונה|ימונה|צפוי להתמנות|פוטר|התפטר|עזב את תפקידו|מאמן חדש",
+    r"מאמן|מאמן ראשי|על הקווים|לקווים|ספסל|מונה|ימונה|צפוי להתמנות|פוטר|התפטר|עזב את תפקידו|מאמן חדש",
 )
 
 BIG_CLUB_CONTEXT_PATTERNS = (
@@ -8152,7 +8266,7 @@ def has_big_club_as_main_buyer(cleaned: str) -> bool:
 # but still specific enough to block ordinary post-match interviews.
 TRANSFER_OR_FUTURE_PATTERNS = (
     r"\b(?:transfer|move|join|joining|sign|signing|leave|leaving|return|back to|future|loan|buy option|option to buy|purchase option|clause|release clause|bid|offer|proposal|talks|negotiations|agreement|medical|deal|contract|free agent|wants? to|would like to|keen to|open to|dreams? of)\b",
-    r"העברה|מעבר|לעבור|להצטרף|חתימה|יחתום|יחתמו|יעזוב|לעזוב|לחזור|חזרה ל|עתידו|עתיד ב|השאלה|אופציית רכישה|אופציית הקנייה|סעיף שחרור|הצעה|שיחות|מו\"מ|משא ומתן|סיכום|הסכמה|תנאים אישיים|בדיקות רפואיות|עסקה|חוזה|שחקן חופשי|רוצה|מעוניין|מעוניינת|חולם|פתוח להצטרף",
+    r"העברה|מעבר|לעבור|להצטרף|חתימה|יחתום|יחתמו|יחתמו על החוזים|יעזוב|לעזוב|לחזור|חזרה ל|עתידו|עתיד ב|השאלה|אופציית רכישה|אופציית הקנייה|סעיף שחרור|הצעה|שיחות|מו\"מ|משא ומתן|סיכום|הסכמה|תנאים אישיים|בדיקות רפואיות|עסקה|חוזה|חוזים|שחקן חופשי|רוצה|מעוניין|מעוניינת|חולם|פתוח להצטרף",
 )
 
 # Injury reports are allowed only when they are meaningful, especially around big clubs.
@@ -8193,6 +8307,10 @@ def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
+def is_extra_strict_source(post: Post) -> bool:
+    return (getattr(post, "username", "") or "") in EXTRA_STRICT_SOURCE_ACCOUNTS
+
+
 def is_non_elite_loose_transfer_report(cleaned: str) -> bool:
     """Block low-certainty transfer chatter unless the main club is truly elite."""
     if not cleaned or not _matches_any(NON_ELITE_LOOSE_TRANSFER_PATTERNS, cleaned):
@@ -8203,6 +8321,7 @@ def is_non_elite_loose_transfer_report(cleaned: str) -> bool:
         or has_big_club_as_main_buyer(cleaned)
         or _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
         or matches_managed_team_tier("tier1", cleaned)
+        or has_central_player_affiliation(cleaned, {"tier1"})
         or _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
     ):
         return False
@@ -8210,9 +8329,37 @@ def is_non_elite_loose_transfer_report(cleaned: str) -> bool:
         _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
         or matches_managed_team_tier("tier2", cleaned)
         or matches_managed_team_tier("tier3", cleaned)
+        or has_central_player_affiliation(cleaned, {"tier2", "tier3"})
     )
     known_non_elite_top_league = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) and not _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
     return bool(tracked_lower_tier or known_non_elite_top_league)
+
+
+def is_untracked_transfer_or_staff_news(post: Post) -> bool:
+    """Transfer/contract/coach reports must name a team the user actually tracks."""
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    has_market_or_staff_news = (
+        _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned)
+        or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+        or _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
+        or _matches_any(ADMIN_OR_BACKROOM_ROLE_PATTERNS, cleaned)
+        or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
+        or _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
+    )
+    if not has_market_or_staff_news:
+        return False
+    if contains_tracked_club_or_israeli_league(post):
+        return False
+    if (
+        has_big_club_as_main_buyer(cleaned)
+        or _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
+        or matches_managed_team_tier("tier1", cleaned)
+        or _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
+    ):
+        return False
+    return True
 
 
 def should_use_ai_affiliation_fallback(post: Post) -> bool:
@@ -8293,6 +8440,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "unclear_subject_news", 0, ["unclear_subject_news"]
     if is_vague_status_without_primary_context(post):
         return False, "vague_status_without_primary_context", 0, ["vague_status_without_primary_context"]
+    if is_untracked_transfer_or_staff_news(post):
+        return False, "untracked_transfer_or_staff_news", 0, ["untracked_transfer_or_staff_news"]
     if not contains_tracked_club_or_israeli_league(post):
         logging.debug("פוסט של %s נפסל בסינון האיכות: לא קשור לקבוצה ברשימות הדרגים.", post.username)
         return False, "not_connected_to_tracked_club", 0, ["no_tracked_club"]
@@ -8322,12 +8471,16 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "weak_copy_without_primary_value", 0, ["weak_copy_without_primary_value"]
     if is_writer_profile_noise_post(post):
         return False, "writer_profile_noise", 0, ["writer_profile_noise"]
+    central_player_tiers = central_player_affiliation_tiers(cleaned)
+    has_central_tier1_player = "tier1" in central_player_tiers
+    has_central_tier2_player = "tier2" in central_player_tiers
+    has_central_tier3_player = "tier3" in central_player_tiers
     has_allowed_interest_club = contains_allowed_club_or_israeli_league(post)
-    has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned)
-    has_tier3_club = matches_managed_team_tier("tier3", cleaned)
+    has_final_only_club = _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned) or has_central_tier2_player
+    has_tier3_club = matches_managed_team_tier("tier3", cleaned) or has_central_tier3_player
     has_big_club_main_buyer = has_big_club_as_main_buyer(cleaned)
-    has_big_rumor_club = (_matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) or matches_managed_team_tier("tier1", cleaned)) and (not has_final_only_club or has_big_club_main_buyer)
-    has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned) or matches_managed_team_tier("tier3", cleaned)
+    has_big_rumor_club = (_matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned) or matches_managed_team_tier("tier1", cleaned) or has_central_tier1_player) and (not has_final_only_club or has_big_club_main_buyer)
+    has_top5_or_promoted_club = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned) or matches_managed_team_tier("tier3", cleaned) or has_central_tier2_player or has_central_tier3_player
     has_elite_admin_club = _matches_any(ELITE_ADMIN_CLUB_PATTERNS, cleaned)
     has_low_interest_club = _matches_any(LOW_INTEREST_CLUB_PATTERNS, cleaned)
     has_low_interest_german_update = _matches_any(LOW_INTEREST_GERMAN_UPDATE_PATTERNS, cleaned)
@@ -8342,7 +8495,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_strong_move = _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
     has_clear_departure = is_clear_player_departure_post(post)
     has_coach_news = _matches_any(COACH_IMPORTANT_PATTERNS, cleaned)
-    has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned) or matches_managed_team_tier("tier1", cleaned)
+    has_big_club_context = _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned) or matches_managed_team_tier("tier1", cleaned) or has_central_tier1_player
     has_pure_admin_appointment = _matches_any(PURE_ADMIN_APPOINTMENT_PATTERNS, cleaned)
     has_injury = _matches_any(INJURY_PATTERNS, cleaned)
     has_serious_injury = _matches_any(SERIOUS_INJURY_PATTERNS, cleaned)
@@ -8351,12 +8504,40 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_final_or_near_final = _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
     has_final_only_strict = _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
     has_non_elite_loose_transfer = is_non_elite_loose_transfer_report(cleaned)
+    has_lower_tier_context = has_final_only_club or has_tier3_club
+    has_staff_or_coach_context = has_coach_news or has_admin_role or has_known_admin_person_status or has_pure_admin_appointment
+    has_elite_or_national_context = has_big_rumor_club or has_big_club_context or has_big_club_main_buyer or has_major_national_context
+    has_clear_final_step = has_final_only_strict or has_strong_move or has_clear_departure
+    is_strict_writer = is_extra_strict_source(post)
 
     if has_small_total_transfer_fee(post):
         return False, "small_transfer_fee", 0, ["small_transfer_fee"]
 
     if is_minor_destination_from_big_club_source(post):
         return False, "minor_destination_from_big_club", 0, ["minor_destination_from_big_club"]
+
+    if has_staff_or_coach_context and has_lower_tier_context and not (has_elite_admin_club and has_final_only_strict) and not has_elite_or_national_context:
+        return False, "lower_tier_staff_or_coach_noise", 0, ["lower_tier", "staff_or_coach"]
+
+    if has_tier3_club and not (has_clear_final_step or has_elite_or_national_context):
+        return False, "tier3_not_final_enough", 0, ["tier3", "not_final_enough"]
+
+    if is_strict_writer:
+        strict_has_strength = (
+            has_final_only_strict
+            or (has_strong_move and (has_allowed_interest_club or has_elite_or_national_context))
+            or (has_clear_departure and (has_allowed_interest_club or has_elite_or_national_context))
+            or (has_serious_injury and (has_big_club_context or has_major_national_context))
+            or (has_big_club_main_buyer and has_transfer_or_future and has_final_or_near_final)
+        )
+        if has_staff_or_coach_context and not (has_elite_admin_club and has_final_only_strict):
+            return False, "strict_writer_staff_or_coach_noise", 0, ["strict_writer", "staff_or_coach"]
+        if (has_weak_interest or has_vague_player_idea or has_non_elite_loose_transfer) and not strict_has_strength:
+            return False, "strict_writer_not_strong_enough", 0, ["strict_writer", "weak_or_vague"]
+        if has_lower_tier_context and not (has_final_only_strict or has_big_club_main_buyer or has_big_club_context):
+            return False, "strict_writer_not_strong_enough", 0, ["strict_writer", "lower_tier_not_final"]
+        if not strict_has_strength:
+            return False, "strict_writer_not_strong_enough", 0, ["strict_writer", "not_strong"]
 
     if has_non_elite_loose_transfer:
         return False, "non_elite_loose_transfer_talk", 0, ["non_elite", "loose_transfer_talk"]
@@ -8610,6 +8791,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     if temporary_block_reason:
         return temporary_block_reason
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if is_untracked_transfer_or_staff_news(post):
+        return "untracked_transfer_or_staff_news"
     if is_non_elite_loose_transfer_report(cleaned):
         return "non_elite_loose_transfer_talk"
     if (
@@ -8807,11 +8990,10 @@ def send_post(post: Post, reply_message_ids: dict[str, int] | None = None) -> di
 
     # Final network-free approval gate. No Gemini request, video HEAD/GET,
     # external video API, or Telegram upload is allowed before this passes.
-    if getattr(post, "force_startup_send", False):
-        logging.info("בדיקת הפעלה: מדלג על מסננים מקומיים לפוסט האחרון של @%s. תרגום ושליחה עדיין נבדקים כרגיל.", post.username)
+    block_reason = pre_send_final_local_block_reason(post)
+    if getattr(post, "force_startup_send", False) and block_reason == "old_post":
+        logging.info("בדיקת הפעלה: מדלג רק על חסימת גיל לפוסט האחרון של @%s. מסנני תוכן עדיין פועלים כרגיל.", post.username)
         block_reason = ""
-    else:
-        block_reason = pre_send_final_local_block_reason(post)
     if block_reason:
         timings["total_seconds"] = time.perf_counter() - started
         timings["mode"] = f"pre_send_blocked:{block_reason}"
@@ -9166,6 +9348,19 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                         log_skip_once("minor_destination_from_big_club", post, "דילוג מסנן: יעד קטן דרך קבוצה גדולה מ-@%s לא נשלח: %s | טקסט: %s", username, post.link, filtered_post_text_preview(post))
                         continue
                     if getattr(post, "force_startup_send", False):
+                        forced_block_reason = pre_send_final_local_block_reason(post)
+                        if forced_block_reason and forced_block_reason != "old_post":
+                            seen.update(post.dedupe_ids)
+                            log_skip_once(
+                                "force_startup_final:" + forced_block_reason,
+                                post,
+                                "דילוג בדיקת הפעלה: %s מ-@%s לא נשלח: %s | טקסט: %s",
+                                hebrew_block_reason(forced_block_reason),
+                                username,
+                                post.link,
+                                filtered_post_text_preview(post),
+                            )
+                            continue
                         candidate_posts.append((username, post, time.perf_counter() - cycle_started))
                         continue
                     if is_too_old_post(post) and not (username == "FabrizioRomano" and startup_cycle and SEND_LAST_POST_ON_EVERY_START):
@@ -9303,7 +9498,9 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 break
             username, post, _ = candidate
             seen = set(state.get(username, []))
-            final_block_reason = "interview_blocked" if is_interview_post(post) else ("" if getattr(post, "force_startup_send", False) else pre_send_final_local_block_reason(post))
+            final_block_reason = "interview_blocked" if is_interview_post(post) else pre_send_final_local_block_reason(post)
+            if getattr(post, "force_startup_send", False) and final_block_reason == "old_post":
+                final_block_reason = ""
             if final_block_reason:
                 mark_candidate_seen(state, candidate)
                 final_block_reason_he = hebrew_block_reason(final_block_reason)
