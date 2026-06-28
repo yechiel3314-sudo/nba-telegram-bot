@@ -4502,6 +4502,7 @@ BLOCK_REASON_HEBREW = {
     "world_cup_bracket_noise": "דיווח מונדיאל סתמי",
     "final_only_club_not_strict_final": "קבוצת דרג ב שמותרת רק בדיווח סופי",
     "tier3_weak_interest": "דרג ג עם התעניינות חלשה",
+    "non_elite_loose_transfer_talk": "שמועה/שיחות לקבוצה לא-עלית בלי התקדמות ממשית",
     "minor_destination_from_big_club": "יעד קטן דרך קבוצה גדולה",
     "small_transfer_fee": "עסקה קטנה מתחת לרף",
     "admin_or_backroom_only_barca_real_allowed": "דיווח ניהולי שלא קשור לריאל/ברצלונה",
@@ -8082,7 +8083,12 @@ ADMIN_PERSON_EXIT_OR_STATUS_PATTERNS = (
 
 WEAK_INTEREST_PATTERNS = (
     r"\b(?:interest|interested|monitoring|tracking|keeping tabs|admire|considering|could|might|eyeing|linked with|on the list|shortlist|inquired|enquired|exploring|watching|following|asked for|requested|no agreement|no deal|talks stalled)\b",
-    r"מתעניין|מתעניינת|מעוניין|מעוניינת|הביע(?:ו)? עניין|עוקב(?:ת|ים)?|שוקל(?:ת|ים)?|עשוי|יכולה|מקושר|ברשימה|ברשימת המועמדים|בירר(?:ה|ו)?|בודק(?:ת|ים)?|נמצא במעקב|ביקשו|מבקשת|אין הסכמה|אין עסקה|השיחות נתקעו",
+    r"מתעניין|מתעניינת|מעוניין|מעוניינת|מגלה עניין|מגלים עניין|גילה עניין|גילו עניין|הביע(?:ו)? עניין|עוקב(?:ת|ים)?|שוקל(?:ת|ים)?|עשוי|יכולה|מקושר|ברשימה|ברשימת המועמדים|בירר(?:ה|ו)?|בודק(?:ת|ים)?|נמצא במעקב|פתח(?:ה|ו)? שיחות|נפתחו שיחות|שיחות ראשוניות|מגעים ראשוניים|ביקשו|מבקשת|אין הסכמה|אין עסקה|השיחות נתקעו",
+)
+
+NON_ELITE_LOOSE_TRANSFER_PATTERNS = (
+    r"\b(?:interest|interested|monitoring|tracking|keeping tabs|considering|could|might|eyeing|linked with|on the list|shortlist|inquired|enquired|exploring|watching|following|asked for|requested|opened talks|open talks|talks opened|initial talks|preliminary talks|contacts?|no agreement|no deal|talks stalled)\b",
+    r"גיל(?:ה|ו)\s+עניין|מגל(?:ה|ים)\s+עניין|הביע(?:ה|ו)?\s+עניין|מתעניינ(?:ת|ים)|מעוניינ(?:ת|ים)|פתח(?:ה|ו)?\s+שיחות|נפתחו\s+שיחות|שיחות\s+(?:ראשוניות|פתוחות|נמשכות)|מגעים\s+(?:ראשוניים|נמשכים)|בירר(?:ה|ו)?|בודק(?:ת|ים)?|בדק(?:ה|ו)?|פנ(?:ה|תה|ו)|עוקב(?:ת|ים)?|במעקב|נמצא\s+במעקב|ברשימה|ברשימת\s+המועמדים|מועמד(?:ת|ים)?|מקושר(?:ת|ים)?|אין\s+סיכום|אין\s+הסכמה|אין\s+עסקה|השיחות\s+נתקעו",
 )
 
 # Weak/quote reports around big clubs should pass only when the text itself is
@@ -8132,10 +8138,10 @@ BIG_CLUB_RUMOR_PATTERNS = (
 )
 
 BIG_CLUB_AS_MAIN_BUYER_PATTERNS = (
-    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma)\b.{0,120}\b(?:bid|offer|proposal|submit|prepare|ready|expected|set|trying|push(?:ing)?|working|talks|negotiations|advance|close|closing|complete|seal|buy|bring)\b",
-    r"\b(?:bid|offer|proposal|submit|prepare|ready|expected|set|trying|push(?:ing)?|working|talks|negotiations|advance|close|closing|complete|seal|buy|bring)\b.{0,120}\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma)\b",
-    r"(?:ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן(?: מינכן)?|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא).{0,120}(?:הצעה|תציע|צפויה להגיש|צפוי להגיש|מכינה|מכין|מנסה|דוחפת|דוחף|בשיחות|מגעים|מו\"מ|מתקדמת|מתקדם|קרובה|קרוב|לסגור|להשלים|להחתים|לרכוש)",
-    r"(?:הצעה|תציע|צפויה להגיש|צפוי להגיש|מכינה|מכין|מנסה|דוחפת|דוחף|בשיחות|מגעים|מו\"מ|מתקדמת|מתקדם|קרובה|קרוב|לסגור|להשלים|להחתים|לרכוש).{0,120}(?:ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן(?: מינכן)?|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא)",
+    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma)\b.{0,120}\b(?:interest|interested|monitoring|tracking|eyeing|shortlist|considering|bid|offer|proposal|submit|prepare|ready|expected|set|trying|push(?:ing)?|working|talks|negotiations|advance|close|closing|complete|seal|buy|bring)\b",
+    r"\b(?:interest|interested|monitoring|tracking|eyeing|shortlist|considering|bid|offer|proposal|submit|prepare|ready|expected|set|trying|push(?:ing)?|working|talks|negotiations|advance|close|closing|complete|seal|buy|bring)\b.{0,120}\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|PSG|Paris Saint-Germain|Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma)\b",
+    r"(?:ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן(?: מינכן)?|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא).{0,120}(?:גילתה עניין|גילו עניין|מגלה עניין|מגלים עניין|מעוניינת|מעוניינים|עוקבת|עוקבים|ברשימה|ברשימת המועמדים|הצעה|תציע|צפויה להגיש|צפוי להגיש|מכינה|מכין|מנסה|דוחפת|דוחף|בשיחות|מגעים|מו\"מ|מתקדמת|מתקדם|קרובה|קרוב|לסגור|להשלים|להחתים|לרכוש)",
+    r"(?:גילתה עניין|גילו עניין|מגלה עניין|מגלים עניין|מעוניינת|מעוניינים|עוקבת|עוקבים|ברשימה|ברשימת המועמדים|הצעה|תציע|צפויה להגיש|צפוי להגיש|מכינה|מכין|מנסה|דוחפת|דוחף|בשיחות|מגעים|מו\"מ|מתקדמת|מתקדם|קרובה|קרוב|לסגור|להשלים|להחתים|לרכוש).{0,120}(?:ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|באיירן(?: מינכן)?|דורטמונד|לברקוזן|פ\.ס\.ז|פריז סן ז'רמן|יובנטוס|אינטר|מילאן|נאפולי|רומא)",
 )
 
 
@@ -8185,6 +8191,28 @@ MIN_IMPORTANCE_SCORE_TO_SEND_WEAK_INTEREST = 45
 
 def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def is_non_elite_loose_transfer_report(cleaned: str) -> bool:
+    """Block low-certainty transfer chatter unless the main club is truly elite."""
+    if not cleaned or not _matches_any(NON_ELITE_LOOSE_TRANSFER_PATTERNS, cleaned):
+        return False
+    if (
+        _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
+        or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+        or has_big_club_as_main_buyer(cleaned)
+        or _matches_any(BIG_CLUB_CONTEXT_PATTERNS, cleaned)
+        or matches_managed_team_tier("tier1", cleaned)
+        or _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned)
+    ):
+        return False
+    tracked_lower_tier = (
+        _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned)
+        or matches_managed_team_tier("tier2", cleaned)
+        or matches_managed_team_tier("tier3", cleaned)
+    )
+    known_non_elite_top_league = _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, cleaned) and not _matches_any(BIG_CLUB_RUMOR_PATTERNS, cleaned)
+    return bool(tracked_lower_tier or known_non_elite_top_league)
 
 
 def should_use_ai_affiliation_fallback(post: Post) -> bool:
@@ -8322,12 +8350,16 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_major_national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, cleaned) or matches_managed_team_tier("national", cleaned)
     has_final_or_near_final = _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
     has_final_only_strict = _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
+    has_non_elite_loose_transfer = is_non_elite_loose_transfer_report(cleaned)
 
     if has_small_total_transfer_fee(post):
         return False, "small_transfer_fee", 0, ["small_transfer_fee"]
 
     if is_minor_destination_from_big_club_source(post):
         return False, "minor_destination_from_big_club", 0, ["minor_destination_from_big_club"]
+
+    if has_non_elite_loose_transfer:
+        return False, "non_elite_loose_transfer_talk", 0, ["non_elite", "loose_transfer_talk"]
 
     # For the user's lower-priority club group, block pure rumours/loose interest.
     # Keep normal rules if a major club is also part of the same report, or when the
@@ -8578,6 +8610,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     if temporary_block_reason:
         return temporary_block_reason
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if is_non_elite_loose_transfer_report(cleaned):
+        return "non_elite_loose_transfer_talk"
     if (
         (_matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, cleaned) or matches_managed_team_tier("tier2", cleaned))
         and not _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
