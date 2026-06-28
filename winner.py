@@ -225,7 +225,7 @@ OPTIONAL_CONTROLLED_ACCOUNTS = [
 ]
 
 DEFAULT_ENABLED_OPTIONAL_ACCOUNTS = {"Plettigoal"}
-ALWAYS_ENABLED_OPTIONAL_ACCOUNTS: set[str] = {"MatteMoretto"}
+ALWAYS_ENABLED_OPTIONAL_ACCOUNTS: set[str] = set()
 
 OPTIONAL_CONTROLLED_ACCOUNT_LABELS = {
     "Plettigoal": "פלוריאן פלטנברג",
@@ -389,6 +389,8 @@ MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCO
 RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
 RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "0") == "1"
 RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "0"))
+RSS_ENABLE_STALE_FALLBACK = os.environ.get("RSS_ENABLE_STALE_FALLBACK", "1") == "1"
+RSS_STALE_FALLBACK_SECONDS = int(os.environ.get("RSS_STALE_FALLBACK_SECONDS", str(6 * 60 * 60)))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
 FEED_ISSUE_LAST_LOGGED_AT: dict[str, float] = {}
@@ -548,10 +550,33 @@ PODCAST_BLOCK_PATTERNS = (
     r"\bfull\s+show\b",
     r"\blisten\s+(?:now|to|here)\b",
     r"\bwatch\s+(?:now|the\s+full|here)\b",
+    r"\bwatch\s+the\s+full\s+(?:video|interview|show|episode)\b",
     r"\bnew\s+episode\b",
     r"\bepisode\s+\d+\b",
+    r"\b(?:read|see|click)\s+(?:the\s+)?(?:full\s+)?(?:story|article|piece|column|report)\b",
+    r"\b(?:full|exclusive)\s+(?:story|article|piece|column|report)\s+(?:on|in|at)\b",
+    r"\b(?:my|our)\s+(?:story|article|piece|column|report)\s+(?:on|in|at)\b",
+    r"\b(?:for|with)\s+@[A-Za-z0-9_]{3,40}\s*$",
+    r"\b(?:live\s+now|we\s+are\s+live|join\s+us\s+live|live\s+on|stream\s+live)\b",
+    r"\b(?:newsletter|substack|website|site|blog)\b",
     r"האזינו",
     r"להאזנה",
+    r"לכתבה\s+המלאה",
+    r"קראו\s+(?:את\s+)?הכתבה",
+    r"קראו\s+עוד",
+    r"לקריאה",
+    r"לטור\s+המלא",
+    r"הטור\s+המלא",
+    r"באתר",
+    r"כתבתי\s+באתר",
+    r"כתבתי\s+על",
+    r"הכתבה\s+שלי",
+    r"הכתבה\s+המלאה",
+    r"הדיווח\s+המלא\s+באתר",
+    r"שידור\s+חי",
+    r"לייב",
+    r"אנחנו\s+בשידור",
+    r"הצטרפו\s+לשידור",
     r"פודקאסט",
     r"הפודקאסט",
     r"צפו\s+בפודקאסט",
@@ -1773,6 +1798,24 @@ def fetch_posts(username: str) -> list[Post]:
     posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(username, primary_templates)
     if posts:
         FEED_NO_POSTS_FAILURE_COUNTS.pop(username, None)
+        latest_age = max(0.0, time.time() - float(posts[0].published_ts or 0.0)) if posts[0].published_ts else 0.0
+        if RSS_ENABLE_STALE_FALLBACK and fallback_templates and latest_age >= RSS_STALE_FALLBACK_SECONDS:
+            fallback_posts, fallback_errors, fallback_timeouts = collect_posts_from_feed_templates(username, fallback_templates)
+            if fallback_posts and float(fallback_posts[0].published_ts or 0.0) > float(posts[0].published_ts or 0.0):
+                logging.info(
+                    "🔁 RSS: המקור הראשי עבור @%s ישן/תקוע, נלקח מקור גיבוי %s עם פוסט חדש יותר.",
+                    username,
+                    fallback_posts[0].source_name,
+                )
+                send_rss_stale_latest_alert_if_needed(username, fallback_posts)
+                return fallback_posts
+            if fallback_errors or fallback_timeouts:
+                logging.debug(
+                    "RSS: ניסיון גיבוי בגלל מקור ישן עבור @%s לא החזיר מקור חדש יותר. errors=%s timeouts=%s",
+                    username,
+                    "; ".join(fallback_errors[:4]),
+                    ", ".join(fallback_timeouts[:4]),
+                )
         send_rss_stale_latest_alert_if_needed(username, posts)
         return posts
 
@@ -1945,7 +1988,7 @@ def enabled_optional_accounts_from_state(state: dict[str, Any] | None = None) ->
     if not isinstance(raw_accounts, list):
         raw_accounts = []
     allowed = set(OPTIONAL_CONTROLLED_ACCOUNTS)
-    enabled = set(raw_accounts) | ALWAYS_ENABLED_OPTIONAL_ACCOUNTS
+    enabled = set(raw_accounts)
     return [username for username in OPTIONAL_CONTROLLED_ACCOUNTS if username in allowed and username in enabled]
 
 
@@ -2076,7 +2119,7 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
         keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_base_account:{username}"}])
     for username in OPTIONAL_CONTROLLED_ACCOUNTS:
         label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
-        status = "פעיל קבוע" if username in ALWAYS_ENABLED_OPTIONAL_ACCOUNTS else ("פעיל" if username in enabled_optional else "כבוי")
+        status = "פעיל" if username in enabled_optional else "כבוי"
         keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_account:{username}"}])
     return stable_reply_markup(keyboard)
 
@@ -2884,7 +2927,9 @@ def check_all_accounts_now_text() -> str:
             latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
             latest = f"{latest_dt} | {recent[0].link}"
         elif posts:
-            latest = "יש פוסטים ב-RSS, אבל אין פוסטים מהיממה האחרונה"
+            source = posts[0].source_name or "לא ידוע"
+            age_hours = max(0.0, (time.time() - float(posts[0].published_ts or 0.0)) / 3600) if posts[0].published_ts else 0.0
+            latest = f"מקור RSS עובד אבל ישן/תקוע: אחרון לפני {age_hours:.1f} שעות | מקור: {source}"
         else:
             latest = "אין פוסטים כרגע"
         lines.append(f"✅ {label}: {len(recent)} פוסטים ביממה האחרונה | אחרון: {latest}")
@@ -2920,7 +2965,8 @@ def rss_status_text() -> str:
                 latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
                 lines.append(f"✅ {label}: RSS תקין | {len(recent)} פוסטים ביממה | מקור אחרון: {source} | אחרון: {latest_dt}")
             else:
-                lines.append(f"⚠️ {label}: RSS מחזיר פוסטים, אבל כולם ישנים מ-24 שעות | מקור אחרון: {source}")
+                age_hours = max(0.0, (time.time() - float(posts[0].published_ts or 0.0)) / 3600) if posts[0].published_ts else 0.0
+                lines.append(f"⚠️ {label}: מקור RSS עובד אבל ישן/תקוע | אחרון לפני {age_hours:.1f} שעות | מקור: {source}")
         else:
             lines.append(f"⚠️ {label}: RSS עובד/נבדק, אבל לא החזיר פוסטים כרגע")
     lines.append("")
@@ -3053,10 +3099,7 @@ def active_accounts_status_text() -> str:
 
     lines.extend(["", "כתבים אופציונליים:"])
     for username in OPTIONAL_CONTROLLED_ACCOUNTS:
-        if username in ALWAYS_ENABLED_OPTIONAL_ACCOUNTS:
-            status = "פעיל קבוע"
-        else:
-            status = "פעיל" if username in enabled_optional else "כבוי"
+        status = "פעיל" if username in enabled_optional else "כבוי"
         marker = "✅" if username in active_set else "⛔"
         lines.append(f"{marker} {_hebrew_account_label(username)}: {status}{since_text(username)}")
     return "\n".join(lines)
@@ -3458,12 +3501,6 @@ def process_control_update(update: dict[str, Any]) -> None:
             if callback_id:
                 answer_control_callback(callback_id, "כתב לא מוכר")
             return
-        if username in ALWAYS_ENABLED_OPTIONAL_ACCOUNTS:
-            label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
-            if callback_id:
-                answer_control_callback(callback_id, f"{label} פעיל קבוע")
-            send_control_panel(is_control_paused(), f"{label} פעיל קבוע ולא כובה.")
-            return
         state = load_control_state()
         enabled = set(enabled_optional_accounts_from_state(state))
         label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
@@ -3481,7 +3518,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, action_text)
         suffix = " פוסטים שיפורסמו אחרי ההפעלה ייבדקו בסריקה הבאה." if username in enabled else ""
-        send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.{suffix}")
+        send_control_menu(f"👥 ניהול כתבים\nהפעולה בוצעה בהצלחה: {action_text}.{suffix}", writers_management_reply_markup(is_control_paused()), message.get("message_id"))
     elif data.startswith("football_base_account:"):
         username = data.split(":", 1)[1]
         if username not in X_ACCOUNTS:
@@ -3505,7 +3542,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, action_text)
         suffix = " פוסטים שיפורסמו אחרי ההפעלה ייבדקו בסריקה הבאה." if username not in disabled else ""
-        send_control_panel(is_control_paused(), f"הפעולה בוצעה בהצלחה: {action_text}.{suffix}")
+        send_control_menu(f"👥 ניהול כתבים\nהפעולה בוצעה בהצלחה: {action_text}.{suffix}", writers_management_reply_markup(is_control_paused()), message.get("message_id"))
 
 
 def process_channel_post_update(update: dict[str, Any]) -> None:
@@ -3598,7 +3635,6 @@ def control_loop() -> None:
     last_conflict_cleanup = 0.0
     if CONTROL_SEND_PANEL_ON_STARTUP:
         try:
-            send_control_panel(is_control_paused(), force_new=True)
             send_quick_control_panel(force_new=True)
         except Exception as exc:
             logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
