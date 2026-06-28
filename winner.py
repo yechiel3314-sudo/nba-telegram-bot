@@ -2439,9 +2439,6 @@ TEAM_CATALOG.update({
     "leicester": {"name": "לסטר", "tier": "tier3", "aliases": ["Leicester", "Leicester City", "לסטר"]},
     "southampton": {"name": "סאות'המפטון", "tier": "tier3", "aliases": ["Southampton", "סאות'המפטון"]},
     "burnley": {"name": "ברנלי", "tier": "tier3", "aliases": ["Burnley", "ברנלי"]},
-    "ipswich": {"name": "איפסוויץ'", "tier": "tier3", "aliases": ["Ipswich", "Ipswich Town", "איפסוויץ'"]},
-    "sheffield united": {"name": "שפילד יונייטד", "tier": "tier3", "aliases": ["Sheffield United", "שפילד יונייטד"]},
-    "luton": {"name": "לוטון", "tier": "tier3", "aliases": ["Luton", "Luton Town", "לוטון"]},
     "bologna": {"name": "בולוניה", "tier": "tier3", "aliases": ["Bologna", "בולוניה"]},
     "torino": {"name": "טורינו", "tier": "tier3", "aliases": ["Torino", "טורינו"]},
     "udinese": {"name": "אודינזה", "tier": "tier3", "aliases": ["Udinese", "אודינזה"]},
@@ -2452,7 +2449,6 @@ TEAM_CATALOG.update({
     "genoa": {"name": "גנואה", "tier": "tier3", "aliases": ["Genoa", "גנואה"]},
     "cagliari": {"name": "קליארי", "tier": "tier3", "aliases": ["Cagliari", "קליארי"]},
     "lecce": {"name": "לצ'ה", "tier": "tier3", "aliases": ["Lecce", "לצ'ה"]},
-    "empoli": {"name": "אמפולי", "tier": "tier3", "aliases": ["Empoli", "אמפולי"]},
     "girona": {"name": "ג'ירונה", "tier": "tier3", "aliases": ["Girona", "ג'ירונה"]},
     "getafe": {"name": "חטאפה", "tier": "tier3", "aliases": ["Getafe", "חטאפה"]},
     "osasuna": {"name": "אוססונה", "tier": "tier3", "aliases": ["Osasuna", "אוססונה"]},
@@ -2461,20 +2457,17 @@ TEAM_CATALOG.update({
     "celta vigo": {"name": "סלטה ויגו", "tier": "tier3", "aliases": ["Celta Vigo", "Celta", "סלטה", "סלטה ויגו"]},
     "espanyol": {"name": "אספניול", "tier": "tier3", "aliases": ["Espanyol", "אספניול"]},
     "nice": {"name": "ניס", "tier": "tier3", "aliases": ["Nice", "OGC Nice", "ניס"]},
-    "rennes": {"name": "רן", "tier": "tier3", "aliases": ["Rennes", "רן"]},
     "strasbourg": {"name": "שטרסבורג", "tier": "tier3", "aliases": ["Strasbourg", "שטרסבורג"]},
-    "brest": {"name": "ברסט", "tier": "tier3", "aliases": ["Brest", "ברסט"]},
-    "nantes": {"name": "נאנט", "tier": "tier3", "aliases": ["Nantes", "נאנט"]},
     "toulouse": {"name": "טולוז", "tier": "tier3", "aliases": ["Toulouse", "טולוז"]},
-    "montpellier": {"name": "מונפלייה", "tier": "tier3", "aliases": ["Montpellier", "מונפלייה"]},
-    "reims": {"name": "ריימס", "tier": "tier3", "aliases": ["Reims", "ריימס"]},
     "freiburg": {"name": "פרייבורג", "tier": "tier3", "aliases": ["Freiburg", "פרייבורג"]},
     "wolfsburg": {"name": "וולפסבורג", "tier": "tier3", "aliases": ["Wolfsburg", "וולפסבורג"]},
     "werder bremen": {"name": "ורדר ברמן", "tier": "tier3", "aliases": ["Werder Bremen", "ורדר ברמן"]},
     "hoffenheim": {"name": "הופנהיים", "tier": "tier3", "aliases": ["Hoffenheim", "הופנהיים"]},
     "mainz": {"name": "מיינץ", "tier": "tier3", "aliases": ["Mainz", "מיינץ"]},
-    "augsburg": {"name": "אוגסבורג", "tier": "tier3", "aliases": ["Augsburg", "אוגסבורג"]},
     "union berlin": {"name": "אוניון ברלין", "tier": "tier3", "aliases": ["Union Berlin", "אוניון ברלין"]},
+    "levante": {"name": "לבאנטה", "tier": "tier3", "aliases": ["Levante", "לבאנטה"]},
+    "malaga": {"name": "מלאגה", "tier": "tier3", "aliases": ["Malaga", "Málaga", "מלאגה"]},
+    "racing santander": {"name": "ראסינג סנטנדר", "tier": "tier3", "aliases": ["Racing Santander", "Racing", "ראסינג", "ראסינג סנטנדר", "ראסטינג"]},
 })
 
 NATIONAL_TEAM_HEBREW_NAMES = [
@@ -4241,14 +4234,14 @@ def filtered_post_text_preview(post: Post, limit: int = 260) -> str:
 # cases like a family/agent/player quote about wanting/being able to move to Napoli.
 EARLY_MAJOR_CLUB_CONTEXT_PATTERNS = (
     r"\b(?:Manchester United|Man United|Man Utd|Manchester City|Man City|Liverpool|Arsenal|Chelsea|Tottenham|Spurs|Newcastle|Aston Villa|West Ham|Brighton|Everton|Leicester|Crystal Palace|Wolves|Fulham|Bournemouth|Brentford|Nottingham Forest|Leeds|Sunderland|Burnley)\b",
-    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Sevilla|Valencia|Villarreal|Real Sociedad|Athletic Club|Athletic Bilbao|Real Betis|Girona|Celta Vigo|Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Espanyol|Levante|Leganes|Granada|Las Palmas|Valladolid)\b",
-    r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Lazio|Atalanta|Fiorentina|Torino|Bologna|Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Verona|Parma|Pisa|Cremonese)\b",
-    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|Eintracht Frankfurt|Mainz|Freiburg|Augsburg|Wolfsburg|Union Berlin|Hoffenheim|Werder Bremen|Hamburg|Koln|Köln|St Pauli|Heidenheim|Bochum)\b",
-    r"\b(?:PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille|Nice|Rennes|Lens|Strasbourg|Brest|Nantes|Toulouse|Montpellier|Reims|Metz|Auxerre|Angers|Lorient|Paris FC)\b",
+    r"\b(?:Real Madrid|Barcelona|Barca|Barça|Atletico Madrid|Atlético Madrid|Sevilla|Valencia|Villarreal|Real Sociedad|Athletic Club|Athletic Bilbao|Real Betis|Girona|Celta Vigo|Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Espanyol|Levante|Malaga|Málaga|Racing Santander|Leganes|Granada|Las Palmas|Valladolid)\b",
+    r"\b(?:Juventus|Inter Milan|Inter|AC Milan|Milan|Napoli|Roma|Lazio|Atalanta|Fiorentina|Torino|Bologna|Genoa|Cagliari|Como|Lecce|Udinese|Sassuolo|Verona|Parma|Pisa|Cremonese)\b",
+    r"\b(?:Bayern Munich|Bayern|Borussia Dortmund|Dortmund|Bayer Leverkusen|Leverkusen|Eintracht Frankfurt|Mainz|Freiburg|Wolfsburg|Union Berlin|Hoffenheim|Werder Bremen|Hamburg|Koln|Köln|St Pauli|Heidenheim|Bochum)\b",
+    r"\b(?:PSG|Paris Saint-Germain|Marseille|Monaco|Lyon|Lille|Nice|Lens|Strasbourg|Toulouse|Metz|Auxerre|Angers|Lorient|Paris FC)\b",
     r"ריאל מדריד|ברצלונה|בארסה|אתלטיקו מדריד|מנצ'סטר יונייטד|מנצ'סטר סיטי|ליברפול|ארסנל|צ'לסי|טוטנהאם|ניוקאסל|אסטון וילה|ווסטהאם|ברייטון|אברטון|לסטר|קריסטל פאלאס|וולבס|פולהאם|בורנמות|ברנטפורד|נוטינגהאם|לידס|סנדרלנד|ברנלי",
-    r"יובנטוס|אינטר|מילאן|נאפולי|רומא|לאציו|אטאלנטה|פיורנטינה|טורינו|בולוניה|גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|ורונה|פארמה|פיזה|קרמונזה",
-    r"באיירן|דורטמונד|לברקוזן|פרנקפורט|מיינץ|פרייבורג|אוגסבורג|וולפסבורג|אוניון ברלין|הופנהיים|ורדר ברמן|המבורג|קלן|סט פאולי|בוכום",
-    r"פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל|ניס|רן|לאנס|שטרסבורג|ברסט|נאנט|טולוז|מונפלייה|ריימס|מץ|אוקזר|אנז'ה|לוריין",
+    r"יובנטוס|אינטר|מילאן|נאפולי|רומא|לאציו|אטאלנטה|פיורנטינה|טורינו|בולוניה|גנואה|קליארי|קומו|לצ'ה|אודינזה|ססואולו|ורונה|פארמה|פיזה|קרמונזה",
+    r"באיירן|דורטמונד|לברקוזן|פרנקפורט|מיינץ|פרייבורג|וולפסבורג|אוניון ברלין|הופנהיים|ורדר ברמן|המבורג|קלן|סט פאולי|בוכום",
+    r"פ\.ס\.ז|פריז סן ז'רמן|מארסיי|מונאקו|ליון|ליל|ניס|לאנס|שטרסבורג|טולוז|מץ|אוקזר|אנז'ה|לוריין",
 )
 
 # A quote/interview is rescued only when it has a REAL transfer/contract mechanism.
@@ -4268,7 +4261,10 @@ INTERVIEW_BLOCK_PATTERNS = (
     r"\b(?:speaking to|spoke to|told|tells|said to|says to)\s+(?:@[A-Za-z0-9_]{2,}|[A-Z][A-Za-z0-9_.-]{2,}(?:\s+[A-Z][A-Za-z0-9_.-]{2,}){0,3})\b",
     r"\b(?:said|told|speaking|spoke)\s+(?:to|with)\s+(?:El\s+Mundo|Marca|AS|COPE|SER|L'Equipe|LEquipe|Sky|ESPN|TNT|DAZN|BBC|The\s+Athletic|Telegraph|Guardian|MailSport)\b",
     r"\b(?:on|via)\s+[A-Z][A-Za-z0-9_.-]{2,}(?:\s+[A-Z][A-Za-z0-9_.-]{2,}){0,3}\s*:",
+    r"(?is)[\"“”][^\"“”\n]{5,260}[\"“”].{0,400}[\"“”][^\"“”\n]{5,260}[\"“”]",
     r"ראיון|בראיון|מסיבת\s+עיתונאים|אזור\s+מעורב|דיבר\s+עם|נשאל\s+על|נשאלה\s+על",
+    r"(?:אמר|אמרה|אמרו)\s+ל-?@?[A-Za-z0-9_]{3,40}",
+    r"(?m)^\s*[א-ת][א-ת'״\".-]+(?:\s+[א-ת][א-ת'״\".-]+){0,5}\s+על\s+[^:\n]{2,120}:\s*[\"“”]",
 )
 
 QUOTE_INTERVIEW_FORMAT_PATTERNS = (
@@ -6576,6 +6572,11 @@ def remove_dangling_source_attribution(text: str) -> str:
     )
     for pattern in patterns:
         text = re.sub(pattern, ".", text)
+    text = re.sub(
+        r"(?iu)\s*,?\s*(?:כפי\s+ש(?:נחשף|דווח|פורסם|מדווח)|כמו\s+ש(?:נחשף|דווח|פורסם))\s+(?:אתמול|היום|מוקדם\s+יותר|לפני\s+[^.!?,;\n]{1,40})\s*[.!?]?",
+        ".",
+        text,
+    )
     text = re.sub(r"(?iu)\s*,?\s*(?:as\s+(?:first\s+)?reported|reported\s+by|כפי\s+שדווח|דווח\s+על\s+ידי)\s*[.,;:!?]*\s*$", "", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)
     text = re.sub(r"\.{2,}", ".", text)
@@ -7238,7 +7239,17 @@ def final_hebrew_polish(text: str) -> str:
     return text.strip()
 
 
-LIST_STAT_ITEM_MARKERS = ("🥇", "🥈", "🥉", "✅", "🔹", "🔸", "▪️", "▫️", "•")
+LIST_STAT_ITEM_MARKERS = ("🥇", "🥈", "🥉", "✅", "❌", "☑️", "✔️", "🔹", "🔸", "▪️", "▫️", "•")
+
+
+def regional_flag_count(text: str) -> int:
+    return len(re.findall(r"[\U0001F1E6-\U0001F1FF]{2}", text or ""))
+
+
+def add_group_spacing_to_long_list(text: str) -> str:
+    # Lists should be readable line-by-line, without blank lines inside the list.
+    # Paragraph spacing is added only between the list and surrounding text.
+    return text
 
 
 def format_stat_list_lines(text: str) -> str:
@@ -7246,23 +7257,32 @@ def format_stat_list_lines(text: str) -> str:
     if not value:
         return value
     marker_count = sum(value.count(marker) for marker in LIST_STAT_ITEM_MARKERS)
+    flag_count = regional_flag_count(value)
     has_many_numbered_stats = len(re.findall(r"\(\d+\)", value)) >= 4 and re.search(r"הכי הרבה|most\s+", value, re.IGNORECASE)
-    if marker_count < 3 and not has_many_numbered_stats:
+    has_dense_inline_list = marker_count >= 4 or flag_count >= 4 or bool(marker_count >= 3 and re.search(r"נבחרות|qualified|העפילו|עלו|מודחות|שלב", value, re.IGNORECASE))
+    if not has_dense_inline_list and not has_many_numbered_stats:
         return value
 
     value = re.sub(r"(?iu)(היום)\.\s+(?=[💥🔥⚽🥇🥈🥉✅🔹🔸▪▫•])", r"\1:\n", value)
     value = re.sub(r"(?iu)\b(today)\.\s+(?=[💥🔥⚽🥇🥈🥉✅🔹🔸▪▫•])", r"\1:\n", value)
+    value = re.sub(r"(?<!\n)\s+(?=(?:✅|❌|☑️|✔️)\s+)", "\n", value)
     value = re.sub(r"(?<!\n)\s+(?=[💥🔥⚽]\s+)", "\n", value)
-    value = re.sub(r"(?<!\n)\s+(?=(?:🥇|🥈|🥉|✅|🔹|🔸|▪️|▫️|•)\s+)", "\n", value)
+    value = re.sub(r"(?<!\n)\s+(?=(?:🥇|🥈|🥉|✅|❌|☑️|✔️|🔹|🔸|▪️|▫️|•)\s+)", "\n", value)
+    value = re.sub(r"(?<=[\U0001F1E6-\U0001F1FF])(?=(?:✅|❌|☑️|✔️))", "\n", value)
+    value = re.sub(r"(?m)^((?:✅|❌|☑️|✔️)\s+.*?[\U0001F1E6-\U0001F1FF]{2})\s+(\d+\s+(?:נבחרות|קבוצות|שחקנים)\b.*)$", r"\1\n\n\2", value)
     value = re.sub(r"(\(\d+\))\s+(לא רע\.)", r"\1\n\2", value)
     value = re.sub(r"(?m)^((?:🥇|🥈|🥉)\s+.*?\(\d+\))\s+([^\n]{2,24}\.)$", r"\1\n\2", value)
     value = re.sub(r"(?<=\S)\s+(לא רע\.?)(?=\s*(?:\n|$))", r"\n\1", value)
     value = re.sub(r"(?<=\S)\s+(not bad\.?)(?=\s*(?:\n|$))", r"\n\1", value, flags=re.IGNORECASE)
     value = re.sub(r"(?<=\.)\s+(היום:)", r"\n\n\1", value, count=1)
     value = re.sub(r"(?<=\.)\s+(today:)", r"\n\n\1", value, count=1, flags=re.IGNORECASE)
+    value = re.sub(r"(?<=\.)\n(היום:)", r"\n\n\1", value, count=1)
+    value = re.sub(r"([.!?״”])\n(היום:)", r"\1\n\n\2", value, count=1)
+    value = re.sub(r"(לא רע\.?)\s+([🫲🫱].*)", r"\1\n\n\2", value)
     value = re.sub(r"[ \t]{2,}", " ", value)
-    value = re.sub(r" *\n+ *", "\n", value)
+    value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
+    value = add_group_spacing_to_long_list(value)
     return value.strip()
 
 
@@ -7564,6 +7584,9 @@ def should_hide_writer_header(post: Post, translated: str) -> bool:
         return False
     if is_world_cup_bracket_or_qualification_noise(post):
         return True
+    transfer_or_coach_news = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, source) or _matches_any(COACH_IMPORTANT_PATTERNS, source)
+    if not transfer_or_coach_news and re.search(r"(?iu)\bWorld Cup\b|מונדיאל|גביע העולם|נבחרות|העפילו|שלב\s+32", source):
+        return True
     national_context = _matches_any(MAJOR_NATIONAL_TEAM_CONTEXT_PATTERNS, source) or matches_managed_team_tier("national", source)
     club_context = (
         _matches_any(ALLOWED_CLUB_PATTERNS, source)
@@ -7573,7 +7596,6 @@ def should_hide_writer_header(post: Post, translated: str) -> bool:
         or matches_managed_team_tier("tier3", source)
         or _matches_any(ISRAELI_LEAGUE_PATTERNS, source)
     )
-    transfer_or_coach_news = _matches_any(TRANSFER_OR_FUTURE_PATTERNS, source) or _matches_any(COACH_IMPORTANT_PATTERNS, source)
     soft_national_update = bool(
         national_context
         and not transfer_or_coach_news
@@ -7828,12 +7850,12 @@ FINAL_ONLY_ALLOWED_CLUB_PATTERNS = (
 
 FINAL_OR_NEAR_FINAL_PATTERNS = (
     r"\b(?:official|confirmed|announced|announcement|club statement|signed|has signed|will sign|set to sign|set to join|here we go|done deal|deal done|deal agreed|agreement reached|full agreement|verbal agreement|agreed in principle|medical booked|medical tests|medical|documents signed|contracts signed|completed|sealed|final details|final stages|final steps|closing stages|one step away|imminent|expected to be completed|approved|green light|accepted bid|bid accepted)\b",
-    r"רשמי|אושר|אישר|אישרה|הודיע|הודיעה|הודעה רשמית|חתם|חתמה|יחתום|תחתום|צפוי לחתום|צפויה לחתום|צפוי להצטרף|צפויה להצטרף|הנה זה קורה|עסקה סגורה|העסקה סגורה|העסקה הושלמה|העסקה סוכמה|סוכמה העסקה|סיכום מלא|הושג סיכום|סיכום בעל פה|סוכמו התנאים|בדיקות רפואיות|נקבעו בדיקות|מסמכים נחתמו|חוזים נחתמו|הושלם|הושלמה|נסגר|נסגרה|פרטים אחרונים|בשלבים האחרונים|צעד אחד מסגירה|קרוב לסגירה|קרובה לסגירה|מיידי|צפוי להיסגר|אור ירוק|הצעה התקבלה|ההצעה התקבלה",
+    r"רשמי|אושר|אישר|אישרה|הודיע|הודיעה|הודעה רשמית|חתם|חתמה|יחתום|תחתום|צפוי לחתום|צפויה לחתום|צפוי להצטרף|צפויה להצטרף|הנה זה קורה|הנה זה בא|עסקה סגורה|העסקה סגורה|העסקה הושלמה|העסקה סוכמה|סוכמה העסקה|סיכום מלא|הושג סיכום|סיכום בעל פה|סיכום עם|סיכום על|סוכמו התנאים|בדיקות רפואיות|נקבעו בדיקות|מסמכים נחתמו|חוזים נחתמו|הושלם|הושלמה|נסגר|נסגרה|פרטים אחרונים|בשלבים האחרונים|צעד אחד מסגירה|קרוב לסגירה|קרובה לסגירה|מיידי|צפוי להיסגר|אור ירוק|הצעה התקבלה|ההצעה התקבלה",
 )
 
 FINAL_ONLY_STRICT_PATTERNS = (
     r"\b(?:official|confirmed|announced|announcement|club statement|signed|has signed|done deal|deal done|deal agreed|agreement reached|full agreement|documents signed|contracts signed|completed|sealed|approved|accepted bid|bid accepted)\b",
-    r"רשמי|אושר|אישר|אישרה|הודיע|הודיעה|הודעה רשמית|חתם|חתמה|חתמו|חתימה רשמית|העסקה סגורה|עסקה סגורה|העסקה הושלמה|העסקה סוכמה|סוכמה העסקה|סיכום מלא|הושג סיכום|מסמכים נחתמו|חוזים נחתמו|הושלם|הושלמה|נסגר|נסגרה|הצעה התקבלה|ההצעה התקבלה",
+    r"רשמי|אושר|אישר|אישרה|הודיע|הודיעה|הודעה רשמית|חתם|חתמה|חתמו|חתימה רשמית|הנה זה בא|הנה זה קורה|העסקה סגורה|עסקה סגורה|העסקה הושלמה|העסקה סוכמה|סוכמה העסקה|סיכום מלא|הושג סיכום|סיכום עם|סיכום על|מסמכים נחתמו|חוזים נחתמו|הושלם|הושלמה|נסגר|נסגרה|הצעה התקבלה|ההצעה התקבלה",
 )
 
 ISRAELI_LEAGUE_PATTERNS = (
@@ -7965,16 +7987,16 @@ def is_other_sport_post(post: Post) -> bool:
 POPULAR_OR_RECENT_UCL_CLUB_PATTERNS = (
     # All current/recent top-5 league clubs and clubs promoted/back to a top league are treated like popular clubs.
     # This prevents important reports from Premier League / La Liga / Serie A / Bundesliga / Ligue 1 sides being blocked as "small".
-    r"\b(?:Brighton|Bournemouth|Brentford|Fulham|Wolves|Everton|West Ham|Crystal Palace|Nottingham Forest|Leeds|Sunderland|Leicester|Southampton|Burnley|Sheffield United|Ipswich|Luton|Aston Villa|Newcastle)\b",
-    r"\b(?:Genoa|Cagliari|Como|Lecce|Empoli|Udinese|Sassuolo|Bologna|Torino|Monza|Verona|Parma|Sampdoria|Pisa|Cremonese|Salernitana)\b",
-    r"\b(?:Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Alavés|Celta Vigo|Espanyol|Levante|Leganes|Leganés|Granada|Las Palmas|Valladolid|Girona)\b",
-    r"\b(?:Nantes|Toulouse|Montpellier|Reims|Metz|Nice|Rennes|Strasbourg|Lens|Brest|Auxerre|Angers|Lorient|Paris FC|Saint-Étienne|Saint Etienne)\b",
-    r"\b(?:Bochum|Augsburg|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Hamburg|Koln|Köln|Darmstadt|Holstein Kiel)\b",
+    r"\b(?:Brighton|Bournemouth|Brentford|Fulham|Wolves|Everton|West Ham|Crystal Palace|Nottingham Forest|Leeds|Sunderland|Leicester|Southampton|Burnley|Aston Villa|Newcastle)\b",
+    r"\b(?:Genoa|Cagliari|Como|Lecce|Udinese|Sassuolo|Bologna|Torino|Monza|Verona|Parma|Sampdoria|Pisa|Cremonese|Salernitana)\b",
+    r"\b(?:Getafe|Osasuna|Mallorca|Rayo Vallecano|Alaves|Alavés|Celta Vigo|Espanyol|Levante|Malaga|Málaga|Racing Santander|Leganes|Leganés|Granada|Las Palmas|Valladolid|Girona)\b",
+    r"\b(?:Toulouse|Metz|Nice|Strasbourg|Lens|Auxerre|Angers|Lorient|Paris FC|Saint-Étienne|Saint Etienne)\b",
+    r"\b(?:Bochum|Mainz|Freiburg|Heidenheim|St Pauli|Werder Bremen|Wolfsburg|Union Berlin|Hoffenheim|Hamburg|Koln|Köln|Darmstadt|Holstein Kiel)\b",
     r"ברייטון|בורנמות|ברנטפורד|פולהאם|וולבס|אברטון|ווסטהאם|קריסטל פאלאס|נוטינגהאם|לידס|סנדרלנד|לסטר|סאות'המפטון|ברנלי|אסטון וילה|ניוקאסל",
-    r"גנואה|קליארי|קומו|לצ'ה|אמפולי|אודינזה|ססואולו|בולוניה|טורינו|מונצה|ורונה|פארמה|סמפדוריה|פיזה|קרמונזה",
-    r"חטאפה|אוססונה|מיורקה|ראיו|אלאבס|סלטה|אספניול|לבאנטה|לגאנס|גרנאדה|לאס פאלמאס|ויאדוליד|ג'ירונה",
-    r"נאנט|טולוז|מונפלייה|ריימס|מץ|ניס|רן|שטרסבורג|לאנס|ברסט|אוקזר|אנז'ה|לוריין|פאריס FC|סנט אטיין",
-    r"בוכום|אוגסבורג|מיינץ|פרייבורג|היידנהיים|סט פאולי|ורדר ברמן|וולפסבורג|אוניון ברלין|הופנהיים|המבורג|קלן|דרמשטאדט|הולשטיין קיל",
+    r"גנואה|קליארי|קומו|לצ'ה|אודינזה|ססואולו|בולוניה|טורינו|מונצה|ורונה|פארמה|סמפדוריה|פיזה|קרמונזה",
+    r"חטאפה|אוססונה|מיורקה|ראיו|אלאבס|סלטה|אספניול|לבאנטה|מלאגה|ראסינג|ראסינג סנטנדר|לגאנס|גרנאדה|לאס פאלמאס|ויאדוליד|ג'ירונה",
+    r"טולוז|מץ|ניס|שטרסבורג|לאנס|אוקזר|אנז'ה|לוריין|פאריס FC|סנט אטיין",
+    r"בוכום|מיינץ|פרייבורג|היידנהיים|סט פאולי|ורדר ברמן|וולפסבורג|אוניון ברלין|הופנהיים|המבורג|קלן|דרמשטאדט|הולשטיין קיל",
     r"\b(?:promoted|promotion|newly promoted|back in|back to|return to|returns to)\s+(?:the\s+)?(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\b",
     r"\b(?:Premier League|La Liga|Serie A|Bundesliga|Ligue 1)\s+(?:newcomers|side|club|team)\b",
     r"עלתה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)|חזרה\s+ל(?:פרמייר ליג|לה ליגה|סרייה א|בונדסליגה|ליגה 1)",
@@ -8079,7 +8101,7 @@ VAGUE_PLAYER_IDEA_PATTERNS = (
 
 STRONG_PLAYER_MOVE_PATTERNS = (
     r"\b(?:official|confirmed|here we go|deal agreed|agreement reached|full agreement|verbal agreement|set to sign|set to join|close to signing|close to joining|medical|medical tests|contract signed|signs|joins|completed|done deal|bid accepted|release clause activated|loan agreed|permanent transfer|free agent)\b",
-    r"רשמי|אושר|הנה זה קורה|העסקה סוכמה|הושג סיכום|סיכום מלא|סיכום בעל פה|צפוי לחתום|צפוי להצטרף|קרוב לחתימה|קרוב להצטרף|בדיקות רפואיות|החוזה נחתם|חתם|יחתום|מצטרף|עסקה סגורה|ההצעה התקבלה|סעיף שחרור|שחקן חופשי|העברה קבועה|השאלה סוכמה",
+    r"רשמי|אושר|הנה זה קורה|הנה זה בא|העסקה סוכמה|הושג סיכום|סיכום מלא|סיכום בעל פה|סיכום עם|סיכום על|צפוי לחתום|צפוי להצטרף|קרוב לחתימה|קרוב להצטרף|בדיקות רפואיות|החוזה נחתם|חתם|יחתום|מצטרף|עסקה סגורה|ההצעה התקבלה|סעיף שחרור|שחקן חופשי|העברה קבועה|השאלה סוכמה",
 )
 
 CLEAR_PLAYER_DEPARTURE_PATTERNS = (
@@ -8663,6 +8685,9 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- Preserve real flag emojis. If country-code letters are used as a flag marker, output the correct flag emoji and remove the letters.\n"
         "- Remove leftovers such as TR, טי אר, GE, FR, IT, ES, DE when they only duplicate a nearby flag emoji.\n"
         "- Keep emojis only when useful and already implied by the source.\n"
+        "- If the source contains an inline list of stats, countries, teams, players, checkmarks, crosses, medals, bullets, or many flag emojis, format it as a readable Telegram list.\n"
+        "- For lists: use one line per list item and do NOT add blank lines inside the list. Add a blank line only after the list ends if a summary/next paragraph follows.\n"
+        "- For long non-list messages only: use natural short paragraphs every 2-3 sentences when it improves readability.\n"
         "- Do not write explanations. JSON only.\n"
         f"{glossary_block}\n"
         "MAIN_TEXT:\n" + (main_source or "") + "\n\n"
