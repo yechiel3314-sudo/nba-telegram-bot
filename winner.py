@@ -185,7 +185,10 @@ GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "").strip()
 # One Gemini request per post stays strict. If the active model is overloaded,
 # future posts can temporarily use another model automatically. This does not
 # add a second Gemini request for the same post.
-GEMINI_FALLBACK_MODELS_RAW = ""
+GEMINI_FALLBACK_MODELS_RAW = os.environ.get(
+    "GEMINI_FALLBACK_MODELS",
+    os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash-lite,gemini-2.5-flash-lite"),
+).strip()
 GEMINI_MODEL_OVERLOAD_SECONDS = int(os.environ.get("GEMINI_MODEL_OVERLOAD_SECONDS", "180"))
 GEMINI_MODEL_OVERLOAD_UNTIL = 0.0
 GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
@@ -3313,7 +3316,25 @@ def gemini_status_text() -> str:
             err = GEMINI_KEY_LAST_ERRORS.get(key, {})
             reason = err.get("summary", "כשל זמני")
             minutes = max(1, (wait + 59) // 60)
-            lines.append(f"• {gemini_key_label(i)} — {reason}, עוד כ־{minutes} דק׳")
+            if "לא מורשה" in str(reason) or "תקין" in str(reason):
+                lines.append(f"• {gemini_key_label(i)} — חשד לחסימה/הרשאה, עוד כ־{minutes} דק׳")
+            else:
+                lines.append(f"• {gemini_key_label(i)} — {reason}, עוד כ־{minutes} דק׳")
+
+    blocked_like = []
+    quota_like = []
+    for i, key in enumerate(GEMINI_API_KEYS):
+        err = GEMINI_KEY_LAST_ERRORS.get(key, {})
+        summary = str(err.get("summary", ""))
+        full = str(err.get("full_error", ""))
+        if any(x in (summary + " " + full).lower() for x in ("401", "403", "api key", "permission", "unauthorized")) or "לא מורשה" in summary:
+            blocked_like.append(gemini_key_label(i))
+        if any(x in (summary + " " + full).lower() for x in ("429", "quota", "resource_exhausted")) or "מכסה" in summary:
+            quota_like.append(gemini_key_label(i))
+    if blocked_like:
+        lines += ["", "חשד למפתחות חסומים/לא מורשים:", "• " + ", ".join(blocked_like[:8])]
+    if quota_like:
+        lines += ["", "מפתחות שקיבלו 429 לאחרונה:", "• " + ", ".join(quota_like[:8])]
 
     model_waits = []
     for model in gemini_translation_model_candidates():
@@ -3342,9 +3363,9 @@ def gemini_status_text() -> str:
 
     # Practical diagnosis only; avoid flooding the control panel with a generic list.
     if any("מכסה" in str(k) or "קצב" in str(k) for k in failures_today_map):
-        lines += ["", "מה זה אומר: מפתח שקיבל 429 יוצא אוטומטית מהרוטציה; שאר המפתחות ממשיכים לעבוד."]
-    elif any("עומס" in str(k) for k in failures_today_map):
-        lines += ["", "מה זה אומר: המודל עמוס זמנית; הפוסט הבא יעבור למודל זמין אחר."]
+        lines += ["", "מה זה אומר: 429 הוא מכסה/קצב. המפתח שקיבל 429 לא ייבחר שוב עד שיתקרר."]
+    if any("עומס" in str(k) for k in failures_today_map):
+        lines += ["", "מה זה אומר: 503 הוא עומס מודל. תוקן: התרגום הבא לא ייתקע על אותו מודל אלא יעבור למודל הבא ברשימה."]
 
     return "\n".join(lines)
 
@@ -9744,9 +9765,11 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     for index, key in gemini_available_keys_for_operation():
         if real_requests_used >= max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS):
             break
+        model_for_request = current_gemini_translation_model()
+        globals()["GEMINI_LAST_MODEL_USED"] = model_for_request
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{urllib.parse.quote(GEMINI_FAST_MODEL)}:generateContent?key={urllib.parse.quote(key)}"
+            f"{urllib.parse.quote(model_for_request)}:generateContent?key={urllib.parse.quote(key)}"
         )
         try:
             with GEMINI_TRANSLATION_SEMAPHORE:
@@ -9775,7 +9798,8 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
             raise RuntimeError("Gemini returned empty translation")
         except Exception as exc:
             last_error = exc
-            cool_down_gemini_key(key, exc)
+            mark_gemini_model_overloaded(exc, locals().get("model_for_request", GEMINI_FAST_MODEL))
+            cool_down_gemini_key(key, exc, index)
             remaining = max(0, max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS) - real_requests_used)
             if remaining:
                 logging.warning(
