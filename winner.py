@@ -186,7 +186,7 @@ GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", 
 # Robust default: try up to 3 real Gemini requests for a publishable post.
 # ברירת מחדל בטוחה: פוסט אחד = בקשת Gemini אמיתית אחת בלבד.
 # אם Gemini מחזיר JSON ריק/לא תקין, לא שורפים מפתח נוסף; הכשל מדווח בפירוט מלא.
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = 1  # חסכון קשיח: בקשת Gemini אמיתית אחת בלבד לפוסט
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 # נשארים כאן כי הקובץ החדש משתמש בהם בהמשך; הערכים תואמים לזמנים שהיו קשיחים בקוד התקין.
 GEMINI_TRANSLATION_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "18"))
@@ -3238,29 +3238,85 @@ def gemini_status_text() -> str:
     now = time.time()
     with GEMINI_KEY_LOCK:
         loaded = len(GEMINI_API_KEYS)
-        cooled = sum(1 for key in GEMINI_API_KEYS if GEMINI_KEY_COOLDOWNS.get(key, 0.0) > now)
-        longest_wait = max([GEMINI_KEY_COOLDOWNS.get(key, 0.0) - now for key in GEMINI_API_KEYS if GEMINI_KEY_COOLDOWNS.get(key, 0.0) > now] or [0])
+        cooled_keys = [(i, key, GEMINI_KEY_COOLDOWNS.get(key, 0.0) - now) for i, key in enumerate(GEMINI_API_KEYS) if GEMINI_KEY_COOLDOWNS.get(key, 0.0) > now]
+        cooled = len(cooled_keys)
+        longest_wait = max([wait for _, _, wait in cooled_keys] or [0])
     available_count = max(0, loaded - cooled)
     global_wait = max(0, int(GEMINI_DISABLED_UNTIL - now)) if GEMINI_DISABLED_UNTIL and GEMINI_DISABLED_UNTIL < 10**11 else 0
     paused_until_refill = gemini_requests_paused_until_refill()
     bucket = _daily_stats_bucket()
-    failures_today = sum(int(v or 0) for v in (bucket.get("gemini_failures", {}) or {}).values())
-    status = "עצור עד שחרור ידני" if paused_until_refill else ("תקין מקומית" if loaded and (available_count > 0) and not global_wait else ("בקירור מקומי" if loaded else "אין מפתחות טעונים"))
+    failures_today_map = bucket.get("gemini_failures", {}) or {}
+    failures_today = sum(int(v or 0) for v in failures_today_map.values())
+    status = "עצור עד שחרור ידני" if paused_until_refill else ("יש מפתחות פנויים" if loaded and (available_count > 0) and not global_wait else ("כל המפתחות בקירור/לא זמינים" if loaded else "אין מפתחות טעונים"))
+
+    recent_lines: list[str] = []
+    for i, key in enumerate(GEMINI_API_KEYS[:20]):
+        err = GEMINI_KEY_LAST_ERRORS.get(key, {})
+        wait = int(max(0, GEMINI_KEY_COOLDOWNS.get(key, 0.0) - now))
+        state = "בקירור" if wait else "פנוי מקומית"
+        if err:
+            ago = int(now - float(err.get("at", now)))
+            recent_lines.append(
+                f"• {gemini_key_label(i)}: {state}"
+                + (f" ({wait} שנ׳)" if wait else "")
+                + f" | כשל אחרון לפני {ago} שנ׳: {err.get('summary','לא ידוע')}"
+                + (f" | קירור: {err.get('cooldown_seconds',0)} שנ׳" if err.get("cooled") else " | בלי קירור")
+                + (f" | פירוט: {compact_debug_text(err.get('full_error',''), 220)}" if err.get("full_error") else "")
+            )
+        else:
+            recent_lines.append(f"• {gemini_key_label(i)}: {state}" + (f" ({wait} שנ׳)" if wait else ""))
+
+    top_failure_lines = []
+    for name, count in sorted(failures_today_map.items(), key=lambda x: int(x[1] or 0), reverse=True)[:8]:
+        top_failure_lines.append(f"• {name}: {count}")
+
+    last = GEMINI_LAST_TRANSLATION_FAILURE or {}
+    last_failure_block = ""
+    if last:
+        last_failure_block = (
+            "\n\n🧾 הכשל האחרון בתרגום:\n"
+            f"זמן: {datetime.fromtimestamp(float(last.get('at', now)), ZoneInfo(SHABBAT_TIMEZONE)).strftime('%H:%M:%S %d/%m/%Y')}\n"
+            f"כתב: @{last.get('username','')}\n"
+            f"קישור: {last.get('link','')}\n"
+            f"בקשות Gemini אמיתיות שנוצלו: {last.get('real_requests_used','?')}\n"
+            f"סיבה: {last.get('summary','לא ידוע')}\n"
+            f"שגיאה: {compact_debug_text(last.get('error',''), 500)}\n"
+            f"פלט/תגובה: {compact_debug_text(last.get('response_debug',''), 500)}"
+        )
+
+    possible_causes = (
+        "\n\n🔎 כל סוגי הבעיות האפשריות שצריך לבדוק:\n"
+        "1. מכסה יומית/דקתית נגמרה במפתח או בפרויקט Google משותף.\n"
+        "2. מפתח לא תקין, חסום, לא מורשה או שייך לפרויקט בלי Gemini API פעיל.\n"
+        "3. עומס זמני של Gemini: 500/502/503/504 או timeout.\n"
+        "4. מודל לא זמין באזור/במפתח: שגיאת model/404.\n"
+        "5. בקשה לא תקינה: 400 / invalid argument / הגדרת responseMimeType.\n"
+        "6. Gemini החזיר תשובה ריקה או JSON בלי main. זה לא שורף מפתח נוסף ולא מכניס קירור.\n"
+        "7. הפלט נפסל כי שינה שמות, קבוצות, שנים או מספרים. זה לא קירור מפתח.\n"
+        "8. המפתחות פנויים מקומית אבל כולם חולקים אותה מכסה בפרויקט Google אחד. את זה אי אפשר לדעת בלי בקשה אמיתית.\n"
+        "9. Railway לא טען את כל משתני הסביבה אחרי שינוי עד שעושים Deploy/Restart.\n"
+        "10. Google Translate fallback נכשל או תרגם חלקית בגלל טקסט מעורב/שבור.\n"
+    )
+
     return (
-        "🤖 בדיקת Gemini מקומית\n\n"
+        "🤖 בדיקת Gemini מורחבת\n\n"
         f"מצב: {status}\n"
         f"מפתחות טעונים: {loaded}\n"
         f"מפתחות פנויים מקומית: {available_count}\n"
         f"מפתחות בקירור מקומי: {cooled}\n"
         f"הגנת מכסה עד שחרור: {'פעילה' if paused_until_refill else 'כבויה'}\n"
         f"כשלי Gemini שנרשמו היום: {failures_today}\n"
-        f"מודל תרגום: {GEMINI_MODEL}\n"
-        + (f"\nקירור כללי נשאר: {global_wait} שניות" if global_wait else "")
-        + (f"\nהמתנה ארוכה ביותר למפתח: {int(longest_wait)} שניות" if longest_wait else "")
-        + "\n\nהבדיקה הזו לא שולחת בקשה ל-Gemini ולא מבזבזת קרדיט.\n"
-        "אם נגמרה מכסה: הפעל עצירת בקשות Gemini. כשהמכסה מתמלאת או כשמוסיפים מפתח חדש, לחץ שחרור Gemini אחרי שהתמלא."
+        f"מודל תרגום: {GEMINI_FAST_MODEL}\n"
+        f"בקשות Gemini אמיתיות מקסימום לפוסט: {max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS)}\n"
+        + (f"קירור כללי נשאר: {global_wait} שניות\n" if global_wait else "")
+        + (f"המתנה ארוכה ביותר למפתח: {int(longest_wait)} שניות\n" if longest_wait else "")
+        + "\n🔑 מצב לפי מפתח:\n"
+        + ("\n".join(recent_lines) if recent_lines else "אין מפתחות להצגה")
+        + ("\n\n📊 כשלי היום לפי סוג:\n" + "\n".join(top_failure_lines) if top_failure_lines else "")
+        + last_failure_block
+        + possible_causes
+        + "\nהבדיקה הזו לא שולחת בקשה ל-Gemini ולא מבזבזת קרדיט."
     )
-
 
 def active_accounts_status_text() -> str:
     state = load_control_state()
@@ -6751,7 +6807,7 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
         except Exception as exc:
             last_error = exc
             try:
-                cool_down_gemini_key(key, exc)
+                cool_down_gemini_key(key, exc, index)
             except Exception:
                 pass
             continue
@@ -6917,7 +6973,7 @@ def ai_merge_parallel_posts(cluster: list[tuple[str, Post, float]]) -> str:
                 return merged[:1800]
         except Exception as exc:
             try:
-                cool_down_gemini_key(key, exc)
+                cool_down_gemini_key(key, exc, index)
             except Exception:
                 pass
             continue
@@ -7388,6 +7444,8 @@ GEMINI_FAILURE_LOGGED = False
 GEMINI_DISABLED_UNTIL = 0.0
 GEMINI_COOLDOWN_IS_QUOTA = False
 GEMINI_KEY_COOLDOWNS: dict[str, float] = {}
+GEMINI_KEY_LAST_ERRORS: dict[str, dict[str, Any]] = {}
+GEMINI_LAST_TRANSLATION_FAILURE: dict[str, Any] = {}
 GEMINI_NEXT_KEY_INDEX = 0
 GEMINI_KEY_LOCK = Lock()
 GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
@@ -7456,11 +7514,23 @@ def is_gemini_output_validation_error(error: Exception | None) -> bool:
 
 
 def should_cool_down_gemini_key(error: Exception | None) -> bool:
+    """Cool down only the key that really failed.
+
+    Do NOT cool a key for content/output problems such as empty JSON, invalid
+    translation, changed numbers, or malformed model output. Those are not proof
+    that the key is bad or that quota is gone, and cooling them used to make the
+    bot look stuck even while other keys were free.
+    """
     if error is None:
-        return True
+        return False
     if is_gemini_output_validation_error(error):
         return False
     lowered = str(error or "").lower()
+    # Request/config errors normally affect the request/model/prompt, not a
+    # specific key. Do not cool keys for these; show them in diagnostics instead.
+    if any(marker in lowered for marker in ("http 400", "invalid argument", "http 404", "not found", "model")):
+        return False
+    # Cool only real per-key/per-service failures. The rest of the pool remains usable.
     return any(
         marker in lowered
         for marker in (
@@ -7546,7 +7616,9 @@ def gemini_translation_keys_for_operation() -> list[tuple[int, str]]:
     return gemini_key_order_limited(max(GEMINI_LOCAL_KEY_SWEEP_SIZE, minimum_keys))
 
 
-def cool_down_gemini_key(key: str, error: Exception | None) -> None:
+def cool_down_gemini_key(key: str, error: Exception | None, key_index: int | None = None, response_debug: str = "") -> None:
+    now = time.time()
+    cooldown = 0
     if should_cool_down_gemini_key(error):
         cooldown = (
             GEMINI_COOLDOWN_SECONDS
@@ -7555,7 +7627,18 @@ def cool_down_gemini_key(key: str, error: Exception | None) -> None:
             if is_gemini_temporary_overload_error(error)
             else 90
         )
-        GEMINI_KEY_COOLDOWNS[key] = time.time() + cooldown
+        GEMINI_KEY_COOLDOWNS[key] = now + cooldown
+    # Keep safe diagnostics per key without exposing the actual API key.
+    label = gemini_key_label(key_index) if key_index is not None else "מפתח לא ידוע"
+    GEMINI_KEY_LAST_ERRORS[key] = {
+        "at": now,
+        "label": label,
+        "summary": gemini_error_summary(error),
+        "full_error": compact_debug_text(str(error or ""), 900),
+        "cooled": bool(cooldown),
+        "cooldown_seconds": int(cooldown),
+        "response_debug": compact_debug_text(response_debug, 900),
+    }
     try:
         daily_stat_increment("gemini_failures", gemini_error_summary(error), 1)
     except Exception:
@@ -7615,26 +7698,86 @@ def google_translate(text: str) -> str:
     return "".join(part[0] for part in data[0] if part and part[0]).strip()
 
 
-def google_translate_hebrew_safe(text: str, max_chars: int = 900) -> str:
-    """Translate visible control/debug text to Hebrew without using Gemini.
+def google_translate_latin_fragments_to_hebrew(text: str) -> str:
+    """Translate remaining English/foreign fragments line-by-line without Gemini quota."""
+    value = text or ""
+    if not value or not re.search(r"[A-Za-z]", value):
+        return value
 
-    Used for summaries, block previews and fallback after the single Gemini request.
-    If Google Translate fails, returns the original text so the bot does not crash.
+    def replace_fragment(match: re.Match[str]) -> str:
+        fragment = match.group(0).strip()
+        if not fragment or fragment.upper() in LATIN_KEEP or re.fullmatch(r"[A-Z]{2,5}", fragment):
+            return fragment
+        try:
+            translated = google_translate(fragment)
+            translated = final_hebrew_polish(translated)
+            translated = final_visual_cleanup(translated)
+            return translated.strip() or fragment
+        except Exception:
+            return fragment
+
+    # Translate long Latin runs. Keep numbers/emojis/punctuation around them intact.
+    value = re.sub(r"[A-Za-z][A-Za-z0-9 .,'’‘\-–—:;!?()/%€£$&+#]{8,}[A-Za-z0-9.!?)]", replace_fragment, value)
+    return value
+
+
+def google_translate_full_hebrew(text: str, max_chars: int = 2500) -> str:
+    """Strong free Google Translate fallback for every visible bot message.
+
+    It uses no Gemini requests. It first translates the whole text, then fixes any
+    leftover Latin fragments line-by-line. This prevents the control channel and
+    fallback posts from staying half-English when Gemini rejects/returns empty.
     """
-    text = compact_debug_text(clean_before_translation(text or ""), max_chars).strip()
-    if not text:
+    original = compact_debug_text(clean_before_translation(text or ""), max_chars).strip()
+    if not original:
         return ""
-    if latin_ratio(text) < 0.18 and re.search(r"[א-ת]", text):
-        return final_visual_cleanup(text)
+    if latin_ratio(original) < 0.10 and re.search(r"[א-ת]", original):
+        translated = original
+    else:
+        translated_parts: list[str] = []
+        try:
+            translated = google_translate(original)
+        except Exception as first_exc:
+            logging.warning("⚠️ Google Translate whole-text failed, trying line mode: %s", first_exc)
+            translated = ""
+        if not translated or latin_ratio(translated) > 0.28:
+            for raw_line in re.split(r"\n+", original):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    translated_parts.append(google_translate(line) if latin_ratio(line) >= 0.10 else line)
+                except Exception:
+                    # Last free attempt: translate sentence chunks.
+                    sentence_parts: list[str] = []
+                    for piece in re.split(r"(?<=[.!?])\s+", line):
+                        piece = piece.strip()
+                        if not piece:
+                            continue
+                        try:
+                            sentence_parts.append(google_translate(piece) if latin_ratio(piece) >= 0.10 else piece)
+                        except Exception:
+                            sentence_parts.append(piece)
+                    translated_parts.append(" ".join(sentence_parts).strip())
+            translated = "\n".join(part for part in translated_parts if part).strip() or translated or original
+
+    translated = google_translate_latin_fragments_to_hebrew(translated)
+    translated = final_hebrew_polish(translated)
+    translated = final_visual_cleanup(preserve_original_country_flags(original, preserve_original_emojis(original, translated)))
+    translated = remove_urls(translated)
+    translated = remove_untranslated_tail_tokens(translated)
+    translated = remove_junk_tail_lines(translated)
+    translated = remove_dangling_source_attribution(translated)
+    return translated.strip() or original
+
+
+def google_translate_hebrew_safe(text: str, max_chars: int = 900) -> str:
+    """Translate visible control/debug text to Hebrew without using Gemini."""
     try:
-        translated = google_translate(text)
-        translated = final_hebrew_polish(translated)
-        translated = final_visual_cleanup(preserve_original_country_flags(text, preserve_original_emojis(text, translated)))
-        translated = remove_urls(translated)
-        return translated.strip() or text
+        return google_translate_full_hebrew(text, max_chars=max_chars)
     except Exception as exc:
         logging.warning("⚠️ Google Translate fallback failed: %s", exc)
-        return text
+        return compact_debug_text(clean_before_translation(text or ""), max_chars).strip()
 
 
 def mymemory_translate(text: str) -> str:
@@ -7727,9 +7870,12 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
                 GEMINI_KEY_COOLDOWNS.pop(key, None)
                 mark_gemini_available()
                 return translated
+            last_error = RuntimeError("Gemini returned empty text; candidates=%s" % compact_debug_text(json.dumps(data, ensure_ascii=False), 600))
+            logging.warning("⚠️ ג'מיני החזיר תשובה ריקה עם %s. לא מקרר את המפתח כי זו בעיית פלט/פרומפט, ועובר לגיבוי חינמי.", gemini_key_label(index))
+            break
         except Exception as exc:
             last_error = exc
-            cool_down_gemini_key(key, exc)
+            cool_down_gemini_key(key, exc, index)
             logging.warning("⚠️ ג'מיני נכשל עם %s. בדיקת שאר המפתחות היא מקומית וחינמית; בקשות אמיתיות מוגבלות. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
             if should_stop_gemini_key_sweep(exc):
                 break
@@ -8015,9 +8161,9 @@ def translate_text(text: str) -> str:
                 break
             try:
                 with GEMINI_TRANSLATION_SEMAPHORE:
-                    allowed_real_requests = max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS - real_requests_used)
-                    polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False, max_real_requests=allowed_real_requests))
-                    real_requests_used += allowed_real_requests
+                    allowed_real_requests = 1
+                    polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False, max_real_requests=1))
+                    real_requests_used += 1
                 polished = final_visual_cleanup(preserve_original_country_flags(ai_text, preserve_original_emojis(ai_text, polished)))
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
@@ -8038,11 +8184,27 @@ def translate_text(text: str) -> str:
                         gemini_error_summary(exc),
                     )
                     time.sleep(GEMINI_RETRY_WAIT_SECONDS)
-        logging.error("⛔ ג'מיני לא הצליח בתרגום אחרי עד %s בדיקות / עד %s בקשות אמיתיות. הפוסט לא יישלח בלי תרגום ויישאר לניסיון הבא.", GEMINI_TRANSLATION_ATTEMPTS, GEMINI_MAX_REAL_TRANSLATION_REQUESTS)
-        raise TranslationUnavailable("Gemini translation failed after all attempts")
+        logging.error(
+            "⛔ Gemini נכשל בבקשה היחידה המותרת לפוסט. לא מנסה בקשת Gemini נוספת. עובר ל-Google Translate חינמי. סיבה אחרונה: %s",
+            gemini_error_summary(last_error),
+        )
+        if GOOGLE_TRANSLATE_FALLBACK_ENABLED:
+            fallback = google_translate_full_hebrew(prepared or cleaned or ai_text, max_chars=3000)
+            fallback = final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, fallback)))
+            if fallback:
+                TRANSLATION_CACHE[fallback_key] = fallback
+                TRANSLATION_CACHE_DIRTY = True
+                return fallback
+        raise TranslationUnavailable("Gemini failed and Google Translate fallback unavailable")
+
+    if GOOGLE_TRANSLATE_FALLBACK_ENABLED and (prepared or cleaned):
+        logging.warning("⚠️ אין Gemini זמין. משתמש ב-Google Translate חינמי כדי לא לשלוח אנגלית.")
+        fallback = google_translate_full_hebrew(prepared or cleaned, max_chars=3000)
+        if fallback:
+            return fallback
 
     logging.error("⛔ אין תרגום תקין. הפוסט לא יישלח.")
-    raise TranslationUnavailable("Gemini-only translation unavailable")
+    raise TranslationUnavailable("Translation unavailable")
 
 
 def translate_short_label(text: str) -> str:
@@ -8055,7 +8217,8 @@ def translate_short_label(text: str) -> str:
     if latin_ratio(text) <= 0.15:
         return final_hebrew_polish(text)
     try:
-        translated = gemini_translate(text) if GEMINI_API_KEYS else google_translate(text)
+        # Labels/buttons/previews should never spend Gemini. Google Translate is free and enough here.
+        translated = google_translate_full_hebrew(text, max_chars=220)
         translated = final_hebrew_polish(translated)
     except Exception:
         translated = final_hebrew_polish(text)
@@ -8898,7 +9061,7 @@ def ai_affiliation_fallback_allows(post: Post) -> bool:
             return answer.startswith("YES")
         except Exception as exc:
             try:
-                cool_down_gemini_key(key, exc)
+                cool_down_gemini_key(key, exc, index)
             except Exception:
                 pass
             return False
@@ -9510,7 +9673,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
             raise RuntimeError("Gemini returned empty translation after parsing JSON. " + response_debug)
         except Exception as exc:
             last_error = exc
-            cool_down_gemini_key(key, exc)
+            cool_down_gemini_key(key, exc, index)
             remaining = max(0, max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS) - real_requests_used)
             if remaining:
                 logging.warning(
@@ -9529,6 +9692,86 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     log_gemini_unavailable(last_error)
     raise TranslationUnavailable("Gemini single translation failed. " + gemini_failure_details(last_error, None, real_requests_used))
 
+
+
+def has_non_hebrew_leftovers(text: str) -> bool:
+    if not text:
+        return False
+    latin = re.findall(r"[A-Za-z]{3,}", text)
+    arabic = re.findall(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+", text)
+    # Keep common Latin football abbreviations, but translate real words.
+    latin = [x for x in latin if x.upper() not in LATIN_KEEP and x.lower() not in {"http", "https", "www", "com"}]
+    return bool(latin or arabic)
+
+
+def split_translation_units(text: str) -> list[str]:
+    text = clean_before_translation(text or "")
+    if not text:
+        return []
+    lines = [line.strip() for line in re.split(r"[\n\r]+", text) if line.strip()]
+    units: list[str] = []
+    for line in lines:
+        if len(line) <= 260:
+            units.append(line)
+            continue
+        parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\s+[|•]+\s+", line) if p.strip()]
+        if not parts:
+            parts = [line[i:i+240].strip() for i in range(0, len(line), 240)]
+        units.extend(parts)
+    return units
+
+
+def google_translate_full_hebrew_stronger(text: str, max_chars: int = 2500) -> str:
+    """Free Google Translate fallback designed for mixed RSS text. No Gemini used."""
+    original = compact_debug_text(clean_before_translation(text or ""), max_chars)
+    if not original:
+        return ""
+    candidates: list[str] = []
+    # Candidate 1: translate the full body.
+    try:
+        candidates.append(google_translate(original))
+    except Exception as exc:
+        logging.warning("⚠️ Google Translate full-body failed: %s", exc)
+    # Candidate 2: translate line/sentence units, better for mixed English/Hebrew/German/Spanish RSS text.
+    translated_units: list[str] = []
+    for unit in split_translation_units(original):
+        try:
+            translated_units.append(google_translate(unit) if has_non_hebrew_leftovers(unit) or latin_ratio(unit) >= 0.08 else unit)
+        except Exception:
+            translated_units.append(unit)
+    if translated_units:
+        candidates.append("\n".join(translated_units))
+    # Candidate 3: if leftovers remain, translate only leftover Latin/Arabic fragments inside the best candidate.
+    best = ""
+    def score(value: str) -> tuple[int, float, int]:
+        return (len(re.findall(r"[א-ת]", value or "")), -latin_ratio(value or ""), -len(value or ""))
+    for candidate in candidates:
+        candidate = final_visual_cleanup(final_hebrew_polish(normalize_country_flags(candidate or "")))
+        if score(candidate) > score(best):
+            best = candidate
+    if has_non_hebrew_leftovers(best):
+        best = google_translate_latin_fragments_to_hebrew(best)
+        # One more unit pass if the first pass kept whole English clauses.
+        if has_non_hebrew_leftovers(best):
+            repaired: list[str] = []
+            for unit in split_translation_units(best):
+                try:
+                    repaired.append(google_translate(unit) if has_non_hebrew_leftovers(unit) else unit)
+                except Exception:
+                    repaired.append(unit)
+            best = "\n".join(repaired).strip() or best
+    best = final_visual_cleanup(final_hebrew_polish(normalize_country_flags(best)))
+    best = remove_untranslated_tail_tokens(best)
+    return best.strip() or original
+
+
+def google_translate_hebrew_safe(text: str, max_chars: int = 900) -> str:
+    """Translate any visible text to Hebrew without Gemini, including mixed languages."""
+    try:
+        return google_translate_full_hebrew_stronger(text, max_chars=max_chars)
+    except Exception as exc:
+        logging.warning("⚠️ Google Translate fallback failed: %s", exc)
+        return compact_debug_text(clean_before_translation(text or ""), max_chars).strip()
 
 def free_translate_post_for_send(post: Post, include_quote: bool) -> tuple[str, str, str]:
     """Free Hebrew fallback after ONE Gemini request failed. No Gemini quota is used."""
@@ -9559,6 +9802,16 @@ def translate_post_for_send(post: Post) -> tuple[str, str, str]:
         raise TranslationUnavailable("Gemini returned no meaningful translation after the single allowed API response. No extra Gemini request was made. main=" + compact_debug_text(main, 300) + " | quote=" + compact_debug_text(quote, 300) + " | source=" + main_source_debug)
     except Exception as exc:
         gemini_error = exc
+        GEMINI_LAST_TRANSLATION_FAILURE.clear()
+        GEMINI_LAST_TRANSLATION_FAILURE.update({
+            "at": time.time(),
+            "username": post.username,
+            "link": post.link,
+            "summary": gemini_error_summary(exc),
+            "error": compact_debug_text(str(exc), 1200),
+            "real_requests_used": 1,
+            "response_debug": compact_debug_text(str(exc), 1200),
+        })
         if not GOOGLE_TRANSLATE_FALLBACK_ENABLED:
             raise
         logging.warning("⚠️ Gemini לא החזיר תרגום תקין אחרי בקשה אחת. עובר לתרגום Google חינמי בלי לשרוף עוד Gemini. פירוט: %s", exc)
