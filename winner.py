@@ -190,6 +190,12 @@ GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANS
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 # נשארים כאן כי הקובץ החדש משתמש בהם בהמשך; הערכים תואמים לזמנים שהיו קשיחים בקוד התקין.
 GEMINI_TRANSLATION_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "18"))
+# Free fallback: Google Translate is used only after the single allowed Gemini request fails
+# or for control-panel previews. It does not spend Gemini quota.
+GOOGLE_TRANSLATE_FALLBACK_ENABLED = os.environ.get("GOOGLE_TRANSLATE_FALLBACK_ENABLED", "1") == "1"
+GOOGLE_TRANSLATE_CONTROL_PREVIEWS = os.environ.get("GOOGLE_TRANSLATE_CONTROL_PREVIEWS", "1") == "1"
+GOOGLE_TRANSLATE_TIMEOUT_SECONDS = int(os.environ.get("GOOGLE_TRANSLATE_TIMEOUT_SECONDS", "7"))
+
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS = int(os.environ.get("GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS", "90"))
 # When Gemini quota is exhausted, do not keep probing the API every few minutes.
@@ -2998,6 +3004,8 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str) -> s
         source = _hebrew_account_label(str(item.get("source", "") or ""))
         reason = hebrew_block_reason(str(item.get("reason", "") or "סיבה לא ידועה"))
         preview = str(item.get("preview", "") or "")
+        if preview and GOOGLE_TRANSLATE_CONTROL_PREVIEWS:
+            preview = google_translate_hebrew_safe(preview, 220)
         link = str(item.get("link", "") or "")
         lines.append(f"{index}. כתב: {source}")
         lines.append(f"   סיבה: {reason}")
@@ -7486,8 +7494,12 @@ def gemini_key_order() -> list[tuple[int, str]]:
     now = time.time()
     ordered = [(index, GEMINI_API_KEYS[index]) for index in range(len(GEMINI_API_KEYS))]
     rotated = ordered[start:] + ordered[:start]
+    # Return only keys that are not in local cooldown.
+    # Important: if one key hit quota/timeout, keep only that key in cooldown
+    # and let other free keys continue working. If all keys are cooling, return []
+    # instead of falling back to cooled keys.
     active = [(index, key) for index, key in rotated if GEMINI_KEY_COOLDOWNS.get(key, 0.0) <= now]
-    return active or rotated
+    return active
 
 
 def gemini_key_order_limited(max_keys: int | None = None) -> list[tuple[int, str]]:
@@ -7505,9 +7517,9 @@ def gemini_key_order_limited(max_keys: int | None = None) -> list[tuple[int, str
 
 def has_gemini_key_available() -> bool:
     # Free local check only: scans configured key cooldowns in memory, never calls Gemini.
+    # Do not use a global Gemini cooldown here: a failure belongs to the specific key
+    # that failed, while the rest of the configured keys should remain available.
     if gemini_requests_paused_until_refill():
-        return False
-    if GEMINI_DISABLED_UNTIL and GEMINI_DISABLED_UNTIL > time.time():
         return False
     return bool(GEMINI_API_KEYS and gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE))
 
@@ -7523,8 +7535,6 @@ def gemini_available_keys_for_operation() -> list[tuple[int, str]]:
     """
     if gemini_requests_paused_until_refill():
         return []
-    if GEMINI_DISABLED_UNTIL and GEMINI_DISABLED_UNTIL > time.time():
-        return []
     return gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE)
 
 
@@ -7532,9 +7542,7 @@ def gemini_translation_keys_for_operation() -> list[tuple[int, str]]:
     """Translation is the core path: do not let old server env cap it to one key."""
     if gemini_requests_paused_until_refill():
         return []
-    if GEMINI_DISABLED_UNTIL and GEMINI_DISABLED_UNTIL > time.time():
-        return []
-    minimum_keys = max(3, min(len(GEMINI_API_KEYS), GEMINI_MAX_REAL_TRANSLATION_REQUESTS))
+    minimum_keys = max(1, min(len(GEMINI_API_KEYS), GEMINI_MAX_REAL_TRANSLATION_REQUESTS))
     return gemini_key_order_limited(max(GEMINI_LOCAL_KEY_SWEEP_SIZE, minimum_keys))
 
 
@@ -7556,23 +7564,23 @@ def cool_down_gemini_key(key: str, error: Exception | None) -> None:
 
 def log_gemini_unavailable(error: Exception | None) -> None:
     global GEMINI_FAILURE_LOGGED, GEMINI_DISABLED_UNTIL, GEMINI_COOLDOWN_IS_QUOTA
-    if is_gemini_output_validation_error(error):
-        if not GEMINI_FAILURE_LOGGED:
-            logging.warning("⚠️ פלט Gemini נפסל בבדיקת איכות מקומית. לא מקרר את כל Gemini, והפוסט ידולג/יישמר לפי מנגנון הסינון.")
-        GEMINI_FAILURE_LOGGED = True
-        return
+    # A Gemini failure must not shut down all Gemini usage. The key that failed
+    # is cooled down by cool_down_gemini_key(); the rest of the key pool stays usable.
+    # Only the manual/quota-guard button may pause all Gemini requests.
     GEMINI_COOLDOWN_IS_QUOTA = is_gemini_quota_error(error)
-    if GEMINI_QUOTA_GUARD_ENABLED and GEMINI_COOLDOWN_IS_QUOTA:
-        set_gemini_requests_pause(True, gemini_error_summary(error))
-        GEMINI_DISABLED_UNTIL = 10 ** 12
-    elif is_gemini_temporary_overload_error(error):
-        GEMINI_DISABLED_UNTIL = time.time() + GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS
-    else:
-        GEMINI_DISABLED_UNTIL = time.time() + GEMINI_COOLDOWN_SECONDS
+    GEMINI_DISABLED_UNTIL = 0.0
     if GEMINI_FAILURE_LOGGED:
         return
     GEMINI_FAILURE_LOGGED = True
-    logging.warning("⚠️ ג'מיני לא זמין כרגע. הבוט לא ישלח פוסטים בלי תרגום Gemini תקין. סיבה: %s", gemini_error_summary(error))
+    if is_gemini_output_validation_error(error):
+        logging.warning(
+            "⚠️ פלט Gemini נפסל בבדיקת איכות מקומית. לא מקרר את כל Gemini; רק הפוסט הזה ידולג/יתורגם בגיבוי."
+        )
+        return
+    logging.warning(
+        "⚠️ כשל Gemini נקודתי. לא עוצר את כל המפתחות; רק המפתח שנכשל נכנס לקירור. סיבה: %s",
+        gemini_error_summary(error),
+    )
 
 
 def mark_gemini_available() -> None:
@@ -7598,9 +7606,35 @@ def relevant_name_glossary(text: str) -> str:
 
 
 def google_translate(text: str) -> str:
+    """Free Google Translate endpoint. No Gemini quota is used here."""
+    text = (text or "").strip()
+    if not text:
+        return ""
     query = urllib.parse.urlencode({"client": "gtx", "sl": "auto", "tl": TARGET_LANGUAGE, "dt": "t", "q": text})
-    data = json.loads(http_get(f"https://translate.googleapis.com/translate_a/single?{query}", timeout=8).decode("utf-8"))
+    data = json.loads(http_get(f"https://translate.googleapis.com/translate_a/single?{query}", timeout=GOOGLE_TRANSLATE_TIMEOUT_SECONDS).decode("utf-8"))
     return "".join(part[0] for part in data[0] if part and part[0]).strip()
+
+
+def google_translate_hebrew_safe(text: str, max_chars: int = 900) -> str:
+    """Translate visible control/debug text to Hebrew without using Gemini.
+
+    Used for summaries, block previews and fallback after the single Gemini request.
+    If Google Translate fails, returns the original text so the bot does not crash.
+    """
+    text = compact_debug_text(clean_before_translation(text or ""), max_chars).strip()
+    if not text:
+        return ""
+    if latin_ratio(text) < 0.18 and re.search(r"[א-ת]", text):
+        return final_visual_cleanup(text)
+    try:
+        translated = google_translate(text)
+        translated = final_hebrew_polish(translated)
+        translated = final_visual_cleanup(preserve_original_country_flags(text, preserve_original_emojis(text, translated)))
+        translated = remove_urls(translated)
+        return translated.strip() or text
+    except Exception as exc:
+        logging.warning("⚠️ Google Translate fallback failed: %s", exc)
+        return text
 
 
 def mymemory_translate(text: str) -> str:
@@ -9496,18 +9530,42 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     raise TranslationUnavailable("Gemini single translation failed. " + gemini_failure_details(last_error, None, real_requests_used))
 
 
+def free_translate_post_for_send(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    """Free Hebrew fallback after ONE Gemini request failed. No Gemini quota is used."""
+    main_source = clean_for_ai_translation(post.text) or clean_before_translation(post.text)
+    quote_source = clean_for_ai_translation(post.quoted_text) if include_quote and post.quoted_text else ""
+    author_source = clean_before_translation(post.quoted_author) if include_quote and post.quoted_author else ""
+    main = google_translate_hebrew_safe(main_source, 1200) if main_source else ""
+    quote = google_translate_hebrew_safe(quote_source, 900) if quote_source else ""
+    quote_author = google_translate_hebrew_safe(author_source, 120) if author_source else ""
+    if main_source and not has_meaningful_text(main):
+        raise TranslationUnavailable("Google Translate fallback also returned no meaningful Hebrew translation")
+    return main, quote, quote_author
+
+
 def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    """Return publishable translation. If Gemini is unavailable, do not send."""
+    """Return publishable Hebrew translation. Gemini gets one request; free Google fallback prevents English output."""
     include_quote = bool(
         not is_self_quote(post)
         and post.quoted_text
         and TRANSLATE_QUOTED_POSTS
     )
-    main, quote, quote_author = gemini_translate_post_once(post, include_quote)
-    if not (has_meaningful_text(main) or has_meaningful_text(quote)):
+    gemini_error: Exception | None = None
+    try:
+        main, quote, quote_author = gemini_translate_post_once(post, include_quote)
+        if has_meaningful_text(main) or has_meaningful_text(quote):
+            return main, quote, quote_author
         main_source_debug = compact_debug_text(clean_for_ai_translation(post.text) or clean_before_translation(post.text), 500)
         raise TranslationUnavailable("Gemini returned no meaningful translation after the single allowed API response. No extra Gemini request was made. main=" + compact_debug_text(main, 300) + " | quote=" + compact_debug_text(quote, 300) + " | source=" + main_source_debug)
-    return main, quote, quote_author
+    except Exception as exc:
+        gemini_error = exc
+        if not GOOGLE_TRANSLATE_FALLBACK_ENABLED:
+            raise
+        logging.warning("⚠️ Gemini לא החזיר תרגום תקין אחרי בקשה אחת. עובר לתרגום Google חינמי בלי לשרוף עוד Gemini. פירוט: %s", exc)
+        main, quote, quote_author = free_translate_post_for_send(post, include_quote)
+        if has_meaningful_text(main) or has_meaningful_text(quote):
+            return main, quote, quote_author
+        raise TranslationUnavailable("Gemini failed and Google Translate fallback failed. Gemini details: " + str(gemini_error))
 
 
 def send_post(post: Post, reply_message_ids: dict[str, int] | None = None) -> dict[str, Any]:
