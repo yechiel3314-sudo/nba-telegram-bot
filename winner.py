@@ -182,7 +182,8 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Real network attempts below DO use one Gemini request each.
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
 # Default: try the configured key pool for a publishable post before giving up.
-# Railway can still lower this with GEMINI_MAX_REAL_TRANSLATION_REQUESTS to save quota.
+# Keep translation reliability high by default. Railway/server savings are handled
+# by scan cadence, retries, parallelism, and marking failed posts as seen.
 GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "8"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
@@ -298,7 +299,7 @@ ACCOUNT_DISPLAY_NAMES = {
 }
 
 TARGET_LANGUAGE = "he"
-CHECK_EVERY_SECONDS = 15
+CHECK_EVERY_SECONDS = int(os.environ.get("CHECK_EVERY_SECONDS", "30"))
 HEARTBEAT_LOG_SECONDS = 5 * 60  # לוג חיים כל 5 דקות
 SCAN_CYCLE_SUMMARY_SECONDS = int(os.environ.get("SCAN_CYCLE_SUMMARY_SECONDS", "60"))
 SCAN_CYCLE_SUMMARY_LAST_LOGGED_AT = 0.0
@@ -314,15 +315,15 @@ DAILY_QUALITY_STATS_LAST_SAVE_AT = 0.0
 DAILY_QUALITY_STATS_LOADED = False
 BOT_DATA_DIR = os.environ.get("FOOTBALL_BOT_DATA_DIR") or os.environ.get("BOT_DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or ""
 APP_DATA_DIR_CACHE: Path | None = None
-HTTP_RETRIES = 3
+HTTP_RETRIES = int(os.environ.get("HTTP_RETRIES", "2"))
 REQUEST_TIMEOUT_SECONDS = 10
 FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "4"))
-FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
-FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "7"))
-MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "6"))
+FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "1"))
+FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "5"))
+MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "4"))
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = int(os.environ.get("MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK", "20"))
-MAX_POSTS_SENT_PER_CYCLE = int(os.environ.get("MAX_POSTS_SENT_PER_CYCLE", "6"))
+MAX_POSTS_SENT_PER_CYCLE = int(os.environ.get("MAX_POSTS_SENT_PER_CYCLE", "4"))
 MAX_POST_AGE_SECONDS = int(os.environ.get("MAX_POST_AGE_SECONDS", str(2 * 60 * 60)))
 MIN_TRANSFER_FEE_MILLIONS_TO_SEND = float(os.environ.get("MIN_TRANSFER_FEE_MILLIONS_TO_SEND", "15"))
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
@@ -351,7 +352,7 @@ CONTROL_CHAT_ID = required_env_any(
     "CONTROL_CHAT_ID",
 )
 CONTROL_STATE_FILE = "football_control_state.json"
-CONTROL_POLL_SECONDS = float(os.environ.get("CONTROL_POLL_SECONDS", "0.25"))
+CONTROL_POLL_SECONDS = float(os.environ.get("CONTROL_POLL_SECONDS", "0.8"))
 TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS = float(os.environ.get("TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS", "1.2"))
 CONTROL_RESUME_BACKLOG_SECONDS = 10 * 60
 CONTROL_TEMP_MODE_SECONDS = int(os.environ.get("CONTROL_TEMP_MODE_SECONDS", str(2 * 60 * 60)))
@@ -367,7 +368,7 @@ SHABBAT_HEBCAL_CACHE_SECONDS = 6 * 60 * 60
 SHABBAT_HEBCAL_TIMEOUT_SECONDS = 4
 SHABBAT_SLEEP_SECONDS = 300
 SHABBAT_CACHE_FILE = "football_shabbat_times_cache.json"
-MAX_PARALLEL_POST_SENDS = 12
+MAX_PARALLEL_POST_SENDS = int(os.environ.get("MAX_PARALLEL_POST_SENDS", "4"))
 MAX_IMAGES_PER_POST = 4
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 SEND_VIDEO_FILES = os.environ.get("SEND_VIDEO_FILES", "0") == "1"
@@ -405,7 +406,7 @@ RSS_CONTROL_ALERT_LAST_SENT_AT: dict[str, float] = {}
 RSS_STALE_LATEST_ALERT_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_SECONDS", "0"))
 RSS_STALE_LATEST_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_EVERY_SECONDS", str(6 * 60 * 60)))
 RSS_STALE_LATEST_ALERT_LAST_SENT_AT: dict[str, float] = {}
-FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "6"))
+FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "3"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
 
@@ -2480,6 +2481,30 @@ TEAM_CATALOG.update({
     "racing santander": {"name": "ראסינג סנטנדר", "tier": "tier3", "aliases": ["Racing Santander", "Racing", "ראסינג", "ראסינג סנטנדר", "ראסטינג"]},
 })
 
+KNOWN_UNTRACKED_DESTINATION_CLUB_ALIASES = (
+    "Aalborg", "Aberdeen", "Al Ahli", "Al Ettifaq", "Al Hilal", "Al Ittihad", "Al Nassr",
+    "Al Qadsiah", "Al Shabab", "Alanyaspor", "Alaves", "Anderlecht", "Angers",
+    "Antalyaspor", "Athletic Bilbao", "Athletic Club", "Augsburg", "Auxerre",
+    "AZ Alkmaar", "Basel", "Besiktas", "Blackburn",
+    "Bordeaux", "Borussia Monchengladbach", "Brescia", "Bristol City", "Brugge",
+    "Cardiff", "Catanzaro",
+    "Ceara", "Cesena", "Club Brugge", "Coventry", "Cruzeiro", "Cruz Azul",
+    "CSKA Moscow", "Deportivo La Coruna", "Derby County", "Dinamo Zagreb",
+    "Dynamo Kyiv", "Elche", "Estudiantes", "Feyenoord", "Fortaleza", "Gent",
+    "Eintracht Frankfurt", "Goztepe", "Granada", "Gremio", "Hamburg", "Hannover", "Hertha Berlin",
+    "Hull City", "Independiente", "Ipswich", "Jagiellonia", "Juve Stabia", "Kaiserslautern",
+    "Karlsruhe", "Kayserispor", "Koln", "Konyaspor", "Las Palmas", "Leganes",
+    "Lech Poznan", "Lens", "Levante", "Lille", "Lokomotiv Moscow", "Malaga", "Middlesbrough",
+    "Millwall", "Modena", "Monza", "Nantes", "Norwich", "Olympiacos", "PAOK",
+    "Panathinaikos", "Palermo", "Pisa", "Portsmouth", "Potenza", "Preston", "QPR",
+    "Racing Santander", "Rangers", "RB Leipzig", "Real Betis", "Real Oviedo", "Real Sociedad", "Real Valladolid",
+    "Rosario Central", "Rotherham", "Rubin Kazan", "Sampdoria", "Santos",
+    "Sao Paulo", "Schalke", "Sevilla", "Sheffield Wednesday", "Shakhtar Donetsk",
+    "Spartak Moscow", "Sparta Prague", "Stoke City", "Stuttgart", "Swansea", "Trabzonspor",
+    "Universitario", "Universitario de Deportes", "Valencia", "Vasco da Gama",
+    "Velez", "Villarreal", "Watford", "Wigan", "Wrexham", "Young Boys", "Zenit",
+)
+
 NATIONAL_TEAM_HEBREW_NAMES = [
     # 48 נבחרות מונדיאל 2026, ועוד איטליה וישראל.
     "מקסיקו", "דרום אפריקה", "דרום קוריאה", "צ'כיה",
@@ -2691,6 +2716,78 @@ def managed_team_patterns_for_tier(tier: str) -> tuple[str, ...]:
 
 def matches_managed_team_tier(tier: str, text: str) -> bool:
     return _matches_any(managed_team_patterns_for_tier(tier), text)
+
+
+def _team_alias_boundary_pattern(alias: str) -> str:
+    raw = str(alias or "").strip()
+    if not raw:
+        return r"$^"
+    parts = [part for part in re.split(r"[\s\-]+", raw) if part]
+    escaped = r"[\s\-]+".join(re.escape(part) for part in parts) if parts else re.escape(raw)
+    return rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])"
+
+
+def destination_text_matches_tracked_team(text: str) -> bool:
+    source = str(text or "").strip()
+    if not source:
+        return False
+    return any(matches_managed_team_tier(tier, source) for tier in ("tier1", "tier2", "tier3", "national"))
+
+
+def known_untracked_destination_aliases() -> tuple[str, ...]:
+    tracked_names: set[str] = set()
+    for item in all_team_catalog_items().values():
+        tracked_names.add(normalize_team_key(str(item.get("name", ""))))
+        tracked_names.update(normalize_team_key(str(alias)) for alias in item.get("aliases", []) if str(alias).strip())
+    aliases = [
+        alias for alias in KNOWN_UNTRACKED_DESTINATION_CLUB_ALIASES
+        if normalize_team_key(alias) and normalize_team_key(alias) not in tracked_names
+    ]
+    return tuple(sorted(set(aliases), key=len, reverse=True))
+
+
+def explicit_untracked_destination_club(post: Post) -> str:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return ""
+    if not (
+        _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned)
+        or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+        or _matches_any(CLEAR_PLAYER_DEPARTURE_PATTERNS, cleaned)
+    ):
+        return ""
+    for alias in known_untracked_destination_aliases():
+        alias_pattern = _team_alias_boundary_pattern(alias)
+        destination_patterns = (
+            rf"\b(?:to|for|with|at)\s+{alias_pattern}\b",
+            rf"\b(?:join|joins|joining|joined|sign|signs|signed|signing|move|moves|moved|moving|transfer|transfers|transferred|loan|loaned|lands|landed)\s+(?:to|for|with|at)?\s*{alias_pattern}\b",
+            rf"\b(?:set to join|set to sign|will join|will sign|agreed to join|close to joining|close to signing)\s+{alias_pattern}\b",
+            rf"\b(?:accepted|accepts|accept|agreed|agrees|reached agreement|has agreement|have agreement)\s+(?:personal terms\s+)?(?:with\s+)?{alias_pattern}\b",
+            rf"\b(?:accepted|accepts|accept|received|gets|got)\s+{alias_pattern}\s+(?:proposal|offer|bid|approach)\b",
+            rf"\b(?:proposal|offer|bid|approach)\s+(?:from|by)\s+{alias_pattern}\b",
+            rf"\b(?:agreement|deal|verbal agreement|full agreement|contract agreement)\s+(?:with|at)\s+{alias_pattern}\b",
+            rf"{alias_pattern}\s+(?:have|has)?\s*(?:asked|requested|opened talks|approached|made an offer|submitted an offer|want|wants|seek|seeks)\b",
+            rf"{alias_pattern}\s+(?:proposal|offer|bid|approach)\b",
+        )
+        if any(re.search(pattern, cleaned, re.IGNORECASE | re.UNICODE) for pattern in destination_patterns):
+            if not destination_text_matches_tracked_team(alias):
+                return alias
+    generic_destination = re.search(
+        r"\b(?:to|join(?:s|ing|ed)?|sign(?:s|ing|ed)?\s+(?:for|with)?|move(?:s|d|ing)?\s+to|loan(?:ed)?\s+to|lands?\s+at)\s+"
+        r"(?P<dest>(?:[A-Z][A-Za-zÀ-ÿ'’.-]{2,}|FC|CF|SC|AC)(?:\s+(?:[A-Z][A-Za-zÀ-ÿ'’.-]{2,}|FC|CF|SC|AC|United|City|Town|County|Calcio|Deportes|Sporting|Club)){0,4})",
+        cleaned,
+        re.IGNORECASE | re.UNICODE,
+    )
+    if generic_destination:
+        dest = re.sub(r"\s+", " ", generic_destination.group("dest").strip(" .,:;()[]"))
+        clubish = re.search(r"\b(?:FC|CF|SC|AC|United|City|Town|County|Calcio|Deportes|Sporting|Club)\b", dest, re.IGNORECASE)
+        if clubish and not destination_text_matches_tracked_team(dest):
+            return dest
+    return ""
+
+
+def is_explicit_untracked_destination_club(post: Post) -> bool:
+    return bool(explicit_untracked_destination_club(post))
 
 
 def central_player_alias_matches(alias: str, text: str) -> bool:
@@ -4616,6 +4713,7 @@ BLOCK_REASON_HEBREW = {
     "lower_tier_staff_or_coach_noise": "מאמן/צוות בדרג נמוך לא מספיק חשוב",
     "strict_writer_not_strong_enough": "כתב קשוח: הדיווח לא מספיק חזק",
     "strict_writer_staff_or_coach_noise": "כתב קשוח: דיווח צוות/מאמן לא מספיק חשוב",
+    "untracked_destination_club": "יעד המעבר לא נמצא בדרגים",
     "non_elite_loose_transfer_talk": "שמועה/שיחות לקבוצה לא-עלית בלי התקדמות ממשית",
     "minor_destination_from_big_club": "יעד קטן דרך קבוצה גדולה",
     "small_transfer_fee": "עסקה קטנה מתחת לרף",
@@ -8522,6 +8620,10 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if is_minor_destination_from_big_club_source(post):
         return False, "minor_destination_from_big_club", 0, ["minor_destination_from_big_club"]
 
+    untracked_destination = explicit_untracked_destination_club(post)
+    if untracked_destination:
+        return False, "untracked_destination_club", 0, ["untracked_destination", untracked_destination]
+
     if has_staff_or_coach_context and has_lower_tier_context and not (has_elite_admin_club and has_final_only_strict) and not has_elite_or_national_context:
         return False, "lower_tier_staff_or_coach_noise", 0, ["lower_tier", "staff_or_coach"]
 
@@ -8769,6 +8871,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "small_transfer_fee"
     if is_minor_destination_from_big_club_source(post):
         return "minor_destination_from_big_club"
+    if is_explicit_untracked_destination_club(post):
+        return "untracked_destination_club"
     if is_contextless_teaser_post(post):
         return "contextless_teaser"
     if is_unclear_subject_news_post(post):
@@ -9587,6 +9691,17 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     "דילוג: אין עדכון חדשותי, הפוסט סומן כנראה: %s | מקור: %s",
                     link,
                     result.get("source_name", "unknown"),
+                )
+            elif str(result.get("mode", "")).startswith("translation_unavailable") or str(result.get("mode", "")).startswith("pre_send_blocked:"):
+                forget_pending_recent_news_event(sent_post, state)
+                seen = set(state.get(username, []))
+                seen.update(post_ids)
+                state[username] = list(seen)[-500:]
+                logging.info(
+                    "דילוג חסכוני: הפוסט סומן כנראה כדי לא לנסות שוב באותו כשל. מצב: %s | מקור: %s | %s",
+                    result.get("mode", "skipped"),
+                    result.get("source_name", "unknown"),
+                    link,
                 )
             else:
                 forget_pending_recent_news_event(sent_post, state)
