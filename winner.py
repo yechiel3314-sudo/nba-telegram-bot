@@ -7,8 +7,8 @@ Run:
 
 What this version does:
 - Scans all accounts in parallel with a server-credit-saving cadence.
-- Checks nitter.net RSS for each account by default. Extra mirrors stay disabled
-  unless RSS_ALLOW_EXTRA_FEED_TEMPLATES=1 is explicitly set.
+- Checks nitter.net RSS first, then uses RSS fallback mirrors only when the
+  primary source is empty, stale, or failing.
 - Sends photos together with the Telegram message caption.
 - Does not upload videos by default, to avoid extra video lookup requests.
 - Removes all links from the post body. Only the final X post link is kept.
@@ -319,11 +319,11 @@ BOT_DATA_DIR = os.environ.get("FOOTBALL_BOT_DATA_DIR") or os.environ.get("BOT_DA
 APP_DATA_DIR_CACHE: Path | None = None
 HTTP_RETRIES = int(os.environ.get("HTTP_RETRIES", "2"))
 REQUEST_TIMEOUT_SECONDS = 10
-FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "4"))
-FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "1"))
-FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "5"))
+FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("FEED_REQUEST_TIMEOUT_SECONDS", "6"))
+FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
+FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("FEED_COLLECTION_TIMEOUT_SECONDS", "8"))
 MAX_PARALLEL_ACCOUNT_CHECKS = int(os.environ.get("MAX_PARALLEL_ACCOUNT_CHECKS", "4"))
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "1"))
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT", "3"))
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = int(os.environ.get("MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK", "20"))
 MAX_POSTS_SENT_PER_CYCLE = int(os.environ.get("MAX_POSTS_SENT_PER_CYCLE", "4"))
 MAX_POST_AGE_SECONDS = int(os.environ.get("MAX_POST_AGE_SECONDS", str(2 * 60 * 60)))
@@ -383,6 +383,10 @@ SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://nitter.net/{username}/rss",
+    "https://nitter.poast.org/{username}/rss",
+    "https://nitter.privacydev.net/{username}/rss",
+    "https://xcancel.com/{username}/rss",
+    "https://nitter.tiekoetter.com/{username}/rss",
 ]
 EXTRA_FEED_TEMPLATES = [
     template.strip()
@@ -391,10 +395,10 @@ EXTRA_FEED_TEMPLATES = [
 ]
 if EXTRA_FEED_TEMPLATES:
     FEED_TEMPLATES = list(dict.fromkeys(FEED_TEMPLATES + EXTRA_FEED_TEMPLATES))
-MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "1"))
+MAX_FEED_TEMPLATES_PER_ACCOUNT = max(5, int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5")))
 RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
-RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "0") == "1"
-RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "0"))
+RSS_ENABLE_FALLBACK = os.environ.get("RSS_DISABLE_FALLBACK", "0") != "1"
+RSS_FALLBACK_SOURCE_COUNT = max(4, int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "4")))
 RSS_ENABLE_STALE_FALLBACK = os.environ.get("RSS_ENABLE_STALE_FALLBACK", "1") == "1"
 RSS_STALE_FALLBACK_SECONDS = int(os.environ.get("RSS_STALE_FALLBACK_SECONDS", str(6 * 60 * 60)))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
