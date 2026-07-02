@@ -186,6 +186,7 @@ GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", 
 # by scan cadence, retries, parallelism, and marking failed posts as seen.
 GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "8"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
+GEMINI_TRANSLATION_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "18"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 # When Gemini quota is exhausted, do not keep probing the API every few minutes.
 # A failed probe is also an API request, so quota protection pauses all real Gemini requests
@@ -2056,10 +2057,13 @@ def active_x_accounts() -> list[str]:
 
 
 def save_control_state(paused: bool | None = None, **updates: Any) -> None:
+    global CANONICAL_ENTITY_ALIAS_CACHE
     state = load_control_state()
     if paused is not None:
         state["paused"] = paused
     state.update(updates)
+    if "team_tier_overrides" in updates or "custom_team_catalog" in updates:
+        CANONICAL_ENTITY_ALIAS_CACHE = None
     path = control_state_path()
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
@@ -2149,7 +2153,7 @@ def _onoff_label(text: str, state: dict[str, Any], key: str) -> str:
     return f"{text}: {_flag_status(state, key)}"
 
 
-CONTROL_BUTTON_TEXT_WIDTH = int(os.environ.get("CONTROL_BUTTON_TEXT_WIDTH", "30"))
+CONTROL_BUTTON_TEXT_WIDTH = int(os.environ.get("CONTROL_BUTTON_TEXT_WIDTH", "34"))
 CONTROL_BUTTON_PAD = "\u2800"
 
 
@@ -2189,13 +2193,13 @@ def quick_control_reply_markup() -> dict[str, Any]:
             {"text": "👥 ניהול כתבים", "callback_data": "football_menu_writers"},
         ],
         [
+            {"text": "🏟️ ניהול קבוצות", "callback_data": "football_menu_teams"},
+        ],
+        [
             {"text": "🛡️ הגדרות וסינון", "callback_data": "football_menu_filter"},
         ],
         [
             {"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"},
-        ],
-        [
-            {"text": "🏟️ ניהול קבוצות", "callback_data": "football_menu_teams"},
         ],
         [
             {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
@@ -2211,19 +2215,13 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
         [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
         [{"text": "👥 כתבים פעילים בפועל", "callback_data": "football_active_accounts_status"}],
+        [{"text": "📡 בדיקת RSS", "callback_data": "football_rss_status"}],
+        [{"text": "🤖 בדיקת Gemini", "callback_data": "football_gemini_status"}],
+        [{"text": "♻️ שחרור קירור Gemini", "callback_data": "football_gemini_clear_local_cooldown"}],
+        [{"text": gemini_guard_button_label(), "callback_data": "football_gemini_toggle_quota_guard"}],
         [{"text": "📬 פוסט אחרון שנשלח", "callback_data": "football_last_sent_post"}],
         [{"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"}],
         [{"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"}],
-        [{"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"}],
-        [{"text": "📊 אחוז הצלחה היום", "callback_data": "football_stat_success_rate"}],
-        [{"text": "✅ כמה נשלחו היום", "callback_data": "football_stat_sent_today"}],
-        [{"text": "🚫 כמה נחסמו היום", "callback_data": "football_stat_blocked_today"}],
-        [{"text": "⏳ כמה פוסטים ישנים מדי היו", "callback_data": "football_stat_old_posts"}],
-        [
-            {"text": "📡 RSS תקין?", "callback_data": "football_rss_status"},
-            {"text": "🤖 Gemini תקין?", "callback_data": "football_gemini_status"},
-        ],
-        [{"text": gemini_guard_button_label(), "callback_data": "football_gemini_toggle_quota_guard"}],
         [{"text": "ℹ️ הסבר בדיקה וניטור", "callback_data": "football_category_help:monitor"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
@@ -2274,6 +2272,10 @@ def filter_menu_reply_markup() -> dict[str, Any]:
 def stats_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
         [{"text": "🏆 הכתב הכי פעיל היום", "callback_data": "football_stat_active_writer"}],
+        [{"text": "✅ כמה נשלחו היום", "callback_data": "football_stat_sent_today"}],
+        [{"text": "🚫 כמה נחסמו היום", "callback_data": "football_stat_blocked_today"}],
+        [{"text": "📊 אחוז הצלחה היום", "callback_data": "football_stat_success_rate"}],
+        [{"text": "⏳ פוסטים ישנים מדי היום", "callback_data": "football_stat_old_posts"}],
         [{"text": "📋 כמה פוסטים כל כתב פרסם", "callback_data": "football_stat_posts_by_writer"}],
         [{"text": "🧱 טופ 10 סיבות חסימה", "callback_data": "football_stat_top_blocks"}],
         [{"text": "😅 איזה כתב נחסם הכי הרבה", "callback_data": "football_stat_most_blocked_writer"}],
@@ -3741,7 +3743,7 @@ def process_channel_post_update(update: dict[str, Any]) -> None:
         state = load_state()
         message_id = str(message.get("message_id", ""))
         update_source = "channel_edit" if update.get("edited_channel_post") else "channel"
-        remember_channel_news_text(text, state, message_id=message_id, source=update_source)
+        remember_channel_news_text(text, state, message_id=message_id, source=update_source, chat_id=chat_id)
         save_state(state)
         logging.info(
             "🧠 זיכרון כפילויות מהערוץ: נשמרה %s %s ל-12 שעות | טקסט: %s",
@@ -4107,8 +4109,12 @@ POLL_OR_AUDIENCE_PATTERNS = (
 WORLD_CUP_BRACKET_NOISE_PATTERNS = (
     r"\b(?:World Cup|FIFA World Cup)\b.{0,120}\b(?:round of 32|round of 16|last 32|last 16|knockout|qualified|qualifies|advanced|advances|vs\.?|v)\b",
     r"\b(?:round of 32|round of 16|last 32|last 16|knockout|qualified|qualifies|advanced|advances|vs\.?|v)\b.{0,120}\b(?:World Cup|FIFA World Cup)\b",
+    r"\b(?:World Cup|FIFA World Cup)\b.{0,160}\b(?:eliminated|knocked out|out of the tournament|crashed out|through to|goes through|set up a clash|will face|face each other|fixture confirmed|bracket|qualified for the knockout)\b",
+    r"\b(?:eliminated|knocked out|out of the tournament|crashed out|through to|goes through|set up a clash|will face|face each other|fixture confirmed|bracket|qualified for the knockout)\b.{0,160}\b(?:World Cup|FIFA World Cup)\b",
     r"(?:מונדיאל|גביע העולם).{0,120}(?:שמינית|שלב\s+32|נוקאאוט|העפיל|העפילה|העפילו|נגד|🆚|מי עולה)",
     r"(?:שמינית|שלב\s+32|נוקאאוט|העפיל|העפילה|העפילו|נגד|🆚|מי עולה).{0,120}(?:מונדיאל|גביע העולם)",
+    r"(?:מונדיאל|גביע העולם).{0,160}(?:הודח|הודחה|הודחו|מודחת|מודחות|עלתה|עלו|עולה|עולות|הבטיחה מקום|הבטיחו מקום|נקבע|נקבעו|תפגוש|יפגשו|ייפגשו|מי מול מי|המשחק בין|העפילה לשלב|עלתה לשלב)",
+    r"(?:הודח|הודחה|הודחו|מודחת|מודחות|עלתה|עלו|עולה|עולות|הבטיחה מקום|הבטיחו מקום|נקבע|נקבעו|תפגוש|יפגשו|ייפגשו|מי מול מי|המשחק בין|העפילה לשלב|עלתה לשלב).{0,160}(?:מונדיאל|גביע העולם)",
 )
 
 LIVE_GOAL_OR_MATCH_MOMENT_PATTERNS = (
@@ -4621,6 +4627,7 @@ CHANNEL_RECENT_NEWS_WINDOW_SECONDS = 12 * 60 * 60
 BOT_SENT_REPLY_STATE_KEY = "__bot_sent_reply_targets__"
 BOT_SENT_REPLY_WINDOW_SECONDS = int(os.environ.get("BOT_SENT_REPLY_WINDOW_SECONDS", str(12 * 60 * 60)))
 BOT_SENT_REPLY_MAX_ITEMS = int(os.environ.get("BOT_SENT_REPLY_MAX_ITEMS", "250"))
+CHANNEL_REPLY_CERTAIN_MIN_SCORE = float(os.environ.get("CHANNEL_REPLY_CERTAIN_MIN_SCORE", "0.58"))
 NEWS_BURST_SPAM_WINDOW_SECONDS = int(os.environ.get("NEWS_BURST_SPAM_WINDOW_SECONDS", str(10 * 60)))
 NEWS_BURST_SPAM_MIN_EVENTS = int(os.environ.get("NEWS_BURST_SPAM_MIN_EVENTS", "5"))
 
@@ -5480,6 +5487,104 @@ def _news_duplicate_tokens(text: str) -> set[str]:
     return tokens
 
 
+CANONICAL_ENTITY_ALIAS_CACHE: list[tuple[str, str]] | None = None
+
+
+def _duplicate_phrase_norm(value: str) -> str:
+    text = html.unescape(str(value or ""))
+    text = normalize_country_flags(text) if "normalize_country_flags" in globals() else text
+    text = remove_external_links(text)
+    text = apply_handle_replacements(text)
+    text = apply_phrase_replacements(text, TEAM_REPLACEMENTS)
+    text = apply_phrase_replacements(text, PLAYER_REPLACEMENTS)
+    text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES) if "HEBREW_FINAL_FIXES" in globals() else text
+    text = re.sub(r"[^A-Za-z0-9\u0590-\u05ff'׳\- ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    return text
+
+
+def _canonical_id(kind: str, value: str) -> str:
+    norm = _duplicate_phrase_norm(value)
+    norm = re.sub(r"[^A-Za-z0-9\u0590-\u05ff]+", "_", norm).strip("_")
+    if not norm:
+        norm = hashlib.sha1(str(value or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return f"{kind}:{norm}"
+
+
+def _canonical_alias_entries() -> list[tuple[str, str]]:
+    global CANONICAL_ENTITY_ALIAS_CACHE
+    if CANONICAL_ENTITY_ALIAS_CACHE is not None:
+        return CANONICAL_ENTITY_ALIAS_CACHE
+
+    entries: list[tuple[str, str]] = []
+
+    def add(kind: str, entity_id: str, aliases: list[str] | tuple[str, ...] | set[str]) -> None:
+        for alias in aliases:
+            norm = _duplicate_phrase_norm(str(alias or ""))
+            if len(norm) < 3:
+                continue
+            entries.append((norm, entity_id))
+
+    for key, item in all_team_catalog_items().items():
+        aliases = [str(item.get("name", "")), key]
+        aliases.extend(str(alias) for alias in item.get("aliases", []) or [])
+        add("team", "team:" + normalize_team_key(key).replace(" ", "_"), aliases)
+
+    for source, target in TEAM_REPLACEMENTS.items():
+        add("team", _canonical_id("team", target), [source, target])
+
+    for source, target in PLAYER_REPLACEMENTS.items():
+        add("player", _canonical_id("player", target), [source, target])
+
+    for item in CENTRAL_PLAYER_AFFILIATIONS:
+        aliases = item.get("aliases", ())
+        if not isinstance(aliases, (list, tuple, set)):
+            aliases = (str(aliases),)
+        aliases = [str(alias) for alias in aliases if str(alias).strip()]
+        if aliases:
+            add("player", _canonical_id("player", aliases[0]), aliases)
+
+    # Long aliases first so "Real Madrid" wins before "Madrid".
+    deduped = sorted(set(entries), key=lambda item: len(item[0]), reverse=True)
+    CANONICAL_ENTITY_ALIAS_CACHE = deduped
+    return deduped
+
+
+def _duplicate_phrase_present(phrase: str, text: str) -> bool:
+    phrase = _duplicate_phrase_norm(phrase)
+    text = _duplicate_phrase_norm(text)
+    return _duplicate_phrase_present_in_normalized_text(phrase, text)
+
+
+def _duplicate_phrase_present_in_normalized_text(phrase: str, normalized_text: str) -> bool:
+    if not phrase or not normalized_text:
+        return False
+    parts = [re.escape(part) for part in re.split(r"[\s\-]+", phrase) if part]
+    if not parts:
+        return False
+    body = r"[\s\-]+".join(parts)
+    hebrew_prefix = r"[\u05d5\u05d1\u05dc\u05de\u05d4]?" if re.match(r"^[\u0590-\u05ff]", phrase) else ""
+    return bool(re.search(rf"(?<![A-Za-z0-9\u0590-\u05ff]){hebrew_prefix}{body}(?![A-Za-z0-9\u0590-\u05ff])", normalized_text, re.IGNORECASE))
+
+
+def _canonical_event_entity_ids(text: str) -> set[str]:
+    normalized = _duplicate_phrase_norm(text)
+    if not normalized:
+        return set()
+    found: set[str] = set()
+    for alias, entity_id in _canonical_alias_entries():
+        if _duplicate_phrase_present_in_normalized_text(alias, normalized):
+            found.add(entity_id)
+    return found
+
+
+def _canonical_sets_from_signature(sig: dict[str, Any]) -> tuple[set[str], set[str]]:
+    entities = set(sig.get("entities", [])) if isinstance(sig, dict) else set()
+    players = {entity for entity in entities if str(entity).startswith("player:")}
+    teams = {entity for entity in entities if str(entity).startswith("team:")}
+    return players, teams
+
+
 NEWS_EVENT_FAMILY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("transfer_move", (
         r"\b(?:transfer|move|join|joining|sign|signing|loan|buy|purchase|deal|bid|offer|proposal|talks|negotiations|agreement|personal terms|medical|confident|optimistic|close|closing|final stages|advanced|push|pushing)\b",
@@ -5528,6 +5633,8 @@ def news_event_signature(post: Post) -> dict[str, Any]:
         for value in (source, target):
             if value and re.search(r"(?<!\w)" + re.escape(value.lower()) + r"(?!\w)", text):
                 entity_tokens.update(_news_duplicate_tokens(value.lower()))
+    canonical_entities = _canonical_event_entity_ids(text)
+    entity_tokens.update(canonical_entities)
     # Add repeated proper-name style tokens from the normalized text as a fallback.
     for token in tokens:
         if len(token) >= 5 and token not in NEWS_DUP_ACTION_WORDS:
@@ -5552,14 +5659,25 @@ def _event_similarity(current: dict[str, Any], previous: dict[str, Any]) -> floa
     current_entities = set(current.get("entities", []))
     previous_entities = set(previous.get("entities", []))
     entity_overlap = len(current_entities & previous_entities)
+    current_players, current_teams = _canonical_sets_from_signature(current)
+    previous_players, previous_teams = _canonical_sets_from_signature(previous)
+    player_overlap = len(current_players & previous_players)
+    team_overlap = len(current_teams & previous_teams)
     current_actions = set(current.get("actions", []))
     previous_actions = set(previous.get("actions", []))
     action_overlap = len(current_actions & previous_actions)
+    family_overlap = _duplicate_family_overlap(current_actions, previous_actions)
     current_numbers = {token for token in current_tokens if re.fullmatch(r"\d+", token)}
     previous_numbers = {token for token in previous_tokens if re.fullmatch(r"\d+", token)}
     number_overlap = len(current_numbers & previous_numbers)
     sequence_score = SequenceMatcher(None, " ".join(sorted(current_tokens)), " ".join(sorted(previous_tokens))).ratio()
     score = max(token_jaccard, sequence_score * 0.75)
+    if player_overlap >= 1 and team_overlap >= 2 and family_overlap:
+        score = max(score, 0.90)
+    elif player_overlap >= 1 and team_overlap >= 1 and family_overlap:
+        score = max(score, 0.84)
+    elif team_overlap >= 2 and family_overlap and (number_overlap >= 1 or action_overlap >= 1):
+        score = max(score, 0.80)
     if entity_overlap >= 2 and (action_overlap >= 1 or number_overlap >= 1 or token_jaccard >= 0.24):
         score = max(score, 0.82)
     if entity_overlap >= 2 and number_overlap >= 1 and token_jaccard >= 0.16:
@@ -5587,12 +5705,23 @@ def strict_duplicate_match(
     previous_actions = set(previous.get("actions", []))
     current_tokens = set(current.get("tokens", []))
     previous_tokens = set(previous.get("tokens", []))
+    current_players, current_teams = _canonical_sets_from_signature(current)
+    previous_players, previous_teams = _canonical_sets_from_signature(previous)
 
     entity_overlap = len(current_entities & previous_entities)
     action_overlap = len(current_actions & previous_actions)
+    family_overlap = _duplicate_family_overlap(current_actions, previous_actions)
+    player_overlap = len(current_players & previous_players)
+    team_overlap = len(current_teams & previous_teams)
     token_overlap = len(current_tokens & previous_tokens)
     number_overlap = len({token for token in current_tokens if token.isdigit()} & {token for token in previous_tokens if token.isdigit()})
 
+    if player_overlap >= 1 and team_overlap >= 2 and family_overlap and score >= 0.50:
+        return True
+    if player_overlap >= 1 and team_overlap >= 1 and family_overlap and score >= 0.70 and token_overlap >= 5:
+        return True
+    if team_overlap >= 2 and family_overlap and (number_overlap >= 1 or action_overlap >= 1) and score >= 0.74:
+        return True
     if score >= 0.94 and entity_overlap >= 2 and action_overlap >= 1:
         return True
     if score >= 0.90 and entity_overlap >= 3 and (action_overlap >= 1 or number_overlap >= 1):
@@ -5713,7 +5842,7 @@ def cleanup_channel_recent_news_events(state: dict[str, Any], now: float | None 
     return state[CHANNEL_RECENT_NEWS_STATE_KEY]
 
 
-def remember_channel_news_text(text: str, state: dict[str, Any], message_id: str = "", source: str = "channel") -> None:
+def remember_channel_news_text(text: str, state: dict[str, Any], message_id: str = "", source: str = "channel", chat_id: str = "") -> None:
     post = channel_duplicate_text_to_post(text, message_id)
     if len(post.text) < 12:
         return
@@ -5726,6 +5855,9 @@ def remember_channel_news_text(text: str, state: dict[str, Any], message_id: str
     signature = news_event_signature(post)
     if not signature.get("tokens"):
         return
+    message_ids: dict[str, int] = {}
+    if str(chat_id or "").strip() and str(message_id or "").isdigit():
+        message_ids[str(chat_id)] = int(str(message_id))
     recent.append(
         {
             "ts": time.time(),
@@ -5733,6 +5865,7 @@ def remember_channel_news_text(text: str, state: dict[str, Any], message_id: str
             "priority": 120,
             "link": post.link,
             "ai_text": post.text,
+            "message_ids": message_ids,
             "signature": signature,
         }
     )
@@ -5786,6 +5919,38 @@ def remember_bot_sent_reply_target(post: Post, state: dict[str, Any], message_id
     state[BOT_SENT_REPLY_STATE_KEY] = recent[-BOT_SENT_REPLY_MAX_ITEMS:]
 
 
+def channel_reply_target_match_is_certain(post: Post, item: dict[str, Any], score: float, local: str) -> bool:
+    if local != "ADVANCED_NEW" or score < CHANNEL_REPLY_CERTAIN_MIN_SCORE:
+        return False
+    current_sig = news_event_signature(post)
+    previous_sig = item.get("signature", {}) if isinstance(item, dict) else {}
+    if not isinstance(previous_sig, dict):
+        return False
+    cur_players, cur_teams = _canonical_sets_from_signature(current_sig)
+    prev_players, prev_teams = _canonical_sets_from_signature(previous_sig)
+    player_overlap = len(cur_players & prev_players)
+    team_overlap = len(cur_teams & prev_teams)
+    cur_actions = set(current_sig.get("actions", []))
+    prev_actions = set(previous_sig.get("actions", []))
+    family_overlap = _duplicate_family_overlap(cur_actions, prev_actions)
+    cur_tokens = set(current_sig.get("tokens", []))
+    prev_tokens = set(previous_sig.get("tokens", []))
+    cur_entities = set(current_sig.get("entities", []))
+    prev_entities = set(previous_sig.get("entities", []))
+    distinctive_overlap = _near_duplicate_subject_overlap(
+        _distinctive_duplicate_tokens(cur_tokens, cur_entities),
+        _distinctive_duplicate_tokens(prev_tokens, prev_entities),
+    )
+    number_overlap = len({token for token in cur_tokens if token.isdigit()} & {token for token in prev_tokens if token.isdigit()})
+    if player_overlap >= 1 and team_overlap >= 1 and family_overlap:
+        return True
+    if player_overlap >= 1 and family_overlap and score >= 0.72:
+        return True
+    if team_overlap >= 2 and family_overlap and (distinctive_overlap >= 1 or number_overlap >= 1):
+        return True
+    return False
+
+
 def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
     best_item: dict[str, Any] | None = None
     best_score = 0.0
@@ -5806,7 +5971,24 @@ def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[st
             best_item = item
             best_score = score
     if not best_item:
-        return {}
+        for item in reversed(cleanup_channel_recent_news_events(state)):
+            if not isinstance(item, dict):
+                continue
+            message_ids = item.get("message_ids")
+            if not isinstance(message_ids, dict) or not message_ids:
+                continue
+            previous = item.get("signature", {})
+            if not isinstance(previous, dict):
+                continue
+            score = _event_similarity(news_event_signature(post), previous)
+            local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
+            if not channel_reply_target_match_is_certain(post, item, score, local):
+                continue
+            if score > best_score:
+                best_item = item
+                best_score = score
+        if not best_item:
+            return {}
     return {str(chat_id): int(message_id) for chat_id, message_id in dict(best_item.get("message_ids", {})).items() if message_id}
 
 
@@ -6065,10 +6247,18 @@ EVENT_STAGE_PATTERNS: list[tuple[int, str, tuple[str, ...]]] = [
 ]
 
 IMPORTANT_DETAIL_WORDS = {
-    "official", "confirmed", "contract", "fee", "salary", "years", "year", "option", "clause", "medical", "loan", "permanent",
+    "official", "confirmed", "contract", "fee", "package", "salary", "years", "year", "option", "clause", "medical", "loan", "permanent",
     "pick", "picks", "first-round", "second-round", "extension", "waived", "injury", "severity", "return", "date", "deadline",
-    "רשמי", "אישרה", "אישר", "חוזה", "שכר", "מיליון", "שנים", "שנה", "אופציה", "סעיף", "בדיקות", "רפואיות", "השאלה",
+    "week", "weeks", "day", "days", "month", "months", "tests", "scan", "hamstring", "muscle", "fracture",
+    "רשמי", "אישרה", "אישר", "חוזה", "שכר", "חבילה", "בונוסים", "מיליון", "שנים", "שנה", "אופציה", "סעיף", "בדיקות", "רפואיות", "השאלה",
     "בחירה", "דראפט", "הארכת", "שוחרר", "פציעה", "חומרת", "חזרה", "תאריך", "דדליין",
+}
+
+INJURY_ADVANCEMENT_DETAIL_WORDS = {
+    "severity", "return", "date", "deadline", "week", "weeks", "day", "days", "month", "months",
+    "tests", "scan", "fracture", "surgery", "operation", "acl", "tear", "torn", "confirmed",
+    "חומרת", "חזרה", "תאריך", "דדליין", "שבוע", "שבועות", "יום", "ימים", "חודש", "חודשים",
+    "בדיקות", "סריקה", "שבר", "ניתוח", "קרע", "אושר", "אישר", "אישרה",
 }
 
 
@@ -6094,6 +6284,18 @@ def _signature_sets_from_item(item: dict[str, Any]) -> tuple[set[str], set[str],
 
 def _important_detail_delta(current_tokens: set[str], previous_tokens: set[str]) -> int:
     return len((current_tokens - previous_tokens) & IMPORTANT_DETAIL_WORDS)
+
+
+def _material_number_detail_tokens(text: str) -> set[str]:
+    cleaned = (text or "").lower()
+    details: set[str] = set()
+    for match in re.finditer(r"\b\d+(?:[.,]\d+)?\s?(?:m|million|מיליון|%|percent|אחוזים?)?\b", cleaned, flags=re.IGNORECASE):
+        token = re.sub(r"\s+", "", match.group(0).lower())
+        if token:
+            details.add(token)
+    for match in re.finditer(r"\b(?:19|20)\d{2}\b", cleaned):
+        details.add(match.group(0))
+    return details
 
 
 GENERIC_DUPLICATE_CONTEXT_TOKENS = {
@@ -6240,6 +6442,59 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     family_overlap = _duplicate_family_overlap(cur_actions, prev_actions)
     squad_absence_overlap = _squad_absence_subject_overlap(cur_tokens, prev_tokens)
     shared_big_club_groups = _shared_big_club_groups(cur_tokens | cur_entities, prev_tokens | prev_entities)
+    number_detail_delta = len(_material_number_detail_tokens(cur_text) - _material_number_detail_tokens(prev_text))
+    cur_sig = news_event_signature(current_post)
+    prev_sig = previous_item.get("signature", {}) if isinstance(previous_item, dict) else {}
+    if not isinstance(prev_sig, dict):
+        prev_sig = {}
+    cur_players, cur_teams = _canonical_sets_from_signature(cur_sig)
+    prev_players, prev_teams = _canonical_sets_from_signature(prev_sig)
+    canonical_player_overlap = len(cur_players & prev_players)
+    canonical_team_overlap = len(cur_teams & prev_teams)
+    new_important_detail_tokens = (cur_tokens - prev_tokens) & IMPORTANT_DETAIL_WORDS
+    general_has_new_material_detail = detail_delta >= 2 or number_detail_delta >= 1
+    injury_has_new_material_detail = bool(new_important_detail_tokens & INJURY_ADVANCEMENT_DETAIL_WORDS) or number_detail_delta >= 1
+
+    if (
+        not same_author
+        and family_overlap
+        and (canonical_player_overlap >= 1 or canonical_team_overlap >= 2)
+        and (current_rank >= previous_rank or "injury_squad" in family_overlap)
+        and (
+            ("injury_squad" in family_overlap and injury_has_new_material_detail)
+            or ("injury_squad" not in family_overlap and general_has_new_material_detail)
+        )
+    ):
+        return "ADVANCED_NEW"
+
+    if (
+        not same_author
+        and canonical_player_overlap >= 1
+        and canonical_team_overlap >= 2
+        and family_overlap
+        and current_rank < previous_rank + 10
+        and detail_delta <= 1
+    ):
+        return "SAME_DUPLICATE"
+    if (
+        not same_author
+        and canonical_player_overlap >= 1
+        and canonical_team_overlap >= 1
+        and family_overlap
+        and score >= 0.62
+        and current_rank < previous_rank + 10
+        and detail_delta <= 1
+    ):
+        return "SAME_DUPLICATE"
+    if (
+        not same_author
+        and canonical_team_overlap >= 2
+        and family_overlap
+        and score >= 0.72
+        and current_rank < previous_rank + 10
+        and detail_delta <= 1
+    ):
+        return "SAME_DUPLICATE"
 
     # Same journalist often posts several separate updates about the same club minutes apart.
     # For the same source, block only a near-repeat or a post sharing the same distinctive
@@ -7133,12 +7388,58 @@ def gemini_error_summary(error: Exception | None) -> str:
         return "בעיה בהרשאת מפתח Gemini"
     if "timeout" in lowered or "timed out" in lowered:
         return "זמן התגובה של ג'מיני נגמר"
+    if is_gemini_output_validation_error(error):
+        return "פלט Gemini נפסל בבדיקת איכות מקומית"
+    if "404" in lowered or "not found" in lowered or "model" in lowered:
+        return "בעיה בהגדרת מודל Gemini"
+    if "400" in lowered or "invalid argument" in lowered:
+        return "בקשת Gemini חזרה לא תקינה"
     return "שגיאת ג'מיני זמנית"
 
 
 def is_gemini_quota_error(error: Exception | None) -> bool:
     lowered = str(error or "").lower()
     return "quota" in lowered or "429" in lowered or "resource_exhausted" in lowered
+
+
+def is_gemini_output_validation_error(error: Exception | None) -> bool:
+    lowered = str(error or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "translation contradicted source names",
+            "translation changed locked numbers",
+            "returned empty translation",
+            "returned no meaningful translation",
+            "non json translation",
+            "no meaningful translation",
+        )
+    )
+
+
+def should_cool_down_gemini_key(error: Exception | None) -> bool:
+    if error is None:
+        return True
+    if is_gemini_output_validation_error(error):
+        return False
+    lowered = str(error or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "quota", "429", "resource_exhausted", "403", "401", "api key", "permission",
+            "timeout", "timed out", "urlopen", "connection", "ssl", "http 500", "http 502",
+            "http 503", "http 504", "remote end", "temporarily unavailable",
+        )
+    )
+
+
+def should_stop_gemini_key_sweep(error: Exception | None) -> bool:
+    if error is None or is_gemini_output_validation_error(error) or is_gemini_quota_error(error):
+        return False
+    lowered = str(error or "").lower()
+    if "api key" in lowered or "permission" in lowered or "403" in lowered or "401" in lowered:
+        return False
+    return any(marker in lowered for marker in ("http 400", "invalid argument", "http 404", "not found", "model"))
 
 
 def gemini_key_label(index: int) -> str:
@@ -7176,6 +7477,8 @@ def has_gemini_key_available() -> bool:
     # Free local check only: scans configured key cooldowns in memory, never calls Gemini.
     if gemini_requests_paused_until_refill():
         return False
+    if GEMINI_DISABLED_UNTIL and GEMINI_DISABLED_UNTIL > time.time():
+        return False
     return bool(GEMINI_API_KEYS and gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE))
 
 
@@ -7190,12 +7493,15 @@ def gemini_available_keys_for_operation() -> list[tuple[int, str]]:
     """
     if gemini_requests_paused_until_refill():
         return []
+    if GEMINI_DISABLED_UNTIL and GEMINI_DISABLED_UNTIL > time.time():
+        return []
     return gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE)
 
 
 def cool_down_gemini_key(key: str, error: Exception | None) -> None:
-    cooldown = GEMINI_COOLDOWN_SECONDS if is_gemini_quota_error(error) else 60
-    GEMINI_KEY_COOLDOWNS[key] = time.time() + cooldown
+    if should_cool_down_gemini_key(error):
+        cooldown = GEMINI_COOLDOWN_SECONDS if is_gemini_quota_error(error) else 90
+        GEMINI_KEY_COOLDOWNS[key] = time.time() + cooldown
     try:
         daily_stat_increment("gemini_failures", gemini_error_summary(error), 1)
     except Exception:
@@ -7204,6 +7510,11 @@ def cool_down_gemini_key(key: str, error: Exception | None) -> None:
 
 def log_gemini_unavailable(error: Exception | None) -> None:
     global GEMINI_FAILURE_LOGGED, GEMINI_DISABLED_UNTIL, GEMINI_COOLDOWN_IS_QUOTA
+    if is_gemini_output_validation_error(error):
+        if not GEMINI_FAILURE_LOGGED:
+            logging.warning("⚠️ פלט Gemini נפסל בבדיקת איכות מקומית. לא מקרר את כל Gemini, והפוסט ידולג/יישמר לפי מנגנון הסינון.")
+        GEMINI_FAILURE_LOGGED = True
+        return
     GEMINI_COOLDOWN_IS_QUOTA = is_gemini_quota_error(error)
     if GEMINI_QUOTA_GUARD_ENABLED and GEMINI_COOLDOWN_IS_QUOTA:
         set_gemini_requests_pause(True, gemini_error_summary(error))
@@ -7327,7 +7638,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
             # This is the only line in this loop that spends a Gemini request.
             # The sweep above over all 8 keys is local/cooldown-only and free.
             real_requests_used += 1
-            data = http_post_json(url, payload, timeout=8, max_attempts=1, respect_retry_after=False)
+            data = http_post_json(url, payload, timeout=GEMINI_TRANSLATION_TIMEOUT_SECONDS, max_attempts=1, respect_retry_after=False)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             translated = "".join(part.get("text", "") for part in parts).strip()
             if translated:
@@ -7338,6 +7649,8 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
             last_error = exc
             cool_down_gemini_key(key, exc)
             logging.warning("⚠️ ג'מיני נכשל עם %s. בדיקת שאר המפתחות היא מקומית וחינמית; בקשות אמיתיות מוגבלות. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
+            if should_stop_gemini_key_sweep(exc):
+                break
             continue
     log_gemini_unavailable(last_error)
     raise RuntimeError(f"Gemini translation failed after {real_requests_used} real request(s): {last_error}")
@@ -8867,6 +9180,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "lineup_or_teamsheet"
     if is_poll_or_audience_post(post):
         return "poll_or_audience"
+    if is_world_cup_bracket_or_qualification_noise(post):
+        return "world_cup_bracket_noise"
     if has_small_total_transfer_fee(post):
         return "small_transfer_fee"
     if is_minor_destination_from_big_club_source(post):
@@ -9037,7 +9352,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         try:
             with GEMINI_TRANSLATION_SEMAPHORE:
                 real_requests_used += 1
-                data = http_post_json(url, payload, timeout=10, max_attempts=1, respect_retry_after=False)
+                data = http_post_json(url, payload, timeout=GEMINI_TRANSLATION_TIMEOUT_SECONDS, max_attempts=1, respect_retry_after=False)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             raw = "".join(part.get("text", "") for part in parts).strip()
             parsed = _extract_json_object(raw)
@@ -9076,6 +9391,8 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
                     gemini_key_label(index),
                     gemini_error_summary(exc),
                 )
+            if should_stop_gemini_key_sweep(exc):
+                break
             continue
     log_gemini_unavailable(last_error)
     raise TranslationUnavailable(f"Gemini single translation failed after {real_requests_used} real request(s): {last_error}")
