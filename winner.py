@@ -183,6 +183,9 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
 # ברירת מחדל חסכונית: פוסט אחד = ניסיון Gemini אמיתי אחד בלבד.
 # אם רוצים רוטציה אגרסיבית בזמן תקלה, אפשר להגדיל ב-Railway דרך GEMINI_MAX_REAL_TRANSLATION_REQUESTS.
+# Robust default: try up to 3 real Gemini requests for a publishable post.
+# ברירת מחדל בטוחה: פוסט אחד = בקשת Gemini אמיתית אחת בלבד.
+# אם Gemini מחזיר JSON ריק/לא תקין, לא שורפים מפתח נוסף; הכשל מדווח בפירוט מלא.
 GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 # נשארים כאן כי הקובץ החדש משתמש בהם בהמשך; הערכים תואמים לזמנים שהיו קשיחים בקוד התקין.
@@ -9333,6 +9336,51 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         return {}
 
 
+
+def compact_debug_text(value: Any, limit: int = 900) -> str:
+    """Short safe one-line debug text for control-channel/log messages."""
+    try:
+        text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+    except Exception:
+        text = str(value)
+    text = re.sub(r"\s+", " ", text or "").strip()
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def gemini_response_debug(data: dict[str, Any], raw: str) -> str:
+    """Explain exactly what Gemini returned, without exposing the API key."""
+    try:
+        candidate = (data.get("candidates") or [{}])[0]
+        finish_reason = candidate.get("finishReason", "")
+        safety = candidate.get("safetyRatings", "")
+        prompt_feedback = data.get("promptFeedback", "")
+        usage = data.get("usageMetadata", "")
+        return (
+            f"finishReason={finish_reason or 'לא נמסר'}; "
+            f"raw_len={len(raw or '')}; "
+            f"raw_preview={compact_debug_text(raw, 450) or 'ריק'}; "
+            f"promptFeedback={compact_debug_text(prompt_feedback, 220) or 'אין'}; "
+            f"safety={compact_debug_text(safety, 220) or 'אין'}; "
+            f"usage={compact_debug_text(usage, 220) or 'אין'}"
+        )
+    except Exception as exc:
+        return f"לא הצלחתי לפרק תשובת Gemini: {exc}; raw={compact_debug_text(raw, 450)}"
+
+
+def gemini_failure_details(exc: Exception | None, key_index: int | None = None, real_requests_used: int | None = None, response_debug: str = "") -> str:
+    """Human-readable detailed Gemini failure for Telegram/logs."""
+    parts = []
+    if key_index is not None:
+        parts.append(f"מפתח: {gemini_key_label(key_index)}")
+    if real_requests_used is not None:
+        parts.append(f"בקשות אמיתיות שנוצלו בפוסט הזה: {real_requests_used}/{max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS)}")
+    parts.append(f"סיווג קצר: {gemini_error_summary(exc)}")
+    if exc is not None:
+        parts.append(f"שגיאה מלאה: {compact_debug_text(str(exc), 900)}")
+    if response_debug:
+        parts.append(f"פירוט תשובת Gemini: {response_debug}")
+    return " | ".join(parts)
+
 def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
     global TRANSLATION_CACHE_DIRTY
     """Translate main + quoted text in ONE Gemini request, after local approval only."""
@@ -9359,7 +9407,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     glossary_block = f"\nKnown names glossary. Use these exact Hebrew names when relevant:\n{glossary_text}\n" if glossary_text else ""
     prompt = (
         "You are a senior Hebrew MEN'S football news translator and name editor.\n"
-        "The post below already passed a strict local publishing filter. Do NOT decide whether to publish. Translate only.\n"
+        "The post below already passed a strict local publishing filter. Do NOT decide whether to publish, block, filter, skip, or return empty. Translate only. Never return an empty main field when MAIN_TEXT has text. If MAIN_TEXT is short, vague, or looks like a link caption, still translate/summarize the exact visible text as a Hebrew news update.\n"
         "Return ONLY compact valid JSON with exactly these keys: main, quote, quote_author.\n"
         "Rules:\n"
         "- Hebrew only, natural Telegram sports-news Hebrew.\n"
@@ -9376,6 +9424,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- For lists: use one line per list item and do NOT add blank lines inside the list. Add a blank line only after the list ends if a summary/next paragraph follows.\n"
         "- For long non-list messages only: use natural short paragraphs every 2-3 sentences when it improves readability.\n"
         "- Do not write explanations. JSON only.\n"
+        "- IMPORTANT: main must contain a Hebrew translation/summary of MAIN_TEXT. Do not return empty strings unless MAIN_TEXT is completely empty. A non-empty MAIN_TEXT must always produce non-empty main.\n"
         f"{glossary_block}\n"
         "MAIN_TEXT:\n" + (main_source or "") + "\n\n"
         "QUOTED_AUTHOR:\n" + (author_source or "") + "\n\n"
@@ -9383,7 +9432,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.0, "topP": 0.7, "maxOutputTokens": 900},
+        "generationConfig": {"temperature": 0.0, "topP": 0.7, "maxOutputTokens": 900, "responseMimeType": "application/json"},
     }
     last_error: Exception | None = None
     real_requests_used = 0
@@ -9400,14 +9449,20 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
                 data = http_post_json(url, payload, timeout=GEMINI_TRANSLATION_TIMEOUT_SECONDS, max_attempts=1, respect_retry_after=False)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             raw = "".join(part.get("text", "") for part in parts).strip()
+            response_debug = gemini_response_debug(data, raw)
             parsed = _extract_json_object(raw)
             if not parsed:
+                # If Gemini ignored the JSON instruction but did translate, use the raw text as main.
                 parsed = {"main": raw, "quote": "", "quote_author": ""}
             main = final_hebrew_polish(str(parsed.get("main", ""))).strip()
             quote = final_hebrew_polish(str(parsed.get("quote", ""))).strip()
             quote_author = final_hebrew_polish(str(parsed.get("quote_author", ""))).strip()
             main = final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, main)))
             quote = final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, quote))) if quote_source else ""
+            # Do not burn a second Gemini request just because the model returned an empty/too-short JSON field.
+            # The post already passed local filters; use the raw non-JSON text if Gemini gave one, otherwise fail with full debug.
+            if main_source and not has_meaningful_text(main) and raw and has_meaningful_text(raw):
+                main = final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, final_hebrew_polish(raw))))
             if translation_contradicts_source(main_source + "\n" + quote_source, main + "\n" + quote):
                 raise RuntimeError("Gemini translation contradicted source names")
             if translation_changes_locked_numbers(main_source + "\n" + quote_source, main + "\n" + quote):
@@ -9418,29 +9473,27 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
                 GEMINI_KEY_COOLDOWNS.pop(key, None)
                 mark_gemini_available()
                 return main, quote, quote_author
-            raise RuntimeError("Gemini returned empty translation")
+            raise RuntimeError("Gemini returned empty translation after parsing JSON. " + response_debug)
         except Exception as exc:
             last_error = exc
             cool_down_gemini_key(key, exc)
             remaining = max(0, max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS) - real_requests_used)
             if remaining:
                 logging.warning(
-                    "⚠️ תרגום Gemini נכשל עם %s; עובר למפתח הבא. נשארו עד %s ניסיונות מפתח לפוסט הזה. סיבה: %s",
-                    gemini_key_label(index),
+                    "⚠️ תרגום Gemini נכשל; עובר למפתח הבא. נשארו עד %s ניסיונות מפתח לפוסט הזה. פירוט: %s",
                     remaining,
-                    gemini_error_summary(exc),
+                    gemini_failure_details(exc, index, real_requests_used),
                 )
             else:
                 logging.warning(
-                    "⚠️ תרגום Gemini נכשל עם %s ואין עוד ניסיונות מפתח לפוסט הזה. סיבה: %s",
-                    gemini_key_label(index),
-                    gemini_error_summary(exc),
+                    "⚠️ תרגום Gemini נכשל ואין עוד ניסיונות מפתח לפוסט הזה. פירוט: %s",
+                    gemini_failure_details(exc, index, real_requests_used),
                 )
             if should_stop_gemini_key_sweep(exc):
                 break
             continue
     log_gemini_unavailable(last_error)
-    raise TranslationUnavailable(f"Gemini single translation failed after {real_requests_used} real request(s): {last_error}")
+    raise TranslationUnavailable("Gemini single translation failed. " + gemini_failure_details(last_error, None, real_requests_used))
 
 
 def translate_post_for_send(post: Post) -> tuple[str, str, str]:
@@ -9452,7 +9505,8 @@ def translate_post_for_send(post: Post) -> tuple[str, str, str]:
     )
     main, quote, quote_author = gemini_translate_post_once(post, include_quote)
     if not (has_meaningful_text(main) or has_meaningful_text(quote)):
-        raise TranslationUnavailable("Gemini returned no meaningful translation")
+        main_source_debug = compact_debug_text(clean_for_ai_translation(post.text) or clean_before_translation(post.text), 500)
+        raise TranslationUnavailable("Gemini returned no meaningful translation after the single allowed API response. No extra Gemini request was made. main=" + compact_debug_text(main, 300) + " | quote=" + compact_debug_text(quote, 300) + " | source=" + main_source_debug)
     return main, quote, quote_author
 
 
@@ -9491,7 +9545,7 @@ def send_post(post: Post, reply_message_ids: dict[str, int] | None = None) -> di
         log_skip_once(
             "translation_unavailable",
             post,
-            "⏳ פוסט עבר סינון אבל לא נשלח כי אין תרגום Gemini תקין אחרי ניסיון מפתחות Gemini: @%s %s | %s",
+            "⏳ פוסט עבר סינון אבל לא נשלח כי אין תרגום Gemini תקין. פירוט מלא: @%s %s | %s",
             post.username,
             post.link,
             exc,
