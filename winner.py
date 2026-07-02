@@ -416,24 +416,23 @@ SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://nitter.net/{username}/rss",
-    "https://twiiit.com/{username}/rss",
-    "https://lightbrd.com/{username}/rss",
-    "https://rsshub.rssforever.com/twitter/user/{username}",
-    "https://rsshub.app/twitter/user/{username}",
+    "https://nitter.poast.org/{username}/rss",
+    "https://nitter.privacydev.net/{username}/rss",
+    "https://xcancel.com/{username}/rss",
+    "https://nitter.tiekoetter.com/{username}/rss",
 ]
 EXTRA_FEED_TEMPLATES = [
     template.strip()
     for template in re.split(r"[\n,]+", os.environ.get("EXTRA_FEED_TEMPLATES", ""))
-    if template.strip() and "{username}" in template
+    if os.environ.get("RSS_ALLOW_EXTRA_FEED_TEMPLATES", "0") == "1" and template.strip() and "{username}" in template
 ]
 if EXTRA_FEED_TEMPLATES:
     FEED_TEMPLATES = list(dict.fromkeys(FEED_TEMPLATES + EXTRA_FEED_TEMPLATES))
-MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
-RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "3"))
-RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
-RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2"))
-# הקובץ החדש יודע לבדוק מקור ראשי תקוע; כדי להחזיר התנהגות כמו הקוד התקין זה כבוי כברירת מחדל.
-RSS_ENABLE_STALE_FALLBACK = os.environ.get("RSS_ENABLE_STALE_FALLBACK", "0") == "1"
+MAX_FEED_TEMPLATES_PER_ACCOUNT = max(5, int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5")))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
+RSS_ENABLE_FALLBACK = os.environ.get("RSS_DISABLE_FALLBACK", "0") != "1"
+RSS_FALLBACK_SOURCE_COUNT = max(4, int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "4")))
+RSS_ENABLE_STALE_FALLBACK = os.environ.get("RSS_ENABLE_STALE_FALLBACK", "1") == "1"
 RSS_STALE_FALLBACK_SECONDS = int(os.environ.get("RSS_STALE_FALLBACK_SECONDS", str(6 * 60 * 60)))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
@@ -446,7 +445,7 @@ RSS_CONTROL_ALERT_LAST_SENT_AT: dict[str, float] = {}
 RSS_STALE_LATEST_ALERT_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_SECONDS", "0"))
 RSS_STALE_LATEST_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_EVERY_SECONDS", str(6 * 60 * 60)))
 RSS_STALE_LATEST_ALERT_LAST_SENT_AT: dict[str, float] = {}
-FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
+FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "3"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
 
