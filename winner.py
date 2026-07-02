@@ -187,7 +187,7 @@ GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "").strip()
 # add a second Gemini request for the same post.
 GEMINI_FALLBACK_MODELS_RAW = os.environ.get(
     "GEMINI_FALLBACK_MODELS",
-    GEMINI_FALLBACK_MODEL or "gemini-2.0-flash-lite",
+    GEMINI_FALLBACK_MODEL or "gemini-2.5-flash-lite,gemini-2.0-flash-lite,gemini-1.5-flash-latest",
 )
 GEMINI_MODEL_OVERLOAD_SECONDS = int(os.environ.get("GEMINI_MODEL_OVERLOAD_SECONDS", "180"))
 GEMINI_MODEL_OVERLOAD_UNTIL = 0.0
@@ -3320,18 +3320,29 @@ def gemini_status_text() -> str:
             f"פלט/תגובה: {compact_debug_text(last.get('response_debug',''), 500)}"
         )
 
+    model_candidates_text = ", ".join(gemini_translation_model_candidates())
+    model_waits = []
+    now_for_models = time.time()
+    for model_name in gemini_translation_model_candidates():
+        wait = int(max(0, GEMINI_MODEL_COOLDOWNS.get(model_name, 0.0) - now_for_models))
+        if wait:
+            model_waits.append(f"{model_name}: עומס זמני, עוד {wait} שנ׳")
+    model_status_text = "; ".join(model_waits) if model_waits else "אין מודל בקירור זמני"
+
     possible_causes = (
-        "\n\n🔎 כל סוגי הבעיות האפשריות שצריך לבדוק:\n"
-        "1. מכסה יומית/דקתית נגמרה במפתח או בפרויקט Google משותף.\n"
-        "2. מפתח לא תקין, חסום, לא מורשה או שייך לפרויקט בלי Gemini API פעיל.\n"
-        "3. עומס זמני של Gemini: 500/502/503/504 או timeout.\n"
-        "4. מודל לא זמין באזור/במפתח: שגיאת model/404.\n"
-        "5. בקשה לא תקינה: 400 / invalid argument / הגדרת responseMimeType.\n"
-        "6. Gemini החזיר תשובה ריקה או JSON בלי main. זו בעיית פלט, לא בעיית מפתח.\n"
-        "7. הפלט נפסל כי שינה שמות, קבוצות, שנים או מספרים. זו בעיית איכות פלט.\n"
-        "8. המפתחות פנויים מקומית אבל כולם חולקים אותה מכסה בפרויקט Google אחד. את זה אי אפשר לדעת בלי בקשה אמיתית.\n"
-        "9. Railway לא טען את כל משתני הסביבה אחרי שינוי עד שעושים Deploy/Restart.\n"
-        "10. Google Translate fallback נכשל או תרגם חלקית בגלל טקסט מעורב/שבור.\n"
+        "\n\n🔎 בעיות שאפשר לזהות מכאן:\n"
+        f"מודלים שהבוט יכול לנסות בפוסטים הבאים: {model_candidates_text}\n"
+        f"מצב עומס לפי מודל: {model_status_text}\n"
+        "1. 503 / high demand = עומס זמני במודל, לא בעיית מפתח. תוקן: המפתח לא מתקרר, ורק המודל עובר המתנה קצרה.\n"
+        "2. אם מודל אחד עמוס, הפוסט הבא ינסה מודל אחר מהרשימה, ועדיין רק בקשת Gemini אחת לפוסט.\n"
+        "3. לערוץ הראשי נשלח רק Gemini. Google Translate לא נשלח לראשי גם אם הטקסט בעברית.\n"
+        "4. מכסה 429 / RESOURCE_EXHAUSTED = ייתכן שמפתח או פרויקט Google משותף הגיעו למכסה.\n"
+        "5. 401/403 = מפתח לא תקין, חסום, לא מורשה או API לא פעיל בפרויקט.\n"
+        "6. 400/invalid argument = בעיית בקשה/פורמט, לא בעיית מפתח.\n"
+        "7. 404/model = מודל לא זמין בשם הזה או באזור/בפרויקט.\n"
+        "8. תשובה ריקה/JSON בלי main = בעיית פלט של Gemini, לא קירור מפתח.\n"
+        "9. פלט ששינה שמות/מספרים = בעיית איכות, לא קירור מפתח.\n"
+        "10. אחרי שינוי משתני סביבה ב-Railway חייבים Deploy/Restart כדי שהבוט יראה אותם.\n"
     )
 
     return (
@@ -7488,7 +7499,10 @@ GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS
 
 def gemini_translation_model_candidates() -> list[str]:
     models: list[str] = []
-    for raw in [GEMINI_FAST_MODEL, GEMINI_FALLBACK_MODELS_RAW]:
+    # Keep the configured active model first, then safe fallback candidates.
+    # This gives every post only one Gemini request, but if one model is overloaded
+    # the next posts automatically use another model for a few minutes.
+    for raw in [GEMINI_FAST_MODEL, GEMINI_MODEL, GEMINI_FALLBACK_MODELS_RAW]:
         for part in re.split(r"[,\n\r;]+", raw or ""):
             model = part.strip()
             if model and model not in models:
@@ -7524,9 +7538,27 @@ def append_google_translate_marker(text: str) -> str:
     text = (text or "").strip()
     if not text or not GOOGLE_TRANSLATE_VISIBLE_MARKER:
         return text
-    if GOOGLE_TRANSLATE_MARKER_TEXT in text:
+    if is_google_translate_fallback_text(text):
         return text
     return f"{text}\n\n{GOOGLE_TRANSLATE_MARKER_TEXT}"
+
+
+def is_google_translate_fallback_text(text: str) -> bool:
+    """Detect every Google-Translate fallback marker, including older cached wording."""
+    value = text or ""
+    return bool(
+        GOOGLE_TRANSLATE_MARKER_TEXT in value
+        or "תורגם בגיבוי גוגל" in value
+        or "Google Translate" in value and ("לא באמצעות Gemini" in value or "לא בג׳מיני" in value or "לא בג'מיני" in value)
+    )
+
+
+def strip_google_translate_markers(text: str) -> str:
+    value = text or ""
+    value = value.replace(GOOGLE_TRANSLATE_MARKER_TEXT, "")
+    value = value.replace("(תורגם בגיבוי גוגל, לא בג׳מיני)", "")
+    value = value.replace("(תורגם בגיבוי גוגל, לא בג'מיני)", "")
+    return value
 
 
 def translation_cache_key(text: str) -> str:
@@ -7546,7 +7578,7 @@ def gemini_error_summary(error: Exception | None) -> str:
     if is_gemini_output_validation_error(error):
         return "פלט Gemini נפסל בבדיקת איכות מקומית"
     if is_gemini_temporary_overload_error(error):
-        return "עומס זמני במודל Gemini; הבוט יעבור לגיבוי בלי לעכב שליחה"
+        return "עומס זמני במודל Gemini; המודל יוחלף זמנית בפוסטים הבאים, והפוסט הזה לא יישלח לראשי בלי Gemini"
     if "404" in lowered or "not found" in lowered or "model" in lowered:
         return "בעיה בהגדרת מודל Gemini"
     if "400" in lowered or "invalid argument" in lowered:
@@ -7605,7 +7637,7 @@ def should_cool_down_gemini_key(error: Exception | None) -> bool:
         return False
     if is_gemini_temporary_overload_error(error):
         # 503/high demand is a model/service load issue, not proof that the key is bad.
-        # Keep the key available and fall back to Google Translate for this post.
+        # Keep the key available. The model is cooled briefly; main channel still requires Gemini.
         mark_gemini_model_overloaded(error)
         return False
     lowered = str(error or "").lower()
@@ -8271,7 +8303,7 @@ def translate_text(text: str) -> str:
                     )
                     time.sleep(GEMINI_RETRY_WAIT_SECONDS)
         logging.error(
-            "⛔ Gemini נכשל בבקשה היחידה לפוסט. עובר לתרגום Google. סיבה אחרונה: %s",
+            "⛔ Gemini נכשל בבקשה היחידה לפוסט. לא יישלח לראשי בלי Gemini. סיבה אחרונה: %s",
             gemini_error_summary(last_error),
         )
         if GOOGLE_TRANSLATE_FALLBACK_ENABLED:
@@ -8285,7 +8317,7 @@ def translate_text(text: str) -> str:
         raise TranslationUnavailable("Gemini failed and Google Translate fallback unavailable")
 
     if GOOGLE_TRANSLATE_FALLBACK_ENABLED and (prepared or cleaned):
-        logging.warning("⚠️ אין Gemini זמין. משתמש בתרגום Google כדי לא לשלוח אנגלית.")
+        logging.warning("⚠️ אין Gemini זמין. לא תתבצע שליחה לראשי בלי Gemini; Google Translate מיועד רק לתצוגות/ערוץ שקט.")
         fallback = google_translate_full_hebrew(prepared or cleaned, max_chars=3000)
         if fallback:
             return append_google_translate_marker(fallback)
@@ -9906,12 +9938,44 @@ def translate_post_for_send(post: Post) -> tuple[str, str, str]:
         })
         if not GOOGLE_TRANSLATE_FALLBACK_ENABLED:
             raise
-        logging.warning("⚠️ Gemini לא החזיר תרגום תקין אחרי בקשה אחת. עובר לתרגום Google. פירוט: %s", exc)
+        logging.warning("⚠️ Gemini לא החזיר תרגום תקין אחרי בקשה אחת. לא יישלח לראשי בלי Gemini. פירוט: %s", exc)
         main, quote, quote_author = free_translate_post_for_send(post, include_quote)
         if has_meaningful_text(main) or has_meaningful_text(quote):
             return main, quote, quote_author
         raise TranslationUnavailable("Gemini failed and Google Translate fallback failed. Gemini details: " + str(gemini_error))
 
+
+
+def is_publishable_hebrew_for_main_channel(main_text: str, quoted_text: str = "") -> tuple[bool, str]:
+    """Final gate for the main channel.
+
+    Rule requested now:
+    - Main channel is allowed ONLY when the translation came from Gemini.
+    - If the visible text was produced by Google Translate fallback, never send it
+      to the main channel, even if it is fully Hebrew.
+    - Gemini translations may still pass even if a few Latin/English words remain
+      (names, acronyms, club tags, source leftovers). Manual tests/Google fallback
+      may still appear only in the quiet/control channel.
+    """
+    raw_combined = "\n".join([main_text or "", quoted_text or ""])
+    if is_google_translate_fallback_text(raw_combined):
+        return False, "התרגום הוא Google Translate ולכן מותר רק לערוץ השקט, לא לערוץ הראשי"
+
+    combined = clean_before_translation(strip_google_translate_markers(raw_combined))
+    combined = remove_urls(combined)
+    if not has_meaningful_text(combined):
+        return False, "אין טקסט משמעותי אחרי תרגום Gemini"
+    hebrew_chars = len(re.findall(r"[א-ת]", combined))
+    if hebrew_chars < 8:
+        return False, "תרגום Gemini קצר מדי או לא עברי מספיק"
+
+    # English leftovers are allowed only for Gemini output. They are no longer a
+    # reason to block the main channel, because the user prefers delivery when
+    # Gemini produced the translation.
+    non_hebrew_foreign = re.findall(r"[\u0400-\u052F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]{2,}", combined)
+    if non_hebrew_foreign:
+        return False, "נשאר טקסט בשפה זרה שאינה אנגלית אחרי תרגום Gemini"
+    return True, ""
 
 def send_post(post: Post, reply_message_ids: dict[str, int] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
@@ -9955,6 +10019,21 @@ def send_post(post: Post, reply_message_ids: dict[str, int] | None = None) -> di
         )
         return timings
     timings["translation_seconds"] = time.perf_counter() - translation_started
+
+    publishable_hebrew, publishable_reason = is_publishable_hebrew_for_main_channel(translated, quoted_translated)
+    if not publishable_hebrew:
+        timings["total_seconds"] = time.perf_counter() - started
+        timings["mode"] = "main_blocked_untranslated"
+        log_skip_once(
+            "main_blocked_untranslated",
+            post,
+            "⛔ הפוסט לא נשלח לערוץ הראשי. אם זה Google Translate הוא נשאר רק לערוץ השקט; אם זה Gemini הסיבה מפורטת כאן. @%s %s | %s | תצוגה: %s",
+            post.username,
+            post.link,
+            publishable_reason,
+            compact_debug_text(translated or post.text, 500),
+        )
+        return timings
 
     video_started = time.perf_counter()
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
