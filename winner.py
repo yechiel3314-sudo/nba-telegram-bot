@@ -181,11 +181,11 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
-# Default: try the configured key pool for a publishable post before giving up.
-# Keep translation reliability high by default. Railway/server savings are handled
-# by scan cadence, retries, parallelism, and retrying transient translation failures later.
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = max(3, int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "8")))
+# ברירת מחדל חסכונית: פוסט אחד = ניסיון Gemini אמיתי אחד בלבד.
+# אם רוצים רוטציה אגרסיבית בזמן תקלה, אפשר להגדיל ב-Railway דרך GEMINI_MAX_REAL_TRANSLATION_REQUESTS.
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "1"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
+# נשארים כאן כי הקובץ החדש משתמש בהם בהמשך; הערכים תואמים לזמנים שהיו קשיחים בקוד התקין.
 GEMINI_TRANSLATION_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "18"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
 GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS = int(os.environ.get("GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS", "90"))
@@ -206,6 +206,7 @@ GEMINI_MAX_KEYS_PER_OPERATION = int(os.environ.get("GEMINI_MAX_KEYS_PER_OPERATIO
 # Credit-safe mode: do NOT spend Gemini on uncertain affiliation/filter checks.
 # Gemini is used only after all local deterministic filters already approved a post for publishing.
 AI_AFFILIATION_FALLBACK_ENABLED = os.environ.get("AI_AFFILIATION_FALLBACK_ENABLED", "0") == "1"
+
 
 X_ACCOUNTS = [
     "FabrizioRomano",
@@ -383,23 +384,24 @@ SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://nitter.net/{username}/rss",
-    "https://nitter.poast.org/{username}/rss",
-    "https://nitter.privacydev.net/{username}/rss",
-    "https://xcancel.com/{username}/rss",
-    "https://nitter.tiekoetter.com/{username}/rss",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
 ]
 EXTRA_FEED_TEMPLATES = [
     template.strip()
     for template in re.split(r"[\n,]+", os.environ.get("EXTRA_FEED_TEMPLATES", ""))
-    if os.environ.get("RSS_ALLOW_EXTRA_FEED_TEMPLATES", "0") == "1" and template.strip() and "{username}" in template
+    if template.strip() and "{username}" in template
 ]
 if EXTRA_FEED_TEMPLATES:
     FEED_TEMPLATES = list(dict.fromkeys(FEED_TEMPLATES + EXTRA_FEED_TEMPLATES))
-MAX_FEED_TEMPLATES_PER_ACCOUNT = max(5, int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5")))
-RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
-RSS_ENABLE_FALLBACK = os.environ.get("RSS_DISABLE_FALLBACK", "0") != "1"
-RSS_FALLBACK_SOURCE_COUNT = max(4, int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "4")))
-RSS_ENABLE_STALE_FALLBACK = os.environ.get("RSS_ENABLE_STALE_FALLBACK", "1") == "1"
+MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "3"))
+RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
+RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2"))
+# הקובץ החדש יודע לבדוק מקור ראשי תקוע; כדי להחזיר התנהגות כמו הקוד התקין זה כבוי כברירת מחדל.
+RSS_ENABLE_STALE_FALLBACK = os.environ.get("RSS_ENABLE_STALE_FALLBACK", "0") == "1"
 RSS_STALE_FALLBACK_SECONDS = int(os.environ.get("RSS_STALE_FALLBACK_SECONDS", str(6 * 60 * 60)))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
@@ -412,9 +414,10 @@ RSS_CONTROL_ALERT_LAST_SENT_AT: dict[str, float] = {}
 RSS_STALE_LATEST_ALERT_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_SECONDS", "0"))
 RSS_STALE_LATEST_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_EVERY_SECONDS", str(6 * 60 * 60)))
 RSS_STALE_LATEST_ALERT_LAST_SENT_AT: dict[str, float] = {}
-FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "3"))
+FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
+
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m3u8", ".webm", ".avi", ".mkv")
