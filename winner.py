@@ -183,11 +183,12 @@ GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
 # Default: try the configured key pool for a publishable post before giving up.
 # Keep translation reliability high by default. Railway/server savings are handled
-# by scan cadence, retries, parallelism, and marking failed posts as seen.
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "8"))
+# by scan cadence, retries, parallelism, and retrying transient translation failures later.
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = max(3, int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "8")))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 GEMINI_TRANSLATION_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "18"))
 GEMINI_COOLDOWN_SECONDS = 10 * 60
+GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS = int(os.environ.get("GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS", "90"))
 # When Gemini quota is exhausted, do not keep probing the API every few minutes.
 # A failed probe is also an API request, so quota protection pauses all real Gemini requests
 # until the control-panel button releases it after the quota has refilled.
@@ -7390,6 +7391,8 @@ def gemini_error_summary(error: Exception | None) -> str:
         return "זמן התגובה של ג'מיני נגמר"
     if is_gemini_output_validation_error(error):
         return "פלט Gemini נפסל בבדיקת איכות מקומית"
+    if is_gemini_temporary_overload_error(error):
+        return "עומס זמני ב-Gemini, ינסה שוב אחרי קירור קצר"
     if "404" in lowered or "not found" in lowered or "model" in lowered:
         return "בעיה בהגדרת מודל Gemini"
     if "400" in lowered or "invalid argument" in lowered:
@@ -7400,6 +7403,23 @@ def gemini_error_summary(error: Exception | None) -> str:
 def is_gemini_quota_error(error: Exception | None) -> bool:
     lowered = str(error or "").lower()
     return "quota" in lowered or "429" in lowered or "resource_exhausted" in lowered
+
+
+def is_gemini_temporary_overload_error(error: Exception | None) -> bool:
+    lowered = str(error or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "http 503",
+            "unavailable",
+            "high demand",
+            "try again later",
+            "temporarily unavailable",
+            "http 500",
+            "http 502",
+            "http 504",
+        )
+    )
 
 
 def is_gemini_output_validation_error(error: Exception | None) -> bool:
@@ -7434,7 +7454,7 @@ def should_cool_down_gemini_key(error: Exception | None) -> bool:
 
 
 def should_stop_gemini_key_sweep(error: Exception | None) -> bool:
-    if error is None or is_gemini_output_validation_error(error) or is_gemini_quota_error(error):
+    if error is None or is_gemini_output_validation_error(error) or is_gemini_quota_error(error) or is_gemini_temporary_overload_error(error):
         return False
     lowered = str(error or "").lower()
     if "api key" in lowered or "permission" in lowered or "403" in lowered or "401" in lowered:
@@ -7498,9 +7518,25 @@ def gemini_available_keys_for_operation() -> list[tuple[int, str]]:
     return gemini_key_order_limited(GEMINI_LOCAL_KEY_SWEEP_SIZE)
 
 
+def gemini_translation_keys_for_operation() -> list[tuple[int, str]]:
+    """Translation is the core path: do not let old server env cap it to one key."""
+    if gemini_requests_paused_until_refill():
+        return []
+    if GEMINI_DISABLED_UNTIL and GEMINI_DISABLED_UNTIL > time.time():
+        return []
+    minimum_keys = max(3, min(len(GEMINI_API_KEYS), GEMINI_MAX_REAL_TRANSLATION_REQUESTS))
+    return gemini_key_order_limited(max(GEMINI_LOCAL_KEY_SWEEP_SIZE, minimum_keys))
+
+
 def cool_down_gemini_key(key: str, error: Exception | None) -> None:
     if should_cool_down_gemini_key(error):
-        cooldown = GEMINI_COOLDOWN_SECONDS if is_gemini_quota_error(error) else 90
+        cooldown = (
+            GEMINI_COOLDOWN_SECONDS
+            if is_gemini_quota_error(error)
+            else GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS
+            if is_gemini_temporary_overload_error(error)
+            else 90
+        )
         GEMINI_KEY_COOLDOWNS[key] = time.time() + cooldown
     try:
         daily_stat_increment("gemini_failures", gemini_error_summary(error), 1)
@@ -7519,6 +7555,8 @@ def log_gemini_unavailable(error: Exception | None) -> None:
     if GEMINI_QUOTA_GUARD_ENABLED and GEMINI_COOLDOWN_IS_QUOTA:
         set_gemini_requests_pause(True, gemini_error_summary(error))
         GEMINI_DISABLED_UNTIL = 10 ** 12
+    elif is_gemini_temporary_overload_error(error):
+        GEMINI_DISABLED_UNTIL = time.time() + GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS
     else:
         GEMINI_DISABLED_UNTIL = time.time() + GEMINI_COOLDOWN_SECONDS
     if GEMINI_FAILURE_LOGGED:
@@ -7624,7 +7662,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
     }
     last_error: Exception | None = None
     real_requests_used = 0
-    available_keys = gemini_available_keys_for_operation()
+    available_keys = gemini_translation_keys_for_operation()
     if not available_keys:
         raise RuntimeError("No Gemini key is locally available")
     for index, key in available_keys:
@@ -9342,7 +9380,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     }
     last_error: Exception | None = None
     real_requests_used = 0
-    for index, key in gemini_available_keys_for_operation():
+    for index, key in gemini_translation_keys_for_operation():
         if real_requests_used >= max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS):
             break
         url = (
@@ -10009,7 +10047,15 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                     link,
                     result.get("source_name", "unknown"),
                 )
-            elif str(result.get("mode", "")).startswith("translation_unavailable") or str(result.get("mode", "")).startswith("pre_send_blocked:"):
+            elif str(result.get("mode", "")).startswith("translation_unavailable"):
+                forget_pending_recent_news_event(sent_post, state)
+                logging.info(
+                    "דילוג זמני: הפוסט לא סומן כנראה כי הכשל הוא בתרגום Gemini בלבד. ינסה שוב אחרי הקירור המקומי. מצב: %s | מקור: %s | %s",
+                    result.get("mode", "skipped"),
+                    result.get("source_name", "unknown"),
+                    link,
+                )
+            elif str(result.get("mode", "")).startswith("pre_send_blocked:"):
                 forget_pending_recent_news_event(sent_post, state)
                 seen = set(state.get(username, []))
                 seen.update(post_ids)
