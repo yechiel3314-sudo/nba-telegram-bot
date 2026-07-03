@@ -180,36 +180,34 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Optional: when the main Gemini model returns temporary overload (503/high demand),
 # the next posts can use this model without spending a second Gemini request on the same post.
-# Leave empty to use only the main model and fall back to free Google Translate on overload.
+# Leave empty to use only the main model. Publishing stays Gemini-only.
 GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "").strip()
 # One Gemini request per post stays strict. If the active model is overloaded,
 # future posts can temporarily use another model automatically. This does not
 # add a second Gemini request for the same post.
 GEMINI_FALLBACK_MODELS_RAW = os.environ.get(
     "GEMINI_FALLBACK_MODELS",
-    os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash-lite,gemini-2.5-flash-lite"),
+    os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite,gemini-2.5-flash"),
 ).strip()
 GEMINI_MODEL_OVERLOAD_SECONDS = int(os.environ.get("GEMINI_MODEL_OVERLOAD_SECONDS", "180"))
 GEMINI_MODEL_OVERLOAD_UNTIL = 0.0
 GEMINI_MODEL_COOLDOWNS: dict[str, float] = {}
 GEMINI_LAST_MODEL_USED = ""
+GEMINI_SHUTDOWN_MODELS = {"gemini-2.0-flash", "gemini-2.0-flash-lite"}
 GOOGLE_TRANSLATE_VISIBLE_MARKER = os.environ.get("GOOGLE_TRANSLATE_VISIBLE_MARKER", "1") == "1"
 GOOGLE_TRANSLATE_MARKER_TEXT = "(תורגם באמצעות גוגל טרנסלייט ולא באמצעות ג'מיני)"
 # Local key/cooldown checks do not call Gemini and do not use credits.
 # Real network attempts below DO use one Gemini request each.
-GEMINI_TRANSLATION_ATTEMPTS = 1
-# ברירת מחדל חסכונית: פוסט אחד = ניסיון Gemini אמיתי אחד בלבד.
-# אם רוצים רוטציה אגרסיבית בזמן תקלה, אפשר להגדיל ב-Railway דרך GEMINI_MAX_REAL_TRANSLATION_REQUESTS.
-# Robust default: try up to 3 real Gemini requests for a publishable post.
-# ברירת מחדל בטוחה: פוסט אחד = בקשת Gemini אמיתית אחת בלבד.
-# אם Gemini מחזיר JSON ריק/לא תקין, לא שורפים מפתח נוסף; הכשל מדווח בפירוט מלא.
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = 1
+GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", "1"))
+# Default: try the configured key pool for a publishable post before giving up.
+# This restores the reliable Gemini-only behavior from the earlier working bot.
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = max(3, int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "8")))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 # נשארים כאן כי הקובץ החדש משתמש בהם בהמשך; הערכים תואמים לזמנים שהיו קשיחים בקוד התקין.
 GEMINI_TRANSLATION_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "18"))
-# Free fallback: Google Translate is used only after the single allowed Gemini request fails
-# or for control-panel previews. It does not spend Gemini quota.
-GOOGLE_TRANSLATE_FALLBACK_ENABLED = os.environ.get("GOOGLE_TRANSLATE_FALLBACK_ENABLED", "1") == "1"
+# Google Translate may be useful for control-panel previews only. It must not be
+# used as a publishing fallback, because the channel should receive Gemini text only.
+GOOGLE_TRANSLATE_FALLBACK_ENABLED = os.environ.get("GOOGLE_TRANSLATE_FALLBACK_ENABLED", "0") == "1"
 GOOGLE_TRANSLATE_CONTROL_PREVIEWS = os.environ.get("GOOGLE_TRANSLATE_CONTROL_PREVIEWS", "1") == "1"
 GOOGLE_TRANSLATE_TIMEOUT_SECONDS = int(os.environ.get("GOOGLE_TRANSLATE_TIMEOUT_SECONDS", "7"))
 
@@ -416,23 +414,24 @@ SIGNATURE_TEXT = "נטו ספורט.📝"
 
 FEED_TEMPLATES = [
     "https://nitter.net/{username}/rss",
-    "https://nitter.poast.org/{username}/rss",
-    "https://nitter.privacydev.net/{username}/rss",
-    "https://xcancel.com/{username}/rss",
-    "https://nitter.tiekoetter.com/{username}/rss",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
 ]
 EXTRA_FEED_TEMPLATES = [
     template.strip()
     for template in re.split(r"[\n,]+", os.environ.get("EXTRA_FEED_TEMPLATES", ""))
-    if os.environ.get("RSS_ALLOW_EXTRA_FEED_TEMPLATES", "0") == "1" and template.strip() and "{username}" in template
+    if template.strip() and "{username}" in template
 ]
 if EXTRA_FEED_TEMPLATES:
     FEED_TEMPLATES = list(dict.fromkeys(FEED_TEMPLATES + EXTRA_FEED_TEMPLATES))
-MAX_FEED_TEMPLATES_PER_ACCOUNT = max(5, int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5")))
-RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "1"))
-RSS_ENABLE_FALLBACK = os.environ.get("RSS_DISABLE_FALLBACK", "0") != "1"
-RSS_FALLBACK_SOURCE_COUNT = max(4, int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "4")))
-RSS_ENABLE_STALE_FALLBACK = os.environ.get("RSS_ENABLE_STALE_FALLBACK", "1") == "1"
+MAX_FEED_TEMPLATES_PER_ACCOUNT = int(os.environ.get("MAX_FEED_TEMPLATES_PER_ACCOUNT", "5"))
+RSS_PRIMARY_SOURCE_COUNT = int(os.environ.get("RSS_PRIMARY_SOURCE_COUNT", "3"))
+RSS_ENABLE_FALLBACK = os.environ.get("RSS_ENABLE_FALLBACK", "1") == "1"
+RSS_FALLBACK_SOURCE_COUNT = int(os.environ.get("RSS_FALLBACK_SOURCE_COUNT", "2"))
+# הקובץ החדש יודע לבדוק מקור ראשי תקוע; כדי להחזיר התנהגות כמו הקוד התקין זה כבוי כברירת מחדל.
+RSS_ENABLE_STALE_FALLBACK = os.environ.get("RSS_ENABLE_STALE_FALLBACK", "0") == "1"
 RSS_STALE_FALLBACK_SECONDS = int(os.environ.get("RSS_STALE_FALLBACK_SECONDS", str(6 * 60 * 60)))
 LOGGED_FEED_ISSUE_KEYS: set[str] = set()
 FEED_ISSUE_LOG_EVERY_SECONDS = int(os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60)))
@@ -445,7 +444,7 @@ RSS_CONTROL_ALERT_LAST_SENT_AT: dict[str, float] = {}
 RSS_STALE_LATEST_ALERT_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_SECONDS", "0"))
 RSS_STALE_LATEST_ALERT_EVERY_SECONDS = int(os.environ.get("RSS_STALE_LATEST_ALERT_EVERY_SECONDS", str(6 * 60 * 60)))
 RSS_STALE_LATEST_ALERT_LAST_SENT_AT: dict[str, float] = {}
-FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "3"))
+FEED_SOURCE_MAX_PARALLEL = int(os.environ.get("FEED_SOURCE_MAX_PARALLEL", "2"))
 FEED_SOURCE_SEMAPHORES: dict[str, BoundedSemaphore] = {}
 FEED_SOURCE_SEMAPHORES_LOCK = Lock()
 
@@ -7506,17 +7505,19 @@ def gemini_translation_model_candidates() -> list[str]:
     for raw in [GEMINI_FAST_MODEL, GEMINI_FALLBACK_MODELS_RAW]:
         for part in re.split(r"[,\n\r;]+", raw or ""):
             model = part.strip()
+            if model in GEMINI_SHUTDOWN_MODELS:
+                continue
             if model and model not in models:
                 models.append(model)
-    return models or [GEMINI_FAST_MODEL]
+    return models or ["gemini-2.5-flash-lite"]
 
 
 def current_gemini_translation_model() -> str:
     """Pick one model for the next single Gemini request.
 
     If the main model recently returned 503/high-demand, use the next available
-    model for later posts. The bot still spends at most one Gemini request per
-    post and falls back to Google Translate when that one request fails.
+    model for later posts. Publishing still stays Gemini-only; if Gemini fails,
+    the post is retried later instead of sending lower-quality fallback text.
     """
     now = time.time()
     for model in gemini_translation_model_candidates():
@@ -7642,7 +7643,7 @@ def should_cool_down_gemini_key(error: Exception | None) -> bool:
         return False
     if is_gemini_temporary_overload_error(error):
         # 503/high demand is a model/service load issue, not proof that the key is bad.
-        # Keep the key available and fall back to Google Translate for this post.
+        # Keep the key available and let model fallback/retry-later logic handle it.
         mark_gemini_model_overloaded(error)
         return False
     lowered = str(error or "").lower()
@@ -8001,8 +8002,8 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
                 mark_gemini_available()
                 return translated
             last_error = RuntimeError("Gemini returned empty text; candidates=%s" % compact_debug_text(json.dumps(data, ensure_ascii=False), 600))
-            logging.warning("⚠️ ג'מיני החזיר תשובה ריקה עם %s. לא מקרר את המפתח כי זו בעיית פלט/פרומפט, ועובר לגיבוי חינמי.", gemini_key_label(index))
-            break
+            logging.warning("⚠️ ג'מיני החזיר תשובה ריקה עם %s. לא מקרר את המפתח כי זו בעיית פלט/פרומפט; עובר למפתח הבא אם נשארו ניסיונות.", gemini_key_label(index))
+            continue
         except Exception as exc:
             last_error = exc
             mark_gemini_model_overloaded(exc, model_for_request)
@@ -8292,9 +8293,9 @@ def translate_text(text: str) -> str:
                 break
             try:
                 with GEMINI_TRANSLATION_SEMAPHORE:
-                    allowed_real_requests = 1
-                    polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False, max_real_requests=1))
-                    real_requests_used += 1
+                    allowed_real_requests = max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS - real_requests_used)
+                    polished = final_hebrew_polish(gemini_translate(ai_text, respect_global_cooldown=False, max_real_requests=allowed_real_requests))
+                    real_requests_used += allowed_real_requests
                 polished = final_visual_cleanup(preserve_original_country_flags(ai_text, preserve_original_emojis(ai_text, polished)))
                 if translation_contradicts_source(ai_text, polished):
                     raise RuntimeError("Gemini translation contradicted source names")
@@ -8316,27 +8317,15 @@ def translate_text(text: str) -> str:
                     )
                     time.sleep(GEMINI_RETRY_WAIT_SECONDS)
         logging.error(
-            "⛔ Gemini נכשל בבקשה היחידה לפוסט. עובר לתרגום Google. סיבה אחרונה: %s",
+            "⛔ Gemini לא הצליח בתרגום אחרי עד %s בדיקות / עד %s בקשות אמיתיות. הפוסט לא יישלח בלי תרגום Gemini ויישאר לניסיון הבא. סיבה אחרונה: %s",
+            GEMINI_TRANSLATION_ATTEMPTS,
+            GEMINI_MAX_REAL_TRANSLATION_REQUESTS,
             gemini_error_summary(last_error),
         )
-        if GOOGLE_TRANSLATE_FALLBACK_ENABLED:
-            fallback = google_translate_full_hebrew(prepared or cleaned or ai_text, max_chars=3000)
-            fallback = final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, fallback)))
-            if fallback:
-                fallback = append_google_translate_marker(fallback)
-                TRANSLATION_CACHE[fallback_key] = fallback
-                TRANSLATION_CACHE_DIRTY = True
-                return fallback
-        raise TranslationUnavailable("Gemini failed and Google Translate fallback unavailable")
-
-    if GOOGLE_TRANSLATE_FALLBACK_ENABLED and (prepared or cleaned):
-        logging.warning("⚠️ אין Gemini זמין. משתמש בתרגום Google כדי לא לשלוח אנגלית.")
-        fallback = google_translate_full_hebrew(prepared or cleaned, max_chars=3000)
-        if fallback:
-            return append_google_translate_marker(fallback)
+        raise TranslationUnavailable("Gemini translation failed after all attempts")
 
     logging.error("⛔ אין תרגום תקין. הפוסט לא יישלח.")
-    raise TranslationUnavailable("Translation unavailable")
+    raise TranslationUnavailable("Gemini-only translation unavailable")
 
 
 def translate_short_label(text: str) -> str:
@@ -9749,6 +9738,9 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- Preserve real flag emojis. If country-code letters are used as a flag marker, output the correct flag emoji and remove the letters.\n"
         "- Remove leftovers such as TR, טי אר, GE, FR, IT, ES, DE when they only duplicate a nearby flag emoji.\n"
         "- Keep emojis only when useful and already implied by the source.\n"
+        "- If the source contains an inline list of stats, countries, teams, players, checkmarks, crosses, medals, bullets, or many flag emojis, format it as a readable Telegram list.\n"
+        "- For lists: use one line per list item and do NOT add blank lines inside the list. Add a blank line only after the list ends if a summary/next paragraph follows.\n"
+        "- For long non-list messages only: use natural short paragraphs every 2-3 sentences when it improves readability.\n"
         "- Do not write explanations. JSON only.\n"
         f"{glossary_block}\n"
         "MAIN_TEXT:\n" + (main_source or "") + "\n\n"
@@ -9761,7 +9753,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     }
     last_error: Exception | None = None
     real_requests_used = 0
-    for index, key in gemini_available_keys_for_operation():
+    for index, key in gemini_translation_keys_for_operation():
         if real_requests_used >= max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS):
             break
         model_for_request = current_gemini_translation_model()
@@ -9773,7 +9765,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         try:
             with GEMINI_TRANSLATION_SEMAPHORE:
                 real_requests_used += 1
-                data = http_post_json(url, payload, timeout=10, max_attempts=1, respect_retry_after=False)
+                data = http_post_json(url, payload, timeout=GEMINI_TRANSLATION_TIMEOUT_SECONDS, max_attempts=1, respect_retry_after=False)
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             raw = "".join(part.get("text", "") for part in parts).strip()
             parsed = _extract_json_object(raw)
@@ -9813,6 +9805,8 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
                     gemini_key_label(index),
                     gemini_error_summary(exc),
                 )
+            if should_stop_gemini_key_sweep(exc):
+                break
             continue
     log_gemini_unavailable(last_error)
     raise TranslationUnavailable(f"Gemini single translation failed after {real_requests_used} real request(s): {last_error}")
@@ -9912,21 +9906,15 @@ def free_translate_post_for_send(post: Post, include_quote: bool) -> tuple[str, 
 
 
 def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    """Return publishable Hebrew translation. Gemini gets one request; free Google fallback prevents English output."""
+    """Return publishable translation. If Gemini is unavailable, do not send."""
     include_quote = bool(
         not is_self_quote(post)
         and post.quoted_text
         and TRANSLATE_QUOTED_POSTS
     )
-    gemini_error: Exception | None = None
     try:
         main, quote, quote_author = gemini_translate_post_once(post, include_quote)
-        if has_meaningful_text(main) or has_meaningful_text(quote):
-            return main, quote, quote_author
-        main_source_debug = compact_debug_text(clean_for_ai_translation(post.text) or clean_before_translation(post.text), 500)
-        raise TranslationUnavailable("Gemini returned no meaningful translation after the single allowed API response. main=" + compact_debug_text(main, 300) + " | quote=" + compact_debug_text(quote, 300) + " | source=" + main_source_debug)
     except Exception as exc:
-        gemini_error = exc
         GEMINI_LAST_TRANSLATION_FAILURE.clear()
         GEMINI_LAST_TRANSLATION_FAILURE.update({
             "at": time.time(),
@@ -9934,16 +9922,24 @@ def translate_post_for_send(post: Post) -> tuple[str, str, str]:
             "link": post.link,
             "summary": gemini_error_summary(exc),
             "error": compact_debug_text(str(exc), 1200),
-            "real_requests_used": 1,
+            "real_requests_used": GEMINI_MAX_REAL_TRANSLATION_REQUESTS,
             "response_debug": compact_debug_text(str(exc), 1200),
         })
-        if not GOOGLE_TRANSLATE_FALLBACK_ENABLED:
-            raise
-        logging.warning("⚠️ Gemini לא החזיר תרגום תקין אחרי בקשה אחת. עובר לתרגום Google. פירוט: %s", exc)
-        main, quote, quote_author = free_translate_post_for_send(post, include_quote)
-        if has_meaningful_text(main) or has_meaningful_text(quote):
-            return main, quote, quote_author
-        raise TranslationUnavailable("Gemini failed and Google Translate fallback failed. Gemini details: " + str(gemini_error))
+        raise
+    if not (has_meaningful_text(main) or has_meaningful_text(quote)):
+        exc = TranslationUnavailable("Gemini returned no meaningful translation")
+        GEMINI_LAST_TRANSLATION_FAILURE.clear()
+        GEMINI_LAST_TRANSLATION_FAILURE.update({
+            "at": time.time(),
+            "username": post.username,
+            "link": post.link,
+            "summary": gemini_error_summary(exc),
+            "error": compact_debug_text(str(exc), 1200),
+            "real_requests_used": GEMINI_MAX_REAL_TRANSLATION_REQUESTS,
+            "response_debug": "main=" + compact_debug_text(main, 300) + " | quote=" + compact_debug_text(quote, 300),
+        })
+        raise exc
+    return main, quote, quote_author
 
 
 
