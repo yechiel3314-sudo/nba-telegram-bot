@@ -3185,6 +3185,15 @@ def run_latest_account_control_test(username: str) -> None:
     # גם אם הסינון הרגיל היה חוסם אותו. כפילות וסיבות חסימה אינן נבדקות כאן.
     try:
         translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
+        publishable_hebrew, publishable_reason = is_publishable_hebrew_for_main_channel(translated, quoted_translated)
+        if not publishable_hebrew:
+            send_control_text(
+                f"🧪 בדיקת {label}: הפוסט נמצא, אבל התרגום לא נקי ולכן לא מוצג ולא נשלח.\n"
+                f"סיבה: {publishable_reason}\n"
+                f"קישור: {post.link}"
+            )
+            logging.info("🧪 בדיקת כתב: הפוסט האחרון של @%s לא הוצג כי התרגום לא נקי: %s | %s", username, publishable_reason, post.link)
+            return
         message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
         token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
         send_control_html(message, control_send_to_main_reply_markup(token))
@@ -9958,14 +9967,19 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     log_gemini_unavailable(last_error)
     raise TranslationUnavailable(f"Gemini single translation failed after {real_requests_used} real request(s): {last_error}")
 
-def has_non_hebrew_leftovers(text: str) -> bool:
+def non_hebrew_leftovers(text: str) -> list[str]:
     if not text:
-        return False
+        return []
     latin = re.findall(r"[A-Za-z]{3,}", text)
     arabic = re.findall(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+", text)
     # Keep common Latin football abbreviations, but translate real words.
     latin = [x for x in latin if x.upper() not in LATIN_KEEP and x.lower() not in {"http", "https", "www", "com"}]
-    return bool(latin or arabic)
+    cyrillic = re.findall(r"[\u0400-\u052F]{2,}", text)
+    return list(dict.fromkeys(latin + arabic + cyrillic))
+
+
+def has_non_hebrew_leftovers(text: str) -> bool:
+    return bool(non_hebrew_leftovers(text))
 
 
 def split_translation_units(text: str) -> list[str]:
@@ -10114,8 +10128,8 @@ def is_publishable_hebrew_for_main_channel(main_text: str, quoted_text: str = ""
         return False, "תרגום Gemini קצר מדי או לא עברי מספיק"
 
     # English leftovers are allowed only for Gemini output. They are no longer a
-    # reason to block the main channel, because the user prefers delivery when
-    # Gemini produced the translation.
+    # reason to block the main channel, because some names/acronyms are safer in
+    # Latin than as broken Hebrew. JSON/main leaks are cleaned before this gate.
     non_hebrew_foreign = re.findall(r"[\u0400-\u052F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]{2,}", combined)
     if non_hebrew_foreign:
         return False, "נשאר טקסט בשפה זרה שאינה אנגלית אחרי תרגום Gemini"
