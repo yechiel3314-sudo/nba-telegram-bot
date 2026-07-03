@@ -4697,7 +4697,7 @@ def is_non_news_social_post(post: Post) -> bool:
         r"\bcalled\s+up\b",
         r"\bsquad\b",
         r"\bnational\s+team\b",
-        r"הושג|סוכם|חתם|יחתום|מצטרף|יעבור|העברה|השאלה|חוזה|רשמי|בלעדי|פציעה|מונה|פוטר|יכול לחזור|רוצה לחזור|לחזור ל|עתידו",
+        r"הושג|סוכם|חתם|יחתום|להחתים|החתמה|מצטרף|יעבור|העברה|השאלה|חוזה|רשמי|בלעדי|הצהרה|הודעה רשמית|פציעה|מונה|פוטר|יכול לחזור|רוצה לחזור|לחזור ל|עתידו",
     )
     if any(re.search(pattern, cleaned, re.IGNORECASE) for pattern in news_patterns):
         return False
@@ -7128,6 +7128,10 @@ def remove_external_links(text: str) -> str:
     return text.strip()
 
 
+def remove_urls(text: str) -> str:
+    return remove_external_links(text)
+
+
 def remove_credit_handles(text: str) -> str:
     text = text or ""
     text = re.sub(r"(?im)^\s*(?:presented|sponsored|brought to you)\s+by\s+.+$", "", text)
@@ -8994,7 +8998,7 @@ NON_ELITE_LOOSE_TRANSFER_PATTERNS = (
 # player ideas/lists/admiration with no concrete transfer angle.
 TRANSFER_LINKED_WEAK_PATTERNS = (
     r"\b(?:wants? to join|would like to join|keen to join|open to joining|dreams? of joining|wants? to return|could return|can return|expected to return|set to return|return to|back to|wants? to leave|could leave|future|transfer|move|signing|sign|join|loan|option to buy|buy option|purchase option|clause|release clause|bid|offer|proposal|talks|negotiations|agreement|medical|deal)\b",
-    r"רוצה\s+לעבור|רוצה\s+להצטרף|מעוניין\s+לעבור|מעוניין\s+להצטרף|חולם\s+לעבור|חולם\s+להצטרף|רוצה\s+לחזור|יכול\s+לחזור|יכולה\s+לחזור|צפוי\s+לחזור|עשוי\s+לחזור|חזרה\s+ל|לחזור\s+ל|רוצה\s+לעזוב|יכול\s+לעזוב|עתידו|עתיד\s+ב|מעבר|העברה|חתימה|יחתום|יצטרף|השאלה|אופציית\s+רכישה|אופציית\s+הקנייה|לא\s+הפעיל(?:ה|ו)?\s+את\s+אופציית\s+הרכישה|סעיף\s+שחרור|הצעה|שיחות|מו\"מ|סיכום|בדיקות\s+רפואיות|עסקה",
+    r"רוצה\s+לעבור|רוצה\s+להצטרף|מעוניין\s+לעבור|מעוניין\s+להצטרף|חולם\s+לעבור|חולם\s+להצטרף|רוצה\s+לחזור|יכול\s+לחזור|יכולה\s+לחזור|צפוי\s+לחזור|עשוי\s+לחזור|חזרה\s+ל|לחזור\s+ל|רוצה\s+לעזוב|יכול\s+לעזוב|עתידו|עתיד\s+ב|מעבר|העברה|חתימה|החתמה|להחתים|יחתום|יצטרף|השאלה|אופציית\s+רכישה|אופציית\s+הקנייה|לא\s+הפעיל(?:ה|ו)?\s+את\s+אופציית\s+הרכישה|סעיף\s+שחרור|הצעה|שיחות|מו\"מ|סיכום|בדיקות\s+רפואיות|עסקה|אין\s+(?:להם|לה|לו)?\s*כוונה\s+להחתים|עניין\s+לכאורה",
 )
 
 VAGUE_PLAYER_IDEA_PATTERNS = (
@@ -9049,7 +9053,7 @@ def has_big_club_as_main_buyer(cleaned: str) -> bool:
 # but still specific enough to block ordinary post-match interviews.
 TRANSFER_OR_FUTURE_PATTERNS = (
     r"\b(?:transfer|move|join|joining|sign|signing|leave|leaving|return|back to|future|loan|buy option|option to buy|purchase option|clause|release clause|bid|offer|proposal|talks|negotiations|agreement|medical|deal|contract|free agent|wants? to|would like to|keen to|open to|dreams? of)\b",
-    r"העברה|מעבר|לעבור|להצטרף|חתימה|יחתום|יחתמו|יחתמו על החוזים|יעזוב|לעזוב|לחזור|חזרה ל|עתידו|עתיד ב|השאלה|אופציית רכישה|אופציית הקנייה|סעיף שחרור|הצעה|שיחות|מו\"מ|משא ומתן|סיכום|הסכמה|תנאים אישיים|בדיקות רפואיות|עסקה|חוזה|חוזים|שחקן חופשי|רוצה|מעוניין|מעוניינת|חולם|פתוח להצטרף",
+    r"העברה|מעבר|לעבור|להצטרף|חתימה|החתמה|להחתים|יחתום|יחתמו|יחתמו על החוזים|יעזוב|לעזוב|לחזור|חזרה ל|עתידו|עתיד ב|השאלה|אופציית רכישה|אופציית הקנייה|סעיף שחרור|הצעה|שיחות|מו\"מ|משא ומתן|סיכום|הסכמה|תנאים אישיים|בדיקות רפואיות|עסקה|חוזה|חוזים|שחקן חופשי|רוצה|מעוניין|מעוניינת|חולם|פתוח להצטרף|אין\s+(?:להם|לה|לו)?\s*כוונה\s+להחתים|עניין\s+לכאורה",
 )
 
 # Injury reports are allowed only when they are meaningful, especially around big clubs.
@@ -9289,6 +9293,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_non_elite_loose_transfer = is_non_elite_loose_transfer_report(cleaned)
     has_lower_tier_context = has_final_only_club or has_tier3_club
     has_staff_or_coach_context = has_coach_news or has_admin_role or has_known_admin_person_status or has_pure_admin_appointment
+    has_final_official_coach_news = has_coach_news and has_final_only_strict
     has_elite_or_national_context = has_big_rumor_club or has_big_club_context or has_big_club_main_buyer or has_major_national_context
     has_clear_final_step = has_final_only_strict or has_strong_move or has_clear_departure
     is_strict_writer = is_extra_strict_source(post)
@@ -9303,7 +9308,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     if untracked_destination:
         return False, "untracked_destination_club", 0, ["untracked_destination", untracked_destination]
 
-    if has_staff_or_coach_context and has_lower_tier_context and not (has_elite_admin_club and has_final_only_strict) and not has_elite_or_national_context:
+    if has_staff_or_coach_context and has_lower_tier_context and not (has_elite_admin_club and has_final_only_strict) and not has_final_official_coach_news and not has_elite_or_national_context:
         return False, "lower_tier_staff_or_coach_noise", 0, ["lower_tier", "staff_or_coach"]
 
     if has_tier3_club and not (has_clear_final_step or has_elite_or_national_context):
@@ -9317,7 +9322,7 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
             or (has_serious_injury and (has_big_club_context or has_major_national_context))
             or (has_big_club_main_buyer and has_transfer_or_future and has_final_or_near_final)
         )
-        if has_staff_or_coach_context and not (has_elite_admin_club and has_final_only_strict):
+        if has_staff_or_coach_context and not (has_elite_admin_club and has_final_only_strict) and not has_final_official_coach_news:
             return False, "strict_writer_staff_or_coach_noise", 0, ["strict_writer", "staff_or_coach"]
         if (has_weak_interest or has_vague_player_idea or has_non_elite_loose_transfer) and not strict_has_strength:
             return False, "strict_writer_not_strong_enough", 0, ["strict_writer", "weak_or_vague"]
