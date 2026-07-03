@@ -202,6 +202,7 @@ GEMINI_TRANSLATION_ATTEMPTS = int(os.environ.get("GEMINI_TRANSLATION_ATTEMPTS", 
 # Default: try the configured key pool for a publishable post before giving up.
 # This restores the reliable Gemini-only behavior from the earlier working bot.
 GEMINI_MAX_REAL_TRANSLATION_REQUESTS = max(3, int(os.environ.get("GEMINI_MAX_REAL_TRANSLATION_REQUESTS", "8")))
+GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS = int(os.environ.get("GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS", "1800"))
 GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("GEMINI_RETRY_WAIT_SECONDS", "8"))
 # נשארים כאן כי הקובץ החדש משתמש בהם בהמשך; הערכים תואמים לזמנים שהיו קשיחים בקוד התקין.
 GEMINI_TRANSLATION_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "18"))
@@ -3143,28 +3144,11 @@ def send_prepared_control_post_to_main(token: str) -> str:
 
     message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
     images = selected_post_images(post)
-    if images:
-        media: list[dict[str, Any]] = []
-        for index, image_url in enumerate(images):
-            media_item: dict[str, Any] = {"type": "photo", "media": image_url}
-            if index == 0:
-                media_item["caption"] = trim_keep_ending(message, 1024)
-                media_item["parse_mode"] = "HTML"
-            media.append(media_item)
-        try:
-            telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message)
-            return "נשלח לערוץ נטו ספורט עם תמונות."
-        except Exception as exc:
-            logging.warning("⚠️ שליחת תמונות מהכפתור נכשלה, מנסה טקסט בלבד: %s", exc)
-
-    telegram_broadcast(
-        "sendMessage",
-        {
-            "text": trim(message, 4096),
-            "disable_web_page_preview": True,
-            "parse_mode": "HTML",
-        },
-    )
+    _message_ids, mode = send_prepared_message_to_main(post, message, images)
+    if "images" in mode:
+        return "נשלח לערוץ נטו ספורט עם תמונות."
+    if "long_text" in mode or "full_text" in mode:
+        return "נשלח לערוץ נטו ספורט במלואו."
     return "נשלח לערוץ נטו ספורט."
 
 
@@ -8039,7 +8023,8 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "- Block youth/reserve/academy/B-team reports, including U15-U23, under-23, Primavera, Next Gen, Futuro, Castilla, Atletic/Atlètic, II/B teams, reserve teams, and reports focused on underage birth years/classes.\n"
         "- Remove ordinary statistics-only posts unless they contain a real record, official achievement or current news angle.\n"
         "- Block women's football, women's leagues/teams, WNBA/NBA/NFL/UFC/tennis/basketball and every sport that is not men's football.\n"
-        "- Write 1-3 natural Hebrew news sentences unless the original genuinely needs more.\n"
+        "- Translate the full update. Do not summarize, shorten, collapse, or omit any factual sentence, clause, list item, condition, quote, fee, date, contract length, club statement, denial, or context that appears in the source.\n"
+        "- Keep the message concise only by removing junk/source/link text, not by removing real news details.\n"
         "- Keep only the actual news. Remove credits, source tags, TV/network tags, junk suffixes, tracking text and promo text.\n"
         "- Remove self/source attribution clauses such as 'as reported by...', 'as revealed by...', 'via...', and Hebrew equivalents like 'כפי שדווח על ידי'. Keep the news fact only, and never leave dangling fragments like 'כפי שדווח על ידי'.\n"
         "- Remove all URLs, website domains and link text.\n"
@@ -8072,7 +8057,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1, "topP": 0.8},
+        "generationConfig": {"temperature": 0.1, "topP": 0.8, "maxOutputTokens": GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS},
     }
     last_error: Exception | None = None
     real_requests_used = 0
@@ -8685,20 +8670,38 @@ def telegram_broadcast_with_text_fallback(method: str, payload: dict[str, Any], 
             logging.error("⛔ טלגרם: %s נכשל לערוץ %s. מנסה לשלוח טקסט רגיל לאותו ערוץ: %s", method, chat_id, exc)
 
         try:
-            fallback_payload = {
-                "chat_id": chat_id,
-                "text": trim(fallback_text, 4096),
-                "disable_web_page_preview": True,
-                "parse_mode": "HTML",
-            }
-            if reply_id:
-                fallback_payload["reply_to_message_id"] = int(reply_id)
-                fallback_payload["allow_sending_without_reply"] = True
-            response = telegram_api("sendMessage", fallback_payload)
-            sent_count += 1
-            message_id = _telegram_message_id_from_response(response)
-            if message_id:
-                message_ids[str(chat_id)] = message_id
+            fallback_plain = html_message_to_plain_text(fallback_text)
+            if len(fallback_text) > TELEGRAM_HTML_TEXT_LIMIT or len(fallback_plain) > TELEGRAM_TEXT_CHUNK_LIMIT:
+                fallback_chunks = split_plain_text_for_telegram(fallback_plain)
+                for index, chunk in enumerate(fallback_chunks):
+                    fallback_payload = {
+                        "chat_id": chat_id,
+                        "text": chunk,
+                        "disable_web_page_preview": True,
+                    }
+                    if index == 0 and reply_id:
+                        fallback_payload["reply_to_message_id"] = int(reply_id)
+                        fallback_payload["allow_sending_without_reply"] = True
+                    response = telegram_api("sendMessage", fallback_payload)
+                    sent_count += 1
+                    message_id = _telegram_message_id_from_response(response)
+                    if message_id and str(chat_id) not in message_ids:
+                        message_ids[str(chat_id)] = message_id
+            else:
+                fallback_payload = {
+                    "chat_id": chat_id,
+                    "text": fallback_text,
+                    "disable_web_page_preview": True,
+                    "parse_mode": "HTML",
+                }
+                if reply_id:
+                    fallback_payload["reply_to_message_id"] = int(reply_id)
+                    fallback_payload["allow_sending_without_reply"] = True
+                response = telegram_api("sendMessage", fallback_payload)
+                sent_count += 1
+                message_id = _telegram_message_id_from_response(response)
+                if message_id:
+                    message_ids[str(chat_id)] = message_id
             logging.info("✅ טלגרם: טקסט גיבוי נשלח בהצלחה לערוץ %s", chat_id)
         except Exception as fallback_exc:
             errors.append(f"{chat_id} fallback: {fallback_exc}")
@@ -8734,6 +8737,219 @@ def trim_keep_ending(text: str, limit: int) -> str:
         prefix_limit = limit - len(ending) - 6
         return text[:prefix_limit].rstrip() + "...\n\n" + ending
     return trim(text, limit)
+
+
+TELEGRAM_HTML_TEXT_LIMIT = 4096
+TELEGRAM_TEXT_CHUNK_LIMIT = 3800
+TELEGRAM_CAPTION_LIMIT = 1024
+
+
+def html_message_to_plain_text(message_html: str) -> str:
+    def replace_anchor(match: re.Match[str]) -> str:
+        href = html.unescape(match.group(1) or "").strip()
+        label_html = match.group(2) or ""
+        label = html.unescape(re.sub(r"<[^>]+>", "", label_html)).strip()
+        if label and href and href != label:
+            return f"{label} ({href})"
+        return label or href
+
+    text = re.sub(
+        r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        replace_anchor,
+        message_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(r"</(?:p|div|br|li|h[1-6])\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def split_plain_text_for_telegram(text: str, limit: int = TELEGRAM_TEXT_CHUNK_LIMIT) -> list[str]:
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+
+    def flush_current() -> None:
+        nonlocal current
+        if current.strip():
+            chunks.append(current.strip())
+        current = ""
+
+    def add_piece(piece: str) -> None:
+        nonlocal current
+        piece = piece.strip()
+        if not piece:
+            return
+        if len(piece) > limit:
+            flush_current()
+            words = re.findall(r"\S+\s*", piece)
+            word_chunk = ""
+            for word in words:
+                word = word.strip()
+                if not word:
+                    continue
+                if len(word) > limit:
+                    if word_chunk.strip():
+                        chunks.append(word_chunk.strip())
+                        word_chunk = ""
+                    for start in range(0, len(word), limit):
+                        chunks.append(word[start:start + limit])
+                    continue
+                candidate = (word_chunk + " " + word).strip() if word_chunk else word
+                if len(candidate) <= limit:
+                    word_chunk = candidate
+                else:
+                    chunks.append(word_chunk.strip())
+                    word_chunk = word
+            if word_chunk.strip():
+                chunks.append(word_chunk.strip())
+            return
+
+        candidate = (current + "\n\n" + piece).strip() if current else piece
+        if len(candidate) <= limit:
+            current = candidate
+            return
+        flush_current()
+        current = piece
+
+    for paragraph in re.split(r"\n{2,}", text):
+        if len(paragraph) <= limit:
+            add_piece(paragraph)
+            continue
+        for line in paragraph.splitlines():
+            if len(line) <= limit:
+                add_piece(line)
+                continue
+            for sentence in re.split(r"(?<=[.!?;:])\s+", line):
+                add_piece(sentence)
+
+    flush_current()
+    return chunks
+
+
+def telegram_broadcast_plain_text_chunks(message_html: str, reply_message_ids: dict[str, int] | None = None) -> dict[str, int]:
+    chunks = split_plain_text_for_telegram(html_message_to_plain_text(message_html))
+    if not chunks:
+        raise RuntimeError("Telegram plain text fallback is empty")
+
+    sent_count = 0
+    errors: list[str] = []
+    message_ids: dict[str, int] = {}
+    for chat_id in TELEGRAM_CHAT_IDS:
+        reply_id = (reply_message_ids or {}).get(str(chat_id))
+        for index, chunk in enumerate(chunks):
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            }
+            if index == 0 and reply_id:
+                payload["reply_to_message_id"] = int(reply_id)
+                payload["allow_sending_without_reply"] = True
+            try:
+                response = telegram_api("sendMessage", payload)
+                sent_count += 1
+                message_id = _telegram_message_id_from_response(response)
+                if message_id and str(chat_id) not in message_ids:
+                    message_ids[str(chat_id)] = message_id
+            except Exception as exc:
+                errors.append(f"{chat_id} part {index + 1}/{len(chunks)}: {exc}")
+                logging.error("Telegram long text part failed for chat %s part %s/%s: %s", chat_id, index + 1, len(chunks), exc)
+                break
+
+    if sent_count == 0:
+        raise RuntimeError("Telegram long text broadcast failed for all chats: " + " | ".join(errors))
+    return message_ids
+
+
+def telegram_broadcast_full_text(message_html: str, reply_message_ids: dict[str, int] | None = None) -> dict[str, int]:
+    plain_text = html_message_to_plain_text(message_html)
+    if len(message_html) > TELEGRAM_HTML_TEXT_LIMIT or len(plain_text) > TELEGRAM_TEXT_CHUNK_LIMIT:
+        return telegram_broadcast_plain_text_chunks(message_html, reply_message_ids=reply_message_ids)
+
+    try:
+        return telegram_broadcast(
+            "sendMessage",
+            {
+                "text": message_html,
+                "disable_web_page_preview": True,
+                "parse_mode": "HTML",
+            },
+            reply_message_ids=reply_message_ids,
+        )
+    except Exception as exc:
+        logging.warning("Telegram HTML text failed, sending safe plain text instead: %s", exc)
+        return telegram_broadcast_plain_text_chunks(message_html, reply_message_ids=reply_message_ids)
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    caption_fits = len(message) <= TELEGRAM_CAPTION_LIMIT
+    text_needs_separate_send = not caption_fits
+
+    if video_url:
+        if caption_fits:
+            message_ids = telegram_broadcast_with_text_fallback(
+                "sendVideo",
+                {
+                    "video": video_url,
+                    "caption": message,
+                    "parse_mode": "HTML",
+                    "supports_streaming": True,
+                },
+                message,
+                reply_message_ids=reply_message_ids,
+            )
+            return message_ids, "video"
+        try:
+            telegram_broadcast(
+                "sendVideo",
+                {"video": video_url, "supports_streaming": True},
+                reply_message_ids=reply_message_ids,
+            )
+        except Exception as exc:
+            logging.warning("Telegram video without caption failed, continuing with full text: %s", exc)
+        message_ids = telegram_broadcast_full_text(message, reply_message_ids=reply_message_ids)
+        return message_ids, "video_plus_full_text"
+
+    if images:
+        if caption_fits:
+            media: list[dict[str, Any]] = []
+            for index, image_url in enumerate(images):
+                item: dict[str, Any] = {"type": "photo", "media": image_url}
+                if index == 0:
+                    item["caption"] = message
+                    item["parse_mode"] = "HTML"
+                media.append(item)
+            message_ids = telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message, reply_message_ids=reply_message_ids)
+            return message_ids, f"{len(images)} images"
+
+        media = [{"type": "photo", "media": image_url} for image_url in images]
+        try:
+            telegram_broadcast("sendMediaGroup", {"media": media}, reply_message_ids=reply_message_ids)
+        except Exception as exc:
+            logging.warning("Telegram images without caption failed, continuing with full text: %s", exc)
+        message_ids = telegram_broadcast_full_text(message, reply_message_ids=reply_message_ids)
+        return message_ids, f"{len(images)} images_plus_full_text"
+
+    message_ids = telegram_broadcast_full_text(message, reply_message_ids=reply_message_ids)
+    plain_text = html_message_to_plain_text(message)
+    mode = "long_text" if len(message) > TELEGRAM_HTML_TEXT_LIMIT or len(plain_text) > TELEGRAM_TEXT_CHUNK_LIMIT else "text"
+    return message_ids, mode
 
 
 def build_message(
@@ -9851,6 +10067,54 @@ def gemini_failure_details(exc: Exception | None, key_index: int | None = None, 
         parts.append(f"פירוט תשובת Gemini: {response_debug}")
     return " | ".join(parts)
 
+
+def significant_text_units(text: str) -> list[str]:
+    value = remove_urls(clean_before_translation(text or ""))
+    if not value:
+        return []
+    units: list[str] = []
+    for line in re.split(r"[\n\r]+", value):
+        line = line.strip(" -–—•\t")
+        if not line:
+            continue
+        pieces = re.split(r"(?<=[.!?;:])\s+|[•]+", line)
+        for piece in pieces:
+            piece = piece.strip(" -–—•\t")
+            if len(piece) >= 18 and re.search(r"[A-Za-zא-ת0-9]", piece):
+                units.append(piece)
+    return units
+
+
+def listish_signal_count(text: str) -> int:
+    value = text or ""
+    markers = len(re.findall(r"(?m)^\s*(?:[-•*]|\d+[.)]|[✅❌☑️✔️🔹🔸▪️▫️])", value))
+    flags = regional_flag_count(value)
+    comma_items = len(re.findall(r"\s[,;]\s", value))
+    return markers + min(flags // 2, 8) + min(comma_items, 8)
+
+
+def translation_looks_incomplete(source: str, translated: str) -> bool:
+    src = remove_urls(clean_before_translation(source or ""))
+    out = clean_before_translation(translated or "")
+    if not src or not out:
+        return False
+    src_len = len(src)
+    out_len = len(out)
+    if src_len < 170:
+        return False
+    source_units = significant_text_units(src)
+    translated_units = significant_text_units(out)
+    if src_len >= 220 and out_len < 70:
+        return True
+    if len(source_units) >= 4 and len(translated_units) <= 1 and out_len < src_len * 0.45:
+        return True
+    if len(source_units) >= 6 and len(translated_units) < max(2, len(source_units) // 3) and out_len < src_len * 0.55:
+        return True
+    if listish_signal_count(src) >= 4 and out_len < src_len * 0.45 and len(translated_units) <= 2:
+        return True
+    return False
+
+
 def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
     global TRANSLATION_CACHE_DIRTY
     """Translate main + quoted text in ONE Gemini request, after local approval only."""
@@ -9864,7 +10128,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     if not main_source and not quote_source:
         return "", "", ""
     cache_material = json.dumps({"m": main_source, "q": quote_source, "a": author_source}, ensure_ascii=False, sort_keys=True)
-    cache_key = "combined-gemini-only-v3:" + hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+    cache_key = "combined-gemini-only-v4-full:" + hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
     if cache_key in TRANSLATION_CACHE:
         cached = _extract_json_object(TRANSLATION_CACHE[cache_key])
         if cached:
@@ -9881,6 +10145,8 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "Return ONLY compact valid JSON with exactly these keys: main, quote, quote_author.\n"
         "Rules:\n"
         "- Hebrew only, natural Telegram sports-news Hebrew.\n"
+        "- Translate the full MAIN_TEXT and full QUOTED_TEXT when provided. Do not summarize, shorten, collapse, or omit any factual sentence, clause, list item, condition, quote, fee, date, contract length, club statement, denial, or context that appears in the source.\n"
+        "- Keep the message concise only by removing junk/source/link text, not by removing real news details.\n"
         "- Do not add facts, context, clubs, years, dates, injuries, transfer status, or words that are not directly in the source.\n"
         "- Preserve every factual item exactly: player/coach names, clubs, national teams, years, dates, numbers, scores, fees, and status.\n"
         "- If a name is uncertain, keep the clean original Latin name instead of inventing Hebrew.\n"
@@ -9901,7 +10167,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.0, "topP": 0.7, "maxOutputTokens": 900},
+        "generationConfig": {"temperature": 0.0, "topP": 0.7, "maxOutputTokens": GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS},
     }
     last_error: Exception | None = None
     real_requests_used = 0
@@ -9932,6 +10198,10 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
             quote_author = final_hebrew_polish(str(parsed.get("quote_author", ""))).strip()
             main = final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, main)))
             quote = final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, quote))) if quote_source else ""
+            if translation_looks_incomplete(main_source, main):
+                raise RuntimeError("Gemini translation appears incomplete for main text")
+            if quote_source and quote and translation_looks_incomplete(quote_source, quote):
+                raise RuntimeError("Gemini translation appears incomplete for quoted text")
             if translation_contradicts_source(main_source + "\n" + quote_source, main + "\n" + quote):
                 raise RuntimeError("Gemini translation contradicted source names")
             if translation_changes_locked_numbers(main_source + "\n" + quote_source, main + "\n" + quote):
@@ -10209,72 +10479,12 @@ def send_post(post: Post, reply_message_ids: dict[str, int] | None = None) -> di
     images = selected_post_images(post)
     timings["prepare_seconds"] = time.perf_counter() - prepare_started
 
-    if video_url:
-        try:
-            send_started = time.perf_counter()
-            message_ids = telegram_broadcast_with_text_fallback(
-                "sendVideo",
-                {
-                    "video": video_url,
-                    "caption": trim_keep_ending(message, 1024),
-                    "parse_mode": "HTML",
-                    "supports_streaming": True,
-                },
-                message,
-                reply_message_ids=reply_message_ids,
-            )
-            timings["send_seconds"] = time.perf_counter() - send_started
-            timings["total_seconds"] = time.perf_counter() - started
-            timings["sent"] = True
-            timings["mode"] = "וידיאו"
-            timings["telegram_message_ids"] = message_ids
-            return timings
-        except Exception as exc:
-            logging.warning("⚠️ שליחת וידיאו נכשלה, שולח טקסט נקי בלבד: %s", exc)
-            message = build_message(
-                post,
-                translated,
-                quoted_translated,
-                quoted_author_translated,
-                include_video_link=False,
-            )
-            images = []
-
-    if images:
-        media: list[dict[str, Any]] = []
-        for index, image_url in enumerate(images):
-            item: dict[str, Any] = {"type": "photo", "media": image_url}
-            if index == 0:
-                item["caption"] = trim_keep_ending(message, 1024)
-                item["parse_mode"] = "HTML"
-            media.append(item)
-        try:
-            send_started = time.perf_counter()
-            message_ids = telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message, reply_message_ids=reply_message_ids)
-        except Exception as exc:
-            logging.warning("⚠️ שליחת תמונות נכשלה, שולח טקסט בלבד: %s", exc)
-        else:
-            timings["send_seconds"] = time.perf_counter() - send_started
-            timings["total_seconds"] = time.perf_counter() - started
-            timings["sent"] = True
-            timings["mode"] = f"{len(images)} תמונה/ות"
-            timings["telegram_message_ids"] = message_ids
-            return timings
-
     send_started = time.perf_counter()
-    message_ids = telegram_broadcast(
-        "sendMessage",
-        {
-            "text": trim(message, 4096),
-            "disable_web_page_preview": True,
-            "parse_mode": "HTML",
-        },
-        reply_message_ids=reply_message_ids,
-    )
+    message_ids, mode = send_prepared_message_to_main(post, message, images, video_url, reply_message_ids=reply_message_ids)
     timings["send_seconds"] = time.perf_counter() - send_started
     timings["total_seconds"] = time.perf_counter() - started
     timings["sent"] = True
-    timings["mode"] = "טקסט"
+    timings["mode"] = mode
     timings["telegram_message_ids"] = message_ids
     return timings
 
