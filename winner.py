@@ -1255,6 +1255,9 @@ class Post:
     source_name: str
 
 
+CONTROL_PREPARED_SENDS: dict[str, dict[str, Any]] = {}
+
+
 class TranslationUnavailable(Exception):
     pass
 
@@ -3081,20 +3084,88 @@ def send_control_text_async(loading_text: str, compute_fn, message_id: Any = Non
 
     Thread(target=_run, daemon=True).start()
 
-def send_control_html(text: str) -> None:
+def send_control_html(text: str, reply_markup: dict[str, Any] | None = None) -> None:
     if not CONTROL_CHAT_ID:
         return
     formatted = rtl(text)
-    telegram_api(
+    payload: dict[str, Any] = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": trim(formatted, 4096),
+        "disable_web_page_preview": True,
+        "parse_mode": "HTML",
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    telegram_api("sendMessage", payload, max_attempts=1)
+
+
+def remember_control_prepared_send(
+    post: Post,
+    translated: str,
+    quoted_translated: str,
+    quoted_author_translated: str,
+) -> str:
+    token = hashlib.sha1(f"{post.username}:{post.post_id}:{post.link}:{time.time()}".encode("utf-8")).hexdigest()[:18]
+    CONTROL_PREPARED_SENDS[token] = {
+        "created_at": time.time(),
+        "post": post,
+        "translated": translated,
+        "quoted_translated": quoted_translated,
+        "quoted_author_translated": quoted_author_translated,
+    }
+    # Keep only recent prepared sends so a long-running bot does not accumulate memory.
+    cutoff = time.time() - 6 * 60 * 60
+    for key, item in list(CONTROL_PREPARED_SENDS.items()):
+        if float(item.get("created_at", 0.0) or 0.0) < cutoff:
+            CONTROL_PREPARED_SENDS.pop(key, None)
+    return token
+
+
+def control_send_to_main_reply_markup(token: str) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [[
+            {"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}
+        ]]
+    }
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    item = CONTROL_PREPARED_SENDS.get(token)
+    if not item:
+        return "הפוסט כבר לא שמור בזיכרון. בצע בדיקת כתב שוב ואז לחץ על הכפתור החדש."
+    post: Post = item["post"]
+    translated = str(item.get("translated", "") or "")
+    quoted_translated = str(item.get("quoted_translated", "") or "")
+    quoted_author_translated = str(item.get("quoted_author_translated", "") or "")
+    publishable, reason = is_publishable_hebrew_for_main_channel(translated, quoted_translated)
+    if not publishable:
+        return f"לא נשלח לערוץ הראשי: {reason}"
+
+    message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+    images = selected_post_images(post)
+    if images:
+        media: list[dict[str, Any]] = []
+        for index, image_url in enumerate(images):
+            media_item: dict[str, Any] = {"type": "photo", "media": image_url}
+            if index == 0:
+                media_item["caption"] = trim_keep_ending(message, 1024)
+                media_item["parse_mode"] = "HTML"
+            media.append(media_item)
+        try:
+            telegram_broadcast_with_text_fallback("sendMediaGroup", {"media": media}, message)
+            return "נשלח לערוץ נטו ספורט עם תמונות."
+        except Exception as exc:
+            logging.warning("⚠️ שליחת תמונות מהכפתור נכשלה, מנסה טקסט בלבד: %s", exc)
+
+    telegram_broadcast(
         "sendMessage",
         {
-            "chat_id": CONTROL_CHAT_ID,
-            "text": trim(formatted, 4096),
+            "text": trim(message, 4096),
             "disable_web_page_preview": True,
             "parse_mode": "HTML",
         },
-        max_attempts=1,
     )
+    return "נשלח לערוץ נטו ספורט."
 
 
 def run_latest_account_control_test(username: str) -> None:
@@ -3110,17 +3181,14 @@ def run_latest_account_control_test(username: str) -> None:
         send_control_text(f"🧪 בדיקת {label}: לא נמצאו פוסטים במקורות ה-RSS כרגע.")
         return
     post = posts[0]
-    # בדיקת כפתור ידנית: שולחים את הפוסט האחרון של הכתב לערוץ השקט
+    # בדיקת כפתור ידנית: שולחים תצוגה נקייה של הפוסט האחרון לערוץ השקט.
     # גם אם הסינון הרגיל היה חוסם אותו. כפילות וסיבות חסימה אינן נבדקות כאן.
     try:
         translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
         message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
-        post_dt = datetime.fromtimestamp(post.published_ts, ZoneInfo(SHABBAT_TIMEZONE)) if post.published_ts else None
-        post_when = post_dt.strftime("%d/%m/%Y %H:%M:%S") if post_dt else "לא ידוע"
-        header = html.escape(rtl(f"🧪 בדיקת {label} אחרון - נשלח בכוח לערוץ השקט"))
-        source = html.escape(rtl(f"תאריך הפוסט לפי שעון ישראל: {post_when} | מקור RSS: {post.source_name} | קישור: {post.link}"))
-        send_control_html(f"<b>{header}</b>\n{source}\n\n{message}")
-        logging.info("🧪 בדיקת כתב: הפוסט האחרון של @%s נשלח בכוח לערוץ השקט ללא סינון וללא בדיקת כפילות. קישור: %s", username, post.link)
+        token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+        send_control_html(message, control_send_to_main_reply_markup(token))
+        logging.info("🧪 בדיקת כתב: תצוגה נקייה של הפוסט האחרון של @%s נשלחה לערוץ השקט ללא סינון וללא בדיקת כפילות. מקור: %s | קישור: %s", username, post.source_name, post.link)
     except Exception as exc:
         send_control_text(
             f"🧪 בדיקת {label}: הפוסט נמצא, אבל התרגום/השליחה לערוץ השקט נכשלו.\n"
@@ -3540,7 +3608,7 @@ def control_buttons_help_text() -> str:
         "המסך הראשי מחולק לקטגוריות, ובנוסף יש בו בדיקת כתב ספציפי, סיכום היום עכשיו והסבר כפתורים.\n\n"
         "🔎 בדיקה וניטור\n"
         "כאן יש בדיקות מיידיות: בדיקת כל הכתבים הפעילים, בדיקת כתב ספציפי, RSS, Gemini, פוסט אחרון שנשלח ונתוני פעילות בסיסיים.\n"
-        "בדיקת כתב ספציפי שולחת את הפוסט האחרון שלו לערוץ השקט בלבד, בכוח, גם אם הסינון הרגיל היה חוסם אותו. זה מיועד לבדיקה בלבד ולא לערוץ הראשי.\n\n"
+        "בדיקת כתב ספציפי שולחת תצוגה נקייה של הפוסט האחרון שלו לערוץ השקט בלבד, גם אם הסינון הרגיל היה חוסם אותו. זה מיועד לבדיקה בלבד ולא לערוץ הראשי.\n\n"
         "🛡️ הגדרות וסינון\n"
         "כאן נמצאים המצבים שמשנים בפועל את מה שהבוט שולח: מצב לילה, רק גדולות, סינון קשוח, חסימת שמועות, חסימת נבחרות, חסימת פציעות, חסימת פוסטים חברתיים, רק Here We Go, רק טופ 5, רק ברצלונה ורק ריאל.\n"
         "רק ברצלונה ורק ריאל הם שני כפתורי הקבוצות היחידים. הפעלה של אחד מהם מכבה את השני כדי שלא תהיה סתירה.\n\n"
@@ -3581,7 +3649,24 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
         return
-    if data == "football_quick_main":
+    if data.startswith("football_send_test:"):
+        token = data.split(":", 1)[1].strip()
+        if callback_id:
+            answer_control_callback(callback_id, "שולח לערוץ נטו ספורט")
+
+        def _send_to_main_from_control() -> None:
+            try:
+                result_text = send_prepared_control_post_to_main(token)
+            except Exception as exc:
+                logging.warning("⚠️ שליחה לערוץ נטו ספורט מהכפתור נכשלה: %s", exc)
+                result_text = f"שליחה לערוץ נטו ספורט נכשלה:\n{short_error(exc, 700)}"
+            try:
+                send_control_text(result_text)
+            except Exception as exc:
+                logging.warning("⚠️ הודעת סטטוס אחרי שליחה מהכפתור נכשלה: %s", exc)
+
+        Thread(target=_send_to_main_from_control, daemon=True).start()
+    elif data == "football_quick_main":
         if callback_id:
             answer_control_callback(callback_id, "חזרה לראשי")
         send_control_menu("כלים מהירים לבוט הכדורגל.", quick_control_reply_markup(), message.get("message_id"))
@@ -8435,6 +8520,7 @@ def fix_known_player_positions(text: str) -> str:
     return value
 
 def tidy_translated_text(text: str) -> str:
+    text = clean_translation_json_leak(text, "main")
     text = final_hebrew_polish(normalize_country_flags(html.unescape(text or "").strip()))
     text = fix_known_player_positions(text)
     text = remove_junk_topic_tags(text)
@@ -9644,6 +9730,7 @@ def pre_send_final_local_block_reason(post: Post) -> str:
 def _extract_json_object(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE | re.DOTALL).strip()
+    raw = re.sub(r"(?is)^\s*json\s*[:：-]?\s*", "", raw).strip()
     try:
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else {}
@@ -9657,6 +9744,57 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
+
+
+def _jsonish_string_field(text: str, key: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    key_pattern = re.escape(key)
+    patterns = (
+        rf'["“”\']?{key_pattern}["“”\']?\s*:\s*"((?:\\.|[^"\\])*)"',
+        rf"['\"“”]?{key_pattern}['\"“”]?\s*:\s*'((?:\\.|[^'\\])*)'",
+        rf'["“”\']?{key_pattern}["“”\']?\s*:\s*(.+?)(?:,\s*["“”\']?(?:main|quote|quote_author)["“”\']?\s*:|\s*[}}]\s*$)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if not value:
+            continue
+        if value[0:1] == '"' and value[-1:] == '"':
+            value = value[1:-1]
+        try:
+            return json.loads(f'"{value}"')
+        except Exception:
+            return re.sub(r"\\n", "\n", value).replace('\\"', '"').strip()
+    return ""
+
+
+def clean_translation_json_leak(text: str, preferred_key: str = "main") -> str:
+    """Return the visible translation if Gemini leaked JSON-ish text."""
+    raw = html.unescape(text or "").strip()
+    if not raw:
+        return ""
+    parsed = _extract_json_object(raw)
+    if parsed:
+        for key in (preferred_key, "main", "quote", "quote_author"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    looks_jsonish = bool(
+        re.search(r'(?is)^\s*(?:```)?\s*json\b', raw)
+        or re.search(r'(?is)["“”\']?(?:main|quote|quote_author)["“”\']?\s*:', raw)
+    )
+    if looks_jsonish:
+        for key in (preferred_key, "main", "quote", "quote_author"):
+            value = _jsonish_string_field(raw, key)
+            if value.strip():
+                return value.strip()
+        raw = re.sub(r"(?is)^\s*(?:```)?\s*json\s*[:：-]?\s*", "", raw).strip()
+        raw = re.sub(r"(?is)^```|```$", "", raw).strip()
+    return raw
 
 
 
@@ -9775,7 +9913,11 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
             raw = "".join(part.get("text", "") for part in parts).strip()
             parsed = _extract_json_object(raw)
             if not parsed:
-                parsed = {"main": raw, "quote": "", "quote_author": ""}
+                parsed = {
+                    "main": clean_translation_json_leak(raw, "main"),
+                    "quote": clean_translation_json_leak(raw, "quote") if "quote" in raw else "",
+                    "quote_author": clean_translation_json_leak(raw, "quote_author") if "quote_author" in raw else "",
+                }
             main = final_hebrew_polish(str(parsed.get("main", ""))).strip()
             quote = final_hebrew_polish(str(parsed.get("quote", ""))).strip()
             quote_author = final_hebrew_polish(str(parsed.get("quote_author", ""))).strip()
