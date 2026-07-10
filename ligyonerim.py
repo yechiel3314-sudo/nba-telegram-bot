@@ -50,7 +50,7 @@ def find_telegram_token():
     for name in preferred_names:
         value = os.getenv(name, "").strip()
         if value:
-            return value
+            return name, value
 
     for name, value in os.environ.items():
         upper_name = name.upper()
@@ -60,20 +60,20 @@ def find_telegram_token():
             and ("BOT" in upper_name or "TOKEN" in upper_name)
         ):
             logging.info("Using Telegram token from environment variable %s", name)
-            return value.strip()
+            return name, value.strip()
 
     for value in os.environ.values():
         if looks_like_telegram_token(value):
             logging.info("Using Telegram token discovered from environment")
-            return value.strip()
+            return "AUTO_DISCOVERED_TOKEN", value.strip()
 
-    return ""
+    return "", ""
 
 
 # ==========================================
 # Settings
 # ==========================================
-TOKEN = find_telegram_token()
+TOKEN_SOURCE, TOKEN = find_telegram_token()
 CHAT_ID = normalize_telegram_chat_id(
     os.getenv("NBA_CHANNEL_ID")
     or os.getenv("NBA_LIVE_TELEGRAM_CHAT_ID_PRIVATE")
@@ -91,6 +91,7 @@ SEND_STARTUP_HEALTHCHECK = (
     not in ("0", "false", "no", "off")
 )
 ISSUE_ALERT_COOLDOWN_SECONDS = int(os.getenv("ISSUE_ALERT_COOLDOWN_SECONDS", "1800"))
+TELEGRAM_ERROR_COOLDOWN_SECONDS = int(os.getenv("TELEGRAM_ERROR_COOLDOWN_SECONDS", "3600"))
 SEND_BEN_SARAF_LAST_FINAL_ON_START = (
     os.getenv("SEND_BEN_SARAF_LAST_FINAL_ON_START", "true").strip().lower()
     not in ("0", "false", "no", "off")
@@ -113,6 +114,7 @@ NBA_CDN_COOLDOWN_SECONDS = int(os.getenv("NBA_CDN_COOLDOWN_SECONDS", "300"))
 
 STATS_DISABLED_UNTIL = 0.0
 CDN_DISABLED_UNTIL = 0.0
+TELEGRAM_DISABLED_UNTIL = 0.0
 
 # NBA Summer League game ids commonly start with 15, for example 15224xxxxx.
 SUMMER_LEAGUE_GAME_ID_PREFIXES = ("15",)
@@ -1038,7 +1040,109 @@ def telegram_error_text(response):
     return (response.text or "")[:500]
 
 
+def mute_telegram_temporarily(reason):
+    global TELEGRAM_DISABLED_UNTIL
+    TELEGRAM_DISABLED_UNTIL = time.time() + TELEGRAM_ERROR_COOLDOWN_SECONDS
+    logging.error(
+        "Telegram sends paused for %s seconds. Reason: %s",
+        TELEGRAM_ERROR_COOLDOWN_SECONDS,
+        reason,
+    )
+
+
+def telegram_request(method, payload=None, timeout=12):
+    if not TOKEN:
+        logging.error(
+            "Telegram token is missing. Token source checked but empty. "
+            "Existing env vars must contain a valid Telegram bot token."
+        )
+        return None
+
+    url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+    try:
+        if payload is None:
+            response = SESSION.get(url, timeout=timeout)
+        else:
+            response = SESSION.post(url, json=payload, timeout=timeout)
+        return response
+    except Exception as e:
+        logging.error("Telegram %s request failed: %s", method, e)
+        return None
+
+
+def telegram_get_me():
+    response = telegram_request("getMe")
+    if response is None:
+        return None
+
+    if response.status_code != 200:
+        logging.error("Telegram getMe failed %s: %s", response.status_code, telegram_error_text(response))
+        return None
+
+    try:
+        data = response.json()
+        bot = data.get("result") or {}
+    except Exception as e:
+        logging.error("Telegram getMe JSON parse failed: %s", e)
+        return None
+
+    username = bot.get("username") or "unknown"
+    bot_id = bot.get("id") or "unknown"
+    logging.info("Telegram bot connected: @%s (id=%s), token env=%s", username, bot_id, TOKEN_SOURCE or "unknown")
+    return bot
+
+
+def telegram_check_chat_access(bot=None):
+    if not CHAT_ID:
+        logging.error("NBA_CHANNEL_ID is missing.")
+        return False
+
+    response = telegram_request("getChat", {"chat_id": CHAT_ID})
+    if response is None:
+        return False
+
+    if response.status_code == 200:
+        try:
+            chat = (response.json() or {}).get("result") or {}
+        except Exception:
+            chat = {}
+        logging.info(
+            "Telegram chat accessible: chat_id=%s, title=%s, type=%s",
+            CHAT_ID,
+            chat.get("title") or chat.get("username") or "unknown",
+            chat.get("type") or "unknown",
+        )
+        return True
+
+    err = telegram_error_text(response)
+    bot_name = f"@{bot.get('username')}" if bot and bot.get("username") else "the selected bot"
+    logging.error("Telegram getChat failed for NBA_CHANNEL_ID=%s: %s", CHAT_ID, err)
+    if "chat not found" in err.lower():
+        logging.error(
+            "Telegram cannot access this channel. Add %s as an ADMIN in the NBA channel, "
+            "or fix NBA_CHANNEL_ID. Current value tried: %s",
+            bot_name,
+            CHAT_ID,
+        )
+        mute_telegram_temporarily("chat not found")
+    return False
+
+
+def validate_telegram_connection():
+    logging.info("Telegram config: CHAT_ID=%s, token env=%s", CHAT_ID or "missing", TOKEN_SOURCE or "missing")
+    bot = telegram_get_me()
+    if not bot:
+        mute_telegram_temporarily("invalid or missing Telegram token")
+        return False
+    return telegram_check_chat_access(bot)
+
+
 def telegram_send_message(text):
+    global TELEGRAM_DISABLED_UNTIL
+
+    if time.time() < TELEGRAM_DISABLED_UNTIL:
+        return False
+
     if not TOKEN:
         logging.error(
             "Telegram token is missing; set TELEGRAM_TOKEN or use an existing TELEGRAM/BOT token variable."
@@ -1064,7 +1168,10 @@ def telegram_send_message(text):
             logging.info("Telegram message sent to %s", CHAT_ID)
             return True
 
-        logging.error("Telegram sendMessage failed %s: %s", r.status_code, telegram_error_text(r))
+        err = telegram_error_text(r)
+        logging.error("Telegram sendMessage failed %s: %s", r.status_code, err)
+        if r.status_code in (400, 401, 403):
+            mute_telegram_temporarily(err)
         return False
     except Exception as e:
         logging.error("sendMessage failed: %s", e)
@@ -1072,6 +1179,11 @@ def telegram_send_message(text):
 
 
 def telegram_send_photo(photo_url, caption):
+    global TELEGRAM_DISABLED_UNTIL
+
+    if time.time() < TELEGRAM_DISABLED_UNTIL:
+        return False
+
     if not TOKEN:
         logging.error(
             "Telegram token is missing; set TELEGRAM_TOKEN or use an existing TELEGRAM/BOT token variable."
@@ -1097,7 +1209,10 @@ def telegram_send_photo(photo_url, caption):
             logging.info("Telegram photo sent to %s", CHAT_ID)
             return True
 
-        logging.error("Telegram sendPhoto failed %s: %s", r.status_code, telegram_error_text(r))
+        err = telegram_error_text(r)
+        logging.error("Telegram sendPhoto failed %s: %s", r.status_code, err)
+        if r.status_code in (400, 401, 403):
+            mute_telegram_temporarily(err)
         return False
     except Exception as e:
         logging.error("sendPhoto failed: %s", e)
@@ -1212,6 +1327,12 @@ def handle_game(state, game, shabbat_or_yom_tov):
 def run():
     state = load_state()
     logging.info("Bot started...")
+    telegram_ok = validate_telegram_connection()
+    if not telegram_ok:
+        logging.error(
+            "Telegram channel connection is NOT OK. Fix NBA_CHANNEL_ID or add the detected bot as channel admin."
+        )
+
     send_startup_healthcheck()
     send_ben_saraf_last_final_on_start(state)
     state = load_state()
@@ -1220,6 +1341,10 @@ def run():
         state_dirty = False
 
         try:
+            if time.time() < TELEGRAM_DISABLED_UNTIL:
+                time.sleep(POLL_SECONDS)
+                continue
+
             shabbat_or_yom_tov = is_shabbat_or_yom_tov()
 
             if not shabbat_or_yom_tov and state.get("pending"):
