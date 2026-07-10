@@ -32,18 +32,48 @@ def normalize_telegram_chat_id(raw):
     return value
 
 
+def looks_like_telegram_token(value):
+    return bool(re.match(r"^\d{6,}:[A-Za-z0-9_-]{20,}$", (value or "").strip()))
+
+
+def find_telegram_token():
+    preferred_names = [
+        "TELEGRAM_TOKEN",
+        "NBA_BOT_TOKEN",
+        "NBA_LIVE_TELEGRAM_BOT_TOKEN_PRIVATE",
+        "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_TOKEN_PRIVATE",
+        "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_TOKEN",
+        "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT",
+        "NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_PRIVATE",
+    ]
+
+    for name in preferred_names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+
+    for name, value in os.environ.items():
+        upper_name = name.upper()
+        if (
+            looks_like_telegram_token(value)
+            and "TELEGRAM" in upper_name
+            and ("BOT" in upper_name or "TOKEN" in upper_name)
+        ):
+            logging.info("Using Telegram token from environment variable %s", name)
+            return value.strip()
+
+    for value in os.environ.values():
+        if looks_like_telegram_token(value):
+            logging.info("Using Telegram token discovered from environment")
+            return value.strip()
+
+    return ""
+
+
 # ==========================================
 # Settings
 # ==========================================
-TOKEN = (
-    os.getenv("TELEGRAM_TOKEN")
-    or os.getenv("NBA_BOT_TOKEN")
-    or os.getenv("NBA_LIVE_TELEGRAM_BOT_TOKEN_PRIVATE")
-    or os.getenv("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_TOKEN_PRIVATE")
-    or os.getenv("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_TOKEN")
-    or os.getenv("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT")
-    or ""
-).strip()
+TOKEN = find_telegram_token()
 CHAT_ID = normalize_telegram_chat_id(
     os.getenv("NBA_CHANNEL_ID")
     or os.getenv("NBA_LIVE_TELEGRAM_CHAT_ID_PRIVATE")
@@ -56,6 +86,11 @@ STATE_FILE = os.getenv("STATE_FILE", "nba_israeli_state.json")
 
 MESSAGE_DELAY_SECONDS = int(os.getenv("MESSAGE_DELAY_SECONDS", "20"))
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "20"))
+SEND_STARTUP_HEALTHCHECK = (
+    os.getenv("SEND_STARTUP_HEALTHCHECK", "true").strip().lower()
+    not in ("0", "false", "no", "off")
+)
+ISSUE_ALERT_COOLDOWN_SECONDS = int(os.getenv("ISSUE_ALERT_COOLDOWN_SECONDS", "1800"))
 SEND_BEN_SARAF_LAST_FINAL_ON_START = (
     os.getenv("SEND_BEN_SARAF_LAST_FINAL_ON_START", "true").strip().lower()
     not in ("0", "false", "no", "off")
@@ -71,6 +106,13 @@ LIVE_SCOREBOARD_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/today
 LIVE_BOX_URL = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{gid}.json"
 STATS_SCOREBOARD_URL = "https://stats.nba.com/stats/scoreboardv2"
 STATS_BOX_URL = "https://stats.nba.com/stats/boxscoretraditionalv2"
+NBA_HTTP_TIMEOUT_SECONDS = int(os.getenv("NBA_HTTP_TIMEOUT_SECONDS", "8"))
+NBA_STATS_TIMEOUT_SECONDS = int(os.getenv("NBA_STATS_TIMEOUT_SECONDS", "4"))
+NBA_STATS_COOLDOWN_SECONDS = int(os.getenv("NBA_STATS_COOLDOWN_SECONDS", "900"))
+NBA_CDN_COOLDOWN_SECONDS = int(os.getenv("NBA_CDN_COOLDOWN_SECONDS", "300"))
+
+STATS_DISABLED_UNTIL = 0.0
+CDN_DISABLED_UNTIL = 0.0
 
 # NBA Summer League game ids commonly start with 15, for example 15224xxxxx.
 SUMMER_LEAGUE_GAME_ID_PREFIXES = ("15",)
@@ -189,16 +231,24 @@ def _parse_json_response(response):
 
 
 def get_json(url, params=None, use_cdn_proxy=True):
+    global CDN_DISABLED_UNTIL
+
+    is_nba_cdn = "cdn.nba.com" in url
+    if is_nba_cdn and time.time() < CDN_DISABLED_UNTIL:
+        return None
+
     try:
-        r = SESSION.get(url, params=params, timeout=18)
+        r = SESSION.get(url, params=params, timeout=NBA_HTTP_TIMEOUT_SECONDS)
         if r.status_code == 200:
             return _parse_json_response(r)
-        logging.warning("HTTP %s for %s", r.status_code, r.url)
+        if not is_nba_cdn:
+            logging.warning("HTTP %s for %s", r.status_code, r.url)
     except Exception as e:
         if "hebcal" in url:
             logging.error("Direct Hebcal fetch failed: %s", e)
             return None
-        logging.warning("Direct fetch failed for %s: %s", url, e)
+        if not is_nba_cdn:
+            logging.warning("Direct fetch failed for %s: %s", url, e)
 
     if not use_cdn_proxy or "cdn.nba.com" not in url:
         return None
@@ -211,10 +261,8 @@ def get_json(url, params=None, use_cdn_proxy=True):
 
     for proxy_url in proxy_urls:
         try:
-            logging.info("Trying NBA CDN proxy for %s", url)
-            r = SESSION.get(proxy_url, timeout=25)
+            r = SESSION.get(proxy_url, timeout=NBA_HTTP_TIMEOUT_SECONDS)
             if r.status_code != 200:
-                logging.warning("Proxy HTTP %s for %s", r.status_code, url)
                 continue
 
             if "/get?" in proxy_url:
@@ -222,19 +270,40 @@ def get_json(url, params=None, use_cdn_proxy=True):
                 return json.loads(contents) if contents else None
             return r.json()
         except Exception as e:
-            logging.error("Proxy fetch failed for %s: %s", url, e)
+            logging.debug("Proxy fetch failed for %s: %s", url, e)
 
+    CDN_DISABLED_UNTIL = time.time() + NBA_CDN_COOLDOWN_SECONDS
+    logging.warning(
+        "NBA CDN unavailable; pausing CDN fetches for %s seconds",
+        NBA_CDN_COOLDOWN_SECONDS,
+    )
     return None
 
 
 def get_stats_json_once(url, params=None, timeout=8):
+    global STATS_DISABLED_UNTIL
+
+    if time.time() < STATS_DISABLED_UNTIL:
+        return None
+
     try:
-        r = requests.get(url, params=params, headers=SESSION.headers, timeout=timeout)
+        r = requests.get(url, params=params, headers=SESSION.headers, timeout=NBA_STATS_TIMEOUT_SECONDS)
         if r.status_code == 200:
+            STATS_DISABLED_UNTIL = 0.0
             return r.json()
-        logging.warning("Stats HTTP %s for %s", r.status_code, r.url)
+        STATS_DISABLED_UNTIL = time.time() + NBA_STATS_COOLDOWN_SECONDS
+        logging.warning(
+            "NBA stats unavailable (HTTP %s); pausing stats fetches for %s seconds",
+            r.status_code,
+            NBA_STATS_COOLDOWN_SECONDS,
+        )
     except Exception as e:
-        logging.warning("Stats fetch failed for %s: %s", url, e)
+        STATS_DISABLED_UNTIL = time.time() + NBA_STATS_COOLDOWN_SECONDS
+        logging.warning(
+            "NBA stats unavailable; pausing stats fetches for %s seconds: %s",
+            NBA_STATS_COOLDOWN_SECONDS,
+            e,
+        )
     return None
 
 
@@ -263,7 +332,7 @@ def is_shabbat_or_yom_tov():
 # ==========================================
 def normalize_state(data):
     if not isinstance(data, dict):
-        return {"games": {}, "pending": {}, "one_time": {}}
+        return {"games": {}, "pending": {}, "one_time": {}, "alerts": {}}
 
     if not isinstance(data.get("games"), dict):
         data["games"] = {}
@@ -273,6 +342,9 @@ def normalize_state(data):
 
     if not isinstance(data.get("one_time"), dict):
         data["one_time"] = {}
+
+    if not isinstance(data.get("alerts"), dict):
+        data["alerts"] = {}
 
     for game_state in data["games"].values():
         if not isinstance(game_state, dict):
@@ -290,7 +362,7 @@ def load_state():
                 return normalize_state(json.load(f))
         except Exception as e:
             logging.error("Failed loading state: %s", e)
-    return {"games": {}, "pending": {}, "one_time": {}}
+    return {"games": {}, "pending": {}, "one_time": {}, "alerts": {}}
 
 
 def save_state(state):
@@ -955,9 +1027,26 @@ def is_final_stage_key(stage_key):
 # ==========================================
 # Telegram
 # ==========================================
+def telegram_error_text(response):
+    try:
+        data = response.json()
+        description = data.get("description")
+        if description:
+            return description
+    except Exception:
+        pass
+    return (response.text or "")[:500]
+
+
 def telegram_send_message(text):
     if not TOKEN:
-        logging.error("TELEGRAM_TOKEN is missing; message was not sent.")
+        logging.error(
+            "Telegram token is missing; set TELEGRAM_TOKEN or use an existing TELEGRAM/BOT token variable."
+        )
+        return False
+
+    if not CHAT_ID:
+        logging.error("NBA_CHANNEL_ID is missing; message was not sent.")
         return False
 
     try:
@@ -971,8 +1060,12 @@ def telegram_send_message(text):
             },
             timeout=20,
         )
-        r.raise_for_status()
-        return True
+        if r.status_code == 200:
+            logging.info("Telegram message sent to %s", CHAT_ID)
+            return True
+
+        logging.error("Telegram sendMessage failed %s: %s", r.status_code, telegram_error_text(r))
+        return False
     except Exception as e:
         logging.error("sendMessage failed: %s", e)
         return False
@@ -980,7 +1073,13 @@ def telegram_send_message(text):
 
 def telegram_send_photo(photo_url, caption):
     if not TOKEN:
-        logging.error("TELEGRAM_TOKEN is missing; photo was not sent.")
+        logging.error(
+            "Telegram token is missing; set TELEGRAM_TOKEN or use an existing TELEGRAM/BOT token variable."
+        )
+        return False
+
+    if not CHAT_ID:
+        logging.error("NBA_CHANNEL_ID is missing; photo was not sent.")
         return False
 
     try:
@@ -994,8 +1093,12 @@ def telegram_send_photo(photo_url, caption):
             },
             timeout=20,
         )
-        r.raise_for_status()
-        return True
+        if r.status_code == 200:
+            logging.info("Telegram photo sent to %s", CHAT_ID)
+            return True
+
+        logging.error("Telegram sendPhoto failed %s: %s", r.status_code, telegram_error_text(r))
+        return False
     except Exception as e:
         logging.error("sendPhoto failed: %s", e)
         return False
@@ -1010,6 +1113,38 @@ def send_player_message(player_name_en, message):
             return True
 
     return telegram_send_message(message)
+
+
+def send_startup_healthcheck():
+    if not SEND_STARTUP_HEALTHCHECK:
+        return False
+
+    msg = "\n".join([
+        rtl("✅ <b>בוט NBA התחבר לערוץ</b>"),
+        "",
+        rtl("הבוט עלה ומנסה לבדוק נתוני NBA וליגת הקיץ."),
+        rtl(f"ערוץ: {esc(CHAT_ID)}"),
+    ])
+    ok = telegram_send_message(msg)
+    if not ok:
+        logging.error("Startup healthcheck message failed. Check token, NBA_CHANNEL_ID, and bot admin access.")
+    return ok
+
+
+def notify_issue(state, key, message, cooldown_seconds=ISSUE_ALERT_COOLDOWN_SECONDS):
+    alerts = state.setdefault("alerts", {})
+    now_ts = time.time()
+    last_ts = float(alerts.get(key) or 0)
+    if now_ts - last_ts < cooldown_seconds:
+        return False
+
+    ok = telegram_send_message(message)
+    alerts[key] = now_ts
+    save_state(state)
+
+    if not ok:
+        logging.error("Issue alert '%s' failed to send to Telegram.", key)
+    return ok
 
 
 # ==========================================
@@ -1077,6 +1212,7 @@ def handle_game(state, game, shabbat_or_yom_tov):
 def run():
     state = load_state()
     logging.info("Bot started...")
+    send_startup_healthcheck()
     send_ben_saraf_last_final_on_start(state)
     state = load_state()
 
@@ -1092,6 +1228,16 @@ def run():
 
             games = fetch_scoreboard_games()
             if not games:
+                notify_issue(
+                    state,
+                    "nba_no_games_or_api_unavailable",
+                    "\n".join([
+                        rtl("⚠️ <b>בוט NBA מחובר אבל אין נתוני משחקים כרגע</b>"),
+                        "",
+                        rtl("הבוט עובד והצליח להגיע ללולאה הראשית, אבל כרגע לא הצליח למשוך משחקים מה-NBA."),
+                        rtl("אם זה ממשיך, כנראה שה-NBA CDN / stats.nba.com חוסמים או איטיים כרגע."),
+                    ]),
+                )
                 time.sleep(POLL_SECONDS)
                 continue
 
@@ -1103,6 +1249,16 @@ def run():
                 save_state(state)
         except Exception as e:
             logging.error("Main loop error: %s", e)
+            notify_issue(
+                state,
+                "nba_main_loop_error",
+                "\n".join([
+                    rtl("⚠️ <b>שגיאה בבוט NBA</b>"),
+                    "",
+                    rtl("הבוט עדיין רץ, אבל הייתה שגיאה בלולאה הראשית."),
+                    rtl(f"שגיאה: {esc(str(e)[:250])}"),
+                ]),
+            )
 
         time.sleep(POLL_SECONDS)
 
