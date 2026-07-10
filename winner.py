@@ -783,7 +783,7 @@ SELF_QUOTE_ALIASES.update(
 )
 
 FOOTBALL_TERMS = {
-    "here we go": "הנה זה קורה",
+    "here we go": "HERE WE GO",
     "breaking": "דיווח",
     "breakthrough": "התפתחות משמעותית",
     "exclusive": "בלעדי",
@@ -1099,6 +1099,11 @@ PLAYER_REPLACEMENTS = {
 
 PLAYER_REPLACEMENTS.update(
     {
+        "Anan Khalaili": "\u05e2\u05e0\u05d0\u05df \u05d7\u05dc\u05d0\u05d9\u05d9\u05dc\u05d9",
+        "Anan Khalaily": "\u05e2\u05e0\u05d0\u05df \u05d7\u05dc\u05d0\u05d9\u05d9\u05dc\u05d9",
+        "Anan Khalail": "\u05e2\u05e0\u05d0\u05df \u05d7\u05dc\u05d0\u05d9\u05d9\u05dc\u05d9",
+        "Khalaili": "\u05d7\u05dc\u05d0\u05d9\u05d9\u05dc\u05d9",
+        "Khalaily": "\u05d7\u05dc\u05d0\u05d9\u05d9\u05dc\u05d9",
         "Ruben Amorim": "רובן אמורים",
         "Rúben Amorim": "רובן אמורים",
         "Amorim": "אמורים",
@@ -2538,14 +2543,14 @@ KNOWN_UNTRACKED_DESTINATION_CLUB_ALIASES = (
     "Hull City", "Independiente", "Ipswich", "Jagiellonia", "Juve Stabia", "Kaiserslautern",
     "Karlsruhe", "Kayserispor", "Koln", "Konyaspor", "Las Palmas", "Leganes",
     "Lech Poznan", "Lens", "Levante", "Lille", "Lokomotiv Moscow", "Malaga", "Middlesbrough",
-    "Millwall", "Modena", "Monza", "Nantes", "Norwich", "Olympiacos", "PAOK",
+    "Millwall", "Modena", "Monza", "Mantova", "\u05de\u05e0\u05d8\u05d5\u05d1\u05d4", "Nantes", "Norwich", "Olympiacos", "PAOK",
     "Panathinaikos", "Palermo", "Pisa", "Portsmouth", "Potenza", "Preston", "QPR",
     "Racing Santander", "Rangers", "RB Leipzig", "Real Betis", "Real Oviedo", "Real Sociedad", "Real Valladolid",
     "Rosario Central", "Rotherham", "Rubin Kazan", "Sampdoria", "Santos",
     "Sao Paulo", "Schalke", "Sevilla", "Sheffield Wednesday", "Shakhtar Donetsk",
     "Spartak Moscow", "Sparta Prague", "Stoke City", "Stuttgart", "Swansea", "Trabzonspor",
     "Universitario", "Universitario de Deportes", "Valencia", "Vasco da Gama",
-    "Velez", "Villarreal", "Watford", "Wigan", "Wrexham", "Young Boys", "Zenit",
+    "Velez", "Villefranche", "FC Villefranche", "Villefranche Beaujolais", "\u05d5\u05d9\u05dc\u05e4\u05e8\u05d0\u05e0\u05e9", "\u05d5\u05d9\u05dc\u05e4\u05e8\u05e0\u05e9", "Villarreal", "Watford", "Wigan", "Wrexham", "Young Boys", "Zenit",
 )
 
 NATIONAL_TEAM_HEBREW_NAMES = [
@@ -3025,12 +3030,13 @@ def answer_control_callback(callback_id: str, text: str = "") -> None:
     Thread(target=_send_ack, daemon=True).start()
 
 
-def _control_list_text(title: str, items: list[dict[str, Any]], empty: str) -> str:
+def _control_list_text(title: str, items: list[dict[str, Any]], empty: str, limit: int = 5) -> str:
     lines = [title, ""]
     if not items:
         lines.append(empty)
         return "\n".join(lines)
-    for index, item in enumerate(items[-5:], 1):
+    shown_items = items[-max(1, int(limit)):]
+    for index, item in enumerate(shown_items, 1):
         source = _hebrew_account_label(str(item.get("source", "") or ""))
         reason = hebrew_block_reason(str(item.get("reason", "") or "סיבה לא ידועה"))
         preview = str(item.get("preview", "") or "")
@@ -3043,9 +3049,51 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str) -> s
             lines.append(f"   תקציר: {preview[:180]}")
         if link:
             lines.append(f"   קישור לפוסט: {link}")
-        if index != min(5, len(items[-5:])):
+        if index != len(shown_items):
             lines.append("")
     return "\n".join(lines)
+
+
+def control_delete_message_reply_markup() -> dict[str, Any]:
+    return stable_reply_markup([[{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}]])
+
+
+def is_control_duplicate_item(item: dict[str, Any]) -> bool:
+    reason = str(item.get("reason", "") or "").lower()
+    return bool(
+        item.get("is_duplicate")
+        or item.get("duplicate")
+        or "duplicate" in reason
+        or "כפיל" in reason
+        or "כפילו" in reason
+    )
+
+
+def recent_duplicate_control_items(state: dict[str, Any], limit: int = 10) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for key in ("last_duplicate_posts", "last_blocked_posts"):
+        raw_items = state.get(key, [])
+        if not isinstance(raw_items, list):
+            continue
+        for item in raw_items:
+            if isinstance(item, dict) and (key == "last_duplicate_posts" or is_control_duplicate_item(item)):
+                merged.append(item)
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for item in merged:
+        item_key = "|".join(
+            [
+                str(item.get("link", "") or ""),
+                str(item.get("source", "") or ""),
+                str(item.get("reason", "") or ""),
+                str(item.get("preview", "") or "")[:80],
+            ]
+        )
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        unique.append(item)
+    return unique[-max(1, int(limit)):]
 
 
 def last_blocked_summary_text(limit: int | None = None) -> str:
@@ -3069,10 +3117,10 @@ def last_blocked_summary_text(limit: int | None = None) -> str:
         "",
         "לפי כתב:",
     ]
-    for writer, count in sorted(by_writer.items(), key=lambda pair: (-pair[1], pair[0]))[:12]:
+    for writer, count in sorted(by_writer.items(), key=lambda pair: (-pair[1], pair[0]))[:8]:
         lines.append(f"- {writer}: {count}")
     lines.extend(["", "לפי סיבה:"])
-    for reason, count in sorted(by_reason.items(), key=lambda pair: (-pair[1], pair[0]))[:12]:
+    for reason, count in sorted(by_reason.items(), key=lambda pair: (-pair[1], pair[0]))[:8]:
         lines.append(f"- {reason}: {count}")
     lines.extend(["", "פירוט אחרון:"])
     for index, item in enumerate(reversed(items), 1):
@@ -3080,13 +3128,13 @@ def last_blocked_summary_text(limit: int | None = None) -> str:
         reason = hebrew_block_reason(str(item.get("reason", "") or "סיבה לא ידועה"))
         preview = str(item.get("preview", "") or "")
         if preview and GOOGLE_TRANSLATE_CONTROL_PREVIEWS:
-            preview = google_translate_hebrew_safe(preview, 180)
+            preview = google_translate_hebrew_safe(preview, 110)
         link = str(item.get("link", "") or "")
         lines.append(f"{index}. {writer} - {reason}")
         if preview:
-            lines.append(f"   {trim(preview, 160)}")
+            lines.append(f"   {trim(preview, 95)}")
         if link:
-            lines.append(f"   {link}")
+            lines.append(f"   {trim(link, 130)}")
     return "\n".join(lines)
 
 
@@ -3112,6 +3160,41 @@ def send_control_text(text: str, message_id: Any = None, reply_markup: dict[str,
             return
     telegram_api("sendMessage", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
 
+
+def control_text_chunks(text: str, limit: int = 3800) -> list[str]:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return [value] if value else []
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in value.splitlines():
+        extra = len(line) + (1 if current else 0)
+        if current and current_len + extra > limit:
+            chunks.append("\n".join(current).strip())
+            current = []
+            current_len = 0
+        if len(line) > limit:
+            if current:
+                chunks.append("\n".join(current).strip())
+                current = []
+                current_len = 0
+            for start in range(0, len(line), limit):
+                chunks.append(line[start:start + limit].strip())
+            continue
+        current.append(line)
+        current_len += extra
+    if current:
+        chunks.append("\n".join(current).strip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def send_control_text_full(text: str, reply_markup: dict[str, Any] | None = None) -> None:
+    chunks = control_text_chunks(text)
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, 1):
+        prefix = f"חלק {index}/{total}\n\n" if total > 1 else ""
+        send_control_text(prefix + chunk, None, reply_markup)
 
 
 
@@ -3691,6 +3774,19 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
         return
+    if data == "football_delete_message":
+        if callback_id:
+            answer_control_callback(callback_id, "מוחק הודעה")
+        try:
+            telegram_api(
+                "deleteMessage",
+                {"chat_id": chat_id, "message_id": int(message.get("message_id"))},
+                max_attempts=1,
+                timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logging.debug("מחיקת הודעת בקרה נכשלה: %s", exc)
+        return
     if data.startswith("football_send_test:"):
         token = data.split(":", 1)[1].strip()
         if callback_id:
@@ -3893,12 +3989,22 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_blocked_summary":
         if callback_id:
             answer_control_callback(callback_id, "שולח סיכום חסימות")
-        send_control_text(last_blocked_summary_text(), None, monitor_menu_reply_markup())
+        send_control_text_full(last_blocked_summary_text(), control_delete_message_reply_markup())
     elif data == "football_last_duplicate":
         if callback_id:
             answer_control_callback(callback_id, "מציג כפילויות אחרונות")
         state = load_control_state()
-        send_control_text(_control_list_text("🧠 כפילויות אחרונות", list(state.get("last_duplicate_posts", [])) if isinstance(state.get("last_duplicate_posts", []), list) else [], "אין כפילויות שמורות כרגע."), message.get("message_id"), monitor_menu_reply_markup())
+        duplicate_items = recent_duplicate_control_items(state, limit=10)
+        send_control_text(
+            _control_list_text("🧠 כפילויות אחרונות - 10 אחרונות", duplicate_items, "אין כפילויות שמורות כרגע.", limit=10),
+            message.get("message_id"),
+            monitor_menu_reply_markup(),
+        )
+    elif data == "football_last_duplicate":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג כפילויות אחרונות")
+        state = load_control_state()
+        send_control_text(_control_list_text("🧠 כפילויות אחרונות - 10 אחרונות", list(state.get("last_duplicate_posts", [])) if isinstance(state.get("last_duplicate_posts", []), list) else [], "אין כפילויות שמורות כרגע.", limit=10), message.get("message_id"), monitor_menu_reply_markup())
     elif data.startswith("football_category_help:"):
         category = data.split(":", 1)[1]
         if callback_id:
@@ -4536,6 +4642,30 @@ def has_news_action_signal(post: Post) -> bool:
     )
 
 
+def is_anan_khalaili_inter_report(post: Post) -> bool:
+    cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not cleaned:
+        return False
+    has_anan = bool(
+        re.search(
+            r"\b(?:Anan\s+Khalaili|Anan\s+Khalaily|Khalaili|Khalaily|Khalail)\b|"
+            "\u05e2\u05e0\u05d0\u05df\\s+\u05d7\u05dc\u05d0\u05d9(?:\u05d9\u05dc\u05d9|\u05dc\u05d9)"
+            "|\u05d7\u05dc\u05d0\u05d9(?:\u05d9\u05dc\u05d9|\u05dc\u05d9)",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+    has_inter = bool(re.search(r"\b(?:Inter|Inter\s+Milan|Internazionale)\b|\u05d0\u05d9\u05e0\u05d8\u05e8(?:\\s+\u05de\u05d9\u05dc\u05d0\u05e0\u05d5)?", cleaned, re.IGNORECASE))
+    if not (has_anan and has_inter):
+        return False
+    return bool(
+        _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned)
+        or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned)
+        or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
+        or _matches_any(FINAL_ONLY_STRICT_PATTERNS, cleaned)
+    )
+
+
 def is_world_cup_bracket_or_qualification_update(post: Post) -> bool:
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if not cleaned:
@@ -4584,6 +4714,8 @@ def has_small_total_transfer_fee(post: Post) -> bool:
 
 
 def is_minor_destination_from_big_club_source(post: Post) -> bool:
+    if is_anan_khalaili_inter_report(post):
+        return False
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if not cleaned:
         return False
@@ -4626,6 +4758,8 @@ def is_minor_destination_from_big_club_source(post: Post) -> bool:
 
 
 def is_media_without_report_post(post: Post) -> bool:
+    if is_anan_khalaili_inter_report(post):
+        return False
     raw = html.unescape("\n".join([post.text or "", post.quoted_text or ""]))
     cleaned = clean_for_ai_translation(raw)
     if not cleaned:
@@ -4638,6 +4772,8 @@ def is_media_without_report_post(post: Post) -> bool:
 
 
 def is_name_without_news_action_post(post: Post) -> bool:
+    if is_anan_khalaili_inter_report(post):
+        return False
     if not primary_text_has_clear_subject(post):
         return False
     if has_news_action_signal(post):
@@ -4648,6 +4784,8 @@ def is_name_without_news_action_post(post: Post) -> bool:
 
 
 def is_too_short_without_strong_news_post(post: Post) -> bool:
+    if is_anan_khalaili_inter_report(post):
+        return False
     cleaned = clean_for_ai_translation(html.unescape(post.text or ""))
     tokens = _news_duplicate_tokens(_news_duplicate_clean_text(clone_post_with_text(post, cleaned)))
     if len(tokens) >= 5:
@@ -4661,6 +4799,8 @@ def is_too_short_without_strong_news_post(post: Post) -> bool:
 
 
 def is_unclear_main_club_context_post(post: Post) -> bool:
+    if is_anan_khalaili_inter_report(post):
+        return False
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     if not cleaned or has_big_club_as_main_buyer(cleaned):
         return False
@@ -4693,9 +4833,26 @@ def is_allowed_recycled_report(post: Post) -> bool:
     )
 
 
+RECYCLED_REPORT_NEW_DETAIL_PATTERNS = (
+    r"\b(?:now|today|also|plus|new detail|new details|fee|million|m|euro|euros|contract|medical|bid|meeting|club statement|agreement reached|here we go|done deal|approved)\b|[€£$]",
+    "\u05db\u05e2\u05ea|\u05d4\u05d9\u05d5\u05dd|\u05d2\u05dd|\u05d1\u05e0\u05d5\u05e1\u05e3|\u05e4\u05e8\u05d8|\u05e4\u05e8\u05d8\u05d9\u05dd|\u05e1\u05db\u05d5\u05dd|\u05de\u05d9\u05dc\u05d9\u05d5\u05df|\u05d0\u05d9\u05e8\u05d5|\u05d7\u05d5\u05d6\u05d4|\u05d1\u05d3\u05d9\u05e7\u05d5\u05ea|\u05e8\u05e4\u05d5\u05d0\u05d9\u05d5\u05ea|\u05e4\u05d2\u05d9\u05e9\u05d4|\u05d4\u05e6\u05e2\u05d4|\u05d4\u05e1\u05db\u05dd|\u05e1\u05d9\u05db\u05d5\u05dd|HERE WE GO",
+)
+
+
+def should_label_recycled_report(post: Post) -> bool:
+    if not is_allowed_recycled_report(post):
+        return False
+    cleaned = clean_for_ai_translation(html.unescape(post.text or ""))
+    return not _matches_any(RECYCLED_REPORT_NEW_DETAIL_PATTERNS, cleaned)
+
+
 def is_weak_copy_without_primary_value_post(post: Post) -> bool:
     cleaned = clean_for_ai_translation(html.unescape(post.text or ""))
+    if is_anan_khalaili_inter_report(post):
+        return False
     if _matches_any(STRONG_PLAYER_MOVE_PATTERNS, cleaned):
+        return False
+    if _matches_any(RECYCLED_REPORT_NEW_DETAIL_PATTERNS, cleaned):
         return False
     if is_allowed_recycled_report(post):
         return False
@@ -4705,6 +4862,8 @@ def is_weak_copy_without_primary_value_post(post: Post) -> bool:
 
 
 def is_writer_profile_noise_post(post: Post) -> bool:
+    if is_anan_khalaili_inter_report(post):
+        return False
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
     username = (post.username or "").lower()
     if has_news_action_signal(post) and primary_text_has_clear_subject(post):
@@ -5056,6 +5215,8 @@ def hebrew_block_reason(reason: str) -> str:
     base = (reason or "").split(";", 1)[0].strip()
     if base.startswith("importance:"):
         base = base.split(":", 1)[1]
+    if base == "transfer_without_tracked_team":
+        return "דיווח העברה בלי קבוצה במעקב"
     translated = BLOCK_REASON_HEBREW.get(base)
     if translated:
         return translated
@@ -5080,12 +5241,26 @@ def remember_control_block_event(reason: str, post: "Post", rendered: str, dupli
             return
 
         state = load_control_state()
+        duplicate_reasons = {
+            "duplicate",
+            "semantic_duplicate",
+            "recent_duplicate",
+            "same_cycle_duplicate",
+            "post_translation_duplicate",
+        }
+        is_duplicate_block = bool(
+            duplicate
+            or base_reason in duplicate_reasons
+            or "duplicate" in base_reason
+            or "כפיל" in rendered
+        )
         item = {
             "ts": time.time(),
             "source": getattr(post, "username", "unknown") or "unknown",
             "reason": hebrew_block_reason(reason),
             "preview": filtered_post_text_preview(post),
             "link": getattr(post, "link", "") or "",
+            "is_duplicate": is_duplicate_block,
         }
         blocked = state.get("last_blocked_posts", [])
         if not isinstance(blocked, list):
@@ -5093,7 +5268,7 @@ def remember_control_block_event(reason: str, post: "Post", rendered: str, dupli
         blocked = [existing for existing in blocked if isinstance(existing, dict)]
         blocked.append(item)
         state["last_blocked_posts"] = blocked[-CONTROL_BLOCK_HISTORY_LIMIT:]
-        if duplicate:
+        if is_duplicate_block:
             duplicates = state.get("last_duplicate_posts", [])
             if not isinstance(duplicates, list):
                 duplicates = []
@@ -5765,6 +5940,7 @@ def _duplicate_token_aliases(token: str) -> set[str]:
 def _news_duplicate_tokens(text: str) -> set[str]:
     raw_tokens = re.findall(r"[A-Za-zא-ת][A-Za-zא-ת'׳\-]{2,}|\d+", text or "")
     tokens: set[str] = set()
+    raw_tokens.extend(re.findall(r"[A-Za-z\u0590-\u05ff][A-Za-z\u0590-\u05ff'׳״`’.\-]{2,}|\d+", text or ""))
     for token in raw_tokens:
         token = _normalize_news_duplicate_token(token)
         if len(token) < 3 or token in NEWS_DUP_STOPWORDS:
@@ -6042,8 +6218,12 @@ def cleanup_recent_news_events(state: dict[str, Any], now: float | None = None) 
 def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
     current = news_event_signature(post)
     for item in reversed(cleanup_recent_news_events(state)):
+        if is_pending_memory_item(item):
+            continue
         previous = item.get("signature", {}) if isinstance(item, dict) else {}
         if not isinstance(previous, dict):
+            continue
+        if current_post_has_new_named_subject(post, item):
             continue
         score = _event_similarity(current, previous)
         local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
@@ -6174,6 +6354,8 @@ def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str,
             continue
         previous = item.get("signature", {})
         if not isinstance(previous, dict):
+            continue
+        if current_post_has_new_named_subject(post, item):
             continue
         score = _event_similarity(current, previous)
         local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
@@ -6334,7 +6516,7 @@ def find_recent_burst_spam_event(post: Post, state: dict[str, Any]) -> dict[str,
     now = time.time()
     matches: list[dict[str, Any]] = []
     for item in reversed(cleanup_recent_news_events(state)):
-        if not isinstance(item, dict) or now - float(item.get("ts", 0) or 0) > NEWS_BURST_SPAM_WINDOW_SECONDS:
+        if not isinstance(item, dict) or is_pending_memory_item(item) or now - float(item.get("ts", 0) or 0) > NEWS_BURST_SPAM_WINDOW_SECONDS:
             continue
         previous = item.get("signature", {})
         if not isinstance(previous, dict):
@@ -6742,6 +6924,72 @@ def _near_duplicate_subject_overlap(cur_distinctive: set[str], prev_distinctive:
     return matches
 
 
+NEW_SUBJECT_IGNORE_TOKENS = {
+    "right", "back", "rightback", "defender", "new", "deal", "agreement", "agreed", "fee", "fixed",
+    "bonus", "bonuses", "million", "millions", "euro", "euros", "club", "clubs", "meeting", "face",
+    "today", "reported", "revealed", "source", "sources", "sky", "sport", "sports", "germany",
+    "\u05d4\u05e0\u05d4", "\u05e7\u05d5\u05e8\u05d4", "\u05d4\u05e1\u05db\u05dd", "\u05d4\u05e1\u05db\u05de\u05d4",
+    "\u05d4\u05e1\u05db\u05de", "\u05e1\u05db\u05dd", "\u05e1\u05d2\u05d5\u05e8", "\u05e1\u05d2\u05d5\u05e8\u05d4",
+    "\u05e2\u05e1\u05e7\u05d4", "\u05e2\u05d1\u05e8\u05d4", "\u05d3\u05de\u05d9", "\u05e7\u05d1\u05d5\u05e2\u05d9\u05dd",
+    "\u05e7\u05d1\u05d5\u05e2\u05d9\u05de", "\u05e7\u05d1\u05e2\u05de", "\u05ea\u05d5\u05e1\u05e4\u05ea",
+    "\u05ea\u05e1\u05e4\u05ea", "\u05d1\u05d5\u05e0\u05d5\u05e1\u05d9\u05dd", "\u05d1\u05d5\u05e0\u05d5\u05e1\u05d9\u05de",
+    "\u05d5\u05e0\u05d5\u05e1\u05d9\u05de", "\u05d0\u05d9\u05e8\u05d5", "\u05de\u05d9\u05dc\u05d9\u05d5\u05df",
+    "\u05de\u05d9\u05dc\u05d9\u05d5\u05e0", "\u05de\u05d2\u05df", "\u05de\u05d2\u05e0", "\u05d9\u05de\u05e0\u05d9",
+    "\u05d7\u05d3\u05e9", "\u05d7\u05d3\u05e9\u05d4", "\u05de\u05d5\u05e2\u05d3\u05d5\u05e0\u05d9\u05dd",
+    "\u05de\u05d5\u05e2\u05d3\u05d5\u05e0\u05d9\u05de", "\u05de\u05e2\u05d3\u05e0\u05de",
+    "\u05e4\u05d2\u05d9\u05e9\u05d4", "\u05e4\u05e0\u05d9", "\u05e4\u05e0\u05d9\u05dd", "\u05e4\u05e0\u05d9\u05de",
+    "\u05d4\u05d9\u05d5\u05dd", "\u05d9\u05d5\u05de", "\u05d9\u05de\u05d9\u05dd", "\u05d9\u05de\u05d9\u05de",
+    "\u05de\u05e1\u05e4\u05e8", "\u05db\u05e4\u05d9", "\u05e9\u05e0\u05d7\u05e9\u05e3",
+    "\u05e8\u05d5\u05de\u05d0\u05e0\u05d5", "\u05e4\u05d1\u05e8\u05d9\u05e6\u05d9\u05d5",
+    "\u05e1\u05e7\u05d9\u05d9", "\u05e1\u05e4\u05d5\u05e8\u05d8", "\u05d2\u05e8\u05de\u05e0\u05d9\u05d4",
+    "\u05d9\u05d5\u05e0\u05d9\u05d5\u05df", "\u05e1\u05df-\u05d6\u05d9\u05dc\u05d5\u05d0\u05d6",
+    "\u05e1\u05df-\u05d6\u05dc\u05d6",
+}
+
+
+def _subject_identity_tokens_from_signature(signature: dict[str, Any]) -> set[str]:
+    if not isinstance(signature, dict):
+        return set()
+    tokens = set(signature.get("tokens", []))
+    entities = set(signature.get("entities", []))
+    subjects: set[str] = set()
+    for token in _distinctive_duplicate_tokens(tokens, entities):
+        lowered = token.lower().strip("-'׳")
+        if lowered.startswith("team:"):
+            continue
+        if lowered in NEW_SUBJECT_IGNORE_TOKENS:
+            continue
+        if lowered in NEWS_DUP_STOPWORDS or lowered in NEWS_DUP_ACTION_WORDS or lowered in IMPORTANT_DETAIL_WORDS:
+            continue
+        if any(ch.isdigit() for ch in lowered):
+            continue
+        if len(lowered) < 4:
+            continue
+        subjects.add(lowered)
+    return subjects
+
+
+def current_post_has_new_named_subject(post: Post, previous_item: dict[str, Any]) -> bool:
+    current_sig = news_event_signature(post)
+    previous_sig = previous_item.get("signature", {}) if isinstance(previous_item, dict) else {}
+    if not isinstance(previous_sig, dict):
+        return False
+    current_subjects = _subject_identity_tokens_from_signature(current_sig)
+    if not current_subjects:
+        return False
+    previous_subjects = _subject_identity_tokens_from_signature(previous_sig)
+    if _near_duplicate_subject_overlap(current_subjects, previous_subjects):
+        return False
+    current_text = str(current_sig.get("text", "") or "")
+    current_rank, _stage = _text_stage_rank(current_text)
+    has_material_number = bool(_material_number_detail_tokens(current_text))
+    return bool(current_rank >= 50 or has_material_number or event_detail_richness(post) >= 8)
+
+
+def is_pending_memory_item(item: dict[str, Any] | None) -> bool:
+    return bool(isinstance(item, dict) and item.get("pending", False))
+
+
 def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
     """Fast local decision before Gemini. Returns SAME_DUPLICATE, ADVANCED_NEW, DIFFERENT or BORDERLINE."""
     if not ENABLE_AI_REQUEST_SAVER:
@@ -6783,6 +7031,13 @@ def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], s
     new_important_detail_tokens = (cur_tokens - prev_tokens) & IMPORTANT_DETAIL_WORDS
     general_has_new_material_detail = detail_delta >= 2 or number_detail_delta >= 1
     injury_has_new_material_detail = bool(new_important_detail_tokens & INJURY_ADVANCEMENT_DETAIL_WORDS) or number_detail_delta >= 1
+
+    if is_anan_khalaili_inter_report(current_post) and (
+        general_has_new_material_detail
+        or current_rank > previous_rank + 5
+        or event_detail_richness(current_post) >= event_detail_richness(channel_duplicate_text_to_post(prev_text)) + 2
+    ):
+        return "ADVANCED_NEW"
 
     if (
         not same_author
@@ -7095,6 +7350,10 @@ def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> d
     for item in recent:
         if not isinstance(item, dict):
             continue
+        if is_pending_memory_item(item):
+            continue
+        if current_post_has_new_named_subject(post, item):
+            continue
         score = _event_similarity_score_for_post(post, item)
         local = local_duplicate_verdict(post, item, score)
         if local == "SAME_DUPLICATE":
@@ -7122,10 +7381,14 @@ def find_recent_duplicate_event_ignoring_self(post: Post, state: dict[str, Any],
     for item in reversed(cleanup_recent_news_events(state)):
         if not isinstance(item, dict):
             continue
+        if is_pending_memory_item(item):
+            continue
         if item.get("link") == original_post.link and item.get("username") == original_post.username:
             continue
         previous_sig = item.get("signature", {}) if isinstance(item.get("signature", {}), dict) else {}
         if not previous_sig:
+            continue
+        if current_post_has_new_named_subject(post, item):
             continue
         score = _event_similarity(current_sig, previous_sig)
         local = local_duplicate_verdict(post, item, score)
@@ -7442,8 +7705,56 @@ def remove_dangling_source_attribution(text: str) -> str:
     return text.strip(" \t,;:")
 
 
+def remove_recycled_source_brag_fragments(text: str) -> str:
+    value = text or ""
+    if not value.strip():
+        return ""
+    no_surprise_he = (
+        "(?:"
+        "\u05d0\u05d9\u05df\\s+(?:\u05db\u05d0\u05df\\s+)?\u05d4?\u05e4\u05ea\u05e2(?:\u05d4|\u05d5\u05ea)"
+        "|"
+        "\u05dc\u05d0\\s+\u05d4\u05d9\u05d5\\s+\u05d4?\u05e4\u05ea\u05e2(?:\u05d4|\u05d5\u05ea)"
+        ")"
+    )
+    disclosure_he = (
+        "(?:"
+        "(?:\u05db\u05e4\u05d9|\u05db\u05de\u05d5)\\s+\u05e9(?:\u05e0?\u05d7\u05e9\u05e3|\u05d3\u05d5\u05d5\u05d7|\u05e4\u05d5\u05e8\u05e1\u05dd)"
+        "(?:\\s+(?:\u05d1\u05e4\u05e8\u05e1\u05d5\u05dd\\s+\u05d1\u05dc\u05e2\u05d3\u05d9|\u05d1\u05dc\u05e2\u05d3\u05d9(?:\u05ea)?))?"
+        "|"
+        "\u05d1\u05e4\u05e8\u05e1\u05d5\u05dd\\s+\u05d1\u05dc\u05e2\u05d3\u05d9"
+        ")"
+    )
+    since_credit_he = (
+        "(?:\u05d0\u05d5\u05e9\u05e8|\u05de\u05d0\u05d5\u05e9\u05e8|\u05de\u05d0\u05d5\u05de\u05ea|\u05d9\u05d3\u05d5\u05e2|\u05e0\u05d7\u05e9\u05e3|\u05d3\u05d5\u05d5\u05d7|\u05e4\u05d5\u05e8\u05e1\u05dd)"
+        "\\s+(?:\u05db\u05d1\u05e8\\s+)?\u05de\u05d0\u05d6[^.!?\\n]{0,80}"
+    )
+    connector = "(?:\\s*(?:\u05d5|,|\\.|:|;|-|\u2013|\u2014)\\s*)*"
+    he_tail = f"(?:{no_surprise_he}(?:{connector}{disclosure_he})?|{disclosure_he}|{since_credit_he})"
+    english_tail = (
+        "(?:"
+        "no\\s+surprises?(?:\\s+here)?"
+        "|nothing\\s+new"
+        "|as\\s+(?:exclusively\\s+)?(?:revealed|reported|first\\s+reported)"
+        "|(?:confirmed|verified|reported|revealed)\\s+since\\s+(?:last\\s+)?[^.!?\\n]{1,60}"
+        ")"
+    )
+
+    # Whole-line source/brag fragments can be dropped anywhere.
+    value = re.sub(rf"(?imu)^\s*(?:{he_tail}|{english_tail})\s*[.!?]*\s*$", "", value)
+    # Trailing fragments are safe to remove after the real report text.
+    value = re.sub(rf"(?isu)(?:[\s,;:]*[.!?]\s*|\s+)(?:{he_tail}|{english_tail})\s*[.!?]*\s*$", ".", value)
+    value = re.sub(r"\s+([,.!?;:])", r"\1", value)
+    value = re.sub(r"\.{2,}", ".", value)
+    value = re.sub(r"\s*\.\s*\.", ".", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip(" \t,;:")
+
+
 def remove_writer_brag_phrases(text: str) -> str:
-    text = text or ""
+    text = remove_recycled_source_brag_fragments(text or "")
+    return text.strip()
     patterns = (
         r"(?iu)\s*(?:אין\s+הפתעות\s+כאן|אין\s+הפתעות|לא\s+היו\s+הפתעות)\s*(?:ו|,|\.)?\s*(?:זה\s+)?(?:אושר|מאושר|מאומת|ידוע|נחשף|דווח|פורסם)?\s*(?:מאז|כבר\s+מאז)?\s*(?:ה-?\d{1,2}\s+ב[א-ת]+|\d{1,2}/\d{1,2}(?:/\d{2,4})?|[A-Za-z]+\s+\d{1,2})?\s*[.!?]?",
         r"(?iu)\s*(?:וזה\s+)?(?:אושר|מאומת|ידוע|נחשף|דווח|פורסם)\s+(?:כבר\s+)?מאז\s+(?:ה-?\d{1,2}\s+ב[א-ת]+|\d{1,2}/\d{1,2}(?:/\d{2,4})?|[A-Za-z]+\s+\d{1,2})\s*[.!?]?",
@@ -7660,6 +7971,8 @@ def clean_before_translation(text: str) -> str:
     text = normalize_official_club_names_for_translation(text)
     text = apply_handle_replacements(text)
     text = remove_credit_handles(text)
+    text = remove_dangling_source_attribution(text)
+    text = remove_writer_brag_phrases(text)
     text = remove_junk_topic_tags(text)
     text = convert_hashtags_to_text(text)
     text = remove_junk_topic_tags(text)
@@ -7680,6 +7993,8 @@ def clean_for_ai_translation(text: str) -> str:
     text = convert_hashtags_to_text(text)
     text = remove_junk_topic_tags(text)
     text = re.sub(r"(?im)^\s*(video|watch video|וידאו|וידיאו)\s*$", "", text)
+    text = remove_dangling_source_attribution(text)
+    text = remove_writer_brag_phrases(text)
     text = text.replace("&amp;", "&")
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -8214,17 +8529,22 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "- Never replace a club/team with a different club/team that is not explicitly in the original post. If Real Madrid appears, do not change it to Real Sociedad; if a club is not named, do not invent one.\n"
         "- Preserve the original news facts exactly: clubs, teams, player names, destinations, scores, dates and competitions must match the source post.\n"
         "- Preserve tense and time exactly. Do not turn past into future, future into past, or change any year/date/time such as 2026 into another year.\n"
+        "- Keep the phrase 'HERE WE GO' in English uppercase. Do not translate it to Hebrew.\n"
         "- If the source says 'last World Cup' or 'final World Cup', translate it explicitly as 'המונדיאל האחרון' or 'גביע העולם האחרון'. Never omit the word 'last/final'.\n"
         "- Treat facts as locked data: names, clubs, years, numbers, scorelines and dates may be translated but never corrected, guessed or rewritten into different facts.\n"
         "- If the post mentions a role such as 'next manager/coach' without naming the club in that phrase, do not add a club name by assumption.\n"
         "- Convert important club/player @handles into natural Hebrew names. Remove handles only when they are just credits or promotion.\n"
         "- Remove sponsor lines such as 'presented by', 'sponsored by', broadcasts, TV/network credits and app promotions.\n"
+        "- Remove Sky Sport Germany / SkySportDE when it is only a credit, outlet tag, or source line.\n"
         "- Do not convert times to Israel time and never add the words 'שעון ישראל'. Keep original time-zone wording only if it is essential.\n"
         "- If the post is mostly a video caption, write one clean Hebrew sentence that explains the actual clip.\n"
         "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
         "- Do not exaggerate labels. Translate 'breaking' as 'דיווח' or omit the label; avoid 'דיווח דרמטי' unless the original facts are truly exceptional.\n"
         "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
+        "- For odds/probability lists such as '33% - France 19% - Argentina', put each percentage item on its own line.\n"
+        "- For football-stat lists that repeat ball emojis or flags, put each stat item on its own line.\n"
+        "- For lists: use one line per list item and do NOT add blank lines inside the list. Add a blank line only after the list ends if a summary/next paragraph follows.\n"
         "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
         "- If a two-letter country code is used as a flag marker, output the correct flag emoji instead of the letters. Preserve real flag emojis from the source and never replace a flag with a generic black flag.\n"
         "- Remove down arrows or pointing-down emojis when they only pointed to a removed link or quoted post.\n"
@@ -8351,6 +8671,28 @@ def normalize_breaking_label(text: str) -> str:
     return text
 
 
+def normalize_here_we_go_phrase(text: str) -> str:
+    text = text or ""
+    text = re.sub(r"(?iu)\bhere\s+we\s+go\b", "HERE WE GO", text)
+    text = re.sub(
+        "(?iu)(?:\u05d4\u05e0\u05d4\\s+\u05d6\u05d4\\s+(?:\u05e7\u05d5\u05e8\u05d4|\u05d1\u05d0)|\u05db\u05d0\u05df\\s+\u05d0\u05e0\u05d7\u05e0\u05d5\\s+\u05d4\u05d5\u05dc\u05db\u05d9\u05dd|\u05d4\u05e0\u05d4\\s+\u05d0\u05e0\u05d7\u05e0\u05d5\\s+\u05d4\u05d5\u05dc\u05db\u05d9\u05dd)",
+        "HERE WE GO",
+        text,
+    )
+    text = re.sub("(?iu)\u05d4?\u05d4\u05e8\u05d4\\s+\u05d5\u05d4\\s+\u05d2\u05d5", "HERE WE GO", text)
+    text = re.sub("(?iu)\u05d4\u05d9\u05e8\\s+\u05d5(?:\u05d5|\u05d9)?\\s+\u05d2\u05d5", "HERE WE GO", text)
+    return text
+
+
+def remove_sky_sport_germany_credit(text: str) -> str:
+    text = text or ""
+    outlet = "(?:@?SkySportDE|Sky\\s*Sport(?:s)?\\s*Germany|Sky\\s*Germany|\u05e1\u05e7\u05d9\u05d9\\s+\u05e1\u05e4\u05d5\u05e8\u05d8\\s+\u05d2\u05e8\u05de\u05e0\u05d9\u05d4)"
+    text = re.sub(rf"(?im)^\s*(?:via|source|credit|for|\u05de\u05e7\u05d5\u05e8|\u05d3\u05e8\u05da|\u05dc\u05e4\u05d9|\u05e2\u05d1\u05d5\u05e8)?\s*:?\s*{outlet}\s*[.!?]*\s*$", "", text)
+    text = re.sub(rf"(?iu)\s*(?:[|/,\-–—]\s*)?(?:via|source|credit|for|\u05de\u05e7\u05d5\u05e8|\u05d3\u05e8\u05da|\u05dc\u05e4\u05d9|\u05e2\u05d1\u05d5\u05e8)?\s*:?\s*{outlet}\s*[.!?]*\s*$", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def final_hebrew_polish(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
@@ -8364,6 +8706,8 @@ def final_hebrew_polish(text: str) -> str:
     text = convert_hashtags_to_text(text)
     for replacements in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS, FOOTBALL_TERMS, HEBREW_FINAL_FIXES):
         text = apply_phrase_replacements(text, replacements)
+    text = normalize_here_we_go_phrase(text)
+    text = remove_sky_sport_germany_credit(text)
     text = re.sub("(?iu)(?:\u05e9?\u05d6\u05d4\\s+\u05d9\u05d4\u05d9\u05d4\\s+)?\u05d4\u05de\u05d5\u05e0\u05d3\u05d9\u05d0\u05dc\\.\\s+\u05e9\u05dc\u05d5\\.?", "\u05e9\u05d6\u05d4 \u05d9\u05d4\u05d9\u05d4 \u05d4\u05de\u05d5\u05e0\u05d3\u05d9\u05d0\u05dc \u05d4\u05d0\u05d7\u05e8\u05d5\u05df \u05e9\u05dc\u05d5.", text)
     text = re.sub("(?iu)(?:\u05e9?\u05d6\u05d4\\s+\u05d9\u05d4\u05d9\u05d4\\s+)?\u05d2\u05d1\u05d9\u05e2\\s+\u05d4\u05e2\u05d5\u05dc\u05dd\\.\\s+\u05e9\u05dc\u05d5\\.?", "\u05e9\u05d6\u05d4 \u05d9\u05d4\u05d9\u05d4 \u05d2\u05d1\u05d9\u05e2 \u05d4\u05e2\u05d5\u05dc\u05dd \u05d4\u05d0\u05d7\u05e8\u05d5\u05df \u05e9\u05dc\u05d5.", text)
     text = re.sub(
@@ -8399,12 +8743,15 @@ def final_hebrew_polish(text: str) -> str:
     text = remove_israel_time_additions(text)
     text = remove_dangling_source_attribution(text)
     text = remove_writer_brag_phrases(text)
+    text = remove_sky_sport_germany_credit(text)
     text = remove_trailing_duplicate_team_tags(text)
     text = normalize_exclusive_label(text)
     text = normalize_breaking_label(text)
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
     text = re.sub(r"(?im)^בלעדי\s*[-:–—]\s*", "בלעדי: ", text)
     text = final_visual_cleanup(text)
+    text = normalize_here_we_go_phrase(text)
+    text = remove_sky_sport_germany_credit(text)
     text = re.sub("(?iu)(?:\u05e9?\u05d6\u05d4\\s+\u05d9\u05d4\u05d9\u05d4\\s+)?\u05d4\u05de\u05d5\u05e0\u05d3\u05d9\u05d0\u05dc\\.\\s+\u05e9\u05dc\u05d5\\.?", "\u05e9\u05d6\u05d4 \u05d9\u05d4\u05d9\u05d4 \u05d4\u05de\u05d5\u05e0\u05d3\u05d9\u05d0\u05dc \u05d4\u05d0\u05d7\u05e8\u05d5\u05df \u05e9\u05dc\u05d5.", text)
     text = re.sub("(?iu)(?:\u05e9?\u05d6\u05d4\\s+\u05d9\u05d4\u05d9\u05d4\\s+)?\u05d2\u05d1\u05d9\u05e2\\s+\u05d4\u05e2\u05d5\u05dc\u05dd\\.\\s+\u05e9\u05dc\u05d5\\.?", "\u05e9\u05d6\u05d4 \u05d9\u05d4\u05d9\u05d4 \u05d2\u05d1\u05d9\u05e2 \u05d4\u05e2\u05d5\u05dc\u05dd \u05d4\u05d0\u05d7\u05e8\u05d5\u05df \u05e9\u05dc\u05d5.", text)
     return text.strip()
@@ -8429,10 +8776,27 @@ def format_stat_list_lines(text: str) -> str:
         return value
     marker_count = sum(value.count(marker) for marker in LIST_STAT_ITEM_MARKERS)
     flag_count = regional_flag_count(value)
+    soccer_item_count = len(re.findall("\u26bd\ufe0f?", value))
+    percent_item_count = len(re.findall(r"\b\d{1,3}(?:[.,]\d+)?\s*%\s*[-\u2013\u2014]", value))
     has_many_numbered_stats = len(re.findall(r"\(\d+\)", value)) >= 4 and re.search(r"הכי הרבה|most\s+", value, re.IGNORECASE)
     has_dense_inline_list = marker_count >= 4 or flag_count >= 4 or bool(marker_count >= 3 and re.search(r"נבחרות|qualified|העפילו|עלו|מודחות|שלב", value, re.IGNORECASE))
+    has_dense_inline_list = has_dense_inline_list or soccer_item_count >= 3 or percent_item_count >= 3
     if not has_dense_inline_list and not has_many_numbered_stats:
         return value
+
+    if percent_item_count >= 3:
+        value = re.sub(r"(?<!\n)\s+(?=\d{1,3}(?:[.,]\d+)?\s*%\s*[-\u2013\u2014])", "\n", value)
+    if soccer_item_count >= 3:
+        value = re.sub(r"(?<!\n)\s+(?=\u26bd\ufe0f?\s*(?:[\U0001F1E6-\U0001F1FF]{2}|\U0001F3F4))", "\n", value)
+    list_tail_pattern = (
+        "(?:"
+        "\u05db\u05ea\u05d1\u05d5(?:\\s+\u05d1\u05ea\u05d2\u05d5\u05d1\u05d5\u05ea)?"
+        "|\u05de\u05d9\\s+\u05dc\u05d3\u05e2\u05ea\u05db\u05dd"
+        "|\u05d4\u05d7\u05dc\u05de\u05d4\\s+\u05de\u05d4\u05d9\u05e8\u05d4"
+        "|write\\s+in\\s+the\\s+comments"
+        ")"
+    )
+    value = re.sub(rf"(?<=\S)\s+(?={list_tail_pattern})", "\n\n", value, flags=re.IGNORECASE)
 
     value = re.sub(r"(?iu)(היום)\.\s+(?=[💥🔥⚽🥇🥈🥉✅🔹🔸▪▫•])", r"\1:\n", value)
     value = re.sub(r"(?iu)\b(today)\.\s+(?=[💥🔥⚽🥇🥈🥉✅🔹🔸▪▫•])", r"\1:\n", value)
@@ -8552,9 +8916,9 @@ def translate_text(text: str) -> str:
     gemini_key = translation_cache_key(ai_text or prepared)
     fallback_key = hashlib.sha256(f"fallback\n{prepared}".encode("utf-8")).hexdigest()
     if GEMINI_API_KEYS and gemini_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key])))
+        return final_visual_cleanup(final_hebrew_polish(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[gemini_key]))))
     if False and fallback_key in TRANSLATION_CACHE:
-        return final_visual_cleanup(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key])))
+        return final_visual_cleanup(final_hebrew_polish(preserve_original_country_flags(ai_text or text, preserve_original_emojis(ai_text or text, TRANSLATION_CACHE[fallback_key]))))
 
     if GEMINI_API_KEYS and ai_text:
         if not has_gemini_key_available():
@@ -9185,11 +9549,12 @@ def build_message(
     translated = polish_team_names_with_original_context(post, translated)
     quoted_translated = polish_team_names_with_original_context(post, quoted_translated)
     translated = format_news_paragraphs(translated)
+    quoted_translated = format_news_paragraphs(quoted_translated)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
     hide_writer_header = should_hide_writer_header(post, translated)
     if hide_writer_header:
         translated = strip_leading_no_writer_prefix(translated)
-    if is_allowed_recycled_report(post):
+    if should_label_recycled_report(post):
         display_name = f"מיחזור של {display_name}"
 
     safe_account = html.escape(rtl(f"{display_name}:"))
@@ -9555,7 +9920,7 @@ CLEAR_PLAYER_DEPARTURE_PATTERNS = (
 
 COACH_IMPORTANT_PATTERNS = (
     r"\b(?:head coach|manager|coach|appointed|set to be appointed|sacked|fired|dismissed|resigned|leaves role|new manager|new head coach)\b",
-    r"מאמן|מאמן ראשי|על הקווים|לקווים|ספסל|מונה|ימונה|צפוי להתמנות|פוטר|התפטר|עזב את תפקידו|מאמן חדש",
+    r"מאמן|מאמן ראשי|על הקווים|לקווים|ספסל|(?<![\u0590-\u05ff])מונה(?![\u0590-\u05ff])|ימונה|צפוי להתמנות|פוטר|התפטר|עזב את תפקידו|מאמן חדש",
 )
 
 BIG_CLUB_CONTEXT_PATTERNS = (
@@ -9795,6 +10160,8 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "weak_copy_without_primary_value", 0, ["weak_copy_without_primary_value"]
     if is_writer_profile_noise_post(post):
         return False, "writer_profile_noise", 0, ["writer_profile_noise"]
+    if is_anan_khalaili_inter_report(post):
+        return True, "anan_khalaili_inter_report", 100, ["anan_khalaili", "inter", "transfer_context"]
     central_player_tiers = central_player_affiliation_tiers(cleaned)
     has_central_tier1_player = "tier1" in central_player_tiers
     has_central_tier2_player = "tier2" in central_player_tiers
@@ -9834,6 +10201,25 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     has_elite_or_national_context = has_big_rumor_club or has_big_club_context or has_big_club_main_buyer or has_major_national_context
     has_clear_final_step = has_final_only_strict or has_strong_move or has_clear_departure
     is_strict_writer = is_extra_strict_source(post)
+    has_any_tracked_or_allowed_context = (
+        has_allowed_interest_club
+        or has_final_only_club
+        or has_tier3_club
+        or has_big_club_main_buyer
+        or has_big_rumor_club
+        or has_top5_or_promoted_club
+        or has_elite_admin_club
+        or has_big_club_context
+        or has_major_national_context
+        or contains_tracked_club_or_israeli_league(post)
+    )
+
+    if (
+        has_transfer_or_future
+        and (has_final_or_near_final or has_final_only_strict or has_strong_move)
+        and not has_any_tracked_or_allowed_context
+    ):
+        return False, "transfer_without_tracked_team", 0, ["untracked_transfer", "no_tracked_team"]
 
     if has_small_total_transfer_fee(post):
         return False, "small_transfer_fee", 0, ["small_transfer_fee"]
@@ -10120,6 +10506,8 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "weak_copy_without_primary_value"
     if is_writer_profile_noise_post(post):
         return "writer_profile_noise"
+    if is_anan_khalaili_inter_report(post):
+        return ""
     temporary_block_reason = temporary_control_filter_block_reason(post)
     if temporary_block_reason:
         return temporary_block_reason
@@ -10361,8 +10749,8 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         cached = _extract_json_object(TRANSLATION_CACHE[cache_key])
         if cached:
             return (
-                final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, str(cached.get("main", ""))))),
-                final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, str(cached.get("quote", ""))))) if quote_source else "",
+                final_visual_cleanup(final_hebrew_polish(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, str(cached.get("main", "")))))),
+                final_visual_cleanup(final_hebrew_polish(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, str(cached.get("quote", "")))))) if quote_source else "",
                 final_hebrew_polish(str(cached.get("quote_author", ""))).strip(),
             )
     glossary_text = "\n".join(x for x in [relevant_name_glossary(main_source), relevant_name_glossary(quote_source), relevant_name_glossary(author_source)] if x)
@@ -10374,6 +10762,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "Rules:\n"
         "- Hebrew only, natural Telegram sports-news Hebrew.\n"
         "- Translate the full MAIN_TEXT and full QUOTED_TEXT when provided. Do not summarize, shorten, collapse, or omit any factual sentence, clause, list item, condition, quote, fee, date, contract length, club statement, denial, or context that appears in the source.\n"
+        "- Keep the phrase 'HERE WE GO' in English uppercase. Do not translate it to Hebrew.\n"
         "- If the source says 'last World Cup' or 'final World Cup', translate it explicitly as 'המונדיאל האחרון' or 'גביע העולם האחרון'. Never omit the word 'last/final'.\n"
         "- Keep the message concise only by removing junk/source/link text, not by removing real news details.\n"
         "- Do not add facts, context, clubs, years, dates, injuries, transfer status, or words that are not directly in the source.\n"
@@ -10382,10 +10771,13 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- Verify names from football context; fix malformed transliterations, but never replace one club/person with a different one.\n"
         "- Convert known @handles only when they are part of the news; remove source/junk handles and URLs.\n"
         "- Remove URLs, tracking text, sponsor lines, and useless link prompts.\n"
+        "- Remove Sky Sport Germany / SkySportDE when it is only a credit, outlet tag, or source line.\n"
         "- Preserve real flag emojis. If country-code letters are used as a flag marker, output the correct flag emoji and remove the letters.\n"
         "- Remove leftovers such as TR, טי אר, GE, FR, IT, ES, DE when they only duplicate a nearby flag emoji.\n"
         "- Keep emojis only when useful and already implied by the source.\n"
         "- If the source contains an inline list of stats, countries, teams, players, checkmarks, crosses, medals, bullets, or many flag emojis, format it as a readable Telegram list.\n"
+        "- For odds/probability lists such as '33% - France 19% - Argentina', put each percentage item on its own line.\n"
+        "- For football-stat lists that repeat ball emojis or flags, put each stat item on its own line.\n"
         "- For lists: use one line per list item and do NOT add blank lines inside the list. Add a blank line only after the list ends if a summary/next paragraph follows.\n"
         "- For long non-list messages only: use natural short paragraphs every 2-3 sentences when it improves readability.\n"
         "- Do not write explanations. JSON only.\n"
@@ -10767,7 +11159,10 @@ def load_state() -> dict[str, Any]:
         raw = path.read_text(encoding="utf-8")
         STATE_LAST_SAVED_JSON = raw
         data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            drop_unconfirmed_recent_news_events(data)
+            return data
+        return {}
     except Exception:
         logging.warning("⚠️ לא הצליח לקרוא קובץ מצב. מתחיל עם מצב נקי.")
         STATE_LAST_SAVED_JSON = None
