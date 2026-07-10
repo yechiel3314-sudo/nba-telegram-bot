@@ -17,6 +17,21 @@ except ImportError:
     ZoneInfo = None
 
 
+def normalize_telegram_chat_id(raw):
+    value = (raw or "").strip()
+    if value.startswith("@"):
+        return value
+
+    # RTL copy/paste can turn -100... into 100...-
+    if value.endswith("-") and value[:-1].isdigit():
+        value = "-" + value[:-1]
+
+    if value.startswith("100") and value.isdigit():
+        value = "-" + value
+
+    return value
+
+
 # ==========================================
 # Settings
 # ==========================================
@@ -25,16 +40,18 @@ TOKEN = (
     or os.getenv("NBA_BOT_TOKEN")
     or os.getenv("NBA_LIVE_TELEGRAM_BOT_TOKEN_PRIVATE")
     or os.getenv("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_TOKEN_PRIVATE")
+    or os.getenv("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT_TOKEN")
+    or os.getenv("NETO_SPORT_SHARED_MAIN_TELEGRAM_BOT")
     or ""
 ).strip()
-CHAT_ID = (
+CHAT_ID = normalize_telegram_chat_id(
     os.getenv("NBA_CHANNEL_ID")
     or os.getenv("NBA_LIVE_TELEGRAM_CHAT_ID_PRIVATE")
     or os.getenv("TELEGRAM_NBA_CHANNEL_ID")
     or os.getenv("TELEGRAM_CHAT_ID")
     or os.getenv("CHAT_ID")
     or "-1003808107418"
-).strip()
+)
 STATE_FILE = os.getenv("STATE_FILE", "nba_israeli_state.json")
 
 MESSAGE_DELAY_SECONDS = int(os.getenv("MESSAGE_DELAY_SECONDS", "20"))
@@ -43,7 +60,7 @@ SEND_BEN_SARAF_LAST_FINAL_ON_START = (
     os.getenv("SEND_BEN_SARAF_LAST_FINAL_ON_START", "true").strip().lower()
     not in ("0", "false", "no", "off")
 )
-BEN_SARAF_TEST_DAYS_BACK = int(os.getenv("BEN_SARAF_TEST_DAYS_BACK", "2"))
+BEN_SARAF_TEST_LOOKBACK_DAYS = int(os.getenv("BEN_SARAF_TEST_LOOKBACK_DAYS", "7"))
 
 ISRAEL_LAT = 31.778
 ISRAEL_LON = 35.235
@@ -207,6 +224,17 @@ def get_json(url, params=None, use_cdn_proxy=True):
         except Exception as e:
             logging.error("Proxy fetch failed for %s: %s", url, e)
 
+    return None
+
+
+def get_stats_json_once(url, params=None, timeout=8):
+    try:
+        r = requests.get(url, params=params, headers=SESSION.headers, timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+        logging.warning("Stats HTTP %s for %s", r.status_code, r.url)
+    except Exception as e:
+        logging.warning("Stats fetch failed for %s: %s", url, e)
     return None
 
 
@@ -517,14 +545,13 @@ def israel_today():
 
 
 def fetch_stats_summer_games_for_date(game_date):
-    data = get_json(
+    data = get_stats_json_once(
         STATS_SCOREBOARD_URL,
         params={
             "GameDate": game_date.strftime("%m/%d/%Y"),
             "LeagueID": NBA_LEAGUE_ID,
             "DayOffset": "0",
         },
-        use_cdn_proxy=False,
     )
     if not data:
         return []
@@ -594,14 +621,13 @@ def parse_stats_scoreboard(data):
 def fetch_stats_summer_games():
     games = []
     for game_date in stats_game_dates_to_check():
-        data = get_json(
+        data = get_stats_json_once(
             STATS_SCOREBOARD_URL,
             params={
                 "GameDate": game_date,
                 "LeagueID": NBA_LEAGUE_ID,
                 "DayOffset": "0",
             },
-            use_cdn_proxy=False,
         )
         if not data:
             continue
@@ -633,34 +659,56 @@ def send_ben_saraf_last_final_on_start(state):
     if not SEND_BEN_SARAF_LAST_FINAL_ON_START:
         return False
 
-    target_date = israel_today() - datetime.timedelta(days=BEN_SARAF_TEST_DAYS_BACK)
-    one_time_key = f"ben_saraf_final_test_{target_date.isoformat()}"
-    if (state.get("one_time") or {}).get(one_time_key):
-        logging.info("Ben Saraf one-time final test already sent for %s", target_date)
-        return False
+    today = israel_today()
+    oldest_date = today - datetime.timedelta(days=BEN_SARAF_TEST_LOOKBACK_DAYS)
+    logging.info("Looking for Ben Saraf final Summer League game from %s to %s", oldest_date, today)
 
-    logging.info("Looking for Ben Saraf final Summer League game on %s", target_date)
+    telegram_send_message("\n".join([
+        rtl("🧪 <b>בדיקת חיבור בוט NBA</b>"),
+        "",
+        rtl("הבוט התחבר לערוץ ומתחיל לחפש את הודעת הסיום האחרונה של בן שרף בשבוע האחרון."),
+        rtl(f"נבדק טווח: {oldest_date.isoformat()} עד {today.isoformat()}"),
+    ]))
+
     dates_to_check = [
-        target_date - datetime.timedelta(days=1),
-        target_date,
-        target_date + datetime.timedelta(days=1),
+        today - datetime.timedelta(days=offset)
+        for offset in range(BEN_SARAF_TEST_LOOKBACK_DAYS + 1)
     ]
+    dates_to_check.append(today + datetime.timedelta(days=1))
+
     games_by_id = {}
+    fetch_errors = []
     for date_to_check in dates_to_check:
-        for game in fetch_stats_summer_games_for_date(date_to_check):
-            gid = str(game.get("gameId") or "")
-            if gid:
-                games_by_id[gid] = game
+        try:
+            for game in fetch_stats_summer_games_for_date(date_to_check):
+                gid = str(game.get("gameId") or "")
+                if gid:
+                    games_by_id[gid] = game
+        except Exception as e:
+            fetch_errors.append(f"{date_to_check}: {e}")
+            logging.error("Failed fetching Summer League games for %s: %s", date_to_check, e)
 
     games = sorted(games_by_id.values(), key=lambda item: str(item.get("gameId") or ""), reverse=True)
     if not games:
-        logging.warning("No Summer League games found around Ben Saraf test date %s", target_date)
+        msg = "\n".join([
+            rtl("🧪 <b>בדיקת חיבור בוט NBA</b>"),
+            "",
+            rtl("הבוט התחבר וניסה לשלוח את הודעת הסיום של בן שרף."),
+            rtl(f"נבדק טווח: {oldest_date.isoformat()} עד {today.isoformat()}"),
+            rtl("לא נמצאו משחקי ליגת קיץ שהסתיימו בטווח הזה."),
+        ])
+        if fetch_errors:
+            msg += "\n" + rtl(f"שגיאות משיכה: {esc(fetch_errors[0])}")
+        telegram_send_message(msg)
         return False
 
+    checked_finished_games = 0
+    boxscore_failures = 0
     for game in games:
         if safe_int(game.get("gameStatus")) != 3:
             continue
 
+        checked_finished_games += 1
         gid = str(game.get("gameId") or "")
         if not gid:
             continue
@@ -672,6 +720,7 @@ def send_ben_saraf_last_final_on_start(state):
         game_info = scoreboard_game_info(game)
         box_game = fetch_boxscore_game(gid, game_info)
         if not box_game:
+            boxscore_failures += 1
             continue
 
         away = (box_game.get("awayTeam") or {}).get("teamTricode") or game_info["away"]
@@ -694,18 +743,28 @@ def send_ben_saraf_last_final_on_start(state):
 
                 ok = send_player_message("Ben Saraf", msg)
                 if ok:
-                    state.setdefault("one_time", {})[one_time_key] = {
-                        "sent_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        "game_id": gid,
-                    }
-                    save_state(state)
                     logging.info("Ben Saraf one-time final test sent for game %s", gid)
                     return True
 
                 logging.error("Ben Saraf one-time final test failed to send for game %s", gid)
+                telegram_send_message("\n".join([
+                    rtl("🧪 <b>בדיקת חיבור בוט NBA</b>"),
+                    "",
+                    rtl(f"נמצא משחק של בן שרף ({gid}), אבל שליחת הודעת הסיום נכשלה."),
+                    rtl("בדוק שהבוט מנהל בערוץ וש-NBA_CHANNEL_ID תקין."),
+                ]))
                 return False
 
-    logging.warning("Ben Saraf was not found in finished Summer League games around %s", target_date)
+    logging.warning("Ben Saraf was not found in finished Summer League games from %s to %s", oldest_date, today)
+    msg = "\n".join([
+        rtl("🧪 <b>בדיקת חיבור בוט NBA</b>"),
+        "",
+        rtl("הבוט התחבר, אבל לא מצא את בן שרף ב-boxscore של משחקי ליגת הקיץ בשבוע האחרון."),
+        rtl(f"נבדק טווח: {oldest_date.isoformat()} עד {today.isoformat()}"),
+        rtl(f"משחקים שהסתיימו ונבדקו: {checked_finished_games}"),
+        rtl(f"כשלי boxscore: {boxscore_failures}"),
+    ])
+    telegram_send_message(msg)
     return False
 
 
@@ -739,7 +798,7 @@ def stats_player_to_live_player(row):
 
 
 def fetch_stats_boxscore_game(gid, game_info):
-    data = get_json(
+    data = get_stats_json_once(
         STATS_BOX_URL,
         params={
             "GameID": gid,
@@ -749,7 +808,6 @@ def fetch_stats_boxscore_game(gid, game_info):
             "EndRange": "0",
             "RangeType": "0",
         },
-        use_cdn_proxy=False,
     )
     if not data:
         return None
