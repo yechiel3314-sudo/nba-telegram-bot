@@ -39,6 +39,11 @@ STATE_FILE = os.getenv("STATE_FILE", "nba_israeli_state.json")
 
 MESSAGE_DELAY_SECONDS = int(os.getenv("MESSAGE_DELAY_SECONDS", "20"))
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "20"))
+SEND_BEN_SARAF_LAST_FINAL_ON_START = (
+    os.getenv("SEND_BEN_SARAF_LAST_FINAL_ON_START", "true").strip().lower()
+    not in ("0", "false", "no", "off")
+)
+BEN_SARAF_TEST_DAYS_BACK = int(os.getenv("BEN_SARAF_TEST_DAYS_BACK", "2"))
 
 ISRAEL_LAT = 31.778
 ISRAEL_LON = 35.235
@@ -230,13 +235,16 @@ def is_shabbat_or_yom_tov():
 # ==========================================
 def normalize_state(data):
     if not isinstance(data, dict):
-        return {"games": {}, "pending": {}}
+        return {"games": {}, "pending": {}, "one_time": {}}
 
     if not isinstance(data.get("games"), dict):
         data["games"] = {}
 
     if not isinstance(data.get("pending"), dict):
         data["pending"] = {}
+
+    if not isinstance(data.get("one_time"), dict):
+        data["one_time"] = {}
 
     for game_state in data["games"].values():
         if not isinstance(game_state, dict):
@@ -254,7 +262,7 @@ def load_state():
                 return normalize_state(json.load(f))
         except Exception as e:
             logging.error("Failed loading state: %s", e)
-    return {"games": {}, "pending": {}}
+    return {"games": {}, "pending": {}, "one_time": {}}
 
 
 def save_state(state):
@@ -501,6 +509,32 @@ def stats_game_dates_to_check():
     ]
 
 
+def israel_today():
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    if ZoneInfo:
+        return now_utc.astimezone(ZoneInfo(ISRAEL_TZID)).date()
+    return (now_utc + datetime.timedelta(hours=3)).date()
+
+
+def fetch_stats_summer_games_for_date(game_date):
+    data = get_json(
+        STATS_SCOREBOARD_URL,
+        params={
+            "GameDate": game_date.strftime("%m/%d/%Y"),
+            "LeagueID": NBA_LEAGUE_ID,
+            "DayOffset": "0",
+        },
+        use_cdn_proxy=False,
+    )
+    if not data:
+        return []
+
+    return [
+        game for game in parse_stats_scoreboard(data)
+        if is_summer_league_game(game)
+    ]
+
+
 def fetch_live_scoreboard_games():
     sb = get_json(LIVE_SCOREBOARD_URL)
     if not sb:
@@ -593,6 +627,86 @@ def fetch_scoreboard_games():
             games_by_id[gid] = game
 
     return list(games_by_id.values())
+
+
+def send_ben_saraf_last_final_on_start(state):
+    if not SEND_BEN_SARAF_LAST_FINAL_ON_START:
+        return False
+
+    target_date = israel_today() - datetime.timedelta(days=BEN_SARAF_TEST_DAYS_BACK)
+    one_time_key = f"ben_saraf_final_test_{target_date.isoformat()}"
+    if (state.get("one_time") or {}).get(one_time_key):
+        logging.info("Ben Saraf one-time final test already sent for %s", target_date)
+        return False
+
+    logging.info("Looking for Ben Saraf final Summer League game on %s", target_date)
+    dates_to_check = [
+        target_date - datetime.timedelta(days=1),
+        target_date,
+        target_date + datetime.timedelta(days=1),
+    ]
+    games_by_id = {}
+    for date_to_check in dates_to_check:
+        for game in fetch_stats_summer_games_for_date(date_to_check):
+            gid = str(game.get("gameId") or "")
+            if gid:
+                games_by_id[gid] = game
+
+    games = sorted(games_by_id.values(), key=lambda item: str(item.get("gameId") or ""), reverse=True)
+    if not games:
+        logging.warning("No Summer League games found around Ben Saraf test date %s", target_date)
+        return False
+
+    for game in games:
+        if safe_int(game.get("gameStatus")) != 3:
+            continue
+
+        gid = str(game.get("gameId") or "")
+        if not gid:
+            continue
+
+        stage_key, stage_text = stage_from_game(game)
+        if not is_final_stage_key(stage_key):
+            continue
+
+        game_info = scoreboard_game_info(game)
+        box_game = fetch_boxscore_game(gid, game_info)
+        if not box_game:
+            continue
+
+        away = (box_game.get("awayTeam") or {}).get("teamTricode") or game_info["away"]
+        home = (box_game.get("homeTeam") or {}).get("teamTricode") or game_info["home"]
+        game_info.update({"away": away, "home": home})
+
+        for team_key in ("awayTeam", "homeTeam"):
+            players = ((box_game.get(team_key) or {}).get("players") or [])
+            if not isinstance(players, list):
+                continue
+
+            for player in players:
+                if tracked_player_name(player_full_name(player)) != "Ben Saraf":
+                    continue
+
+                msg = build_msg(player, stage_text, game_info, "Ben Saraf")
+                if not msg:
+                    logging.warning("Ben Saraf found but no final message was built for game %s", gid)
+                    return False
+
+                ok = send_player_message("Ben Saraf", msg)
+                if ok:
+                    state.setdefault("one_time", {})[one_time_key] = {
+                        "sent_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "game_id": gid,
+                    }
+                    save_state(state)
+                    logging.info("Ben Saraf one-time final test sent for game %s", gid)
+                    return True
+
+                logging.error("Ben Saraf one-time final test failed to send for game %s", gid)
+                return False
+
+    logging.warning("Ben Saraf was not found in finished Summer League games around %s", target_date)
+    return False
 
 
 def stats_player_to_live_player(row):
@@ -905,6 +1019,8 @@ def handle_game(state, game, shabbat_or_yom_tov):
 def run():
     state = load_state()
     logging.info("Bot started...")
+    send_ben_saraf_last_final_on_start(state)
+    state = load_state()
 
     while True:
         state_dirty = False
