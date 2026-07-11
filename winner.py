@@ -176,7 +176,16 @@ def gemini_env_debug_summary() -> str:
     return "; ".join(interesting[:30])
 
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+DEFAULT_GEMINI_MODEL_CHAIN = (
+    "gemini-3.5-flash,"
+    "gemini-3.1-pro-preview,"
+    "gemini-3-flash-preview,"
+    "gemini-2.5-pro,"
+    "gemini-3.1-flash-lite,"
+    "gemini-2.5-flash,"
+    "gemini-2.5-flash-lite"
+)
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_FAST_MODEL = os.environ.get("GEMINI_FAST_MODEL", GEMINI_MODEL)
 # Optional: when the main Gemini model returns temporary overload (503/high demand),
 # the next posts can use this model without spending a second Gemini request on the same post.
@@ -187,7 +196,7 @@ GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "").strip()
 # add a second Gemini request for the same post.
 GEMINI_FALLBACK_MODELS_RAW = os.environ.get(
     "GEMINI_FALLBACK_MODELS",
-    os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite,gemini-2.5-flash"),
+    os.environ.get("GEMINI_FALLBACK_MODEL", DEFAULT_GEMINI_MODEL_CHAIN),
 ).strip()
 GEMINI_MODEL_OVERLOAD_SECONDS = int(os.environ.get("GEMINI_MODEL_OVERLOAD_SECONDS", "180"))
 GEMINI_MODEL_OVERLOAD_UNTIL = 0.0
@@ -1232,7 +1241,7 @@ STAT_REPLACEMENTS = {
     "apps": "הופעות",
 }
 
-LATIN_KEEP = {"VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC"}
+LATIN_KEEP = {"VAR", "UEFA", "FIFA", "PSG", "UCL", "UEL", "MLS", "RMC", "ESPN", "FC", "HERE"}
 
 HEBREW_LETTER = {
     "a": "א", "b": "ב", "c": "ק", "d": "ד", "e": "ה", "f": "פ",
@@ -1262,6 +1271,10 @@ class Post:
 
 
 CONTROL_PREPARED_SENDS: dict[str, dict[str, Any]] = {}
+CONTROL_FALSE_DUPLICATE_CACHE_AT = 0.0
+CONTROL_FALSE_DUPLICATE_CACHE: list[dict[str, Any]] = []
+CONTROL_BORDERLINE_NOTIFIED_KEYS: set[str] = set()
+CONTROL_BORDERLINE_NOTIFY_TIMES: list[float] = []
 
 
 class TranslationUnavailable(Exception):
@@ -2111,6 +2124,10 @@ def save_control_state(paused: bool | None = None, **updates: Any) -> None:
     state.update(updates)
     if "team_tier_overrides" in updates or "custom_team_catalog" in updates:
         CANONICAL_ENTITY_ALIAS_CACHE = None
+    write_control_state(state)
+
+
+def write_control_state(state: dict[str, Any]) -> None:
     path = control_state_path()
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
@@ -2264,6 +2281,7 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
         [{"text": "👥 כתבים פעילים בפועל", "callback_data": "football_active_accounts_status"}],
         [{"text": "📡 בדיקת RSS", "callback_data": "football_rss_status"}],
         [{"text": "🤖 בדיקת Gemini", "callback_data": "football_gemini_status"}],
+        [{"text": "🧪 בדיקת חיבורים מלאה", "callback_data": "football_system_health"}],
         [{"text": "📬 פוסט אחרון שנשלח", "callback_data": "football_last_sent_post"}],
         [{"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"}],
         [{"text": "📋 סיכום 30 חסימות", "callback_data": "football_blocked_summary"}],
@@ -2527,6 +2545,18 @@ TEAM_CATALOG.update({
     "levante": {"name": "לבאנטה", "tier": "tier3", "aliases": ["Levante", "לבאנטה"]},
     "malaga": {"name": "מלאגה", "tier": "tier3", "aliases": ["Malaga", "Málaga", "מלאגה"]},
     "racing santander": {"name": "ראסינג סנטנדר", "tier": "tier3", "aliases": ["Racing Santander", "Racing", "ראסינג", "ראסינג סנטנדר", "ראסטינג"]},
+})
+
+TEAM_CATALOG["hoffenheim"]["name"] = "\u05d0\u05d5\u05e4\u05e0\u05d4\u05d9\u05d9\u05dd"
+TEAM_CATALOG["hoffenheim"]["aliases"] = [
+    "Hoffenheim",
+    "TSG Hoffenheim",
+    "\u05d0\u05d5\u05e4\u05e0\u05d4\u05d9\u05d9\u05dd",
+    "\u05d4\u05d5\u05e4\u05e0\u05d4\u05d9\u05d9\u05dd",
+]
+TEAM_REPLACEMENTS.update({
+    "Hoffenheim": "\u05d0\u05d5\u05e4\u05e0\u05d4\u05d9\u05d9\u05dd",
+    "TSG Hoffenheim": "\u05d0\u05d5\u05e4\u05e0\u05d4\u05d9\u05d9\u05dd",
 })
 
 KNOWN_UNTRACKED_DESTINATION_CLUB_ALIASES = (
@@ -3054,6 +3084,139 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str, limi
     return "\n".join(lines)
 
 
+def control_block_item_id(post: "Post", reason: str, ts: float | None = None) -> str:
+    raw = "|".join(
+        [
+            str(getattr(post, "username", "") or ""),
+            str(getattr(post, "post_id", "") or ""),
+            str(getattr(post, "link", "") or ""),
+            str(reason or ""),
+            str(int(ts or time.time())),
+        ]
+    )
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def post_to_control_payload(post: "Post") -> dict[str, Any]:
+    return {
+        "post_id": post.post_id,
+        "username": post.username,
+        "text": post.text,
+        "link": post.link,
+        "image_urls": list(post.image_urls or []),
+        "video_urls": list(post.video_urls or []),
+        "has_video": bool(post.has_video),
+        "primary_has_video": bool(post.primary_has_video),
+        "quoted_has_video": bool(post.quoted_has_video),
+        "quoted_author": post.quoted_author,
+        "quoted_text": post.quoted_text,
+        "published_ts": float(post.published_ts or 0.0),
+        "dedupe_ids": list(post.dedupe_ids or []),
+        "source_name": post.source_name,
+    }
+
+
+def post_from_control_payload(payload: Any) -> "Post | None":
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return Post(
+            post_id=str(payload.get("post_id", "") or ""),
+            username=str(payload.get("username", "") or ""),
+            text=str(payload.get("text", "") or ""),
+            link=str(payload.get("link", "") or ""),
+            image_urls=[str(x) for x in (payload.get("image_urls", []) or []) if str(x).strip()],
+            video_urls=[str(x) for x in (payload.get("video_urls", []) or []) if str(x).strip()],
+            has_video=bool(payload.get("has_video", False)),
+            primary_has_video=bool(payload.get("primary_has_video", False)),
+            quoted_has_video=bool(payload.get("quoted_has_video", False)),
+            quoted_author=str(payload.get("quoted_author", "") or ""),
+            quoted_text=str(payload.get("quoted_text", "") or ""),
+            published_ts=float(payload.get("published_ts", 0.0) or 0.0),
+            dedupe_ids=[str(x) for x in (payload.get("dedupe_ids", []) or []) if str(x).strip()],
+            source_name=str(payload.get("source_name", "") or "control_blocked"),
+        )
+    except Exception:
+        return None
+
+
+def control_item_id(item: dict[str, Any]) -> str:
+    item_id = str(item.get("id", "") or "")
+    if item_id:
+        return item_id[:24]
+    raw = "|".join(
+        [
+            str(item.get("source", "") or ""),
+            str(item.get("link", "") or ""),
+            str(item.get("reason", "") or ""),
+            str(item.get("preview", "") or "")[:120],
+        ]
+    )
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def control_item_force_send_label(item: dict[str, Any], index: int) -> str:
+    reason = str(item.get("raw_reason", "") or item.get("reason", "") or "").lower()
+    if "translation_quality_blocked" in reason:
+        return f"🔁 תרגם בג'מיני שוב ושלח {index}"
+    return f"🧠 תרגם בג'מיני ושלח {index}"
+
+
+def control_block_actions_reply_markup(items: list[dict[str, Any]], include_delete: bool = True) -> dict[str, Any]:
+    keyboard: list[list[dict[str, str]]] = []
+    for index, item in enumerate(items, 1):
+        item_id = control_item_id(item)
+        row = [{"text": control_item_force_send_label(item, index), "callback_data": f"football_force_blocked:{item_id}"}]
+        if is_control_duplicate_item(item):
+            row.append({"text": f"✅ לא כפילות {index}", "callback_data": f"football_not_duplicate:{item_id}"})
+        keyboard.append(row)
+    if include_delete:
+        keyboard.append([{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}])
+    keyboard.append([{"text": "↩️ חזרה לניטור", "callback_data": "football_menu_monitor"}])
+    return stable_reply_markup(keyboard)
+
+
+def _control_list_text(title: str, items: list[dict[str, Any]], empty: str, limit: int = 5) -> str:
+    lines = [title, ""]
+    if not items:
+        lines.append(empty)
+        return "\n".join(lines)
+    shown_items = items[-max(1, int(limit)):]
+    for index, item in enumerate(shown_items, 1):
+        source = _hebrew_account_label(str(item.get("source", "") or ""))
+        reason = hebrew_block_reason(str(item.get("reason", "") or "סיבה לא ידועה"))
+        preview = str(item.get("preview", "") or "")
+        if preview and GOOGLE_TRANSLATE_CONTROL_PREVIEWS:
+            preview = google_translate_hebrew_safe(preview, 220)
+        link = str(item.get("link", "") or "")
+        rendered = str(item.get("rendered", "") or item.get("details", "") or "")
+        duplicate_source = str(item.get("duplicate_source", "") or "")
+        duplicate_verdict = str(item.get("duplicate_verdict", "") or "")
+        duplicate_score = item.get("duplicate_score")
+        lines.append(f"{index}. כתב: {source}")
+        lines.append(f"   סיבה: {reason}")
+        if is_control_duplicate_item(item):
+            try:
+                score_value = float(duplicate_score)
+                certainty = "ודאית" if score_value >= 0.72 else "כנראה"
+                lines.append(f"   כפילות: {certainty} | דמיון {score_value:.2f}")
+            except Exception:
+                lines.append("   כפילות: זוהתה מול הזיכרון")
+            if duplicate_source:
+                lines.append(f"   מול: {duplicate_source}")
+            if duplicate_verdict:
+                lines.append(f"   החלטה: {duplicate_verdict}")
+        if preview:
+            lines.append(f"   תקציר: {trim(preview, 180)}")
+        if rendered and is_control_duplicate_item(item):
+            lines.append(f"   פירוט: {trim(compact_debug_text(rendered, 220), 220)}")
+        if link:
+            lines.append(f"   קישור לפוסט: {link}")
+        if index != len(shown_items):
+            lines.append("")
+    return "\n".join(lines)
+
+
 def control_delete_message_reply_markup() -> dict[str, Any]:
     return stable_reply_markup([[{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}]])
 
@@ -3067,6 +3230,129 @@ def is_control_duplicate_item(item: dict[str, Any]) -> bool:
         or "כפיל" in reason
         or "כפילו" in reason
     )
+
+
+def control_item_duplicate_score(item: dict[str, Any]) -> float | None:
+    try:
+        value = item.get("duplicate_score")
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def control_item_is_low_confidence_duplicate(item: dict[str, Any]) -> bool:
+    if not is_control_duplicate_item(item):
+        return False
+    score = control_item_duplicate_score(item)
+    if score is None:
+        return False
+    return CONTROL_BORDERLINE_DUPLICATE_MIN_SCORE <= score < CONTROL_BORDERLINE_DUPLICATE_MAX_SCORE
+
+
+def control_item_importance_gap(item: dict[str, Any]) -> float | None:
+    raw_reason = str(item.get("raw_reason", "") or "")
+    match = re.search(r"importance_score_too_low:([0-9]+(?:\.[0-9]+)?)<([0-9]+(?:\.[0-9]+)?)", raw_reason)
+    if not match:
+        return None
+    try:
+        score = float(match.group(1))
+        threshold = float(match.group(2))
+    except Exception:
+        return None
+    return threshold - score
+
+
+def should_notify_control_borderline_item(item: dict[str, Any]) -> bool:
+    if not CONTROL_CHAT_ID:
+        return False
+    raw_reason = str(item.get("raw_reason", "") or "").lower()
+    if control_item_is_low_confidence_duplicate(item):
+        return True
+    if "post_translation_duplicate" in raw_reason:
+        score = control_item_duplicate_score(item)
+        return score is None or score < CONTROL_BORDERLINE_DUPLICATE_MAX_SCORE
+    if "translation_quality_blocked" in raw_reason or "main_blocked_untranslated" in raw_reason:
+        return True
+    if raw_reason.startswith("pre_send:importance_score_too_low"):
+        gap = control_item_importance_gap(item)
+        return gap is not None and 0 <= gap <= 8
+    return False
+
+
+def control_borderline_rate_limited(now_ts: float) -> bool:
+    CONTROL_BORDERLINE_NOTIFY_TIMES[:] = [
+        ts for ts in CONTROL_BORDERLINE_NOTIFY_TIMES
+        if now_ts - float(ts or 0.0) <= 60 * 60
+    ]
+    if len(CONTROL_BORDERLINE_NOTIFY_TIMES) >= max(1, CONTROL_BORDERLINE_NOTIFY_MAX_PER_HOUR):
+        return True
+    CONTROL_BORDERLINE_NOTIFY_TIMES.append(now_ts)
+    return False
+
+
+def control_borderline_candidate_text(item: dict[str, Any]) -> str:
+    source = _hebrew_account_label(str(item.get("source", "") or "unknown"))
+    reason = hebrew_block_reason(str(item.get("reason", "") or "סיבה לא ידועה"))
+    preview = str(item.get("preview", "") or "")
+    if preview:
+        # Borderline control previews must stay cheap and non-authoritative.
+        # Gemini is used only if the user presses the send button.
+        preview = google_translate_hebrew_safe(preview, 260)
+    link = str(item.get("link", "") or "")
+    raw_reason = str(item.get("raw_reason", "") or "").lower()
+    lines = [
+        "⚠️ דיווח גבולי לבדיקה",
+        "",
+        f"כתב: {source}",
+        f"סיבה: {reason}",
+    ]
+    score = control_item_duplicate_score(item)
+    if score is not None:
+        lines.append(f"רמת דמיון: {score:.2f}")
+    if "translation_quality_blocked" in raw_reason:
+        lines.append("הפוסט עבר סינון, אבל התרגום נראה חשוד ולכן נעצר לפני הערוץ הראשי.")
+    elif "main_blocked_untranslated" in raw_reason:
+        lines.append("הפוסט עבר תרגום, אבל נעצר בבדיקת ניקיון לפני שליחה.")
+    elif raw_reason.startswith("pre_send:"):
+        lines.append("הפוסט נעצר לפני תרגום. הכפתור יתרגם וישלח רק אם התרגום תקין.")
+    elif is_control_duplicate_item(item):
+        lines.append("זוהתה כפילות לא ודאית לגמרי, לכן נשארה לך אפשרות ידנית.")
+    if preview:
+        lines.append("התצוגה כאן היא Preview מתרגום Google בלבד. הכפתור יתרגם בג'מיני וישלח רק אם התרגום תקין.")
+        lines.extend(["", trim(preview, 450)])
+    if link:
+        lines.extend(["", f"קישור: {link}"])
+    return "\n".join(lines)
+
+
+def maybe_notify_control_borderline_item(item: dict[str, Any]) -> None:
+    if not should_notify_control_borderline_item(item):
+        return
+    item_id = control_item_id(item)
+    if not item_id or item_id in CONTROL_BORDERLINE_NOTIFIED_KEYS:
+        return
+    now_ts = time.time()
+    if control_borderline_rate_limited(now_ts):
+        logging.debug("דילוג התראת גבולי לערוץ שקט בגלל מגבלת קצב: %s", item_id)
+        return
+    CONTROL_BORDERLINE_NOTIFIED_KEYS.add(item_id)
+    if len(CONTROL_BORDERLINE_NOTIFIED_KEYS) > 500:
+        CONTROL_BORDERLINE_NOTIFIED_KEYS.clear()
+        CONTROL_BORDERLINE_NOTIFIED_KEYS.add(item_id)
+
+    def _notify() -> None:
+        try:
+            send_control_text(
+                control_borderline_candidate_text(item),
+                None,
+                control_block_actions_reply_markup([item], include_delete=True),
+            )
+        except Exception as exc:
+            logging.debug("שליחת התראת דיווח גבולי לערוץ השקט נכשלה: %s", exc)
+
+    Thread(target=_notify, daemon=True).start()
 
 
 def recent_duplicate_control_items(state: dict[str, Any], limit: int = 10) -> list[dict[str, Any]]:
@@ -3094,6 +3380,140 @@ def recent_duplicate_control_items(state: dict[str, Any], limit: int = 10) -> li
         seen.add(item_key)
         unique.append(item)
     return unique[-max(1, int(limit)):]
+
+
+def find_control_block_item(state: dict[str, Any], item_id: str) -> tuple[dict[str, Any] | None, int]:
+    wanted = str(item_id or "").strip()
+    if not wanted:
+        return None, -1
+    items = state.get("last_blocked_posts", [])
+    if not isinstance(items, list):
+        return None, -1
+    for index, item in enumerate(items):
+        if isinstance(item, dict) and control_item_id(item) == wanted:
+            return item, index
+    return None, -1
+
+
+def prune_false_duplicate_links(items: list[Any], now: float | None = None) -> list[dict[str, Any]]:
+    now = now or time.time()
+    result: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if now - float(item.get("ts", 0.0) or 0.0) > CHANNEL_RECENT_NEWS_WINDOW_SECONDS:
+            continue
+        if str(item.get("link", "") or "").strip() or str(item.get("post_id", "") or "").strip():
+            result.append(item)
+    return result[-300:]
+
+
+def control_false_duplicate_items_cached() -> list[dict[str, Any]]:
+    global CONTROL_FALSE_DUPLICATE_CACHE_AT, CONTROL_FALSE_DUPLICATE_CACHE
+    now = time.time()
+    if now - CONTROL_FALSE_DUPLICATE_CACHE_AT < 2.0:
+        return CONTROL_FALSE_DUPLICATE_CACHE
+    try:
+        state = load_control_state()
+        CONTROL_FALSE_DUPLICATE_CACHE = prune_false_duplicate_links(list(state.get("duplicate_false_positive_links", []) or []), now)
+        CONTROL_FALSE_DUPLICATE_CACHE_AT = now
+    except Exception:
+        CONTROL_FALSE_DUPLICATE_CACHE = []
+        CONTROL_FALSE_DUPLICATE_CACHE_AT = now
+    return CONTROL_FALSE_DUPLICATE_CACHE
+
+
+def is_duplicate_false_positive_post(post: "Post") -> bool:
+    try:
+        items = control_false_duplicate_items_cached()
+        link = str(getattr(post, "link", "") or "")
+        post_id = str(getattr(post, "post_id", "") or "")
+        dedupe_ids = {str(x) for x in (getattr(post, "dedupe_ids", []) or [])}
+        for item in items:
+            if link and str(item.get("link", "") or "") == link:
+                return True
+            if post_id and str(item.get("post_id", "") or "") == post_id:
+                return True
+            item_dedupe = {str(x) for x in (item.get("dedupe_ids", []) or [])}
+            if dedupe_ids and item_dedupe and dedupe_ids & item_dedupe:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def mark_control_item_not_duplicate(item_id: str) -> str:
+    global CONTROL_FALSE_DUPLICATE_CACHE_AT
+    state = load_control_state()
+    item, _index = find_control_block_item(state, item_id)
+    if not item:
+        return "לא מצאתי את הפריט הזה בזיכרון החסימות."
+    false_items = prune_false_duplicate_links(list(state.get("duplicate_false_positive_links", []) or []))
+    false_items.append(
+        {
+            "ts": time.time(),
+            "link": str(item.get("link", "") or ""),
+            "post_id": str(item.get("post_id", "") or ""),
+            "dedupe_ids": list(item.get("dedupe_ids", []) or []),
+            "source": str(item.get("source", "") or ""),
+            "preview": str(item.get("preview", "") or "")[:260],
+        }
+    )
+    state["duplicate_false_positive_links"] = prune_false_duplicate_links(false_items)
+    item["is_duplicate"] = False
+    item["not_duplicate_marked"] = True
+    item["reason"] = "סומן ידנית: לא כפילות"
+    duplicates = state.get("last_duplicate_posts", [])
+    if isinstance(duplicates, list):
+        state["last_duplicate_posts"] = [
+            existing for existing in duplicates
+            if not (isinstance(existing, dict) and control_item_id(existing) == control_item_id(item))
+        ][-CONTROL_BLOCK_HISTORY_LIMIT:]
+    write_control_state(state)
+    CONTROL_FALSE_DUPLICATE_CACHE_AT = 0.0
+    return "סומן כלא כפילות. אם תרצה לפרסם אותו עכשיו, לחץ על כפתור השליחה שלו."
+
+
+def send_control_blocked_post_to_main(item_id: str) -> str:
+    control_state = load_control_state()
+    item, _index = find_control_block_item(control_state, item_id)
+    if not item:
+        return "לא מצאתי את הפוסט הזה בזיכרון החסימות."
+    post = post_from_control_payload(item.get("post"))
+    if not post:
+        return "אין מספיק נתונים כדי לשחזר את הפוסט. בדוק שוב את הכתב ושלח משם."
+
+    translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
+    quality_issues = translation_quality_issues(post, translated, quoted_translated)
+    if quality_issues:
+        return "לא נשלח לערוץ הראשי כי התרגום עדיין חשוד:\n" + "\n".join(f"- {issue}" for issue in quality_issues[:6])
+
+    publishable, reason = is_publishable_hebrew_for_main_channel(translated, quoted_translated)
+    if not publishable:
+        return f"לא נשלח לערוץ הראשי: {reason}"
+
+    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+    images = selected_post_images(post)
+    message_ids, mode = send_prepared_message_to_main(post, message, images, video_url)
+
+    try:
+        state = load_state()
+        confirm_recent_news_event(post, state)
+        if message:
+            first_message_id = next(iter(message_ids.values()), "")
+            remember_channel_news_text(message, state, message_id=str(first_message_id or ""), source="control_force")
+        if message_ids:
+            remember_bot_sent_reply_target(post, state, dict(message_ids))
+        seen = set(state.get(post.username, []))
+        seen.update(post.dedupe_ids)
+        state[post.username] = list(seen)[-500:]
+        save_state(state)
+    except Exception as exc:
+        logging.debug("שמירת זיכרון אחרי שליחה ידנית נכשלה: %s", exc)
+
+    save_control_state(last_sent_post={"ts": time.time(), "username": post.username, "link": post.link})
+    return f"נשלח לערוץ נטו ספורט. מצב שליחה: {mode}"
 
 
 def last_blocked_summary_text(limit: int | None = None) -> str:
@@ -3198,7 +3618,7 @@ def send_control_text_full(text: str, reply_markup: dict[str, Any] | None = None
 
 
 
-def send_control_text_async(loading_text: str, compute_fn, message_id: Any = None, reply_markup: dict[str, Any] | None = None) -> None:
+def _send_control_text_async_legacy_unused(loading_text: str, compute_fn, message_id: Any = None, reply_markup: dict[str, Any] | None = None) -> None:
     """Show data fast: edit the button message immediately, compute in background, then replace it."""
     if message_id:
         send_control_text(loading_text, message_id, reply_markup)
@@ -3216,6 +3636,41 @@ def send_control_text_async(loading_text: str, compute_fn, message_id: Any = Non
             logging.warning("⚠️ עדכון נתונים אסינכרוני נכשל: %s", exc)
 
     Thread(target=_run, daemon=True).start()
+
+def send_control_text_async(
+    loading_text: str,
+    compute_fn,
+    message_id: Any = None,
+    reply_markup: dict[str, Any] | None = None,
+    *,
+    result_new_message: bool = False,
+    result_reply_markup: dict[str, Any] | None = None,
+    full_result: bool = False,
+) -> None:
+    """Run heavy control actions in the background so button navigation stays responsive."""
+    def _run() -> None:
+        try:
+            send_control_text(loading_text, message_id, reply_markup)
+        except Exception as exc:
+            logging.debug("הודעת טעינה אסינכרונית נכשלה: %s", exc)
+        try:
+            final_text = compute_fn()
+        except Exception as exc:
+            final_text = f"הבדיקה נכשלה:\n{short_error(exc, 900)}"
+        try:
+            final_markup = result_reply_markup if result_reply_markup is not None else reply_markup
+            if full_result:
+                if result_new_message:
+                    send_control_text_full(final_text, final_markup)
+                else:
+                    send_control_text(final_text, message_id, final_markup)
+            else:
+                send_control_text(final_text, None if result_new_message else message_id, final_markup)
+        except Exception as exc:
+            logging.warning("עדכון נתונים אסינכרוני נכשל: %s", exc)
+
+    Thread(target=_run, daemon=True).start()
+
 
 def send_control_html(text: str, reply_markup: dict[str, Any] | None = None) -> None:
     if not CONTROL_CHAT_ID:
@@ -3255,11 +3710,12 @@ def remember_control_prepared_send(
 
 
 def control_send_to_main_reply_markup(token: str) -> dict[str, Any]:
-    return {
-        "inline_keyboard": [[
-            {"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}
-        ]]
-    }
+    return stable_reply_markup(
+        [
+            [{"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}],
+            [{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}],
+        ]
+    )
 
 
 def send_prepared_control_post_to_main(token: str) -> str:
@@ -3560,6 +4016,86 @@ def gemini_status_text() -> str:
 
     return "\n".join(lines)
 
+
+def system_health_text() -> str:
+    lines = ["🧪 בדיקת חיבורים מלאה", ""]
+
+    try:
+        response = telegram_api("getMe", {}, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
+        result = response.get("result") or {}
+        bot_user = result.get("username") or result.get("first_name") or "bot"
+        lines.append(f"✅ טלגרם: מחובר לבוט @{bot_user}")
+    except Exception as exc:
+        lines.append(f"❌ טלגרם: כשל בחיבור לבוט - {short_error(exc, 220)}")
+
+    if TELEGRAM_CHAT_IDS:
+        lines.append(f"✅ ערוץ ראשי: מוגדרים {len(TELEGRAM_CHAT_IDS)} יעד/ים ({', '.join(str(x) for x in TELEGRAM_CHAT_IDS[:3])})")
+    else:
+        lines.append("❌ ערוץ ראשי: לא מוגדר יעד שליחה")
+    lines.append(f"✅ ערוץ שקט: מוגדר {CONTROL_CHAT_ID}" if CONTROL_CHAT_ID else "❌ ערוץ שקט: לא מוגדר")
+
+    try:
+        data_dir = app_data_dir()
+        test_path = data_dir / ".football_bot_health_check"
+        test_path.write_text("ok", encoding="utf-8")
+        test_path.unlink(missing_ok=True)
+        lines.append(f"✅ שמירת נתונים: תקין ({data_dir})")
+    except Exception as exc:
+        lines.append(f"❌ שמירת נתונים: כשל כתיבה - {short_error(exc, 220)}")
+
+    try:
+        refresh_gemini_api_keys_from_env()
+        now = time.time()
+        with GEMINI_KEY_LOCK:
+            loaded = len(GEMINI_API_KEYS)
+            cooled = sum(1 for key in GEMINI_API_KEYS if GEMINI_KEY_COOLDOWNS.get(key, 0.0) > now)
+        available = max(0, loaded - cooled)
+        if gemini_requests_paused_until_refill():
+            lines.append(f"⚠️ Gemini: מוגדרים {loaded}, אבל הבקשות עצורות ידנית")
+        elif available:
+            lines.append(f"✅ Gemini: {available}/{loaded} מפתחות זמינים | מודל: {current_gemini_translation_model()}")
+        elif loaded:
+            lines.append(f"⚠️ Gemini: {loaded} מפתחות מוגדרים, כולם בקירור/מכסה כרגע")
+        else:
+            lines.append("❌ Gemini: לא נטענו מפתחות")
+    except Exception as exc:
+        lines.append(f"❌ Gemini: בדיקה נכשלה - {short_error(exc, 220)}")
+
+    try:
+        sample_accounts = active_x_accounts()[:3]
+        if not sample_accounts:
+            lines.append("⚠️ RSS: אין כתבים פעילים לבדיקה")
+        else:
+            fetched = fetch_control_posts_for_accounts(sample_accounts)
+            ok = 0
+            details: list[str] = []
+            for username in sample_accounts:
+                posts, error = fetched.get(username, ([], None))
+                if error:
+                    details.append(f"{_hebrew_account_label(username)}: כשל")
+                    continue
+                ok += 1
+                details.append(f"{_hebrew_account_label(username)}: {len(posts)}")
+            lines.append(f"✅ RSS: בדיקה קצרה עברה {ok}/{len(sample_accounts)} | " + " | ".join(details))
+    except Exception as exc:
+        lines.append(f"❌ RSS: בדיקה קצרה נכשלה - {short_error(exc, 220)}")
+
+    state = load_control_state()
+    blocked = state.get("last_blocked_posts", [])
+    duplicates = recent_duplicate_control_items(state, limit=10)
+    lines.extend(
+        [
+            "",
+            "זיכרון ובקרה:",
+            f"- חסימות שמורות: {len(blocked) if isinstance(blocked, list) else 0}",
+            f"- כפילויות אחרונות זמינות: {len(duplicates)}",
+            f"- זיכרון כפילויות רגיל: {RECENT_NEWS_WINDOW_SECONDS // 3600} שעות",
+            f"- זיכרון הודעות ערוץ: {CHANNEL_RECENT_NEWS_WINDOW_SECONDS // 86400} ימים",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def active_accounts_status_text() -> str:
     state = load_control_state()
     active = active_x_accounts()
@@ -3787,6 +4323,30 @@ def process_control_update(update: dict[str, Any]) -> None:
         except Exception as exc:
             logging.debug("מחיקת הודעת בקרה נכשלה: %s", exc)
         return
+    if data.startswith("football_force_blocked:"):
+        token = data.split(":", 1)[1].strip()
+        if callback_id:
+            answer_control_callback(callback_id, "שולח בכוח")
+
+        def _force_blocked_send() -> None:
+            try:
+                result_text = send_control_blocked_post_to_main(token)
+            except Exception as exc:
+                logging.warning("שליחה בכוח מפריט חסום נכשלה: %s", exc)
+                result_text = f"שליחה בכוח נכשלה:\n{short_error(exc, 900)}"
+            try:
+                send_control_text(result_text, None, control_delete_message_reply_markup())
+            except Exception as exc:
+                logging.warning("הודעת סטטוס אחרי שליחה בכוח נכשלה: %s", exc)
+
+        Thread(target=_force_blocked_send, daemon=True).start()
+        return
+    if data.startswith("football_not_duplicate:"):
+        token = data.split(":", 1)[1].strip()
+        if callback_id:
+            answer_control_callback(callback_id, "סומן לא כפילות")
+        send_control_text(mark_control_item_not_duplicate(token), None, control_delete_message_reply_markup())
+        return
     if data.startswith("football_send_test:"):
         token = data.split(":", 1)[1].strip()
         if callback_id:
@@ -3799,7 +4359,7 @@ def process_control_update(update: dict[str, Any]) -> None:
                 logging.warning("⚠️ שליחה לערוץ נטו ספורט מהכפתור נכשלה: %s", exc)
                 result_text = f"שליחה לערוץ נטו ספורט נכשלה:\n{short_error(exc, 700)}"
             try:
-                send_control_text(result_text)
+                send_control_text(result_text, None, control_delete_message_reply_markup())
             except Exception as exc:
                 logging.warning("⚠️ הודעת סטטוס אחרי שליחה מהכפתור נכשלה: %s", exc)
 
@@ -3889,7 +4449,7 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_check_all_accounts_now":
         if callback_id:
             answer_control_callback(callback_id, "בודק את כל הכתבים")
-        send_control_text_async("🔄 בודק את כל הכתבים...", check_all_accounts_now_text, message.get("message_id"), monitor_menu_reply_markup())
+        send_control_text_async("🔄 בודק את כל הכתבים...", check_all_accounts_now_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
     elif data == "football_active_accounts_status":
         if callback_id:
             answer_control_callback(callback_id, "מציג כתבים פעילים")
@@ -3897,11 +4457,15 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_rss_status":
         if callback_id:
             answer_control_callback(callback_id, "בודק RSS")
-        send_control_text_async("📡 בודק RSS...", rss_status_text, message.get("message_id"), monitor_menu_reply_markup())
+        send_control_text_async("📡 בודק RSS...", rss_status_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
     elif data == "football_gemini_status":
         if callback_id:
             answer_control_callback(callback_id, "בודק Gemini")
         send_control_text_async("🤖 טוען מצב Gemini...", gemini_status_text, message.get("message_id"), monitor_menu_reply_markup())
+    elif data == "football_system_health":
+        if callback_id:
+            answer_control_callback(callback_id, "בודק חיבורים")
+        send_control_text_async("🧪 בודק חיבורים...", system_health_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
     elif data == "football_gemini_toggle_quota_guard":
         if callback_id:
             answer_control_callback(callback_id, "מעדכן הגנת Gemini")
@@ -3974,7 +4538,7 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_daily_report_now":
         if callback_id:
             answer_control_callback(callback_id, "שולח סיכום עכשיו")
-        send_control_text(build_daily_quality_report_text(), message.get("message_id"), quick_control_reply_markup())
+        send_control_text_async("📊 מכין סיכום יום...", build_daily_quality_report_text, message.get("message_id"), quick_control_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
     elif data == "football_test_latest_fabrizio":
         if callback_id:
             answer_control_callback(callback_id, "בודק את פבריציו האחרון")
@@ -3985,11 +4549,15 @@ def process_control_update(update: dict[str, Any]) -> None:
         state = load_control_state()
         blocked_posts = list(state.get("last_blocked_posts", [])) if isinstance(state.get("last_blocked_posts", []), list) else []
         blocked_posts = [item for item in blocked_posts if isinstance(item, dict)][-5:]
-        send_control_text(_control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."), message.get("message_id"), monitor_menu_reply_markup())
+        send_control_text(
+            _control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."),
+            message.get("message_id"),
+            control_block_actions_reply_markup(blocked_posts) if blocked_posts else monitor_menu_reply_markup(),
+        )
     elif data == "football_blocked_summary":
         if callback_id:
             answer_control_callback(callback_id, "שולח סיכום חסימות")
-        send_control_text_full(last_blocked_summary_text(), control_delete_message_reply_markup())
+        send_control_text_async("📋 מכין סיכום חסימות...", last_blocked_summary_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
     elif data == "football_last_duplicate":
         if callback_id:
             answer_control_callback(callback_id, "מציג כפילויות אחרונות")
@@ -3998,9 +4566,9 @@ def process_control_update(update: dict[str, Any]) -> None:
         send_control_text(
             _control_list_text("🧠 כפילויות אחרונות - 10 אחרונות", duplicate_items, "אין כפילויות שמורות כרגע.", limit=10),
             message.get("message_id"),
-            monitor_menu_reply_markup(),
+            control_block_actions_reply_markup(duplicate_items) if duplicate_items else monitor_menu_reply_markup(),
         )
-    elif data == "football_last_duplicate":
+    elif False and data == "football_last_duplicate":
         if callback_id:
             answer_control_callback(callback_id, "מציג כפילויות אחרונות")
         state = load_control_state()
@@ -5067,12 +5635,15 @@ def is_non_news_social_post(post: Post) -> bool:
 RECENT_NEWS_STATE_KEY = "__recent_news_events__"
 RECENT_NEWS_WINDOW_SECONDS = int(os.environ.get("RECENT_NEWS_WINDOW_SECONDS", str(24 * 60 * 60)))
 CHANNEL_RECENT_NEWS_STATE_KEY = "__channel_recent_news_events__"
-CHANNEL_RECENT_NEWS_WINDOW_SECONDS = int(os.environ.get("CHANNEL_RECENT_NEWS_WINDOW_SECONDS", str(24 * 60 * 60)))
+CHANNEL_RECENT_NEWS_WINDOW_SECONDS = int(os.environ.get("CHANNEL_RECENT_NEWS_WINDOW_SECONDS", str(7 * 24 * 60 * 60)))
 BOT_SENT_REPLY_STATE_KEY = "__bot_sent_reply_targets__"
 BOT_SENT_REPLY_WINDOW_SECONDS = int(os.environ.get("BOT_SENT_REPLY_WINDOW_SECONDS", str(7 * 24 * 60 * 60)))
 BOT_SENT_REPLY_MAX_ITEMS = int(os.environ.get("BOT_SENT_REPLY_MAX_ITEMS", "700"))
 CHANNEL_REPLY_CERTAIN_MIN_SCORE = float(os.environ.get("CHANNEL_REPLY_CERTAIN_MIN_SCORE", "0.58"))
 CONTROL_BLOCK_HISTORY_LIMIT = int(os.environ.get("CONTROL_BLOCK_HISTORY_LIMIT", "30"))
+CONTROL_BORDERLINE_DUPLICATE_MIN_SCORE = float(os.environ.get("CONTROL_BORDERLINE_DUPLICATE_MIN_SCORE", "0.55"))
+CONTROL_BORDERLINE_DUPLICATE_MAX_SCORE = float(os.environ.get("CONTROL_BORDERLINE_DUPLICATE_MAX_SCORE", "0.72"))
+CONTROL_BORDERLINE_NOTIFY_MAX_PER_HOUR = int(os.environ.get("CONTROL_BORDERLINE_NOTIFY_MAX_PER_HOUR", "6"))
 NEWS_BURST_SPAM_WINDOW_SECONDS = int(os.environ.get("NEWS_BURST_SPAM_WINDOW_SECONDS", str(10 * 60)))
 NEWS_BURST_SPAM_MIN_EVENTS = int(os.environ.get("NEWS_BURST_SPAM_MIN_EVENTS", "5"))
 
@@ -5199,6 +5770,7 @@ BLOCK_REASON_HEBREW = {
     "recent_duplicate": "כפילות מהזמן האחרון",
     "post_translation_duplicate": "כפילות אחרי תרגום",
     "translation_unavailable": "תרגום לא זמין",
+    "translation_quality_blocked": "תרגום חשוד לפני שליחה",
     "send_failed": "כשל בשליחה",
     "control_block_rumors": "סינון כפתור: שמועות כבויות",
     "control_block_national": "סינון כפתור: נבחרות כבויות",
@@ -5254,14 +5826,31 @@ def remember_control_block_event(reason: str, post: "Post", rendered: str, dupli
             or "duplicate" in base_reason
             or "כפיל" in rendered
         )
+        now_ts = time.time()
+        duplicate_score_match = re.search(r"(?:דמיון|similarity)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", rendered, re.IGNORECASE)
+        duplicate_verdict_match = re.search(r"(?:החלטה|verdict)\s*[:=]?\s*([A-Z_]+)", rendered, re.IGNORECASE)
+        duplicate_source_match = re.search(r"מול\s+([^|.\n]{2,90})", rendered)
         item = {
-            "ts": time.time(),
+            "id": control_block_item_id(post, reason, now_ts),
+            "ts": now_ts,
             "source": getattr(post, "username", "unknown") or "unknown",
             "reason": hebrew_block_reason(reason),
+            "raw_reason": reason,
             "preview": filtered_post_text_preview(post),
+            "original_text": clean_for_ai_translation(html.unescape("\n".join([getattr(post, "text", "") or "", getattr(post, "quoted_text", "") or ""]))),
             "link": getattr(post, "link", "") or "",
+            "post_id": getattr(post, "post_id", "") or "",
+            "dedupe_ids": list(getattr(post, "dedupe_ids", []) or []),
+            "post": post_to_control_payload(post),
+            "rendered": compact_debug_text(rendered, 900),
             "is_duplicate": is_duplicate_block,
         }
+        if duplicate_score_match:
+            item["duplicate_score"] = float(duplicate_score_match.group(1))
+        if duplicate_verdict_match:
+            item["duplicate_verdict"] = duplicate_verdict_match.group(1)
+        if duplicate_source_match:
+            item["duplicate_source"] = duplicate_source_match.group(1).strip()
         blocked = state.get("last_blocked_posts", [])
         if not isinstance(blocked, list):
             blocked = []
@@ -5274,10 +5863,8 @@ def remember_control_block_event(reason: str, post: "Post", rendered: str, dupli
                 duplicates = []
             duplicates.append(item)
             state["last_duplicate_posts"] = duplicates[-CONTROL_BLOCK_HISTORY_LIMIT:]
-        path = control_state_path()
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-        temp_path.replace(path)
+        write_control_state(state)
+        maybe_notify_control_borderline_item(item)
     except Exception as exc:
         logging.debug("שמירת חסימה אחרונה ללוח השליטה נכשלה: %s", exc)
 
@@ -5642,6 +6229,26 @@ def build_daily_quality_report_text() -> str:
     lines.append("────────────")
     lines.extend(grouped_skip_reason_lines())
     lines.append("")
+    lines.append("🚫 כתבים עם הכי הרבה חסימות היום")
+    lines.append("────────────")
+    blocked_writer_items = _top_daily_items("skips", 5)
+    if blocked_writer_items:
+        for index, (username, count) in enumerate(blocked_writer_items, 1):
+            lines.append(f"{index}. {_hebrew_account_label(username)} - {count} חסימות")
+    else:
+        lines.append("- אין חסימות לפי כתב היום")
+    reason_map = bucket.get("skip_reasons", {}) if isinstance(bucket.get("skip_reasons", {}), dict) else {}
+    duplicate_count = sum(int(count or 0) for reason, count in reason_map.items() if "כפילות" in display_skip_reason_he(str(reason)) or "duplicate" in str(reason).lower())
+    translation_block_count = sum(int(count or 0) for reason, count in reason_map.items() if "תרגום" in display_skip_reason_he(str(reason)) or "translation" in str(reason).lower())
+    if duplicate_count or translation_block_count:
+        lines.append("")
+        lines.append("🧠 מוקדי טיפול")
+        lines.append("────────────")
+        if duplicate_count:
+            lines.append(f"- כפילויות שנעצרו: {duplicate_count}")
+        if translation_block_count:
+            lines.append(f"- תרגומים שנעצרו/נכשלו: {translation_block_count}")
+    lines.append("")
     lines.append("💾 הדוח נשמר בזיכרון מקומי, לכן הנתונים נשמרים גם אחרי הפעלה מחדש באותו שרת.")
     return "\n".join(lines)
 
@@ -5657,7 +6264,7 @@ def send_daily_quality_report_if_due() -> None:
     if (now_dt.hour, now_dt.minute) < (DAILY_QUALITY_REPORT_HOUR, DAILY_QUALITY_REPORT_MINUTE):
         return
     try:
-        send_control_text(build_daily_quality_report_text(), message.get("message_id"), quick_control_reply_markup())
+        send_control_text_full(build_daily_quality_report_text(), control_delete_message_reply_markup())
         save_daily_quality_stats_to_disk(force=True)
         DAILY_QUALITY_REPORT_LAST_DATE = today
         logging.info("📊 דו\"ח יומי נשלח לערוץ השקט.")
@@ -6216,6 +6823,8 @@ def cleanup_recent_news_events(state: dict[str, Any], now: float | None = None) 
 
 
 def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    if is_duplicate_false_positive_post(post):
+        return None
     current = news_event_signature(post)
     for item in reversed(cleanup_recent_news_events(state)):
         if is_pending_memory_item(item):
@@ -6348,6 +6957,8 @@ def remember_channel_news_text(text: str, state: dict[str, Any], message_id: str
 
 
 def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    if is_duplicate_false_positive_post(post):
+        return None
     current = news_event_signature(post)
     for item in reversed(cleanup_channel_recent_news_events(state)):
         if not isinstance(item, dict):
@@ -6396,8 +7007,77 @@ def remember_bot_sent_reply_target(post: Post, state: dict[str, Any], message_id
     state[BOT_SENT_REPLY_STATE_KEY] = recent[-BOT_SENT_REPLY_MAX_ITEMS:]
 
 
+def _reply_target_writer_noise_tokens() -> set[str]:
+    texts: list[str] = []
+    for mapping_name in ("ACCOUNT_DISPLAY_NAMES", "CONTROLLED_BASE_ACCOUNT_LABELS", "OPTIONAL_CONTROLLED_ACCOUNT_LABELS"):
+        mapping = globals().get(mapping_name, {})
+        if isinstance(mapping, dict):
+            texts.extend(str(key) for key in mapping.keys())
+            texts.extend(str(value) for value in mapping.values())
+    texts.extend(
+        [
+            "Fabrizio Romano",
+            "Nicolo Schira",
+            "Gianluca Di Marzio",
+            "Matteo Moretto",
+            "Florian Plettenberg",
+            "David Ornstein",
+            "Ben Jacobs",
+            "FabrizioRomano",
+            "NicoSchira",
+            "DiMarzio",
+            "MatteMoretto",
+            "Plettigoal",
+            "David_Ornstein",
+        ]
+    )
+    tokens: set[str] = set()
+    for text in texts:
+        tokens.update(_news_duplicate_tokens(str(text or "").lower()))
+    return {token for token in tokens if len(token) >= 3}
+
+
+def _reply_target_distinctive_tokens(sig: dict[str, Any]) -> set[str]:
+    tokens = set(sig.get("tokens", []))
+    entities = set(sig.get("entities", []))
+    return _distinctive_duplicate_tokens(tokens, entities) - _reply_target_writer_noise_tokens()
+
+
+def reply_target_match_has_real_subject_overlap(post: Post, item: dict[str, Any], score: float) -> bool:
+    current_sig = news_event_signature(post)
+    previous_sig = item.get("signature", {}) if isinstance(item, dict) else {}
+    if not isinstance(previous_sig, dict):
+        return False
+    cur_players, cur_teams = _canonical_sets_from_signature(current_sig)
+    prev_players, prev_teams = _canonical_sets_from_signature(previous_sig)
+    player_overlap = len(cur_players & prev_players)
+    team_overlap = len(cur_teams & prev_teams)
+    cur_actions = set(current_sig.get("actions", []))
+    prev_actions = set(previous_sig.get("actions", []))
+    action_overlap = len(cur_actions & prev_actions)
+    family_overlap = _duplicate_family_overlap(cur_actions, prev_actions)
+    cur_tokens = set(current_sig.get("tokens", []))
+    prev_tokens = set(previous_sig.get("tokens", []))
+    cur_distinctive = _reply_target_distinctive_tokens(current_sig)
+    prev_distinctive = _reply_target_distinctive_tokens(previous_sig)
+    distinctive_overlap = _near_duplicate_subject_overlap(cur_distinctive, prev_distinctive)
+    number_overlap = len({token for token in cur_tokens if token.isdigit()} & {token for token in prev_tokens if token.isdigit()})
+
+    if player_overlap >= 1 and (team_overlap >= 1 or family_overlap or number_overlap >= 1):
+        return True
+    if team_overlap >= 2 and family_overlap and (distinctive_overlap >= 1 or number_overlap >= 1):
+        return True
+    if distinctive_overlap >= 2 and (family_overlap or action_overlap >= 2 or number_overlap >= 1) and score >= 0.70:
+        return True
+    if distinctive_overlap >= 1 and number_overlap >= 1 and (family_overlap or action_overlap >= 1) and score >= 0.76:
+        return True
+    return False
+
+
 def channel_reply_target_match_is_certain(post: Post, item: dict[str, Any], score: float, local: str) -> bool:
     if local != "ADVANCED_NEW" or score < CHANNEL_REPLY_CERTAIN_MIN_SCORE:
+        return False
+    if not reply_target_match_has_real_subject_overlap(post, item, score):
         return False
     current_sig = news_event_signature(post)
     previous_sig = item.get("signature", {}) if isinstance(item, dict) else {}
@@ -6438,6 +7118,8 @@ def quoted_reply_target_match_is_certain(post: Post, item: dict[str, Any]) -> bo
         return False
     score = _event_similarity(news_event_signature(quote_post), previous)
     local = local_duplicate_verdict(quote_post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
+    if not reply_target_match_has_real_subject_overlap(quote_post, item, score):
+        return False
     if local == "SAME_DUPLICATE":
         return True
     if local in {"ADVANCED_NEW", "DIFFERENT"}:
@@ -7344,6 +8026,8 @@ def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, 
 
 def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
     """Final duplicate gate. Cheap local rules first, Gemini only for borderline near-matches."""
+    if is_duplicate_false_positive_post(post):
+        return None
     recent = list(reversed(cleanup_recent_news_events(state)))
     fallback_duplicate: dict[str, Any] | None = None
     current_sig = news_event_signature(post)
@@ -7376,6 +8060,8 @@ def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> d
 
 
 def find_recent_duplicate_event_ignoring_self(post: Post, state: dict[str, Any], original_post: Post) -> dict[str, Any] | None:
+    if is_duplicate_false_positive_post(post):
+        return None
     current_sig = news_event_signature(post)
     fallback_duplicate: dict[str, Any] | None = None
     for item in reversed(cleanup_recent_news_events(state)):
@@ -7402,6 +8088,8 @@ def find_recent_duplicate_event_ignoring_self(post: Post, state: dict[str, Any],
 
 
 def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    if is_duplicate_false_positive_post(post):
+        return None
     plain = html_message_to_plain_text(translated_message) if "html_message_to_plain_text" in globals() else re.sub(r"<[^>]+>", " ", translated_message)
     plain = re.sub(r"\s+", " ", html.unescape(plain or "")).strip()
     if len(plain) < 20:
@@ -7752,8 +8440,39 @@ def remove_recycled_source_brag_fragments(text: str) -> str:
     return value.strip(" \t,;:")
 
 
+PROMOTIONAL_DEAL_CREDIT_PATTERNS = (
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:another|one\s+more)\s+(?:top|great|excellent|brilliant|fantastic|strong|smart)\s+(?:deal|transfer|move|piece\s+of\s+business|work|job)\s+(?:by|from|for)\s+[^.!?\n]{2,140}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:top|great|excellent|brilliant|fantastic|strong|smart)\s+(?:deal|transfer|move|piece\s+of\s+business|work|job)\s+(?:by|from|for)\s+[^.!?\n]{2,140}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:credit|credits|congrats|congratulations|well\s+done)\s+(?:to|for)\s+[^.!?\n]{2,140}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:deal|operation|transfer|move)\s+(?:led|handled|negotiated|closed)\s+by\s+(?:agent|agency|representative|intermediary|[A-Z][A-Za-z .'-]{2,80})[^.!?\n]{0,120}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:great|excellent|brilliant|top)\s+(?:work|job|negotiation|management)\s+(?:by|from)\s+(?:agent|agency|representative|intermediary|[A-Z][A-Za-z .'-]{2,80})[^.!?\n]{0,120}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)\u05e2\u05d5\u05d3\s+(?:\u05e2\u05e1\u05e7\u05d4|\u05de\u05d4\u05dc\u05da|\u05e2\u05d1\u05d5\u05d3\u05d4)\s+(?:\u05d2\u05d3\u05d5\u05dc\u05d4|\u05e0\u05d4\u05d3\u05e8\u05ea|\u05de\u05e6\u05d5\u05d9\u05e0\u05ea|\u05d7\u05d6\u05e7\u05d4|\u05d7\u05db\u05de\u05d4|\u05d8\u05d5\u05d1\u05d4)\s+(?:\u05e9\u05dc|\u05de\u05e6\u05d3|\u05e2\u05dc\s+\u05d9\u05d3\u05d9)\s+[^.!?\n]{2,140}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:\u05e2\u05e1\u05e7\u05d4|\u05de\u05d4\u05dc\u05da|\u05e2\u05d1\u05d5\u05d3\u05d4)\s+(?:\u05d2\u05d3\u05d5\u05dc\u05d4|\u05e0\u05d4\u05d3\u05e8\u05ea|\u05de\u05e6\u05d5\u05d9\u05e0\u05ea|\u05d7\u05d6\u05e7\u05d4|\u05d7\u05db\u05de\u05d4|\u05d8\u05d5\u05d1\u05d4)\s+(?:\u05e9\u05dc|\u05de\u05e6\u05d3|\u05e2\u05dc\s+\u05d9\u05d3\u05d9)\s+[^.!?\n]{2,140}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:\u05e7\u05e8\u05d3\u05d9\u05d8|\u05e4\u05e8\u05d2\u05d5\u05df|\u05db\u05dc\s+\u05d4\u05db\u05d1\u05d5\u05d3)\s+(?:\u05dc|\u05dc-|\u05d0\u05dc)\s+[^.!?\n]{2,140}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:\u05e0\u05d9\u05d4\u05d5\u05dc\s+\u05de\u05d5\"\u05de|\u05de\u05d5\"\u05de|\u05e1\u05d2\u05d9\u05e8\u05ea\s+\u05e2\u05e1\u05e7\u05d4)\s+(?:\u05e0\u05d4\u05d3\u05e8|\u05de\u05e6\u05d5\u05d9\u05df|\u05de\u05e8\u05e9\u05d9\u05dd|\u05d8\u05d5\u05d1)\s+(?:\u05e9\u05dc|\u05de\u05e6\u05d3|\u05e2\u05dc\s+\u05d9\u05d3\u05d9)\s+[^.!?\n]{2,140}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:\u05e1\u05d5\u05db\u05df|\u05e1\u05d5\u05db\u05e0\u05d5\u05ea|\u05e0\u05e6\u05d9\u05d2|\u05de\u05ea\u05d5\u05d5\u05da)\s+[^.!?\n]{0,80}(?:\u05e2\u05e9\u05d4|\u05e2\u05e9\u05ea\u05d4|\u05e2\u05e9\u05d5|\u05e0\u05d9\u05d4\u05dc|\u05e0\u05d9\u05d4\u05dc\u05d4|\u05e1\u05d2\u05e8|\u05e1\u05d2\u05e8\u05d4)\s+[^.!?\n]{0,100}(?:\u05e2\u05d1\u05d5\u05d3\u05d4|\u05e2\u05e1\u05e7\u05d4|\u05de\u05d4\u05dc\u05da)[^.!?\n]{0,80}[.!?]?",
+    r"(?isu)(?P<prefix>^|[.!?\n]\s*)(?:\u05e2\u05d5\u05d1\u05d3\u05d4\s+\u05e0\u05d5\u05e1\u05e4\u05ea|\u05e2\u05d5\u05d3\s+\u05e4\u05e8\u05d8|\u05e4\u05e8\u05d8\s+\u05e0\u05d5\u05e1\u05e3)\s*:\s*[^.!?\n]{0,90}(?:\u05d0\u05e0\u05d3\u05e8\u05d0\u05e1\s+\u05e9\u05d9\u05e7\u05e8|\u05e9\u05d9\u05e7\u05e8|\u05e1\u05d5\u05db\u05df|\u05e1\u05d5\u05db\u05e0\u05d9\u05dd|\u05e0\u05e1\u05e4\u05d7|\u05e2\u05e1\u05e7\u05d4|\u05e2\u05d1\u05d5\u05d3\u05d4|\u05e7\u05e8\u05d3\u05d9\u05d8)[^.!?\n]{0,90}[.!?]?",
+)
+
+
+def remove_promotional_deal_credit_fragments(text: str) -> str:
+    value = text or ""
+    if not value.strip():
+        return ""
+    for pattern in PROMOTIONAL_DEAL_CREDIT_PATTERNS:
+        value = re.sub(pattern, lambda match: match.group("prefix") or "", value)
+    value = re.sub(r"\s+([,.!?;:])", r"\1", value)
+    value = re.sub(r"\.{2,}", ".", value)
+    value = re.sub(r"\s*\.\s*\.", ".", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip(" \t,;:")
+
+
 def remove_writer_brag_phrases(text: str) -> str:
     text = remove_recycled_source_brag_fragments(text or "")
+    text = remove_promotional_deal_credit_fragments(text)
     return text.strip()
     patterns = (
         r"(?iu)\s*(?:אין\s+הפתעות\s+כאן|אין\s+הפתעות|לא\s+היו\s+הפתעות)\s*(?:ו|,|\.)?\s*(?:זה\s+)?(?:אושר|מאושר|מאומת|ידוע|נחשף|דווח|פורסם)?\s*(?:מאז|כבר\s+מאז)?\s*(?:ה-?\d{1,2}\s+ב[א-ת]+|\d{1,2}/\d{1,2}(?:/\d{2,4})?|[A-Za-z]+\s+\d{1,2})?\s*[.!?]?",
@@ -7832,6 +8551,7 @@ def remove_junk_topic_tags(text: str) -> str:
 
 def normalize_official_club_names_for_translation(text: str) -> str:
     value = text or ""
+    value = re.sub("(?iu)\u05d4\u05d5\u05e4\u05e0\u05d4\u05d9\u05d9\u05dd", "\u05d0\u05d5\u05e4\u05e0\u05d4\u05d9\u05d9\u05dd", value)
     value = re.sub(r"(?iu)\bBrighton\s*(?:&|and)\s*Hove\s+Albion\b", "Brighton", value)
     value = re.sub(r"(?iu)\bברייטון\s+(?:אנד|ו)?\s*הוב\s+אלביון\b", "ברייטון", value)
     value = re.sub(r"(?iu)\bברייטון\s+אלביון\b", "ברייטון", value)
@@ -7938,6 +8658,33 @@ def remove_israel_time_additions(text: str) -> str:
     return text.strip()
 
 
+EMOJI_PARAGRAPH_STARTER_PATTERN = (
+    r"(?:"
+    r"\U0001F6A8|\U0001F4A5|\U0001F525|\u26A0\ufe0f?|"
+    r"\u2705\ufe0f?|\u274C\ufe0f?|\u2611\ufe0f?|\u2714\ufe0f?|"
+    r"\u26BD\ufe0f?|\U0001F947|\U0001F948|\U0001F949|"
+    r"\U0001F7E2|\U0001F534|\U0001F535|\U0001F7E1|\U0001F7E0|\U0001F7E3|\U0001F7E4|\u26AA\ufe0f?|\u26AB\ufe0f?|"
+    r"\U0001F440|\U0001F51C|\U0001F4DD|\u270D\ufe0f?|\U0001FAF1|\U0001FAF2|\U0001F91D"
+    r")"
+)
+
+
+def format_emoji_paragraph_breaks(text: str) -> str:
+    """Add Telegram-readable spacing before emoji-led news/list items."""
+    value = text or ""
+    if not value:
+        return value
+    regional_flag = r"(?:[\U0001F1E6-\U0001F1FF]{2})"
+    tag_flag = r"(?:\U0001F3F4[\U000E0060-\U000E007F]+)"
+    emoji_tail = rf"(?:(?:\ufe0f|\u200d|[\U0001F3FB-\U0001F3FF])|{regional_flag}|{tag_flag})*"
+    item_start = rf"(?:{EMOJI_PARAGRAPH_STARTER_PATTERN}){emoji_tail}\s*(?=[A-Za-z0-9\u0590-\u05FF])"
+    value = re.sub(rf"([^\s\n])[\t ]+(?={item_start})", r"\1\n\n", value)
+    value = re.sub(rf"([.!?])(?={item_start})", r"\1\n\n", value)
+    value = re.sub(rf"(?<!\n)\n(?={item_start})", "\n\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value
+
+
 def final_visual_cleanup(text: str) -> str:
     text = normalize_country_flags(text or "")
     invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
@@ -7960,6 +8707,7 @@ def final_visual_cleanup(text: str) -> str:
     text = re.sub(rf"(?m)^\s*(?:{link_markers}\s*)+", "", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n+ *", "\n", text)
+    text = format_emoji_paragraph_breaks(text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return strip_country_code_leftovers_near_flags(text).strip()
 
@@ -8084,7 +8832,14 @@ def gemini_translation_model_candidates() -> list[str]:
                 continue
             if model and model not in models:
                 models.append(model)
-    return models or ["gemini-2.5-flash-lite"]
+    return models or list(DEFAULT_GEMINI_MODEL_CHAIN.split(","))
+
+
+def gemini_models_for_operation() -> list[str]:
+    now = time.time()
+    candidates = gemini_translation_model_candidates()
+    available = [model for model in candidates if GEMINI_MODEL_COOLDOWNS.get(model, 0.0) <= now]
+    return available or candidates[:1]
 
 
 def current_gemini_translation_model() -> str:
@@ -8099,6 +8854,28 @@ def current_gemini_translation_model() -> str:
         if GEMINI_MODEL_COOLDOWNS.get(model, 0.0) <= now:
             return model
     return gemini_translation_model_candidates()[0]
+
+
+def should_try_next_gemini_model(error: Exception | None) -> bool:
+    lowered = str(error or "").lower()
+    if not lowered:
+        return False
+    return bool(
+        is_gemini_temporary_overload_error(error)
+        or any(marker in lowered for marker in (
+            "http 404",
+            "not found",
+            "model",
+            "not supported",
+            "unavailable",
+            "empty translation",
+            "empty text",
+            "appears incomplete",
+            "contradicted source",
+            "changed locked numbers",
+            "returned empty",
+        ))
+    )
 
 
 def mark_gemini_model_overloaded(error: Exception | None, model: str | None = None) -> None:
@@ -8535,6 +9312,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "- If the post mentions a role such as 'next manager/coach' without naming the club in that phrase, do not add a club name by assumption.\n"
         "- Convert important club/player @handles into natural Hebrew names. Remove handles only when they are just credits or promotion.\n"
         "- Remove sponsor lines such as 'presented by', 'sponsored by', broadcasts, TV/network credits and app promotions.\n"
+        "- Remove promotional credit/PR sentences such as 'another top deal by...', 'great work by...', agent/agency praise, and Hebrew equivalents like 'עוד עסקה נהדרת של...' or 'קרדיט ל...'. Keep only the actual football news.\n"
         "- Remove Sky Sport Germany / SkySportDE when it is only a credit, outlet tag, or source line.\n"
         "- Do not convert times to Israel time and never add the words 'שעון ישראל'. Keep original time-zone wording only if it is essential.\n"
         "- If the post is mostly a video caption, write one clean Hebrew sentence that explains the actual clip.\n"
@@ -8544,7 +9322,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
         "- For odds/probability lists such as '33% - France 19% - Argentina', put each percentage item on its own line.\n"
         "- For football-stat lists that repeat ball emojis or flags, put each stat item on its own line.\n"
-        "- For lists: use one line per list item and do NOT add blank lines inside the list. Add a blank line only after the list ends if a summary/next paragraph follows.\n"
+        "- For lists: use one item per line. If list/news items start with emojis such as 🚨, 💥, ✅, ❌ or ⚽, separate those emoji-led items with a blank line for Telegram readability.\n"
         "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
         "- If a two-letter country code is used as a flag marker, output the correct flag emoji instead of the letters. Preserve real flag emojis from the source and never replace a flag with a generic black flag.\n"
         "- Remove down arrows or pointing-down emojis when they only pointed to a removed link or quoted post.\n"
@@ -8563,36 +9341,46 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
     available_keys = gemini_translation_keys_for_operation()
     if not available_keys:
         raise RuntimeError("No Gemini key is locally available")
-    for index, key in available_keys:
+    for model_for_request in gemini_models_for_operation():
         if real_requests_used >= max(1, max_real_requests):
             break
-        model_for_request = current_gemini_translation_model()
         globals()["GEMINI_LAST_MODEL_USED"] = model_for_request
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{urllib.parse.quote(model_for_request)}:generateContent?key={urllib.parse.quote(key)}"
-        )
-        try:
-            # This is the only line in this loop that spends a Gemini request.
-            # The sweep above over all 8 keys is local/cooldown-only and free.
-            real_requests_used += 1
-            data = http_post_json(url, payload, timeout=GEMINI_TRANSLATION_TIMEOUT_SECONDS, max_attempts=1, respect_retry_after=False)
-            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-            translated = "".join(part.get("text", "") for part in parts).strip()
-            if translated:
-                GEMINI_KEY_COOLDOWNS.pop(key, None)
-                mark_gemini_available()
-                return translated
-            last_error = RuntimeError("Gemini returned empty text; candidates=%s" % compact_debug_text(json.dumps(data, ensure_ascii=False), 600))
-            logging.warning("⚠️ ג'מיני החזיר תשובה ריקה עם %s. לא מקרר את המפתח כי זו בעיית פלט/פרומפט; עובר למפתח הבא אם נשארו ניסיונות.", gemini_key_label(index))
-            continue
-        except Exception as exc:
-            last_error = exc
-            mark_gemini_model_overloaded(exc, model_for_request)
-            cool_down_gemini_key(key, exc, index)
-            logging.warning("⚠️ ג'מיני נכשל עם %s. בדיקת שאר המפתחות היא מקומית וחינמית; בקשות אמיתיות מוגבלות. סיבה: %s", gemini_key_label(index), gemini_error_summary(exc))
-            if should_stop_gemini_key_sweep(exc):
+        move_to_next_model = False
+        for index, key in available_keys:
+            if real_requests_used >= max(1, max_real_requests):
                 break
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{urllib.parse.quote(model_for_request)}:generateContent?key={urllib.parse.quote(key)}"
+            )
+            try:
+                # This is the only line in this loop that spends a Gemini request.
+                # The sweep above over all keys/models is local/cooldown-only and free.
+                real_requests_used += 1
+                data = http_post_json(url, payload, timeout=GEMINI_TRANSLATION_TIMEOUT_SECONDS, max_attempts=1, respect_retry_after=False)
+                parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                translated = "".join(part.get("text", "") for part in parts).strip()
+                if translated:
+                    GEMINI_KEY_COOLDOWNS.pop(key, None)
+                    GEMINI_MODEL_COOLDOWNS.pop(model_for_request, None)
+                    mark_gemini_available()
+                    return translated
+                last_error = RuntimeError("Gemini returned empty text; candidates=%s" % compact_debug_text(json.dumps(data, ensure_ascii=False), 600))
+                logging.warning("⚠️ ג'מיני החזיר תשובה ריקה במודל %s עם %s. עובר למודל הבא אם יש.", model_for_request, gemini_key_label(index))
+                move_to_next_model = True
+                break
+            except Exception as exc:
+                last_error = exc
+                mark_gemini_model_overloaded(exc, model_for_request)
+                cool_down_gemini_key(key, exc, index)
+                logging.warning("⚠️ ג'מיני נכשל במודל %s עם %s. סיבה: %s", model_for_request, gemini_key_label(index), gemini_error_summary(exc))
+                if should_try_next_gemini_model(exc):
+                    move_to_next_model = True
+                    break
+                if should_stop_gemini_key_sweep(exc):
+                    break
+                continue
+        if move_to_next_model:
             continue
     log_gemini_unavailable(last_error)
     raise RuntimeError(f"Gemini translation failed after {real_requests_used} real request(s): {last_error}")
@@ -8696,6 +9484,7 @@ def remove_sky_sport_germany_credit(text: str) -> str:
 def final_hebrew_polish(text: str) -> str:
     text = remove_external_links(text)
     text = remove_weird_symbols(text)
+    text = normalize_official_club_names_for_translation(text)
     text = normalize_exclusive_label(text)
     text = normalize_breaking_label(text)
     text = re.sub(r"(?im)^\s*(?:אקסקלוסיב|אקסקלוסיבי|אקסלוסיב|אקסקלוסיב-י)\s*[-:–—]?\s*", "בלעדי: ", text)
@@ -10731,6 +11520,59 @@ def translation_looks_incomplete(source: str, translated: str) -> bool:
     return False
 
 
+def material_number_values(text: str) -> set[str]:
+    value = text or ""
+    numbers: set[str] = set()
+    for match in re.finditer(r"\b(?:19|20)\d{2}\b|\b\d+(?:[.,]\d+)?\b", value):
+        raw = match.group(0).replace(",", ".")
+        if raw:
+            numbers.add(raw)
+    return numbers
+
+
+def translation_quality_issues(post: "Post", main_text: str, quoted_text: str = "") -> list[str]:
+    source = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    translated = clean_before_translation(strip_google_translate_markers("\n".join([main_text or "", quoted_text or ""])))
+    issues: list[str] = []
+    if not has_meaningful_text(translated):
+        issues.append("אין טקסט משמעותי אחרי התרגום")
+        return issues
+    if re.search(r"(?is)(?:^|\s|[{\[,])(?:```)?\s*(?:json|main|quote|quote_author)\s*[:=]", translated):
+        issues.append("דליפת JSON / main / quote בתוך ההודעה")
+    if translation_looks_incomplete(source, translated):
+        issues.append("התרגום נראה קצר מדי ביחס למקור")
+    if translation_contradicts_source(source, translated):
+        issues.append("התרגום החליף שם קבוצה/ישות רגישה")
+    if translation_changes_locked_numbers(source, translated):
+        issues.append("התרגום שינה שנה/תוצאה נעולה")
+    source_numbers = material_number_values(source)
+    translated_numbers = material_number_values(translated)
+    missing_numbers = {
+        number for number in source_numbers
+        if number not in translated_numbers and not (number.endswith(".0") and number[:-2] in translated_numbers)
+    }
+    if source_numbers and len(missing_numbers) >= max(1, min(3, len(source_numbers) // 2)):
+        issues.append("נמחקו מספרים חשובים מהמקור: " + ", ".join(sorted(missing_numbers)[:5]))
+    foreign = re.findall(r"[\u0400-\u052F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]{2,}", translated)
+    if foreign:
+        issues.append("נשאר טקסט זר שאינו עברית/אנגלית נקייה")
+    leftovers = non_hebrew_leftovers(translated)
+    suspicious_words = {
+        "main", "quote", "json", "official", "breaking", "reported", "report",
+        "deal", "source", "sources", "exclusive", "update", "translated",
+    }
+    source_lower = source.lower()
+    suspicious_leftovers = [
+        token for token in leftovers
+        if token.lower() in suspicious_words or (token.lower() not in source_lower and not token[:1].isupper())
+    ]
+    if suspicious_leftovers:
+        issues.append("נשארו מילים באנגלית חשודות: " + ", ".join(suspicious_leftovers[:8]))
+    if latin_ratio(translated) > 0.35 and re.search(r"[א-ת]", translated):
+        issues.append("יותר מדי טקסט לועזי נשאר בתוך התרגום")
+    return issues[:8]
+
+
 def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
     global TRANSLATION_CACHE_DIRTY
     """Translate main + quoted text in ONE Gemini request, after local approval only."""
@@ -10771,6 +11613,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- Verify names from football context; fix malformed transliterations, but never replace one club/person with a different one.\n"
         "- Convert known @handles only when they are part of the news; remove source/junk handles and URLs.\n"
         "- Remove URLs, tracking text, sponsor lines, and useless link prompts.\n"
+        "- Remove promotional credit/PR sentences such as 'another top deal by...', 'great work by...', agent/agency praise, and Hebrew equivalents like 'עוד עסקה נהדרת של...' or 'קרדיט ל...'. Keep only the actual football news.\n"
         "- Remove Sky Sport Germany / SkySportDE when it is only a credit, outlet tag, or source line.\n"
         "- Preserve real flag emojis. If country-code letters are used as a flag marker, output the correct flag emoji and remove the letters.\n"
         "- Remove leftovers such as TR, טי אר, GE, FR, IT, ES, DE when they only duplicate a nearby flag emoji.\n"
@@ -10778,7 +11621,7 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- If the source contains an inline list of stats, countries, teams, players, checkmarks, crosses, medals, bullets, or many flag emojis, format it as a readable Telegram list.\n"
         "- For odds/probability lists such as '33% - France 19% - Argentina', put each percentage item on its own line.\n"
         "- For football-stat lists that repeat ball emojis or flags, put each stat item on its own line.\n"
-        "- For lists: use one line per list item and do NOT add blank lines inside the list. Add a blank line only after the list ends if a summary/next paragraph follows.\n"
+        "- For lists: use one item per line. If list/news items start with emojis such as 🚨, 💥, ✅, ❌ or ⚽, separate those emoji-led items with a blank line for Telegram readability.\n"
         "- For long non-list messages only: use natural short paragraphs every 2-3 sentences when it improves readability.\n"
         "- Do not write explanations. JSON only.\n"
         f"{glossary_block}\n"
@@ -10792,68 +11635,74 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
     }
     last_error: Exception | None = None
     real_requests_used = 0
-    for index, key in gemini_translation_keys_for_operation():
+    available_keys = gemini_translation_keys_for_operation()
+    if not available_keys:
+        raise TranslationUnavailable("No Gemini key is locally available")
+    for model_for_request in gemini_models_for_operation():
         if real_requests_used >= max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS):
             break
-        model_for_request = current_gemini_translation_model()
         globals()["GEMINI_LAST_MODEL_USED"] = model_for_request
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{urllib.parse.quote(model_for_request)}:generateContent?key={urllib.parse.quote(key)}"
-        )
-        try:
-            with GEMINI_TRANSLATION_SEMAPHORE:
-                real_requests_used += 1
-                data = http_post_json(url, payload, timeout=GEMINI_TRANSLATION_TIMEOUT_SECONDS, max_attempts=1, respect_retry_after=False)
-            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-            raw = "".join(part.get("text", "") for part in parts).strip()
-            parsed = _extract_json_object(raw)
-            if not parsed:
-                parsed = {
-                    "main": clean_translation_json_leak(raw, "main"),
-                    "quote": clean_translation_json_leak(raw, "quote") if "quote" in raw else "",
-                    "quote_author": clean_translation_json_leak(raw, "quote_author") if "quote_author" in raw else "",
-                }
-            main = final_hebrew_polish(str(parsed.get("main", ""))).strip()
-            quote = final_hebrew_polish(str(parsed.get("quote", ""))).strip()
-            quote_author = final_hebrew_polish(str(parsed.get("quote_author", ""))).strip()
-            main = final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, main)))
-            quote = final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, quote))) if quote_source else ""
-            if translation_looks_incomplete(main_source, main):
-                raise RuntimeError("Gemini translation appears incomplete for main text")
-            if quote_source and quote and translation_looks_incomplete(quote_source, quote):
-                raise RuntimeError("Gemini translation appears incomplete for quoted text")
-            if translation_contradicts_source(main_source + "\n" + quote_source, main + "\n" + quote):
-                raise RuntimeError("Gemini translation contradicted source names")
-            if translation_changes_locked_numbers(main_source + "\n" + quote_source, main + "\n" + quote):
-                raise RuntimeError("Gemini translation changed locked numbers or years")
-            if main or quote:
-                TRANSLATION_CACHE[cache_key] = json.dumps({"main": main, "quote": quote, "quote_author": quote_author}, ensure_ascii=False)
-                TRANSLATION_CACHE_DIRTY = True
-                GEMINI_KEY_COOLDOWNS.pop(key, None)
-                mark_gemini_available()
-                return main, quote, quote_author
-            raise RuntimeError("Gemini returned empty translation")
-        except Exception as exc:
-            last_error = exc
-            mark_gemini_model_overloaded(exc, locals().get("model_for_request", GEMINI_FAST_MODEL))
-            cool_down_gemini_key(key, exc, index)
-            remaining = max(0, max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS) - real_requests_used)
-            if remaining:
+        move_to_next_model = False
+        for index, key in available_keys:
+            if real_requests_used >= max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS):
+                break
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{urllib.parse.quote(model_for_request)}:generateContent?key={urllib.parse.quote(key)}"
+            )
+            try:
+                with GEMINI_TRANSLATION_SEMAPHORE:
+                    real_requests_used += 1
+                    data = http_post_json(url, payload, timeout=GEMINI_TRANSLATION_TIMEOUT_SECONDS, max_attempts=1, respect_retry_after=False)
+                parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                raw = "".join(part.get("text", "") for part in parts).strip()
+                parsed = _extract_json_object(raw)
+                if not parsed:
+                    parsed = {
+                        "main": clean_translation_json_leak(raw, "main"),
+                        "quote": clean_translation_json_leak(raw, "quote") if "quote" in raw else "",
+                        "quote_author": clean_translation_json_leak(raw, "quote_author") if "quote_author" in raw else "",
+                    }
+                main = final_hebrew_polish(str(parsed.get("main", ""))).strip()
+                quote = final_hebrew_polish(str(parsed.get("quote", ""))).strip()
+                quote_author = final_hebrew_polish(str(parsed.get("quote_author", ""))).strip()
+                main = final_visual_cleanup(preserve_original_country_flags(main_source, preserve_original_emojis(main_source, main)))
+                quote = final_visual_cleanup(preserve_original_country_flags(quote_source, preserve_original_emojis(quote_source, quote))) if quote_source else ""
+                if translation_looks_incomplete(main_source, main):
+                    raise RuntimeError("Gemini translation appears incomplete for main text")
+                if quote_source and quote and translation_looks_incomplete(quote_source, quote):
+                    raise RuntimeError("Gemini translation appears incomplete for quoted text")
+                if translation_contradicts_source(main_source + "\n" + quote_source, main + "\n" + quote):
+                    raise RuntimeError("Gemini translation contradicted source names")
+                if translation_changes_locked_numbers(main_source + "\n" + quote_source, main + "\n" + quote):
+                    raise RuntimeError("Gemini translation changed locked numbers or years")
+                if main or quote:
+                    TRANSLATION_CACHE[cache_key] = json.dumps({"main": main, "quote": quote, "quote_author": quote_author}, ensure_ascii=False)
+                    TRANSLATION_CACHE_DIRTY = True
+                    GEMINI_KEY_COOLDOWNS.pop(key, None)
+                    GEMINI_MODEL_COOLDOWNS.pop(model_for_request, None)
+                    mark_gemini_available()
+                    return main, quote, quote_author
+                raise RuntimeError("Gemini returned empty translation")
+            except Exception as exc:
+                last_error = exc
+                mark_gemini_model_overloaded(exc, model_for_request)
+                cool_down_gemini_key(key, exc, index)
+                remaining = max(0, max(1, GEMINI_MAX_REAL_TRANSLATION_REQUESTS) - real_requests_used)
                 logging.warning(
-                    "⚠️ תרגום Gemini נכשל עם %s; עובר למפתח הבא. נשארו עד %s ניסיונות מפתח לפוסט הזה. סיבה: %s",
+                    "⚠️ תרגום Gemini נכשל במודל %s עם %s. נשארו עד %s ניסיונות לפוסט הזה. סיבה: %s",
+                    model_for_request,
                     gemini_key_label(index),
                     remaining,
                     gemini_error_summary(exc),
                 )
-            else:
-                logging.warning(
-                    "⚠️ תרגום Gemini נכשל עם %s ואין עוד ניסיונות מפתח לפוסט הזה. סיבה: %s",
-                    gemini_key_label(index),
-                    gemini_error_summary(exc),
-                )
-            if should_stop_gemini_key_sweep(exc):
-                break
+                if should_try_next_gemini_model(exc):
+                    move_to_next_model = True
+                    break
+                if should_stop_gemini_key_sweep(exc):
+                    break
+                continue
+        if move_to_next_model:
             continue
     log_gemini_unavailable(last_error)
     raise TranslationUnavailable(f"Gemini single translation failed after {real_requests_used} real request(s): {last_error}")
@@ -11068,6 +11917,21 @@ def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state
         )
         return timings
     timings["translation_seconds"] = time.perf_counter() - translation_started
+
+    quality_issues = translation_quality_issues(post, translated, quoted_translated)
+    if quality_issues:
+        timings["total_seconds"] = time.perf_counter() - started
+        timings["mode"] = "translation_quality_blocked"
+        log_skip_once(
+            "translation_quality_blocked",
+            post,
+            "⛔ הפוסט עבר סינון אבל לא נשלח כי התרגום חשוד. @%s %s | בעיות: %s | תצוגה: %s",
+            post.username,
+            post.link,
+            "; ".join(quality_issues[:6]),
+            compact_debug_text(translated or post.text, 500),
+        )
+        return timings
 
     publishable_hebrew, publishable_reason = is_publishable_hebrew_for_main_channel(translated, quoted_translated)
     if not publishable_hebrew:
@@ -11604,6 +12468,16 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                 logging.info(
                     "דילוג זמני: הפוסט לא סומן כנראה כי הכשל הוא בתרגום Gemini בלבד. ינסה שוב אחרי הקירור המקומי. מצב: %s | מקור: %s | %s",
                     result.get("mode", "skipped"),
+                    result.get("source_name", "unknown"),
+                    link,
+                )
+            elif str(result.get("mode", "")) == "translation_quality_blocked":
+                forget_pending_recent_news_event(sent_post, state)
+                seen = set(state.get(username, []))
+                seen.update(post_ids)
+                state[username] = list(seen)[-500:]
+                logging.info(
+                    "דילוג איכות תרגום: הפוסט סומן כנקרא כדי לא לשרוף Gemini שוב על אותו תרגום חשוד. מקור: %s | %s",
                     result.get("source_name", "unknown"),
                     link,
                 )
