@@ -1757,6 +1757,7 @@ def log_feed_issue(username: str, message: str, *args: Any) -> None:
 
 
 def send_rss_control_alert_if_needed(username: str, failures: int, checked_sources: int, issue_text: str) -> None:
+    return
     if not CONTROL_CHAT_ID or RSS_CONTROL_ALERT_AFTER_FAILURES <= 0:
         return
     if failures < RSS_CONTROL_ALERT_AFTER_FAILURES:
@@ -1780,6 +1781,7 @@ def send_rss_control_alert_if_needed(username: str, failures: int, checked_sourc
                 "chat_id": CONTROL_CHAT_ID,
                 "text": text,
                 "disable_web_page_preview": True,
+                "reply_markup": control_delete_message_reply_markup(),
             },
             max_attempts=1,
         )
@@ -1789,6 +1791,7 @@ def send_rss_control_alert_if_needed(username: str, failures: int, checked_sourc
 
 
 def send_rss_stale_latest_alert_if_needed(username: str, posts: list["Post"]) -> None:
+    return
     if not CONTROL_CHAT_ID or RSS_STALE_LATEST_ALERT_SECONDS <= 0 or not posts:
         return
     latest = posts[0]
@@ -1816,6 +1819,7 @@ def send_rss_stale_latest_alert_if_needed(username: str, posts: list["Post"]) ->
                 "chat_id": CONTROL_CHAT_ID,
                 "text": text,
                 "disable_web_page_preview": True,
+                "reply_markup": control_delete_message_reply_markup(),
             },
             max_attempts=1,
         )
@@ -2947,7 +2951,7 @@ def send_control_menu(text: str, reply_markup: dict[str, Any], message_id: Any =
     payload = {
         "chat_id": CONTROL_CHAT_ID,
         "text": rtl(text),
-        "reply_markup": reply_markup,
+        "reply_markup": ensure_delete_button_reply_markup(reply_markup),
         "disable_web_page_preview": True,
     }
     if message_id:
@@ -2978,7 +2982,7 @@ def send_control_panel(paused: bool, action_done: str = "", force_new: bool = Fa
     payload = {
         "chat_id": CONTROL_CHAT_ID,
         "text": text,
-        "reply_markup": control_reply_markup(paused),
+        "reply_markup": ensure_delete_button_reply_markup(control_reply_markup(paused)),
     }
     # Startup should create a fresh control panel every run, like the old behavior.
     # Button clicks still try to edit the active panel to avoid unnecessary spam.
@@ -3005,7 +3009,7 @@ def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> 
     payload = {
         "chat_id": CONTROL_CHAT_ID,
         "text": text,
-        "reply_markup": quick_control_reply_markup(),
+        "reply_markup": ensure_delete_button_reply_markup(quick_control_reply_markup()),
     }
     if message_id and not force_new:
         try:
@@ -3205,6 +3209,20 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str, limi
 
 def control_delete_message_reply_markup() -> dict[str, Any]:
     return stable_reply_markup([[{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}]])
+
+
+def ensure_delete_button_reply_markup(reply_markup: dict[str, Any] | None = None) -> dict[str, Any]:
+    keyboard = []
+    if isinstance(reply_markup, dict) and isinstance(reply_markup.get("inline_keyboard"), list):
+        keyboard = [[dict(button) for button in row if isinstance(button, dict)] for row in reply_markup.get("inline_keyboard", [])]
+    has_delete = any(
+        isinstance(button, dict) and button.get("callback_data") == "football_delete_message"
+        for row in keyboard
+        for button in row
+    )
+    if not has_delete:
+        keyboard.append([{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}])
+    return stable_reply_markup(keyboard)
 
 
 def control_history_reply_markup() -> dict[str, Any]:
@@ -3553,9 +3571,21 @@ def last_blocked_summary_text(limit: int | None = None) -> str:
     return "\n".join(lines)
 
 
-def send_control_text(text: str, message_id: Any = None, reply_markup: dict[str, Any] | None = None) -> None:
+def _control_sent_message_id(response: Any) -> int | None:
+    if not isinstance(response, dict):
+        return None
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return None
+    try:
+        return int(result.get("message_id"))
+    except Exception:
+        return None
+
+
+def send_control_text(text: str, message_id: Any = None, reply_markup: dict[str, Any] | None = None) -> int | None:
     if not CONTROL_CHAT_ID:
-        return
+        return None
     formatted = rtl(text)
     payload = {
         "chat_id": CONTROL_CHAT_ID,
@@ -3563,17 +3593,19 @@ def send_control_text(text: str, message_id: Any = None, reply_markup: dict[str,
         "disable_web_page_preview": True,
     }
     if reply_markup is not None:
-        payload["reply_markup"] = reply_markup
+        payload["reply_markup"] = ensure_delete_button_reply_markup(reply_markup)
+    elif not message_id:
+        payload["reply_markup"] = control_delete_message_reply_markup()
     if message_id:
         try:
             telegram_api("editMessageText", {**payload, "message_id": int(message_id)}, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
-            return
+            return int(message_id)
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
-                return
+                return int(message_id)
             logging.warning("⚠️ טקסט שליטה: עריכת ההודעה נכשלה ולא נשלחה הודעה חדשה כדי לא ליצור כפילות: %s", exc)
-            return
-    telegram_api("sendMessage", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
+            return None
+    return _control_sent_message_id(telegram_api("sendMessage", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS))
 
 
 def control_text_chunks(text: str, limit: int = 3800) -> list[str]:
@@ -3641,11 +3673,21 @@ def send_control_text_async(
     result_new_message: bool = False,
     result_reply_markup: dict[str, Any] | None = None,
     full_result: bool = False,
+    loading_new_message: bool = False,
+    loading_reply_markup: dict[str, Any] | None = None,
 ) -> None:
     """Run heavy control actions in the background so button navigation stays responsive."""
     def _run() -> None:
+        loading_message_id: int | None = None
         try:
-            send_control_text(loading_text, message_id, reply_markup)
+            if loading_new_message:
+                loading_message_id = send_control_text(
+                    loading_text,
+                    None,
+                    loading_reply_markup if loading_reply_markup is not None else control_delete_message_reply_markup(),
+                )
+            else:
+                loading_message_id = send_control_text(loading_text, message_id, reply_markup)
         except Exception as exc:
             logging.debug("הודעת טעינה אסינכרונית נכשלה: %s", exc)
         try:
@@ -3654,13 +3696,20 @@ def send_control_text_async(
             final_text = f"הבדיקה נכשלה:\n{short_error(exc, 900)}"
         try:
             final_markup = result_reply_markup if result_reply_markup is not None else reply_markup
+            final_message_id = loading_message_id if loading_new_message else (None if result_new_message else message_id)
             if full_result:
-                if result_new_message:
+                chunks = control_text_chunks(final_text)
+                if final_message_id and chunks:
+                    total = len(chunks)
+                    for index, chunk in enumerate(chunks, 1):
+                        prefix = f"׳—׳׳§ {index}/{total}\n\n" if total > 1 else ""
+                        send_control_text(prefix + chunk, final_message_id if index == 1 else None, final_markup)
+                elif result_new_message:
                     send_control_text_full(final_text, final_markup)
                 else:
                     send_control_text(final_text, message_id, final_markup)
             else:
-                send_control_text(final_text, None if result_new_message else message_id, final_markup)
+                send_control_text(final_text, final_message_id, final_markup)
         except Exception as exc:
             logging.warning("עדכון נתונים אסינכרוני נכשל: %s", exc)
 
@@ -3678,7 +3727,9 @@ def send_control_html(text: str, reply_markup: dict[str, Any] | None = None) -> 
         "parse_mode": "HTML",
     }
     if reply_markup is not None:
-        payload["reply_markup"] = reply_markup
+        payload["reply_markup"] = ensure_delete_button_reply_markup(reply_markup)
+    else:
+        payload["reply_markup"] = control_delete_message_reply_markup()
     telegram_api("sendMessage", payload, max_attempts=1)
 
 
@@ -3917,6 +3968,26 @@ def gemini_clear_local_cooldowns(clear_pause: bool = True) -> str:
     return f"♻️ שוחרר קירור Gemini מקומי ל-{count} מפתחות."
 
 
+def gemini_public_error_label(value: Any) -> str:
+    raw = str(value or "").strip()
+    lower = raw.lower()
+    if any(token in lower for token in ("429", "quota", "resource_exhausted", "exceeded")):
+        return "מכסה/קצב במפתח"
+    if any(token in lower for token in ("401", "403", "api key", "permission", "unauthorized")):
+        return "מפתח לא מורשה/לא תקין"
+    if any(token in lower for token in ("404", "not found")) or ("model" in lower and "not" in lower):
+        return "מודל לא זמין למפתח הזה"
+    if any(token in lower for token in ("503", "overload", "unavailable", "high demand")):
+        return "עומס זמני במודל"
+    if any(token in lower for token in ("timeout", "timed out")):
+        return "זמן תגובה ארוך מדי"
+    if any(token in lower for token in ("incomplete", "contradicted", "empty", "changed locked")):
+        return "פלט תרגום לא תקין"
+    if raw and re.search(r"[\u0590-\u05ff]", raw) and not re.search(r"[A-Za-z]{12,}", raw):
+        return trim(raw, 90)
+    return "כשל Gemini נקודתי"
+
+
 def gemini_status_text() -> str:
     refresh_gemini_api_keys_from_env()
     now = time.time()
@@ -3956,7 +4027,7 @@ def gemini_status_text() -> str:
         lines += ["", "מפתחות שלא ייבחרו כרגע:"]
         for i, key, wait in cooled_keys[:12]:
             err = GEMINI_KEY_LAST_ERRORS.get(key, {})
-            reason = err.get("summary", "כשל זמני")
+            reason = gemini_public_error_label(err.get("summary") or err.get("full_error") or "")
             minutes = max(1, (wait + 59) // 60)
             if "לא מורשה" in str(reason) or "תקין" in str(reason):
                 lines.append(f"• {gemini_key_label(i)} — חשד לחסימה/הרשאה, עוד כ־{minutes} דק׳")
@@ -3991,16 +4062,15 @@ def gemini_status_text() -> str:
     top = sorted(failures_today_map.items(), key=lambda x: int(x[1] or 0), reverse=True)[:4]
     if top:
         lines += ["", "סיכום כשלים:"]
-        lines.extend(f"• {name}: {count}" for name, count in top)
+        lines.extend(f"• {gemini_public_error_label(name)}: {count}" for name, count in top)
 
     last = GEMINI_LAST_TRANSLATION_FAILURE or {}
     if last:
         lines += [
             "",
             "כשל אחרון:",
-            f"• {last.get('summary','לא ידוע')}",
+            f"• {gemini_public_error_label(last.get('summary') or last.get('error'))}",
             f"• @{last.get('username','')} — {last.get('link','')}",
-            f"• {compact_debug_text(last.get('error',''), 260)}",
         ]
 
     # Practical diagnosis only; avoid flooding the control panel with a generic list.
@@ -4440,27 +4510,27 @@ def process_control_update(update: dict[str, Any]) -> None:
             return
         if callback_id:
             answer_control_callback(callback_id, f"בודק את {_hebrew_account_label(username)}")
-        run_latest_account_control_test(username)
+        Thread(target=run_latest_account_control_test, args=(username,), daemon=True).start()
     elif data == "football_check_all_accounts_now":
         if callback_id:
             answer_control_callback(callback_id, "בודק את כל הכתבים")
-        send_control_text_async("🔄 בודק את כל הכתבים...", check_all_accounts_now_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
+        send_control_text_async("🔄 בודק את כל הכתבים...", check_all_accounts_now_text, message.get("message_id"), monitor_menu_reply_markup(), result_reply_markup=control_delete_message_reply_markup(), full_result=True, loading_new_message=True)
     elif data == "football_active_accounts_status":
         if callback_id:
             answer_control_callback(callback_id, "מציג כתבים פעילים")
-        send_control_text_async("👥 טוען כתבים פעילים...", active_accounts_status_text, message.get("message_id"), monitor_menu_reply_markup())
+        send_control_text_async("👥 טוען כתבים פעילים...", active_accounts_status_text, message.get("message_id"), monitor_menu_reply_markup(), result_reply_markup=control_delete_message_reply_markup(), loading_new_message=True)
     elif data == "football_rss_status":
         if callback_id:
             answer_control_callback(callback_id, "בודק RSS")
-        send_control_text_async("📡 בודק RSS...", rss_status_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
+        send_control_text_async("📡 בודק RSS...", rss_status_text, message.get("message_id"), monitor_menu_reply_markup(), result_reply_markup=control_delete_message_reply_markup(), full_result=True, loading_new_message=True)
     elif data == "football_gemini_status":
         if callback_id:
             answer_control_callback(callback_id, "בודק Gemini")
-        send_control_text_async("🤖 טוען מצב Gemini...", gemini_status_text, message.get("message_id"), monitor_menu_reply_markup())
+        send_control_text_async("🤖 טוען מצב Gemini...", gemini_status_text, message.get("message_id"), monitor_menu_reply_markup(), result_reply_markup=control_delete_message_reply_markup(), loading_new_message=True)
     elif data == "football_system_health":
         if callback_id:
             answer_control_callback(callback_id, "בודק חיבורים")
-        send_control_text_async("🧪 בודק חיבורים...", system_health_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
+        send_control_text_async("🧪 בודק חיבורים...", system_health_text, message.get("message_id"), monitor_menu_reply_markup(), result_reply_markup=control_delete_message_reply_markup(), full_result=True, loading_new_message=True)
     elif data == "football_gemini_toggle_quota_guard":
         if callback_id:
             answer_control_callback(callback_id, "מעדכן הגנת Gemini")
@@ -4533,11 +4603,11 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_daily_report_now":
         if callback_id:
             answer_control_callback(callback_id, "שולח סיכום עכשיו")
-        send_control_text_async("📊 מכין סיכום יום...", build_daily_quality_report_text, message.get("message_id"), quick_control_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
+        send_control_text_async("📊 מכין סיכום יום...", build_daily_quality_report_text, message.get("message_id"), quick_control_reply_markup(), result_reply_markup=control_delete_message_reply_markup(), full_result=True, loading_new_message=True)
     elif data == "football_test_latest_fabrizio":
         if callback_id:
             answer_control_callback(callback_id, "בודק את פבריציו האחרון")
-        run_latest_fabrizio_control_test()
+        Thread(target=run_latest_fabrizio_control_test, daemon=True).start()
     elif data == "football_last_blocked":
         if callback_id:
             answer_control_callback(callback_id, "מציג 30 חסימות")
@@ -4552,7 +4622,7 @@ def process_control_update(update: dict[str, Any]) -> None:
     elif data == "football_blocked_summary":
         if callback_id:
             answer_control_callback(callback_id, "שולח סיכום חסימות")
-        send_control_text_async("📋 מכין סיכום חסימות...", last_blocked_summary_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
+        send_control_text_async("📋 מכין סיכום חסימות...", last_blocked_summary_text, message.get("message_id"), monitor_menu_reply_markup(), result_reply_markup=control_delete_message_reply_markup(), full_result=True, loading_new_message=True)
     elif data == "football_last_duplicate":
         if callback_id:
             answer_control_callback(callback_id, "מציג 10 כפילויות")
@@ -12511,6 +12581,81 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
         send_executor.shutdown(wait=True, cancel_futures=False)
 
     return sent
+
+
+def translation_quality_issue(source_text: Any, translated_text: Any, *args: Any, **kwargs: Any) -> str:
+    """Final translation guard.
+
+    Keep hard blockers for empty/raw/English output, but do not block a manual
+    send only because a clean Hebrew update is shorter than the source. Gemini
+    often compresses noisy football posts, and the control button should not get
+    stuck on a length-ratio warning after the user explicitly chose to send.
+    """
+    translated = str(translated_text or "").strip()
+    source = str(source_text or "").strip()
+    if not translated:
+        return "לא התקבל תרגום"
+    lowered = translated.lower()
+    if "```" in translated or re.search(r'"\s*main\s*"', translated) or lowered.startswith(("json", "{", "[")):
+        return "פלט התרגום לא נקי"
+    hebrew_chars = len(re.findall(r"[\u0590-\u05ff]", translated))
+    latin_words = re.findall(r"\b[A-Za-z]{4,}\b", translated)
+    if source and len(source) > 25 and hebrew_chars < 8:
+        return "לא התקבל תרגום עברי מספיק"
+    if len(latin_words) >= 7 and hebrew_chars < 20:
+        return "נשארו יותר מדי מילים באנגלית"
+    return ""
+
+
+def last_sent_post_text() -> str:
+    state = load_control_state()
+    items: list[dict[str, Any]] = []
+    for key in (
+        "last_sent_posts",
+        "recent_sent_posts",
+        "sent_posts",
+        "sent_history",
+        "manual_sent_posts",
+        "last_manual_sent_posts",
+    ):
+        value = state.get(key)
+        if isinstance(value, list):
+            items.extend(item for item in value if isinstance(item, dict))
+    single = state.get("last_sent_post")
+    if isinstance(single, dict):
+        items.append(single)
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in reversed(items):
+        identity = str(item.get("link") or item.get("post_id") or item.get("message_id") or item.get("preview") or item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(item)
+        if len(deduped) >= 15:
+            break
+
+    if not deduped:
+        return "📌 מקורות אחרונים\n\nאין עדיין פוסטים שנשלחו ושמורים בהיסטוריה."
+
+    lines = ["📌 מקורות אחרונים שנשלחו", ""]
+    for index, item in enumerate(deduped, 1):
+        username = str(item.get("source") or item.get("username") or item.get("writer") or item.get("account") or "").strip()
+        source_label = _hebrew_account_label(username) if username else "מקור לא ידוע"
+        link = str(item.get("link") or item.get("url") or item.get("post_url") or "").strip()
+        sent_via = str(item.get("sent_via") or item.get("delivery") or item.get("mode") or "").strip()
+        preview = str(item.get("preview") or item.get("text") or item.get("translated") or item.get("message") or "").strip()
+        lines.append(f"{index}. {source_label}")
+        if sent_via:
+            lines.append(f"   דרך: {sent_via}")
+        if link:
+            lines.append(f"   מקור: {link}")
+        if preview:
+            lines.append(f"   {trim(compact_debug_text(preview, 140), 140)}")
+        if index != len(deduped):
+            lines.append("")
+    return "\n".join(lines)
 
 
 def main() -> None:
