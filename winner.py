@@ -2254,6 +2254,12 @@ def quick_control_reply_markup() -> dict[str, Any]:
             {"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"},
         ],
         [
+            {"text": "📋 30 חסימות אחרונות", "callback_data": "football_last_blocked"},
+        ],
+        [
+            {"text": "🧠 10 כפילויות אחרונות", "callback_data": "football_last_duplicate"},
+        ],
+        [
             {"text": "👥 ניהול כתבים", "callback_data": "football_menu_writers"},
         ],
         [
@@ -2268,9 +2274,6 @@ def quick_control_reply_markup() -> dict[str, Any]:
         [
             {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
         ],
-        [
-            {"text": "ℹ️ הסבר כפתורים", "callback_data": "football_buttons_help"},
-        ],
     ]
     return stable_reply_markup(keyboard)
 
@@ -2278,15 +2281,11 @@ def quick_control_reply_markup() -> dict[str, Any]:
 def monitor_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
         [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
-        [{"text": "👥 כתבים פעילים בפועל", "callback_data": "football_active_accounts_status"}],
         [{"text": "📡 בדיקת RSS", "callback_data": "football_rss_status"}],
-        [{"text": "🤖 בדיקת Gemini", "callback_data": "football_gemini_status"}],
+        [{"text": "🤖 מצב Gemini", "callback_data": "football_gemini_status"}],
         [{"text": "🧪 בדיקת חיבורים מלאה", "callback_data": "football_system_health"}],
-        [{"text": "📬 פוסט אחרון שנשלח", "callback_data": "football_last_sent_post"}],
-        [{"text": "↩️ למה לא נשלח", "callback_data": "football_last_blocked"}],
-        [{"text": "📋 סיכום 30 חסימות", "callback_data": "football_blocked_summary"}],
-        [{"text": "🧠 כפילות אחרונה", "callback_data": "football_last_duplicate"}],
-        [{"text": "ℹ️ הסבר בדיקה וניטור", "callback_data": "football_category_help:monitor"}],
+        [{"text": "📋 30 חסימות אחרונות", "callback_data": "football_last_blocked"}],
+        [{"text": "🧠 10 כפילויות אחרונות", "callback_data": "football_last_duplicate"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
     return stable_reply_markup(keyboard)
@@ -2339,16 +2338,9 @@ def stats_menu_reply_markup() -> dict[str, Any]:
         [{"text": "✅ כמה נשלחו היום", "callback_data": "football_stat_sent_today"}],
         [{"text": "🚫 כמה נחסמו היום", "callback_data": "football_stat_blocked_today"}],
         [{"text": "📊 אחוז הצלחה היום", "callback_data": "football_stat_success_rate"}],
-        [{"text": "⏳ פוסטים ישנים מדי היום", "callback_data": "football_stat_old_posts"}],
-        [{"text": "📋 כמה פוסטים כל כתב פרסם", "callback_data": "football_stat_posts_by_writer"}],
         [{"text": "🧱 טופ 10 סיבות חסימה", "callback_data": "football_stat_top_blocks"}],
         [{"text": "😅 איזה כתב נחסם הכי הרבה", "callback_data": "football_stat_most_blocked_writer"}],
-        [{"text": "📚 הפוסט הארוך ביותר היום", "callback_data": "football_stat_longest_post"}],
-        [{"text": "✂️ הפוסט הקצר ביותר היום", "callback_data": "football_stat_shortest_post"}],
         [{"text": "⚡ זמן סריקה ממוצע", "callback_data": "football_stat_avg_scan"}],
-        [{"text": "🧠 זמן תרגום ממוצע", "callback_data": "football_stat_avg_translation"}],
-        [{"text": "❌ כמה פעמים Gemini נכשל", "callback_data": "football_stat_gemini_failures"}],
-        [{"text": "ℹ️ הסבר סטטיסטיקות", "callback_data": "football_category_help:stats"}],
         [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
     ]
     return stable_reply_markup(keyboard)
@@ -3219,6 +3211,15 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str, limi
 
 def control_delete_message_reply_markup() -> dict[str, Any]:
     return stable_reply_markup([[{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}]])
+
+
+def control_history_reply_markup() -> dict[str, Any]:
+    return stable_reply_markup(
+        [
+            [{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}],
+            [{"text": "⬅️ חזרה לניטור", "callback_data": "football_menu_monitor"}],
+        ]
+    )
 
 
 def is_control_duplicate_item(item: dict[str, Any]) -> bool:
@@ -4545,14 +4546,14 @@ def process_control_update(update: dict[str, Any]) -> None:
         run_latest_fabrizio_control_test()
     elif data == "football_last_blocked":
         if callback_id:
-            answer_control_callback(callback_id, "מציג חסימות אחרונות")
+            answer_control_callback(callback_id, "מציג 30 חסימות")
         state = load_control_state()
         blocked_posts = list(state.get("last_blocked_posts", [])) if isinstance(state.get("last_blocked_posts", []), list) else []
-        blocked_posts = [item for item in blocked_posts if isinstance(item, dict)][-5:]
+        blocked_posts = [item for item in blocked_posts if isinstance(item, dict)][-30:]
         send_control_text(
-            _control_list_text("↩️ למה לא נשלח - 5 אחרונים", blocked_posts, "אין חסימות שמורות כרגע."),
+            _control_list_text("📋 30 חסימות אחרונות", blocked_posts, "אין חסימות שמורות כרגע.", limit=30),
             message.get("message_id"),
-            control_block_actions_reply_markup(blocked_posts) if blocked_posts else monitor_menu_reply_markup(),
+            control_history_reply_markup() if blocked_posts else monitor_menu_reply_markup(),
         )
     elif data == "football_blocked_summary":
         if callback_id:
@@ -4560,13 +4561,13 @@ def process_control_update(update: dict[str, Any]) -> None:
         send_control_text_async("📋 מכין סיכום חסימות...", last_blocked_summary_text, message.get("message_id"), monitor_menu_reply_markup(), result_new_message=True, result_reply_markup=control_delete_message_reply_markup(), full_result=True)
     elif data == "football_last_duplicate":
         if callback_id:
-            answer_control_callback(callback_id, "מציג כפילויות אחרונות")
+            answer_control_callback(callback_id, "מציג 10 כפילויות")
         state = load_control_state()
         duplicate_items = recent_duplicate_control_items(state, limit=10)
         send_control_text(
-            _control_list_text("🧠 כפילויות אחרונות - 10 אחרונות", duplicate_items, "אין כפילויות שמורות כרגע.", limit=10),
+            _control_list_text("🧠 10 כפילויות אחרונות", duplicate_items, "אין כפילויות שמורות כרגע.", limit=10),
             message.get("message_id"),
-            control_block_actions_reply_markup(duplicate_items) if duplicate_items else monitor_menu_reply_markup(),
+            control_history_reply_markup() if duplicate_items else monitor_menu_reply_markup(),
         )
     elif False and data == "football_last_duplicate":
         if callback_id:
