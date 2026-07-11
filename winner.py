@@ -2951,7 +2951,7 @@ def send_control_menu(text: str, reply_markup: dict[str, Any], message_id: Any =
     payload = {
         "chat_id": CONTROL_CHAT_ID,
         "text": rtl(text),
-        "reply_markup": ensure_delete_button_reply_markup(reply_markup),
+        "reply_markup": reply_markup,
         "disable_web_page_preview": True,
     }
     if message_id:
@@ -2982,7 +2982,7 @@ def send_control_panel(paused: bool, action_done: str = "", force_new: bool = Fa
     payload = {
         "chat_id": CONTROL_CHAT_ID,
         "text": text,
-        "reply_markup": ensure_delete_button_reply_markup(control_reply_markup(paused)),
+        "reply_markup": control_reply_markup(paused),
     }
     # Startup should create a fresh control panel every run, like the old behavior.
     # Button clicks still try to edit the active panel to avoid unnecessary spam.
@@ -3009,7 +3009,7 @@ def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> 
     payload = {
         "chat_id": CONTROL_CHAT_ID,
         "text": text,
-        "reply_markup": ensure_delete_button_reply_markup(quick_control_reply_markup()),
+        "reply_markup": quick_control_reply_markup(),
     }
     if message_id and not force_new:
         try:
@@ -3223,6 +3223,30 @@ def ensure_delete_button_reply_markup(reply_markup: dict[str, Any] | None = None
     if not has_delete:
         keyboard.append([{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}])
     return stable_reply_markup(keyboard)
+
+
+def is_main_control_reply_markup(reply_markup: dict[str, Any] | None = None) -> bool:
+    if not isinstance(reply_markup, dict) or not isinstance(reply_markup.get("inline_keyboard"), list):
+        return False
+    callbacks = {
+        str(button.get("callback_data") or "")
+        for row in reply_markup.get("inline_keyboard", [])
+        if isinstance(row, list)
+        for button in row
+        if isinstance(button, dict)
+    }
+    main_callbacks = {
+        "football_quick_main",
+        "football_menu_monitor",
+        "football_menu_filters",
+        "football_menu_categories",
+        "football_menu_writers",
+        "football_menu_teams",
+        "football_menu_stats",
+        "football_bot_on",
+        "football_bot_off",
+    }
+    return bool(callbacks & main_callbacks)
 
 
 def control_history_reply_markup() -> dict[str, Any]:
@@ -3592,7 +3616,9 @@ def send_control_text(text: str, message_id: Any = None, reply_markup: dict[str,
         "text": trim(formatted, 3900),
         "disable_web_page_preview": True,
     }
-    if reply_markup is not None:
+    if message_id and is_main_control_reply_markup(reply_markup):
+        payload["reply_markup"] = reply_markup
+    elif reply_markup is not None:
         payload["reply_markup"] = ensure_delete_button_reply_markup(reply_markup)
     elif not message_id:
         payload["reply_markup"] = control_delete_message_reply_markup()
