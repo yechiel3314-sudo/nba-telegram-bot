@@ -2254,12 +2254,6 @@ def quick_control_reply_markup() -> dict[str, Any]:
             {"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"},
         ],
         [
-            {"text": "📋 30 חסימות אחרונות", "callback_data": "football_last_blocked"},
-        ],
-        [
-            {"text": "🧠 10 כפילויות אחרונות", "callback_data": "football_last_duplicate"},
-        ],
-        [
             {"text": "👥 ניהול כתבים", "callback_data": "football_menu_writers"},
         ],
         [
