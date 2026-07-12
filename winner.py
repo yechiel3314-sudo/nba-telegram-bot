@@ -51,7 +51,7 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-BOT_BUILD_ID = "football-control-buttons-refined-2026-06-19"
+BOT_BUILD_ID = "football-writers-footballfactly-matteo-enabled-2026-07-12"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -3517,6 +3517,13 @@ def mark_control_item_not_duplicate(item_id: str) -> str:
 
 
 def send_control_blocked_post_to_main(item_id: str) -> str:
+    """Force-send a blocked/borderline post after an explicit button press.
+
+    A manual force-send is the user's final decision. It must not be cancelled by
+    duplicate, importance, short-translation, or translation-quality guards. We
+    still try Gemini first; if Gemini is unavailable, we fall back to a saved
+    Hebrew rendering and then to the free translator so the button remains usable.
+    """
     control_state = load_control_state()
     item, _index = find_control_block_item(control_state, item_id)
     if not item:
@@ -3525,15 +3532,49 @@ def send_control_blocked_post_to_main(item_id: str) -> str:
     if not post:
         return "אין מספיק נתונים כדי לשחזר את הפוסט. בדוק שוב את הכתב ושלח משם."
 
-    translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
-    quality_issues = translation_quality_issues(post, translated, quoted_translated)
-    if quality_issues:
-        return "לא נשלח לערוץ הראשי כי התרגום עדיין חשוד:\n" + "\n".join(f"- {issue}" for issue in quality_issues[:6])
+    translated = ""
+    quoted_translated = ""
+    quoted_author_translated = ""
+    translation_mode = "Gemini"
 
-    publishable, reason = is_publishable_hebrew_for_main_channel(translated, quoted_translated)
-    if not publishable:
-        return f"לא נשלח לערוץ הראשי: {reason}"
+    try:
+        translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
+    except Exception as exc:
+        logging.warning("שליחה ידנית: Gemini נכשל, עובר למסלול גיבוי: %s", exc)
+        translation_mode = "גיבוי"
 
+    # Reuse any already-prepared Hebrew text stored with the control item.
+    if not has_meaningful_text(translated):
+        for key in ("translated", "rendered", "message", "details", "preview"):
+            candidate = str(item.get(key, "") or "").strip()
+            if candidate and len(re.findall(r"[א-ת]", candidate)) >= 6:
+                translated = candidate
+                translation_mode = "טקסט עברי שמור"
+                break
+
+    # Final operational fallback: translate the source without Gemini.
+    if not has_meaningful_text(translated):
+        try:
+            translated, quoted_translated, quoted_author_translated = free_translate_post_for_send(
+                post,
+                include_quote=bool(post.quoted_text and not is_self_quote(post)),
+            )
+            translation_mode = "תרגום גיבוי"
+        except Exception as exc:
+            logging.warning("שליחה ידנית: גם תרגום הגיבוי נכשל: %s", exc)
+
+    # Last resort for an explicit force-send: send the cleaned source rather than
+    # rejecting the button. This is reached only when every translation path failed.
+    if not has_meaningful_text(translated):
+        translated = clean_before_translation(post.text or "").strip() or str(item.get("preview", "") or "").strip()
+        translation_mode = "טקסט מקור"
+
+    if not translated:
+        return "לא ניתן לשלוח: לפוסט אין תוכן טקסטואלי זמין."
+
+    # Intentionally do NOT call translation_quality_issues() or
+    # is_publishable_hebrew_for_main_channel() here. The explicit force button
+    # overrides all borderline/quality/duplicate/importance blocks.
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
     message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
     images = selected_post_images(post)
@@ -3555,7 +3596,7 @@ def send_control_blocked_post_to_main(item_id: str) -> str:
         logging.debug("שמירת זיכרון אחרי שליחה ידנית נכשלה: %s", exc)
 
     save_control_state(last_sent_post={"ts": time.time(), "username": post.username, "link": post.link})
-    return f"נשלח לערוץ נטו ספורט. מצב שליחה: {mode}"
+    return f"נשלח לערוץ נטו ספורט. מצב שליחה: {mode} | תרגום: {translation_mode}"
 
 
 def last_blocked_summary_text(limit: int | None = None) -> str:
@@ -13220,6 +13261,47 @@ def default_active_writer_row(username: str, label: str) -> list[dict[str, str]]
             "callback_data": f"football_default_writer_toggle:{username}:{'off' if enabled else 'on'}",
         }
     ]
+
+
+def ensure_matteo_moretto_enabled_once() -> None:
+    """Enable Matteo Moretto for this upgrade without locking the toggle forever.
+
+    Existing installations may have Matteo saved as disabled. This one-time
+    migration clears that old disabled state and records a marker. Afterward,
+    the user can still switch Matteo off or on normally from writer management.
+    """
+    migration_key = "matteo_moretto_enabled_by_writers_upgrade_v1"
+    try:
+        state = load_control_state()
+        if bool(state.get(migration_key, False)):
+            return
+        aliases = MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES
+        updates: dict[str, Any] = {migration_key: True}
+        for key in (
+            "default_active_disabled_accounts",
+            "disabled_accounts",
+            "disabled_writers",
+            "inactive_accounts",
+            "muted_accounts",
+            "manual_disabled_accounts",
+        ):
+            value = state.get(key)
+            if isinstance(value, list):
+                updates[key] = [
+                    name for name in value
+                    if str(name or "").lower().lstrip("@") not in aliases
+                ]
+            elif isinstance(value, dict):
+                updates[key] = {
+                    name: flag for name, flag in value.items()
+                    if str(name or "").lower().lstrip("@") not in aliases
+                }
+        save_control_state(**updates)
+    except Exception as exc:
+        logging.warning("לא ניתן היה להפעיל את מתאו מורטו בעדכון הראשוני: %s", exc)
+
+
+ensure_matteo_moretto_enabled_once()
 
 
 def control_row_mentions_default_writer(row: Any) -> bool:
