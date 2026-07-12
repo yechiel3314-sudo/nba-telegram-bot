@@ -2207,10 +2207,13 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
 
 
 def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
-    markup = control_reply_markup(paused)
-    keyboard = list(markup.get("inline_keyboard", []))
-    keyboard.append([{"text": stable_button_label("⬅️ חזרה לראשי"), "callback_data": "football_quick_main"}])
-    return {"inline_keyboard": keyboard}
+    """Compatibility wrapper: writer management contains writers only.
+
+    The bot on/off button belongs exclusively to the main quick-control menu.
+    writers_menu_reply_markup() also includes the default-active sources such as
+    FootballFactly ("עובדות כדורגל") with their real persisted on/off state.
+    """
+    return writers_menu_reply_markup()
 
 
 def _flag_status(state: dict[str, Any], key: str) -> str:
@@ -2982,7 +2985,9 @@ def send_control_panel(paused: bool, action_done: str = "", force_new: bool = Fa
     payload = {
         "chat_id": CONTROL_CHAT_ID,
         "text": text,
-        "reply_markup": control_reply_markup(paused),
+        # The persistent/root panel must always be the main menu.
+        # The button flips between off/on according to the saved paused state.
+        "reply_markup": quick_control_reply_markup(),
     }
     # Startup should create a fresh control panel every run, like the old behavior.
     # Button clicks still try to edit the active panel to avoid unnecessary spam.
