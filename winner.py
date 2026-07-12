@@ -51,7 +51,7 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-BOT_BUILD_ID = "football-complete-writers-menu-back-button-fixed-2026-07-12"
+BOT_BUILD_ID = "football-all-writers-menu-final-fixed-2026-07-12"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -2206,14 +2206,67 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
     return stable_reply_markup(keyboard)
 
 
-def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
-    """Compatibility wrapper: writer management contains writers only.
+def _complete_writers_management_reply_markup() -> dict[str, Any]:
+    """Return the full writer list with real persisted on/off states.
 
-    The bot on/off button belongs exclusively to the main quick-control menu.
-    writers_menu_reply_markup() also includes the default-active sources such as
-    FootballFactly ("עובדות כדורגל") with their real persisted on/off state.
+    This builder is intentionally self-contained. It does not wrap or inherit an
+    older menu, so later upgrades cannot accidentally reduce the screen to only
+    the newly-added sources.
     """
-    return writers_menu_reply_markup()
+    state = load_control_state()
+    disabled_base = set(disabled_base_accounts_from_state(state))
+    enabled_optional = set(enabled_optional_accounts_from_state(state))
+    keyboard: list[list[dict[str, str]]] = []
+
+    # The seven regular reporters. Their original persisted states are preserved.
+    for username in X_ACCOUNTS:
+        label = CONTROLLED_BASE_ACCOUNT_LABELS.get(
+            username,
+            ACCOUNT_DISPLAY_NAMES.get(username, username),
+        )
+        if username in LOCKED_DISABLED_BASE_ACCOUNTS:
+            status = "כבוי קבוע"
+        else:
+            status = "כבוי" if username in disabled_base else "פעיל"
+        keyboard.append([{
+            "text": f"{label}: {status}",
+            "callback_data": f"football_base_account:{username}",
+        }])
+
+    # Every optional reporter. Existing state remains unchanged; Matteo is made
+    # active once by the migration farther below, and can then be toggled freely.
+    for username in OPTIONAL_CONTROLLED_ACCOUNTS:
+        label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(
+            username,
+            ACCOUNT_DISPLAY_NAMES.get(username, username),
+        )
+        status = "פעיל" if username in enabled_optional else "כבוי"
+        keyboard.append([{
+            "text": f"{label}: {status}",
+            "callback_data": f"football_account:{username}",
+        }])
+
+    # FootballFactly is managed in this same screen, but is not an X reporter.
+    factly_enabled = not control_state_account_disabled(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME)
+    keyboard.append([{
+        "text": f"עובדות כדורגל: {'פעיל' if factly_enabled else 'כבוי'}",
+        "callback_data": (
+            f"football_default_writer_toggle:{FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME}:"
+            f"{'off' if factly_enabled else 'on'}"
+        ),
+    }])
+
+    # Always and only once at the bottom.
+    keyboard.append([{
+        "text": "⬅️ חזרה לתפריט הראשי",
+        "callback_data": "football_quick_main",
+    }])
+    return stable_reply_markup(keyboard)
+
+
+def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
+    # ``paused`` is intentionally ignored: bot on/off belongs only to main menu.
+    return _complete_writers_management_reply_markup()
 
 
 def _flag_status(state: dict[str, Any], key: str) -> str:
@@ -13325,66 +13378,8 @@ except NameError:
 
 
 def writers_menu_reply_markup() -> dict[str, Any]:
-    """Build the complete writer-management menu from the configured sources.
-
-    This deliberately does not depend on an older menu implementation: every
-    configured base writer and optional writer is always shown, followed by the
-    FootballFactly channel. Each row reads the persisted state and toggles that
-    exact source. The global bot on/off button belongs only to the main menu.
-    """
-    state = load_control_state()
-    disabled_base = set(disabled_base_accounts_from_state(state))
-    enabled_optional = set(enabled_optional_accounts_from_state(state))
-    keyboard: list[list[dict[str, str]]] = []
-
-    # All regular/base writers.
-    for username in X_ACCOUNTS:
-        label = CONTROLLED_BASE_ACCOUNT_LABELS.get(
-            username,
-            ACCOUNT_DISPLAY_NAMES.get(username, username),
-        )
-        if username in LOCKED_DISABLED_BASE_ACCOUNTS:
-            status = "כבוי קבוע"
-        else:
-            status = "כבוי" if username in disabled_base else "פעיל"
-        keyboard.append([
-            {
-                "text": f"{label}: {status}",
-                "callback_data": f"football_base_account:{username}",
-            }
-        ])
-
-    # All optional writers, including Matteo Moretto. Their existing callback
-    # already performs a real persisted on/off toggle and refreshes this menu.
-    for username in OPTIONAL_CONTROLLED_ACCOUNTS:
-        label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(
-            username,
-            ACCOUNT_DISPLAY_NAMES.get(username, username),
-        )
-        status = "פעיל" if username in enabled_optional else "כבוי"
-        keyboard.append([
-            {
-                "text": f"{label}: {status}",
-                "callback_data": f"football_account:{username}",
-            }
-        ])
-
-    # FootballFactly is a channel source rather than one of the X writer lists,
-    # but it is managed from the same screen and uses the same visible behavior.
-    keyboard.append(
-        default_active_writer_row(
-            FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
-            "עובדות כדורגל",
-        )
-    )
-
-    # Keep exactly one permanent back button as the final row, regardless of
-    # future additions to the writer list.
-    keyboard = [row for row in keyboard if not control_row_is_back_row(row)]
-    keyboard.append([
-        {"text": "⬅️ חזרה לתפריט הראשי", "callback_data": "football_quick_main"}
-    ])
-    return stable_reply_markup(keyboard)
+    """Compatibility entry point for the complete writer-management screen."""
+    return _complete_writers_management_reply_markup()
 
 
 try:
