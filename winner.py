@@ -12744,40 +12744,27 @@ NETO_SPORT_FOOTER_HTML = '<a href="https://t.me/neto_sport">נטו ספורט</a
 
 
 def normalize_neto_sport_footer(message: Any) -> str:
-    """Keep exactly one Neto Sport footer at the end of a Telegram HTML message.
-
-    Telegram/RTL formatting can place invisible direction marks inside the anchor
-    text. Comparing the raw HTML therefore misses an already existing footer and
-    used to append a second one. We inspect only trailing lines, convert each line
-    to plain text, remove invisible direction marks, and discard every trailing
-    Neto Sport footer before appending one canonical footer.
-    """
+    """Return a Telegram HTML message with exactly one Neto Sport footer."""
     text = str(message or "").strip()
     if not text:
         return NETO_SPORT_FOOTER_HTML
 
-    lines = text.splitlines()
-    invisible_marks = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+    # Main-channel messages can contain either the old footer (dot/emoji inside
+    # the anchor) or the newer footer (dot/emoji after the anchor). Remove both.
+    anchor_pattern = re.compile(
+        r"(?is)[\t ]*<a\b[^>]*href\s*=\s*([\"'])https?://(?:www\.)?t\.me/neto_sport/?\1[^>]*>.*?</a>[\t ]*(?:[.。]?[\t ]*📝)?[\t ]*"
+    )
+    text = anchor_pattern.sub("", text)
 
-    def is_neto_footer_line(line: str) -> bool:
-        plain = html_message_to_plain_text(line or "")
-        plain = invisible_marks.sub("", html.unescape(plain))
-        compact = re.sub(r"\s+", " ", plain).strip()
-        compact = re.sub(r"[.。•·\-–—:：]+", "", compact).strip()
-        compact = compact.replace("📝", "").strip()
-        compact = re.sub(r"\(?https?://t\.me/neto_sport\)?", "", compact, flags=re.IGNORECASE).strip()
-        return compact == "נטו ספורט"
+    # Safety net for an exact plain-text footer line, ignoring bidi marks.
+    invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*"
+    plain_footer_pattern = re.compile(
+        rf"(?im)^[\t ]*{invisible}נטו[\t ]+ספורט{invisible}[\t ]*[.。]?[\t ]*📝?[\t ]*$"
+    )
+    text = plain_footer_pattern.sub("", text)
 
-    # Remove blank lines and any number of duplicate footer lines from the end.
-    while lines and not lines[-1].strip():
-        lines.pop()
-    while lines and is_neto_footer_line(lines[-1]):
-        lines.pop()
-        while lines and not lines[-1].strip():
-            lines.pop()
-
-    body = "\n".join(lines).strip()
-    return f"{body}\n\n{NETO_SPORT_FOOTER_HTML}" if body else NETO_SPORT_FOOTER_HTML
+    text = re.sub(r"\n[\t ]*\n(?:[\t ]*\n)+", "\n\n", text).strip()
+    return f"{text}\n\n{NETO_SPORT_FOOTER_HTML}" if text else NETO_SPORT_FOOTER_HTML
 
 
 def is_negative_criticism_or_opinion(*parts: Any) -> bool:
