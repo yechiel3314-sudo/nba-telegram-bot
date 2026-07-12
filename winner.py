@@ -51,7 +51,7 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-BOT_BUILD_ID = "football-writers-footballfactly-matteo-enabled-2026-07-12"
+BOT_BUILD_ID = "football-complete-writers-menu-back-button-fixed-2026-07-12"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -13325,22 +13325,66 @@ except NameError:
 
 
 def writers_menu_reply_markup() -> dict[str, Any]:
-    base_markup = _base_writers_menu_reply_markup() if callable(_base_writers_menu_reply_markup) else stable_reply_markup([])
-    rows = []
-    if isinstance(base_markup, dict) and isinstance(base_markup.get("inline_keyboard"), list):
-        rows = [[dict(button) for button in row if isinstance(button, dict)] for row in base_markup.get("inline_keyboard", [])]
-    rows = [
-        row for row in rows
-        if not control_row_mentions_default_writer(row)
-        and not any(str(button.get("callback_data", "")) in {"football_bot_on", "football_bot_off"} for button in row if isinstance(button, dict))
-    ]
-    back_rows = [row for row in rows if control_row_is_back_row(row)]
-    main_rows = [row for row in rows if not control_row_is_back_row(row)]
-    default_rows = [
-        default_active_writer_row(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, "עובדות כדורגל"),
-        default_active_writer_row(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME, "מתאו מורטו"),
-    ]
-    return stable_reply_markup(default_rows + main_rows + back_rows)
+    """Build the complete writer-management menu from the configured sources.
+
+    This deliberately does not depend on an older menu implementation: every
+    configured base writer and optional writer is always shown, followed by the
+    FootballFactly channel. Each row reads the persisted state and toggles that
+    exact source. The global bot on/off button belongs only to the main menu.
+    """
+    state = load_control_state()
+    disabled_base = set(disabled_base_accounts_from_state(state))
+    enabled_optional = set(enabled_optional_accounts_from_state(state))
+    keyboard: list[list[dict[str, str]]] = []
+
+    # All regular/base writers.
+    for username in X_ACCOUNTS:
+        label = CONTROLLED_BASE_ACCOUNT_LABELS.get(
+            username,
+            ACCOUNT_DISPLAY_NAMES.get(username, username),
+        )
+        if username in LOCKED_DISABLED_BASE_ACCOUNTS:
+            status = "כבוי קבוע"
+        else:
+            status = "כבוי" if username in disabled_base else "פעיל"
+        keyboard.append([
+            {
+                "text": f"{label}: {status}",
+                "callback_data": f"football_base_account:{username}",
+            }
+        ])
+
+    # All optional writers, including Matteo Moretto. Their existing callback
+    # already performs a real persisted on/off toggle and refreshes this menu.
+    for username in OPTIONAL_CONTROLLED_ACCOUNTS:
+        label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(
+            username,
+            ACCOUNT_DISPLAY_NAMES.get(username, username),
+        )
+        status = "פעיל" if username in enabled_optional else "כבוי"
+        keyboard.append([
+            {
+                "text": f"{label}: {status}",
+                "callback_data": f"football_account:{username}",
+            }
+        ])
+
+    # FootballFactly is a channel source rather than one of the X writer lists,
+    # but it is managed from the same screen and uses the same visible behavior.
+    keyboard.append(
+        default_active_writer_row(
+            FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
+            "עובדות כדורגל",
+        )
+    )
+
+    # Keep exactly one permanent back button as the final row, regardless of
+    # future additions to the writer list.
+    keyboard = [row for row in keyboard if not control_row_is_back_row(row)]
+    keyboard.append([
+        {"text": "⬅️ חזרה לתפריט הראשי", "callback_data": "football_quick_main"}
+    ])
+    return stable_reply_markup(keyboard)
 
 
 try:
