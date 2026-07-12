@@ -4626,13 +4626,13 @@ def process_control_update(update: dict[str, Any]) -> None:
         logging.info("⏸️ לוח שליטה: הבוט הושהה דרך הכפתור.")
         if callback_id:
             answer_control_callback(callback_id, "הבוט כובה")
-        send_control_panel(True, "הפעולה בוצעה בהצלחה: הבוט כובה.")
+        refresh_quick_control_menu(message, "הפעולה בוצעה בהצלחה: הבוט כובה.")
     elif data == "football_bot_on":
         save_control_state(False, resume_min_ts=time.time() - CONTROL_RESUME_BACKLOG_SECONDS)
         logging.info("▶️ לוח שליטה: הבוט הופעל מחדש דרך הכפתור.")
         if callback_id:
             answer_control_callback(callback_id, "הבוט הופעל")
-        send_control_panel(False, "\u05d4\u05e4\u05e2\u05d5\u05dc\u05d4 \u05d1\u05d5\u05e6\u05e2\u05d4 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4: \u05d4\u05d1\u05d5\u05d8 \u05d4\u05d5\u05e4\u05e2\u05dc.")
+        refresh_quick_control_menu(message, "הפעולה בוצעה בהצלחה: הבוט הופעל.")
     elif data == "football_elite_only_2h":
         save_control_state(elite_only=True, elite_only_until=0.0)
         if callback_id:
@@ -13242,12 +13242,18 @@ def writers_menu_reply_markup() -> dict[str, Any]:
     rows = []
     if isinstance(base_markup, dict) and isinstance(base_markup.get("inline_keyboard"), list):
         rows = [[dict(button) for button in row if isinstance(button, dict)] for row in base_markup.get("inline_keyboard", [])]
-    rows = [row for row in rows if not control_row_mentions_default_writer(row)]
+    rows = [
+        row for row in rows
+        if not control_row_mentions_default_writer(row)
+        and not any(str(button.get("callback_data", "")) in {"football_bot_on", "football_bot_off"} for button in row if isinstance(button, dict))
+    ]
     back_rows = [row for row in rows if control_row_is_back_row(row)]
     main_rows = [row for row in rows if not control_row_is_back_row(row)]
-    main_rows.append(default_active_writer_row(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, "עובדות כדורגל"))
-    main_rows.append(default_active_writer_row(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME, "מתאו מורטו"))
-    return stable_reply_markup(main_rows + back_rows)
+    default_rows = [
+        default_active_writer_row(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, "עובדות כדורגל"),
+        default_active_writer_row(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME, "מתאו מורטו"),
+    ]
+    return stable_reply_markup(default_rows + main_rows + back_rows)
 
 
 try:
@@ -13265,11 +13271,38 @@ def quick_control_reply_markup() -> dict[str, Any]:
         row for row in rows
         if not any(str(button.get("callback_data", "")) in {"football_bot_on", "football_bot_off"} for button in row if isinstance(button, dict))
     ]
+    paused = control_state_is_paused()
     bot_row = [
-        {"text": "▶️ הדלק בוט", "callback_data": "football_bot_on"},
-        {"text": "⏸️ כבה בוט", "callback_data": "football_bot_off"},
+        {
+            "text": "▶️ הפעל בוט" if paused else "⏸️ כבה בוט",
+            "callback_data": "football_bot_on" if paused else "football_bot_off",
+        }
     ]
     return stable_reply_markup([bot_row] + rows)
+
+
+def control_state_is_paused() -> bool:
+    try:
+        state = load_control_state()
+    except Exception:
+        return False
+    return bool(
+        state.get("paused")
+        or state.get("bot_paused")
+        or state.get("is_paused")
+        or state.get("disabled")
+    )
+
+
+def quick_control_status_text(action_done: str = "") -> str:
+    if action_done:
+        return action_done
+    return "כלים מהירים לבוט הכדורגל."
+
+
+def refresh_quick_control_menu(message: dict[str, Any] | None, text: str = "") -> None:
+    message_id = message.get("message_id") if isinstance(message, dict) else None
+    send_control_menu(quick_control_status_text(text), quick_control_reply_markup(), message_id)
 
 
 def is_football_factly_context(*parts: Any, **kwargs: Any) -> bool:
