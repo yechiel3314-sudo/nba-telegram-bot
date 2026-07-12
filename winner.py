@@ -4402,6 +4402,14 @@ def process_control_update(update: dict[str, Any]) -> None:
             answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
         return
     if data == "football_delete_message":
+        try:
+            if (
+                not is_main_control_reply_markup(message.get("reply_markup") if isinstance(message, dict) else None)
+                and should_learn_delete_as_reject(message)
+            ):
+                remember_control_learning("reject", message)
+        except Exception:
+            pass
         if callback_id:
             answer_control_callback(callback_id, "מוחק הודעה")
         try:
@@ -11631,7 +11639,7 @@ def translation_quality_issues(post: "Post", main_text: str, quoted_text: str = 
     if re.search(r"(?is)(?:^|\s|[{\[,])(?:```)?\s*(?:json|main|quote|quote_author)\s*[:=]", translated):
         issues.append("דליפת JSON / main / quote בתוך ההודעה")
     if translation_looks_incomplete(source, translated):
-        issues.append("התרגום נראה קצר מדי ביחס למקור")
+        pass
     if translation_contradicts_source(source, translated):
         issues.append("התרגום החליף שם קבוצה/ישות רגישה")
     if translation_changes_locked_numbers(source, translated):
@@ -12609,7 +12617,299 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
     return sent
 
 
-def translation_quality_issue(source_text: Any, translated_text: Any, *args: Any, **kwargs: Any) -> str:
+MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME = "MatteMoretto"
+MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES = {
+    "mattemoretto",
+    "matteomoretto",
+    "matteo_moretto",
+}
+
+
+def is_forbidden_staff_role_update(*parts: Any) -> bool:
+    text = " ".join(str(part or "") for part in parts).lower()
+    compact = re.sub(r"\s+", " ", text)
+    if not compact.strip():
+        return False
+    goalkeeper_terms = (
+        "מאמן שוערים",
+        "מאמן השוערים",
+        "מאמן השוער",
+        "מאמנת שוערים",
+        "מאמנת השוערים",
+        "goalkeeper coach",
+        "goalkeeping coach",
+        "keeper coach",
+        "coach dei portieri",
+        "preparatore dei portieri",
+        "entrenador de porteros",
+        "entrenador de arqueros",
+    )
+    if any(term in compact for term in goalkeeper_terms):
+        return True
+    if re.search(r"מאמנ\S*\s+(?:ה)?שוער(?:ים)?", compact):
+        return True
+    return False
+
+
+def strip_leading_official_without_writer(message: Any) -> str:
+    text = str(message or "")
+    return re.sub(
+        r"^(\s*(?:[\u200e\u200f\u202a-\u202e\ufeff]|<br\s*/?>|\n|\r)*)רשמי\s*[:：\\-–—]?\s*",
+        r"\1",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+
+def persistent_memory_path(filename: str) -> str:
+    base_dir = str(globals().get("FOOTBALL_BOT_DATA_DIR") or os.environ.get("FOOTBALL_BOT_DATA_DIR") or ".")
+    try:
+        os.makedirs(base_dir, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(base_dir, filename)
+
+
+def load_json_list_file(path: str) -> list[dict[str, Any]]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, list) else []
+    except Exception:
+        return []
+
+
+def save_json_list_file(path: str, items: list[dict[str, Any]], limit: int = 500) -> None:
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(items[-limit:], handle, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logging.warning("שמירת זיכרון מתמשך נכשלה: %s", exc)
+
+
+def normalize_memory_text(value: Any) -> str:
+    text = html_message_to_plain_text(str(value or "")) if "html_message_to_plain_text" in globals() else str(value or "")
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[\W_]+", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def memory_similarity(a: Any, b: Any) -> float:
+    left = set(normalize_memory_text(a).split())
+    right = set(normalize_memory_text(b).split())
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(1, min(len(left), len(right)))
+
+
+def remember_persistent_sent(post: Any, message: Any, sent_via: str = "auto") -> None:
+    path = persistent_memory_path("football_sent_memory.json")
+    items = load_json_list_file(path)
+    username = str(getattr(post, "username", "") or "")
+    link = str(getattr(post, "link", "") or "")
+    post_id = str(getattr(post, "post_id", "") or "")
+    items.append(
+        {
+            "ts": time.time(),
+            "username": username,
+            "source": username,
+            "link": link,
+            "post_id": post_id,
+            "sent_via": sent_via,
+            "preview": trim(html_message_to_plain_text(str(message or "")) if "html_message_to_plain_text" in globals() else str(message or ""), 500),
+        }
+    )
+    save_json_list_file(path, items, limit=700)
+    try:
+        state = load_control_state()
+        recent = state.get("last_sent_posts", [])
+        if not isinstance(recent, list):
+            recent = []
+        recent.append(items[-1])
+        save_control_state(last_sent_posts=recent[-80:])
+    except Exception:
+        pass
+    remember_learning_text(
+        "approve",
+        message,
+        {
+            "username": username,
+            "source": username,
+            "link": link,
+            "post_id": post_id,
+            "sent_via": sent_via,
+        },
+    )
+
+
+def control_message_learning_text(message: dict[str, Any] | None) -> str:
+    if not isinstance(message, dict):
+        return ""
+    text = str(message.get("text") or message.get("caption") or "")
+    reply_to = message.get("reply_to_message")
+    if isinstance(reply_to, dict):
+        text += "\n" + str(reply_to.get("text") or reply_to.get("caption") or "")
+    return trim(compact_debug_text(text, 900), 900) if "compact_debug_text" in globals() else text[:900]
+
+
+def remember_control_learning(decision: str, message: dict[str, Any] | None) -> str:
+    path = persistent_memory_path("football_learning_memory.json")
+    items = load_json_list_file(path)
+    text = control_message_learning_text(message)
+    items.append(
+        {
+            "ts": time.time(),
+            "decision": decision,
+            "text": text,
+            "message_id": (message or {}).get("message_id") if isinstance(message, dict) else None,
+        }
+    )
+    save_json_list_file(path, items, limit=500)
+    if decision == "approve":
+        return "נלמד: זה מסוג הדברים שכן לשלוח."
+    return "נלמד: זה מסוג הדברים שלא לשלוח."
+
+
+def should_learn_delete_as_reject(message: dict[str, Any] | None) -> bool:
+    text = control_message_learning_text(message)
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("דיווח גבולי", "google preview", "preview", "לא נשלח", "סיבה:", "לבדיקה")):
+        return True
+    if any(marker in lowered for marker in ("נשלח בהצלחה", "נשלח לערוץ", "הועבר לערוץ", "בוצעה")):
+        return False
+    return True
+
+
+def remember_learning_text(decision: str, text: Any, meta: dict[str, Any] | None = None) -> None:
+    path = persistent_memory_path("football_learning_memory.json")
+    items = load_json_list_file(path)
+    entry = {
+        "ts": time.time(),
+        "decision": decision,
+        "text": trim(compact_debug_text(str(text or ""), 900), 900) if "compact_debug_text" in globals() else str(text or "")[:900],
+    }
+    if isinstance(meta, dict):
+        entry.update({k: v for k, v in meta.items() if v not in (None, "")})
+    items.append(entry)
+    save_json_list_file(path, items, limit=800)
+
+
+def control_learning_summary_text() -> str:
+    items = load_json_list_file(persistent_memory_path("football_learning_memory.json"))
+    if not items:
+        return "📚 סיכום למידה\n\nעוד אין אישורים/דחיות שמורים."
+    approved = [item for item in items if item.get("decision") == "approve"]
+    rejected = [item for item in items if item.get("decision") == "reject"]
+    lines = [
+        "📚 סיכום למידה",
+        "",
+        f"אישרת לשלוח: {len(approved)}",
+        f"סימנת לא לשלוח: {len(rejected)}",
+        "",
+        "אחרונים:",
+    ]
+    for item in list(reversed(items))[:12]:
+        label = "כן לשלוח" if item.get("decision") == "approve" else "לא לשלוח"
+        lines.append(f"- {label}: {trim(str(item.get('text') or ''), 120)}")
+    return "\n".join(lines)
+
+
+def persistent_duplicate_candidate(*parts: Any, threshold: float = 0.86) -> dict[str, Any] | None:
+    text = " ".join(str(part or "") for part in parts)
+    if len(normalize_memory_text(text)) < 30:
+        return None
+    for item in reversed(load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-250:]):
+        previous = item.get("preview", "")
+        link = str(item.get("link") or "")
+        if link and link in text:
+            return item
+        if memory_similarity(text, previous) >= threshold:
+            return item
+    return None
+
+
+_base_telegram_broadcast_full_text = telegram_broadcast_full_text
+
+
+def telegram_broadcast_full_text(message_html: str, reply_message_ids: dict[str, int] | None = None) -> dict[str, int]:
+    return _base_telegram_broadcast_full_text(strip_leading_official_without_writer(message_html), reply_message_ids=reply_message_ids)
+
+
+_base_telegram_broadcast_with_text_fallback = telegram_broadcast_with_text_fallback
+
+
+def telegram_broadcast_with_text_fallback(
+    method: str,
+    payload: dict[str, Any],
+    fallback_text: str,
+    reply_message_ids: dict[str, int] | None = None,
+) -> dict[str, int]:
+    payload = dict(payload or {})
+    if "text" in payload:
+        payload["text"] = strip_leading_official_without_writer(payload.get("text", ""))
+    if "caption" in payload:
+        payload["caption"] = strip_leading_official_without_writer(payload.get("caption", ""))
+    return _base_telegram_broadcast_with_text_fallback(
+        method,
+        payload,
+        strip_leading_official_without_writer(fallback_text),
+        reply_message_ids=reply_message_ids,
+    )
+
+
+_base_send_prepared_message_to_main = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    clean_message = strip_leading_official_without_writer(message)
+    result = _base_send_prepared_message_to_main(post, clean_message, images, video_url=video_url, reply_message_ids=reply_message_ids)
+    remember_persistent_sent(post, clean_message, "button_or_auto")
+    return result
+
+
+def control_state_account_disabled(username: str) -> bool:
+    state = load_control_state()
+    wanted = str(username or "").lower().lstrip("@")
+    disabled_values: list[Any] = []
+    for key in (
+        "disabled_accounts",
+        "disabled_writers",
+        "inactive_accounts",
+        "muted_accounts",
+        "manual_disabled_accounts",
+    ):
+        value = state.get(key)
+        if isinstance(value, list):
+            disabled_values.extend(value)
+        elif isinstance(value, dict):
+            disabled_values.extend(name for name, disabled in value.items() if disabled)
+    return any(str(value or "").lower().lstrip("@") == wanted for value in disabled_values)
+
+
+_base_active_x_accounts = active_x_accounts
+
+
+def active_x_accounts() -> list[str]:
+    accounts = list(_base_active_x_accounts())
+    normalized = {str(account or "").lower().lstrip("@") for account in accounts}
+    if (
+        not control_state_account_disabled(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME)
+        and not (normalized & MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES)
+    ):
+        accounts.append(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME)
+    return accounts
+
+
+def translation_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
     """Final translation guard.
 
     Keep hard blockers for empty/raw/English output, but do not block a manual
@@ -12619,6 +12919,11 @@ def translation_quality_issue(source_text: Any, translated_text: Any, *args: Any
     """
     translated = str(translated_text or "").strip()
     source = str(source_text or "").strip()
+    if is_forbidden_staff_role_update(source, translated, *args, *kwargs.values()):
+        return "דיווח על מאמן שוערים/צוות שוערים לא נשלח"
+    duplicate_memory_check = globals().get("persistent_duplicate_candidate")
+    if callable(duplicate_memory_check) and duplicate_memory_check(source, translated, *args, *kwargs.values(), threshold=0.92):
+        return "כפילות מול זיכרון שליחות מתמשך"
     if not translated:
         return "לא התקבל תרגום"
     lowered = translated.lower()
@@ -12631,6 +12936,97 @@ def translation_quality_issue(source_text: Any, translated_text: Any, *args: Any
     if len(latin_words) >= 7 and hebrew_chars < 20:
         return "נשארו יותר מדי מילים באנגלית"
     return ""
+
+
+def translation_quality_issues(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> list[str]:
+    issue = translation_quality_issue(source_text, translated_text, *args, **kwargs)
+    return [issue] if issue else []
+
+
+def check_translation_quality(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> list[str]:
+    return translation_quality_issues(source_text, translated_text, *args, **kwargs)
+
+
+def translation_quality_block_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def is_translation_quality_blocked(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
+    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
+
+
+def is_translation_too_short(*args: Any, **kwargs: Any) -> bool:
+    return False
+
+
+def looks_like_short_translation(*args: Any, **kwargs: Any) -> bool:
+    return False
+
+
+def control_translation_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def translated_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def translation_suspicion_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def suspicious_translation_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def is_suspicious_translation(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
+    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
+
+
+def looks_like_bad_translation(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
+    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
+
+
+def is_bad_translation(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
+    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
+
+
+def validate_translated_message_for_send(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def should_notify_control_borderline_item(item: dict[str, Any]) -> bool:
+    if not CONTROL_CHAT_ID:
+        return False
+    if is_forbidden_staff_role_update(
+        item.get("preview"),
+        item.get("text"),
+        item.get("translated"),
+        item.get("message"),
+        item.get("raw_text"),
+    ):
+        return False
+    if persistent_duplicate_candidate(
+        item.get("preview"),
+        item.get("text"),
+        item.get("translated"),
+        item.get("message"),
+        item.get("raw_text"),
+        threshold=0.90,
+    ):
+        return False
+    raw_reason = str(item.get("raw_reason", "") or "").lower()
+    if control_item_is_low_confidence_duplicate(item):
+        return True
+    if "post_translation_duplicate" in raw_reason:
+        score = control_item_duplicate_score(item)
+        return score is None or score < CONTROL_BORDERLINE_DUPLICATE_MAX_SCORE
+    if "translation_quality_blocked" in raw_reason or "main_blocked_untranslated" in raw_reason:
+        return True
+    if raw_reason.startswith("pre_send:importance_score_too_low"):
+        gap = control_item_importance_gap(item)
+        return gap is not None and 0 <= gap <= 8
+    return False
 
 
 def last_sent_post_text() -> str:
