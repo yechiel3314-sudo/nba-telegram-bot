@@ -1389,14 +1389,57 @@ def run():
         time.sleep(POLL_SECONDS)
 
 
+def _find_neto_sport_control_alert_chat_id():
+    known_names = (
+        "NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHAT_ID",
+        "NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_CHANNEL_ID",
+        "NETO_SPORT_FOOTBALL_NEWS_CONTROL_TELEGRAM_GROUP_ID",
+        "NETO_SPORT_CONTROL_TELEGRAM_CHAT_ID",
+        "NETO_SPORT_CONTROL_TELEGRAM_CHANNEL_ID",
+    )
+    for name in known_names:
+        value = normalize_telegram_chat_id(os.getenv(name))
+        if value:
+            return value
+
+    for name, value in os.environ.items():
+        upper_name = name.upper()
+        if (
+            "NETO_SPORT" in upper_name
+            and "CONTROL" in upper_name
+            and "TELEGRAM" in upper_name
+            and "TARGET" not in upper_name
+            and "MAIN" not in upper_name
+        ):
+            value = normalize_telegram_chat_id(value)
+            if value:
+                return value
+
+    return None
+
+
+def _main_nba_chat_id():
+    return normalize_telegram_chat_id(
+        os.getenv("NBA_CHANNEL_ID")
+        or os.getenv("NBA_TELEGRAM_CHANNEL_ID")
+        or os.getenv("NBA_TARGET_TELEGRAM_CHAT_ID")
+        or os.getenv("TELEGRAM_CHAT_ID")
+    )
+
+
 def _send_silent_alert_only(message):
     alert_chat_id = normalize_telegram_chat_id(
         os.getenv("NBA_ALERT_CHANNEL_ID")
         or os.getenv("NBA_SILENT_CHANNEL_ID")
         or os.getenv("ALERT_CHANNEL_ID")
+        or _find_neto_sport_control_alert_chat_id()
     )
     if not alert_chat_id:
         logging.error("NBA alert channel is not configured; alert kept in logs only: %s", message)
+        return False
+
+    if alert_chat_id == _main_nba_chat_id():
+        logging.error("NBA alert channel matches the public NBA channel; alert kept in logs only: %s", message)
         return False
 
     if not TELEGRAM_TOKEN:
