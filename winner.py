@@ -4401,6 +4401,20 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
         return
+    if data.startswith("football_default_writer_toggle:"):
+        try:
+            _prefix, username, action = data.split(":", 2)
+            enabled = action == "on"
+            set_default_active_writer_enabled(username, enabled)
+            label = "עובדות כדורגל" if value_contains_football_factly(username) else "מתאו מורטו"
+            if callback_id:
+                answer_control_callback(callback_id, f"{label}: {'פעיל' if enabled else 'כבוי'}")
+            send_control_menu("👥 ניהול כתבים", writers_menu_reply_markup(), message.get("message_id"))
+        except Exception as exc:
+            if callback_id:
+                answer_control_callback(callback_id, "עדכון נכשל")
+            send_control_text(f"ניהול כתבים נכשל:\n{short_error(exc, 500)}", None, control_delete_message_reply_markup())
+        return
     if data == "football_delete_message":
         try:
             if (
@@ -13034,6 +13048,14 @@ def send_prepared_message_to_main(
 def control_state_account_disabled(username: str) -> bool:
     state = load_control_state()
     wanted = str(username or "").lower().lstrip("@")
+    default_active_aliases = MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES | FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES
+    if wanted in default_active_aliases:
+        explicit_disabled = state.get("default_active_disabled_accounts", [])
+        if isinstance(explicit_disabled, dict):
+            explicit_disabled = [name for name, disabled in explicit_disabled.items() if disabled]
+        if not isinstance(explicit_disabled, list):
+            explicit_disabled = []
+        return any(str(value or "").lower().lstrip("@") in default_active_aliases and str(value or "").lower().lstrip("@") == wanted for value in explicit_disabled)
     disabled_values: list[Any] = []
     for key in (
         "disabled_accounts",
@@ -13146,6 +13168,108 @@ def _hebrew_account_label(username: str) -> str:
 def value_contains_football_factly(value: Any) -> bool:
     lowered = str(value or "").lower().lstrip("@")
     return any(alias in lowered for alias in FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES)
+
+
+def value_contains_matteo_moretto(value: Any) -> bool:
+    lowered = str(value or "").lower().lstrip("@")
+    return any(alias in lowered for alias in MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES)
+
+
+def default_active_writer_aliases(username: str) -> set[str]:
+    if value_contains_football_factly(username):
+        return FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES
+    if value_contains_matteo_moretto(username):
+        return MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES
+    return {str(username or "").lower().lstrip("@")}
+
+
+def set_default_active_writer_enabled(username: str, enabled: bool) -> None:
+    aliases = default_active_writer_aliases(username)
+    canonical = FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME if aliases == FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES else MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME
+    state = load_control_state()
+    disabled = state.get("default_active_disabled_accounts", [])
+    if isinstance(disabled, dict):
+        disabled = [name for name, is_disabled in disabled.items() if is_disabled]
+    if not isinstance(disabled, list):
+        disabled = []
+    disabled = [name for name in disabled if str(name or "").lower().lstrip("@") not in aliases]
+    if not enabled:
+        disabled.append(canonical)
+
+    updates: dict[str, Any] = {"default_active_disabled_accounts": disabled}
+    # Clean older disabled lists so the management screen does not keep showing old "off" state.
+    for key in ("disabled_accounts", "disabled_writers", "inactive_accounts", "muted_accounts", "manual_disabled_accounts"):
+        value = state.get(key)
+        if isinstance(value, list):
+            updates[key] = [name for name in value if str(name or "").lower().lstrip("@") not in aliases]
+        elif isinstance(value, dict):
+            updates[key] = {name: flag for name, flag in value.items() if str(name or "").lower().lstrip("@") not in aliases}
+    save_control_state(**updates)
+
+
+def default_active_writer_row(username: str, label: str) -> list[dict[str, str]]:
+    enabled = not control_state_account_disabled(username)
+    return [
+        {
+            "text": f"{label}: {'פעיל' if enabled else 'כבוי'}",
+            "callback_data": f"football_default_writer_toggle:{username}:{'off' if enabled else 'on'}",
+        }
+    ]
+
+
+def control_row_mentions_default_writer(row: Any) -> bool:
+    text = " ".join(
+        str(button.get("text", "")) + " " + str(button.get("callback_data", ""))
+        for button in row
+        if isinstance(button, dict)
+    ) if isinstance(row, list) else str(row or "")
+    return value_contains_football_factly(text) or value_contains_matteo_moretto(text)
+
+
+def control_row_is_back_row(row: Any) -> bool:
+    text = " ".join(str(button.get("callback_data", "")) for button in row if isinstance(button, dict)) if isinstance(row, list) else ""
+    return any(marker in text for marker in ("football_quick_main", "football_menu_main", "football_back", "back_to"))
+
+
+try:
+    _base_writers_menu_reply_markup = writers_menu_reply_markup
+except NameError:
+    _base_writers_menu_reply_markup = None
+
+
+def writers_menu_reply_markup() -> dict[str, Any]:
+    base_markup = _base_writers_menu_reply_markup() if callable(_base_writers_menu_reply_markup) else stable_reply_markup([])
+    rows = []
+    if isinstance(base_markup, dict) and isinstance(base_markup.get("inline_keyboard"), list):
+        rows = [[dict(button) for button in row if isinstance(button, dict)] for row in base_markup.get("inline_keyboard", [])]
+    rows = [row for row in rows if not control_row_mentions_default_writer(row)]
+    back_rows = [row for row in rows if control_row_is_back_row(row)]
+    main_rows = [row for row in rows if not control_row_is_back_row(row)]
+    main_rows.append(default_active_writer_row(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, "עובדות כדורגל"))
+    main_rows.append(default_active_writer_row(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME, "מתאו מורטו"))
+    return stable_reply_markup(main_rows + back_rows)
+
+
+try:
+    _base_quick_control_reply_markup = quick_control_reply_markup
+except NameError:
+    _base_quick_control_reply_markup = None
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    base_markup = _base_quick_control_reply_markup() if callable(_base_quick_control_reply_markup) else stable_reply_markup([])
+    rows = []
+    if isinstance(base_markup, dict) and isinstance(base_markup.get("inline_keyboard"), list):
+        rows = [[dict(button) for button in row if isinstance(button, dict)] for row in base_markup.get("inline_keyboard", [])]
+    rows = [
+        row for row in rows
+        if not any(str(button.get("callback_data", "")) in {"football_bot_on", "football_bot_off"} for button in row if isinstance(button, dict))
+    ]
+    bot_row = [
+        {"text": "▶️ הדלק בוט", "callback_data": "football_bot_on"},
+        {"text": "⏸️ כבה בוט", "callback_data": "football_bot_off"},
+    ]
+    return stable_reply_markup([bot_row] + rows)
 
 
 def is_football_factly_context(*parts: Any, **kwargs: Any) -> bool:
