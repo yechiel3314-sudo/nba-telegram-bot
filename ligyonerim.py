@@ -1231,6 +1231,7 @@ def send_player_message(player_name_en, message):
 
 
 def send_startup_healthcheck():
+    return True
     if not SEND_STARTUP_HEALTHCHECK:
         return False
 
@@ -1386,6 +1387,269 @@ def run():
             )
 
         time.sleep(POLL_SECONDS)
+
+
+def _send_silent_alert_only(message):
+    alert_chat_id = normalize_telegram_chat_id(
+        os.getenv("NBA_ALERT_CHANNEL_ID")
+        or os.getenv("NBA_SILENT_CHANNEL_ID")
+        or os.getenv("ALERT_CHANNEL_ID")
+    )
+    if not alert_chat_id:
+        logging.error("NBA alert channel is not configured; alert kept in logs only: %s", message)
+        return False
+
+    if not TELEGRAM_TOKEN:
+        logging.error("Telegram token is missing; alert kept in logs only: %s", message)
+        return False
+
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": alert_chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_notification": True,
+            },
+            timeout=10,
+        )
+        if response.status_code >= 400:
+            logging.error("Telegram alert failed %s: %s", response.status_code, response.text)
+            return False
+        return True
+    except Exception as exc:
+        logging.error("Telegram alert failed: %s", exc)
+        return False
+
+
+for _alert_name in ("notify_issue", "send_issue_alert", "send_startup_issue", "send_problem_alert"):
+    if _alert_name in globals():
+        globals()[_alert_name] = _send_silent_alert_only
+
+
+def format_minutes(raw):
+    if raw in (None, ""):
+        return "0:00"
+
+    raw = str(raw).strip()
+    match = re.match(r"PT(\d+)M(?:(\d+(?:\.\d+)?)S)?", raw)
+    if match:
+        minutes = int(match.group(1))
+        seconds = int(float(match.group(2) or 0))
+        return f"{minutes}:{seconds:02d}"
+
+    if ":" in raw:
+        parts = raw.split(":")
+        if len(parts) >= 2:
+            try:
+                minutes = int(float(parts[0]))
+                seconds = int(float(parts[1]))
+                return f"{minutes}:{seconds:02d}"
+            except Exception:
+                return raw
+
+    return raw
+
+
+TEAM_HEBREW_NAMES = {
+    "ATL": "אטלנטה הוקס",
+    "BOS": "בוסטון סלטיקס",
+    "BKN": "ברוקלין נטס",
+    "CHA": "שארלוט הורנטס",
+    "CHI": "שיקגו בולס",
+    "CLE": "קליבלנד קאבלירס",
+    "DAL": "דאלאס מאבריקס",
+    "DEN": "דנבר נאגטס",
+    "DET": "דטרויט פיסטונס",
+    "GSW": "גולדן סטייט ווריורס",
+    "HOU": "יוסטון רוקטס",
+    "IND": "אינדיאנה פייסרס",
+    "LAC": "לוס אנג'לס קליפרס",
+    "LAL": "לוס אנג'לס לייקרס",
+    "MEM": "ממפיס גריזליס",
+    "MIA": "מיאמי היט",
+    "MIL": "מילווקי באקס",
+    "MIN": "מינסוטה טימברוולבס",
+    "NOP": "ניו אורלינס פליקנס",
+    "NYK": "ניו יורק ניקס",
+    "OKC": "אוקלהומה סיטי ת'אנדר",
+    "ORL": "אורלנדו מג'יק",
+    "PHI": "פילדלפיה 76'",
+    "PHX": "פיניקס סאנס",
+    "POR": "פורטלנד טרייל בלייזרס",
+    "SAC": "סקרמנטו קינגס",
+    "SAS": "סן אנטוניו ספרס",
+    "TOR": "טורונטו ראפטורס",
+    "UTA": "יוטה ג'אז",
+    "WAS": "וושינגטון וויזארדס",
+}
+
+TEAM_RESULT_NAMES = {
+    "BKN": "ברוקלין",
+    "SAC": "סקרמנטו",
+    "POR": "פורטלנד",
+}
+
+
+def _safe_get(mapping, *keys, default=""):
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _team_tricode(team):
+    return str(_safe_get(team, "teamTricode", "tricode", "teamCode", default="")).upper()
+
+
+def _team_hebrew(team):
+    tricode = _team_tricode(team)
+    if tricode in TEAM_HEBREW_NAMES:
+        return TEAM_HEBREW_NAMES[tricode]
+
+    city = _safe_get(team, "teamCity", "city")
+    name = _safe_get(team, "teamName", "name")
+    return " ".join([part for part in (city, name) if part]).strip() or tricode
+
+
+def _team_result_name(team):
+    tricode = _team_tricode(team)
+    if tricode in TEAM_RESULT_NAMES:
+        return TEAM_RESULT_NAMES[tricode]
+    hebrew_name = _team_hebrew(team)
+    return hebrew_name.split()[0] if hebrew_name else tricode
+
+
+def _team_score_value(team):
+    value = _safe_get(team, "score", "points", default=0)
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
+def _stat(stats, *keys, default=0):
+    return _safe_get(stats, *keys, default=default)
+
+
+def _player_stats(player):
+    return player.get("statistics") or player.get("stats") or {}
+
+
+def _has_real_player_stats(stats):
+    if not isinstance(stats, dict) or not stats:
+        return False
+
+    minutes = _stat(stats, "minutes", "mins", default="")
+    played = str(minutes).strip() not in ("", "0", "0:00", "PT0M", "PT0M0.00S")
+    stat_keys = (
+        "points",
+        "pts",
+        "reboundsTotal",
+        "rebounds",
+        "reb",
+        "assists",
+        "ast",
+        "steals",
+        "stl",
+        "blocks",
+        "blk",
+        "turnovers",
+        "tov",
+    )
+    has_counting_stat = any(str(_stat(stats, key, default="")).strip() not in ("", "0", "0.0") for key in stat_keys)
+    return played or has_counting_stat
+
+
+def _build_original_style_player_card(game, hit, startup=False):
+    config = hit.get("config", {})
+    player = hit.get("player", {})
+    team = hit.get("team") or {}
+    opponent = hit.get("opponent") or {}
+    stats = _player_stats(player)
+
+    player_hebrew = config.get("hebrew") or config.get("name_he") or config.get("name") or "שחקן"
+    team_he = _team_hebrew(team)
+    opponent_he = _team_hebrew(opponent)
+
+    team_score = _team_score_value(team)
+    opponent_score = _team_score_value(opponent)
+    result_team = _team_result_name(team)
+    result_line = f"✅ {result_team} ניצחה" if team_score > opponent_score else f"❌ {result_team} הפסידה"
+
+    points = _stat(stats, "points", "pts")
+    fgm = _stat(stats, "fieldGoalsMade", "fgm")
+    fga = _stat(stats, "fieldGoalsAttempted", "fga")
+    tpm = _stat(stats, "threePointersMade", "tpm")
+    tpa = _stat(stats, "threePointersAttempted", "tpa")
+    ftm = _stat(stats, "freeThrowsMade", "ftm")
+    fta = _stat(stats, "freeThrowsAttempted", "fta")
+    rebounds = _stat(stats, "reboundsTotal", "rebounds", "reb")
+    assists = _stat(stats, "assists", "ast")
+    steals = _stat(stats, "steals", "stl")
+    blocks = _stat(stats, "blocks", "blk")
+    turnovers = _stat(stats, "turnovers", "tov")
+    plus_minus = _stat(stats, "plusMinusPoints", "plusMinus", "plus_minus", default=0)
+    minutes = format_minutes(_stat(stats, "minutes", "mins", default="0:00"))
+
+    base_lines = [
+        f"🇮🇱 לגיונרים: {player_hebrew} 🇮🇱",
+        "",
+        f"🏀 {team_he} 🆚 {opponent_he} 🏀",
+        "",
+        "📊 סטטיסטיקה מלאה:",
+        "🏁 סיום המשחק 🏁",
+        result_line,
+        "",
+    ]
+
+    if not _has_real_player_stats(stats):
+        return "\n".join(
+            base_lines
+            + [
+                "🚫 לא שותף / אין סטטיסטיקה רשמית במשחק",
+            ]
+        )
+
+    return "\n".join(
+        base_lines
+        + [
+            f"🎯 נקודות: {points}",
+            f"🎯 מהשדה: {fgm}/{fga} | לשלוש: {tpm}/{tpa} | מהעונשין: {ftm}/{fta}",
+            f"💪 ריבאונדים: {rebounds}",
+            f"🅰️ אסיסטים: {assists}",
+            f"🍃 חטיפות: {steals}",
+            f"🚫 חסימות: {blocks}",
+            f"⚠️ איבודים: {turnovers}",
+            f"📊 פלוס מינוס: {plus_minus}",
+            f"⏱ דקות: {minutes}",
+        ]
+    )
+
+
+for _card_builder_name in (
+    "build_player_final_message",
+    "build_player_caption",
+    "build_player_card",
+    "format_player_message",
+    "format_player_card",
+):
+    if _card_builder_name in globals():
+        globals()[_card_builder_name] = _build_original_style_player_card
+
+
+if "find_tracked_players" in globals():
+    _original_find_tracked_players = find_tracked_players
+
+    def find_tracked_players(*args, **kwargs):
+        hits = _original_find_tracked_players(*args, **kwargs)
+        if not hits:
+            logging.info("No tracked Israeli player found in this NBA boxscore; no public card will be sent.")
+        return hits
 
 
 if __name__ == "__main__":
