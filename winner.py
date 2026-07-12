@@ -1836,8 +1836,17 @@ def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) 
         return [], [], []
     executor = ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT, len(feed_templates)))
     futures = {executor.submit(fetch_feed, username, template): template for template in feed_templates}
+    # A feed request can legitimately use more time than the old global collection
+    # timeout when HTTP retries are enabled.  Cutting the whole batch off earlier
+    # made healthy but temporarily slow RSS mirrors look as if they returned no
+    # posts.  Keep the configured value as a minimum, but always allow enough
+    # time for the configured attempts to finish.
+    effective_collection_timeout = max(
+        float(FEED_COLLECTION_TIMEOUT_SECONDS),
+        float(FEED_REQUEST_TIMEOUT_SECONDS) * max(1, int(FEED_HTTP_RETRIES)) + 2.0,
+    )
     try:
-        for future in as_completed(futures, timeout=FEED_COLLECTION_TIMEOUT_SECONDS):
+        for future in as_completed(futures, timeout=effective_collection_timeout):
             template = futures[future]
             source_name = feed_source_name(template)
             try:
