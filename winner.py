@@ -12670,6 +12670,136 @@ def strip_leading_official_without_writer(message: Any) -> str:
     )
 
 
+NETO_SPORT_FOOTER_HTML = '<a href="https://t.me/neto_sport">נטו ספורט</a>.📝'
+
+
+def normalize_neto_sport_footer(message: Any) -> str:
+    text = str(message or "").strip()
+    footer_patterns = [
+        r"(?:\s|<br\s*/?>)*(?:<a\s+href=[\"']https://t\.me/neto_sport[\"']>\s*)?נטו\s+ספורט\s*(?:</a>)?\s*\.?\s*📝?\s*(?:\(?https://t\.me/neto_sport\)?)?\s*$",
+        r"(?:\s|<br\s*/?>)*נטו\s+ספורט\s*\.?\s*📝?\s*$",
+    ]
+    for pattern in footer_patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+    return f"{text}\n\n{NETO_SPORT_FOOTER_HTML}" if text else NETO_SPORT_FOOTER_HTML
+
+
+def is_negative_criticism_or_opinion(*parts: Any) -> bool:
+    text = " ".join(str(part or "") for part in parts).lower()
+    compact = re.sub(r"\s+", " ", text).strip()
+    if not compact:
+        return False
+
+    news_actor_markers = (
+        "מאמן",
+        "שחקן",
+        "קפטן",
+        "נשיא",
+        "מנהל מקצועי",
+        "סוכן",
+        "coach",
+        "player",
+        "captain",
+        "manager",
+        "president",
+        "agent",
+    )
+    actor_negative_markers = (
+        "זעם",
+        "כעס",
+        "לא מרוצה",
+        "מאוכזב",
+        "תקף",
+        "יצא נגד",
+        "התלונן",
+        "furious",
+        "angry",
+        "unhappy",
+        "hit out",
+        "complained",
+        "slammed",
+        "blasted",
+    )
+    if any(marker in compact for marker in news_actor_markers) and any(marker in compact for marker in actor_negative_markers):
+        return False
+
+    criticism_markers = (
+        "ביקורת",
+        "דעה",
+        "טור",
+        "פרשנות",
+        "ניתוח",
+        "למה ",
+        "צריכה להתבייש",
+        "חייבת להשתנות",
+        "כישלון של",
+        "בושה של",
+        "מביך עבור",
+        "criticised",
+        "criticized",
+        "criticism",
+        "opinion",
+        "analysis",
+        "column",
+        "why ",
+        "must change",
+        "embarrassing for",
+        "failure of",
+    )
+    if not any(marker in compact for marker in criticism_markers):
+        return False
+    team_target_markers = (
+        "קבוצה",
+        "קבוצות",
+        "נבחרת",
+        "נבחרות",
+        "מועדון",
+        "מועדונים",
+        "team",
+        "teams",
+        "club",
+        "clubs",
+        "national team",
+    )
+    outside_voice_markers = (
+        "כתב",
+        "עיתונאי",
+        "פרשן",
+        "אוהד",
+        "אוהדים",
+        "טען",
+        "לדבריו",
+        "אמר כי",
+        "journalist",
+        "reporter",
+        "pundit",
+        "fan",
+        "fans",
+        "claimed",
+        "according to",
+    )
+    hard_news_markers = (
+        "חתם",
+        "סיכם",
+        "עסקה",
+        "השאלה",
+        "רכישה",
+        "העברה",
+        "בדיקות רפואיות",
+        "חוזה",
+        "signed",
+        "deal",
+        "transfer",
+        "loan",
+        "medical",
+        "contract",
+        "here we go",
+    )
+    if any(marker in compact for marker in hard_news_markers):
+        return False
+    return any(marker in compact for marker in team_target_markers + outside_voice_markers)
+
+
 def persistent_memory_path(filename: str) -> str:
     base_dir = str(globals().get("FOOTBALL_BOT_DATA_DIR") or os.environ.get("FOOTBALL_BOT_DATA_DIR") or ".")
     try:
@@ -12847,6 +12977,7 @@ _base_telegram_broadcast_full_text = telegram_broadcast_full_text
 
 def telegram_broadcast_full_text(message_html: str, reply_message_ids: dict[str, int] | None = None) -> dict[str, int]:
     clean_text = strip_football_factly_author_heading(strip_leading_official_without_writer(message_html))
+    clean_text = normalize_neto_sport_footer(clean_text)
     return _base_telegram_broadcast_full_text(clean_text, reply_message_ids=reply_message_ids)
 
 
@@ -12861,13 +12992,13 @@ def telegram_broadcast_with_text_fallback(
 ) -> dict[str, int]:
     payload = dict(payload or {})
     if "text" in payload:
-        payload["text"] = strip_football_factly_author_heading(strip_leading_official_without_writer(payload.get("text", "")))
+        payload["text"] = normalize_neto_sport_footer(strip_football_factly_author_heading(strip_leading_official_without_writer(payload.get("text", ""))))
     if "caption" in payload:
-        payload["caption"] = strip_football_factly_author_heading(strip_leading_official_without_writer(payload.get("caption", "")))
+        payload["caption"] = normalize_neto_sport_footer(strip_football_factly_author_heading(strip_leading_official_without_writer(payload.get("caption", ""))))
     return _base_telegram_broadcast_with_text_fallback(
         method,
         payload,
-        strip_football_factly_author_heading(strip_leading_official_without_writer(fallback_text)),
+        normalize_neto_sport_footer(strip_football_factly_author_heading(strip_leading_official_without_writer(fallback_text))),
         reply_message_ids=reply_message_ids,
     )
 
@@ -12884,6 +13015,8 @@ def send_prepared_message_to_main(
 ) -> tuple[dict[str, int], str]:
     clean_message = strip_leading_official_without_writer(message)
     clean_message = format_list_line_breaks_by_source(getattr(post, "text", "") or getattr(post, "raw_text", ""), clean_message)
+    if is_negative_criticism_or_opinion(post, message, clean_message):
+        raise RuntimeError("ביקורת/דעה שלילית לא נשלחה")
     if is_football_factly_context(post, message, clean_message):
         factly_issue = football_factly_filter_issue(post, message, clean_message)
         if factly_issue:
@@ -12892,6 +13025,7 @@ def send_prepared_message_to_main(
         if factly_duplicate:
             raise RuntimeError("עובדות כדורגל: כפילות מול דיווח בלי שם כתב שכבר נשלח")
         clean_message = strip_football_factly_author_heading(clean_message)
+    clean_message = normalize_neto_sport_footer(clean_message)
     result = _base_send_prepared_message_to_main(post, clean_message, images, video_url=video_url, reply_message_ids=reply_message_ids)
     remember_persistent_sent(post, clean_message, "button_or_auto")
     return result
@@ -12948,6 +13082,65 @@ def all_control_test_accounts() -> list[str]:
     if not (normalized & FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES):
         accounts.append(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME)
     return accounts
+
+
+def append_football_factly_account(accounts: Any) -> list[str]:
+    values = list(accounts or [])
+    normalized = {str(account or "").lower().lstrip("@") for account in values}
+    if not (normalized & FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES):
+        values.append(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME)
+    return values
+
+
+for _writer_list_name in (
+    "all_x_accounts",
+    "all_writer_accounts",
+    "control_writer_accounts",
+    "writer_control_accounts",
+    "writers_menu_accounts",
+):
+    _base_writer_list_fn = globals().get(_writer_list_name)
+    if callable(_base_writer_list_fn):
+        globals()[f"_base_{_writer_list_name}"] = _base_writer_list_fn
+
+
+def all_x_accounts() -> list[str]:
+    base = globals().get("_base_all_x_accounts")
+    return append_football_factly_account(base() if callable(base) else all_control_test_accounts())
+
+
+def all_writer_accounts() -> list[str]:
+    base = globals().get("_base_all_writer_accounts")
+    return append_football_factly_account(base() if callable(base) else all_control_test_accounts())
+
+
+def control_writer_accounts() -> list[str]:
+    base = globals().get("_base_control_writer_accounts")
+    return append_football_factly_account(base() if callable(base) else all_control_test_accounts())
+
+
+def writer_control_accounts() -> list[str]:
+    base = globals().get("_base_writer_control_accounts")
+    return append_football_factly_account(base() if callable(base) else all_control_test_accounts())
+
+
+def writers_menu_accounts() -> list[str]:
+    base = globals().get("_base_writers_menu_accounts")
+    return append_football_factly_account(base() if callable(base) else all_control_test_accounts())
+
+
+try:
+    _base_hebrew_account_label = _hebrew_account_label
+except NameError:
+    _base_hebrew_account_label = None
+
+
+def _hebrew_account_label(username: str) -> str:
+    if value_contains_football_factly(username):
+        return "עובדות כדורגל"
+    if callable(_base_hebrew_account_label):
+        return _base_hebrew_account_label(username)
+    return str(username or "").lstrip("@")
 
 
 def value_contains_football_factly(value: Any) -> bool:
@@ -13104,23 +13297,11 @@ def strip_football_factly_author_heading(message: Any) -> str:
 
 
 def normalize_inline_list_breaks(message: Any) -> str:
-    text = str(message or "")
-    text = re.sub(r"\s+((?:\d{1,3}%|\d{1,2})\s*[-–]\s*)", r"\n\1", text)
-    text = re.sub(r"\s+([•▪◦]\s*)", r"\n\1", text)
-    text = re.sub(r"\s+((?:⚽|🏆|🥇|🥈|🥉|✅|❌|🔹|🔸|🚨)\s*)", r"\n\1", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return str(message or "").strip()
 
 
 def format_list_line_breaks_by_source(source_text: Any, message: Any) -> str:
-    source_lines = [line.strip() for line in str(source_text or "").splitlines() if line.strip()]
-    result = str(message or "")
-    result_lines = [line.strip() for line in result.splitlines() if line.strip()]
-    source_looks_like_list = len(source_lines) >= 3 or bool(re.search(r"(?:^|\s)(?:\d{1,3}%|\d{1,2})\s*[-–]", str(source_text or "")))
-    result_collapsed = len(result_lines) <= 2
-    if source_looks_like_list and result_collapsed:
-        return normalize_inline_list_breaks(result)
-    return normalize_inline_list_breaks(result) if re.search(r"(?:\d{1,3}%|\d{1,2})\s*[-–].+(?:\d{1,3}%|\d{1,2})\s*[-–]", result) else result
+    return str(message or "").strip()
 
 
 def looks_like_no_writer_report(item: dict[str, Any]) -> bool:
@@ -13130,6 +13311,8 @@ def looks_like_no_writer_report(item: dict[str, Any]) -> bool:
     if not username:
         return True
     preview = str(item.get("preview") or item.get("text") or "")
+    if re.search(r"^\s*(?:<b>)?\s*[^:\n]{2,40}\s*(?:</b>)?\s*[:：]\s*", preview):
+        return False
     known_writer_markers = (
         "פבריציו רומאנו",
         "ניקולו שירה",
@@ -13138,6 +13321,13 @@ def looks_like_no_writer_report(item: dict[str, Any]) -> bool:
         "פלוריאן פלטנברג",
         "מטאו מורטו",
         "דויד אורנשטיין",
+        "Fabrizio Romano",
+        "Nicolo Schira",
+        "Nicolò Schira",
+        "Gianluca Di Marzio",
+        "Florian Plettenberg",
+        "Matteo Moretto",
+        "David Ornstein",
     )
     return not any(marker in preview for marker in known_writer_markers)
 
@@ -13165,17 +13355,20 @@ def translation_quality_issue(source_text: Any, translated_text: Any = "", *args
     """
     translated = str(translated_text or "").strip()
     source = str(source_text or "").strip()
+    factly_context = is_football_factly_context(source, translated, *args, **kwargs)
     if is_forbidden_staff_role_update(source, translated, *args, *kwargs.values()):
         return "דיווח על מאמן שוערים/צוות שוערים לא נשלח"
+    if is_negative_criticism_or_opinion(source, translated, *args, *kwargs.values()):
+        return "ביקורת/דעה שלילית לא נשלחה"
     factly_issue = football_factly_filter_issue(source, translated, *args, **kwargs)
     if factly_issue:
         return factly_issue
-    if is_football_factly_context(source, translated, *args, **kwargs):
+    if factly_context:
         factly_duplicate = persistent_duplicate_candidate_no_writer(source, translated, *args, *kwargs.values(), threshold=0.91)
         if factly_duplicate:
             return "עובדות כדורגל: כפילות מול דיווח בלי שם כתב שכבר נשלח"
     duplicate_memory_check = globals().get("persistent_duplicate_candidate")
-    if callable(duplicate_memory_check) and duplicate_memory_check(source, translated, *args, *kwargs.values(), threshold=0.92):
+    if (not factly_context) and callable(duplicate_memory_check) and duplicate_memory_check(source, translated, *args, *kwargs.values(), threshold=0.92):
         return "כפילות מול זיכרון שליחות מתמשך"
     if not translated:
         return "לא התקבל תרגום"
