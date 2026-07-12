@@ -12787,13 +12787,29 @@ NETO_SPORT_FOOTER_HTML = '<a href="https://t.me/neto_sport">נטו ספורט</a
 
 
 def normalize_neto_sport_footer(message: Any) -> str:
+    """Guarantee exactly one Neto Sport footer, even with RTL marks or HTML variants."""
     text = str(message or "").strip()
-    footer_patterns = [
-        r"(?:\s|<br\s*/?>)*(?:<a\s+href=[\"']https://t\.me/neto_sport[\"']>\s*)?נטו\s+ספורט\s*(?:</a>)?\s*\.?\s*📝?\s*(?:\(?https://t\.me/neto_sport\)?)?\s*$",
-        r"(?:\s|<br\s*/?>)*נטו\s+ספורט\s*\.?\s*📝?\s*$",
-    ]
-    for pattern in footer_patterns:
-        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+    invisible = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*"
+    spacing = rf"(?:\s|<br\s*/?>|{invisible})*"
+    footer = (
+        rf"{spacing}"
+        rf"(?:<a\s+[^>]*href=[\"']https://t\.me/neto_sport[\"'][^>]*>{spacing})?"
+        rf"{invisible}נטו{spacing}ספורט{invisible}"
+        rf"{spacing}(?:</a>)?{spacing}\.?{spacing}📝?{spacing}"
+        rf"(?:\(?https://t\.me/neto_sport\)?)?{spacing}$"
+    )
+
+    # Remove every trailing copy, not just the last one. This also catches the
+    # RTL-marked signature produced by build_message.
+    while True:
+        cleaned = re.sub(footer, "", text, flags=re.IGNORECASE).strip()
+        if cleaned == text:
+            break
+        text = cleaned
+
+    # Extra exact cleanup for old HTML signatures that may contain hidden marks.
+    old_anchor = rf"<a\s+[^>]*href=[\"']https://t\.me/neto_sport[\"'][^>]*>{invisible}נטו{spacing}ספורט{invisible}\.?{spacing}📝?</a>"
+    text = re.sub(rf"(?:{spacing}{old_anchor}{spacing})+$", "", text, flags=re.IGNORECASE).strip()
     return f"{text}\n\n{NETO_SPORT_FOOTER_HTML}" if text else NETO_SPORT_FOOTER_HTML
 
 
@@ -13323,7 +13339,7 @@ def ensure_matteo_moretto_enabled_once() -> None:
     migration clears that old disabled state and records a marker. Afterward,
     the user can still switch Matteo off or on normally from writer management.
     """
-    migration_key = "matteo_moretto_enabled_by_writers_upgrade_v1"
+    migration_key = "matteo_moretto_enabled_by_footer_fix_v2"
     try:
         state = load_control_state()
         if bool(state.get(migration_key, False)):
