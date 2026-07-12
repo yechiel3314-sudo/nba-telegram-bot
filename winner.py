@@ -12624,6 +12624,14 @@ MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES = {
     "matteo_moretto",
 }
 
+FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME = "FootballFactly"
+FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES = {
+    "footballfactly",
+    "football_factly",
+    "עובדות כדורגל",
+}
+FOOTBALL_FACTLY_MIN_WORDS = 15
+
 
 def is_forbidden_staff_role_update(*parts: Any) -> bool:
     text = " ".join(str(part or "") for part in parts).lower()
@@ -12709,6 +12717,7 @@ def remember_persistent_sent(post: Any, message: Any, sent_via: str = "auto") ->
     username = str(getattr(post, "username", "") or "")
     link = str(getattr(post, "link", "") or "")
     post_id = str(getattr(post, "post_id", "") or "")
+    no_writer = is_football_factly_context(post, message)
     items.append(
         {
             "ts": time.time(),
@@ -12717,6 +12726,8 @@ def remember_persistent_sent(post: Any, message: Any, sent_via: str = "auto") ->
             "link": link,
             "post_id": post_id,
             "sent_via": sent_via,
+            "no_writer": no_writer,
+            "writer_hidden": no_writer,
             "preview": trim(html_message_to_plain_text(str(message or "")) if "html_message_to_plain_text" in globals() else str(message or ""), 500),
         }
     )
@@ -12835,7 +12846,8 @@ _base_telegram_broadcast_full_text = telegram_broadcast_full_text
 
 
 def telegram_broadcast_full_text(message_html: str, reply_message_ids: dict[str, int] | None = None) -> dict[str, int]:
-    return _base_telegram_broadcast_full_text(strip_leading_official_without_writer(message_html), reply_message_ids=reply_message_ids)
+    clean_text = strip_football_factly_author_heading(strip_leading_official_without_writer(message_html))
+    return _base_telegram_broadcast_full_text(clean_text, reply_message_ids=reply_message_ids)
 
 
 _base_telegram_broadcast_with_text_fallback = telegram_broadcast_with_text_fallback
@@ -12849,13 +12861,13 @@ def telegram_broadcast_with_text_fallback(
 ) -> dict[str, int]:
     payload = dict(payload or {})
     if "text" in payload:
-        payload["text"] = strip_leading_official_without_writer(payload.get("text", ""))
+        payload["text"] = strip_football_factly_author_heading(strip_leading_official_without_writer(payload.get("text", "")))
     if "caption" in payload:
-        payload["caption"] = strip_leading_official_without_writer(payload.get("caption", ""))
+        payload["caption"] = strip_football_factly_author_heading(strip_leading_official_without_writer(payload.get("caption", "")))
     return _base_telegram_broadcast_with_text_fallback(
         method,
         payload,
-        strip_leading_official_without_writer(fallback_text),
+        strip_football_factly_author_heading(strip_leading_official_without_writer(fallback_text)),
         reply_message_ids=reply_message_ids,
     )
 
@@ -12871,6 +12883,15 @@ def send_prepared_message_to_main(
     reply_message_ids: dict[str, int] | None = None,
 ) -> tuple[dict[str, int], str]:
     clean_message = strip_leading_official_without_writer(message)
+    clean_message = format_list_line_breaks_by_source(getattr(post, "text", "") or getattr(post, "raw_text", ""), clean_message)
+    if is_football_factly_context(post, message, clean_message):
+        factly_issue = football_factly_filter_issue(post, message, clean_message)
+        if factly_issue:
+            raise RuntimeError(factly_issue)
+        factly_duplicate = persistent_duplicate_candidate_no_writer(post, message, clean_message, threshold=0.91)
+        if factly_duplicate:
+            raise RuntimeError("עובדות כדורגל: כפילות מול דיווח בלי שם כתב שכבר נשלח")
+        clean_message = strip_football_factly_author_heading(clean_message)
     result = _base_send_prepared_message_to_main(post, clean_message, images, video_url=video_url, reply_message_ids=reply_message_ids)
     remember_persistent_sent(post, clean_message, "button_or_auto")
     return result
@@ -12906,7 +12927,232 @@ def active_x_accounts() -> list[str]:
         and not (normalized & MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES)
     ):
         accounts.append(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME)
+    normalized = {str(account or "").lower().lstrip("@") for account in accounts}
+    if (
+        not control_state_account_disabled(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME)
+        and not (normalized & FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES)
+    ):
+        accounts.append(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME)
     return accounts
+
+
+try:
+    _base_all_control_test_accounts = all_control_test_accounts
+except NameError:
+    _base_all_control_test_accounts = None
+
+
+def all_control_test_accounts() -> list[str]:
+    accounts = list(_base_all_control_test_accounts()) if callable(_base_all_control_test_accounts) else list(active_x_accounts())
+    normalized = {str(account or "").lower().lstrip("@") for account in accounts}
+    if not (normalized & FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES):
+        accounts.append(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME)
+    return accounts
+
+
+def value_contains_football_factly(value: Any) -> bool:
+    lowered = str(value or "").lower().lstrip("@")
+    return any(alias in lowered for alias in FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES)
+
+
+def is_football_factly_context(*parts: Any, **kwargs: Any) -> bool:
+    for part in list(parts) + list(kwargs.values()):
+        if value_contains_football_factly(part):
+            return True
+        if isinstance(part, dict):
+            if any(value_contains_football_factly(part.get(key)) for key in ("username", "source", "author", "account", "screen_name", "link", "url")):
+                return True
+        for key in ("username", "source", "author", "account", "screen_name", "link", "url"):
+            try:
+                if value_contains_football_factly(getattr(part, key, "")):
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+def extract_post_text_for_rules(*parts: Any, **kwargs: Any) -> str:
+    candidates: list[str] = []
+    for value in list(parts) + list(kwargs.values()):
+        if isinstance(value, str):
+            candidates.append(value)
+            continue
+        if isinstance(value, dict):
+            for key in ("text", "full_text", "content", "caption", "raw_text", "translated", "message", "preview"):
+                if value.get(key):
+                    candidates.append(str(value.get(key)))
+        for key in ("text", "full_text", "content", "caption", "raw_text", "translated", "message", "preview"):
+            try:
+                found = getattr(value, key, "")
+                if found:
+                    candidates.append(str(found))
+            except Exception:
+                pass
+    return max(candidates, key=len, default="").strip()
+
+
+def extract_original_post_caption_for_rules(*parts: Any, **kwargs: Any) -> str:
+    candidates: list[str] = []
+    for value in list(parts) + list(kwargs.values()):
+        if isinstance(value, dict):
+            for key in ("text", "full_text", "content", "caption", "raw_text"):
+                if value.get(key):
+                    candidates.append(str(value.get(key)))
+        if isinstance(value, str):
+            continue
+        for key in ("text", "full_text", "content", "caption", "raw_text"):
+            try:
+                found = getattr(value, key, "")
+                if found:
+                    candidates.append(str(found))
+            except Exception:
+                pass
+    return max(candidates, key=len, default="").strip()
+
+
+def count_content_words(value: Any) -> int:
+    text = re.sub(r"https?://\S+", " ", str(value or ""))
+    return len(re.findall(r"[\u0590-\u05ffA-Za-z0-9][\u0590-\u05ffA-Za-z0-9'״׳-]*", text))
+
+
+def post_has_own_text_caption(*parts: Any, **kwargs: Any) -> bool:
+    return count_content_words(extract_original_post_caption_for_rules(*parts, **kwargs)) > 0
+
+
+def post_is_repost_or_quote(*parts: Any, **kwargs: Any) -> bool:
+    truthy_keys = (
+        "is_repost",
+        "is_retweet",
+        "retweeted",
+        "is_quote",
+        "is_quote_status",
+        "quoted",
+        "shared",
+        "is_shared",
+    )
+    object_keys = ("retweeted_status", "quoted_status", "quoted_tweet", "referenced_tweets", "shared_from", "repost_of")
+    for part in list(parts) + list(kwargs.values()):
+        if isinstance(part, dict):
+            if any(bool(part.get(key)) for key in truthy_keys):
+                return True
+            if any(part.get(key) for key in object_keys):
+                return True
+        for key in truthy_keys:
+            try:
+                if bool(getattr(part, key, False)):
+                    return True
+            except Exception:
+                pass
+        for key in object_keys:
+            try:
+                if getattr(part, key, None):
+                    return True
+            except Exception:
+                pass
+    text = extract_post_text_for_rules(*parts, **kwargs)
+    return bool(re.search(r"^\s*(rt|repost)\s+@", text, flags=re.IGNORECASE))
+
+
+def post_has_sensitive_or_blurred_media(*parts: Any, **kwargs: Any) -> bool:
+    sensitive_keys = (
+        "possibly_sensitive",
+        "sensitive",
+        "is_sensitive",
+        "nsfw",
+        "blurred",
+        "is_blurred",
+        "withheld",
+        "sensitive_media_warning",
+    )
+    for part in list(parts) + list(kwargs.values()):
+        if isinstance(part, dict) and any(bool(part.get(key)) for key in sensitive_keys):
+            return True
+        for key in sensitive_keys:
+            try:
+                if bool(getattr(part, key, False)):
+                    return True
+            except Exception:
+                pass
+    text = extract_post_text_for_rules(*parts, **kwargs).lower()
+    return any(marker in text for marker in ("sensitive content", "content warning", "blurred", "תוכן רגיש", "מטושטש", "אזהרת תוכן"))
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    if not is_football_factly_context(*parts, **kwargs):
+        return ""
+    text = extract_original_post_caption_for_rules(*parts, **kwargs)
+    if not post_has_own_text_caption(*parts, **kwargs):
+        return "עובדות כדורגל: פוסט בלי כיתוב לא נשלח"
+    if count_content_words(text) < FOOTBALL_FACTLY_MIN_WORDS:
+        return f"עובדות כדורגל: פחות מ-{FOOTBALL_FACTLY_MIN_WORDS} מילים"
+    if post_is_repost_or_quote(*parts, **kwargs):
+        return "עובדות כדורגל: ריפוסט/ציטוט/שיתוף של מקור אחר לא נשלח"
+    if post_has_sensitive_or_blurred_media(*parts, **kwargs):
+        return "עובדות כדורגל: מדיה רגישה/מטושטשת לא נשלחה"
+    return ""
+
+
+def strip_football_factly_author_heading(message: Any) -> str:
+    text = str(message or "")
+    text = re.sub(r"^\s*(?:<b>)?\s*(?:עובדות כדורגל|FootballFactly|@FootballFactly)\s*(?:</b>)?\s*[:：\\-–—]?\s*(?:<br\s*/?>|\n|\r)+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\s*(?:<b>)?\s*(?:עובדות כדורגל|FootballFactly|@FootballFactly)\s*(?:</b>)?\s*[:：\\-–—]?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?:<b>)?\s*(?:עובדות כדורגל|FootballFactly|@FootballFactly)\s*(?:</b>)?\s*[:：\\-–—]?\s*(?:<br\s*/?>|\n|\r)", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?:^|\n)\s*(?:עובדות כדורגל|FootballFactly|@FootballFactly)\s*(?=\n|$)", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*(?:<b>)?\s*(?:עובדות כדורגל|FootballFactly|@FootballFactly)\s*(?:</b>)?\s*[:：\\-–—]?\s*", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
+
+
+def normalize_inline_list_breaks(message: Any) -> str:
+    text = str(message or "")
+    text = re.sub(r"\s+((?:\d{1,3}%|\d{1,2})\s*[-–]\s*)", r"\n\1", text)
+    text = re.sub(r"\s+([•▪◦]\s*)", r"\n\1", text)
+    text = re.sub(r"\s+((?:⚽|🏆|🥇|🥈|🥉|✅|❌|🔹|🔸|🚨)\s*)", r"\n\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def format_list_line_breaks_by_source(source_text: Any, message: Any) -> str:
+    source_lines = [line.strip() for line in str(source_text or "").splitlines() if line.strip()]
+    result = str(message or "")
+    result_lines = [line.strip() for line in result.splitlines() if line.strip()]
+    source_looks_like_list = len(source_lines) >= 3 or bool(re.search(r"(?:^|\s)(?:\d{1,3}%|\d{1,2})\s*[-–]", str(source_text or "")))
+    result_collapsed = len(result_lines) <= 2
+    if source_looks_like_list and result_collapsed:
+        return normalize_inline_list_breaks(result)
+    return normalize_inline_list_breaks(result) if re.search(r"(?:\d{1,3}%|\d{1,2})\s*[-–].+(?:\d{1,3}%|\d{1,2})\s*[-–]", result) else result
+
+
+def looks_like_no_writer_report(item: dict[str, Any]) -> bool:
+    if bool(item.get("no_writer") or item.get("writer_hidden")):
+        return True
+    username = str(item.get("username") or item.get("source") or item.get("writer") or "").strip().lower().lstrip("@")
+    if not username:
+        return True
+    preview = str(item.get("preview") or item.get("text") or "")
+    known_writer_markers = (
+        "פבריציו רומאנו",
+        "ניקולו שירה",
+        "ג'אנלוקה די מרציו",
+        "ג׳אנלוקה די מרציו",
+        "פלוריאן פלטנברג",
+        "מטאו מורטו",
+        "דויד אורנשטיין",
+    )
+    return not any(marker in preview for marker in known_writer_markers)
+
+
+def persistent_duplicate_candidate_no_writer(*parts: Any, threshold: float = 0.90) -> dict[str, Any] | None:
+    text = " ".join(str(part or "") for part in parts)
+    if len(normalize_memory_text(text)) < 35:
+        return None
+    for item in reversed(load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-300:]):
+        if not looks_like_no_writer_report(item):
+            continue
+        previous = item.get("preview", "")
+        if memory_similarity(text, previous) >= threshold:
+            return item
+    return None
 
 
 def translation_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
@@ -12921,6 +13167,13 @@ def translation_quality_issue(source_text: Any, translated_text: Any = "", *args
     source = str(source_text or "").strip()
     if is_forbidden_staff_role_update(source, translated, *args, *kwargs.values()):
         return "דיווח על מאמן שוערים/צוות שוערים לא נשלח"
+    factly_issue = football_factly_filter_issue(source, translated, *args, **kwargs)
+    if factly_issue:
+        return factly_issue
+    if is_football_factly_context(source, translated, *args, **kwargs):
+        factly_duplicate = persistent_duplicate_candidate_no_writer(source, translated, *args, *kwargs.values(), threshold=0.91)
+        if factly_duplicate:
+            return "עובדות כדורגל: כפילות מול דיווח בלי שם כתב שכבר נשלח"
     duplicate_memory_check = globals().get("persistent_duplicate_candidate")
     if callable(duplicate_memory_check) and duplicate_memory_check(source, translated, *args, *kwargs.values(), threshold=0.92):
         return "כפילות מול זיכרון שליחות מתמשך"
