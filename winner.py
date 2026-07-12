@@ -51,7 +51,7 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-BOT_BUILD_ID = "football-all-writers-menu-final-fixed-2026-07-12"
+BOT_BUILD_ID = "football-control-buttons-refined-2026-06-19"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -2206,67 +2206,39 @@ def control_reply_markup(paused: bool) -> dict[str, Any]:
     return stable_reply_markup(keyboard)
 
 
-def _complete_writers_management_reply_markup() -> dict[str, Any]:
-    """Return the full writer list with real persisted on/off states.
-
-    This builder is intentionally self-contained. It does not wrap or inherit an
-    older menu, so later upgrades cannot accidentally reduce the screen to only
-    the newly-added sources.
-    """
+def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
+    """Build the complete writers-management menu without a bot on/off button."""
     state = load_control_state()
     disabled_base = set(disabled_base_accounts_from_state(state))
     enabled_optional = set(enabled_optional_accounts_from_state(state))
     keyboard: list[list[dict[str, str]]] = []
 
-    # The seven regular reporters. Their original persisted states are preserved.
     for username in X_ACCOUNTS:
-        label = CONTROLLED_BASE_ACCOUNT_LABELS.get(
-            username,
-            ACCOUNT_DISPLAY_NAMES.get(username, username),
-        )
-        if username in LOCKED_DISABLED_BASE_ACCOUNTS:
-            status = "כבוי קבוע"
-        else:
-            status = "כבוי" if username in disabled_base else "פעיל"
-        keyboard.append([{
-            "text": f"{label}: {status}",
-            "callback_data": f"football_base_account:{username}",
-        }])
+        label = CONTROLLED_BASE_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
+        status = "כבוי קבוע" if username in LOCKED_DISABLED_BASE_ACCOUNTS else ("כבוי" if username in disabled_base else "פעיל")
+        keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_base_account:{username}"}])
 
-    # Every optional reporter. Existing state remains unchanged; Matteo is made
-    # active once by the migration farther below, and can then be toggled freely.
     for username in OPTIONAL_CONTROLLED_ACCOUNTS:
-        label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(
-            username,
-            ACCOUNT_DISPLAY_NAMES.get(username, username),
-        )
+        if username == "MatteMoretto":
+            continue
+        label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, username)
         status = "פעיל" if username in enabled_optional else "כבוי"
-        keyboard.append([{
-            "text": f"{label}: {status}",
-            "callback_data": f"football_account:{username}",
-        }])
+        keyboard.append([{"text": f"{label}: {status}", "callback_data": f"football_account:{username}"}])
 
-    # FootballFactly is managed in this same screen, but is not an X reporter.
+    matteo_enabled = not control_state_account_disabled(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME)
+    keyboard.append([{
+        "text": f"מתאו מורטו: {'פעיל' if matteo_enabled else 'כבוי'}",
+        "callback_data": f"football_default_writer_toggle:{MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME}:{'off' if matteo_enabled else 'on'}",
+    }])
+
     factly_enabled = not control_state_account_disabled(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME)
     keyboard.append([{
         "text": f"עובדות כדורגל: {'פעיל' if factly_enabled else 'כבוי'}",
-        "callback_data": (
-            f"football_default_writer_toggle:{FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME}:"
-            f"{'off' if factly_enabled else 'on'}"
-        ),
+        "callback_data": f"football_default_writer_toggle:{FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME}:{'off' if factly_enabled else 'on'}",
     }])
 
-    # Always and only once at the bottom.
-    keyboard.append([{
-        "text": "⬅️ חזרה לתפריט הראשי",
-        "callback_data": "football_quick_main",
-    }])
+    keyboard.append([{"text": "⬅️ חזרה לתפריט הראשי", "callback_data": "football_quick_main"}])
     return stable_reply_markup(keyboard)
-
-
-def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
-    # ``paused`` is intentionally ignored: bot on/off belongs only to main menu.
-    return _complete_writers_management_reply_markup()
 
 
 def _flag_status(state: dict[str, Any], key: str) -> str:
@@ -3569,14 +3541,42 @@ def mark_control_item_not_duplicate(item_id: str) -> str:
     return "סומן כלא כפילות. אם תרצה לפרסם אותו עכשיו, לחץ על כפתור השליחה שלו."
 
 
-def send_control_blocked_post_to_main(item_id: str) -> str:
-    """Force-send a blocked/borderline post after an explicit button press.
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+) -> tuple[dict[str, int], str]:
+    clean_message = normalize_neto_sport_footer(
+        strip_football_factly_author_heading(strip_leading_official_without_writer(message))
+    )
+    base_sender = globals().get("_base_send_prepared_message_to_main")
+    if callable(base_sender):
+        return base_sender(post, clean_message, images, video_url=video_url)
+    return send_prepared_message_to_main(post, clean_message, images, video_url=video_url)
 
-    A manual force-send is the user's final decision. It must not be cancelled by
-    duplicate, importance, short-translation, or translation-quality guards. We
-    still try Gemini first; if Gemini is unavailable, we fall back to a saved
-    Hebrew rendering and then to the free translator so the button remains usable.
-    """
+
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    try:
+        translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
+        if translated or quoted_translated:
+            return translated, quoted_translated, quoted_author_translated
+    except Exception as exc:
+        logging.warning("תרגום Gemini בשליחה ידנית נכשל, מנסה גיבוי: %s", exc)
+    try:
+        translated, quoted_translated, quoted_author_translated = free_translate_post_for_send(
+            post, bool(getattr(post, "quoted_text", ""))
+        )
+        if translated or quoted_translated:
+            return translated, quoted_translated, quoted_author_translated
+    except Exception as exc:
+        logging.warning("תרגום גיבוי בשליחה ידנית נכשל: %s", exc)
+    source = str(getattr(post, "text", "") or getattr(post, "raw_text", "") or "").strip()
+    quoted = str(getattr(post, "quoted_text", "") or "").strip()
+    return source, quoted, ""
+
+
+def send_control_blocked_post_to_main(item_id: str) -> str:
     control_state = load_control_state()
     item, _index = find_control_block_item(control_state, item_id)
     if not item:
@@ -3585,53 +3585,11 @@ def send_control_blocked_post_to_main(item_id: str) -> str:
     if not post:
         return "אין מספיק נתונים כדי לשחזר את הפוסט. בדוק שוב את הכתב ושלח משם."
 
-    translated = ""
-    quoted_translated = ""
-    quoted_author_translated = ""
-    translation_mode = "Gemini"
-
-    try:
-        translated, quoted_translated, quoted_author_translated = translate_post_for_send(post)
-    except Exception as exc:
-        logging.warning("שליחה ידנית: Gemini נכשל, עובר למסלול גיבוי: %s", exc)
-        translation_mode = "גיבוי"
-
-    # Reuse any already-prepared Hebrew text stored with the control item.
-    if not has_meaningful_text(translated):
-        for key in ("translated", "rendered", "message", "details", "preview"):
-            candidate = str(item.get(key, "") or "").strip()
-            if candidate and len(re.findall(r"[א-ת]", candidate)) >= 6:
-                translated = candidate
-                translation_mode = "טקסט עברי שמור"
-                break
-
-    # Final operational fallback: translate the source without Gemini.
-    if not has_meaningful_text(translated):
-        try:
-            translated, quoted_translated, quoted_author_translated = free_translate_post_for_send(
-                post,
-                include_quote=bool(post.quoted_text and not is_self_quote(post)),
-            )
-            translation_mode = "תרגום גיבוי"
-        except Exception as exc:
-            logging.warning("שליחה ידנית: גם תרגום הגיבוי נכשל: %s", exc)
-
-    # Last resort for an explicit force-send: send the cleaned source rather than
-    # rejecting the button. This is reached only when every translation path failed.
-    if not has_meaningful_text(translated):
-        translated = clean_before_translation(post.text or "").strip() or str(item.get("preview", "") or "").strip()
-        translation_mode = "טקסט מקור"
-
-    if not translated:
-        return "לא ניתן לשלוח: לפוסט אין תוכן טקסטואלי זמין."
-
-    # Intentionally do NOT call translation_quality_issues() or
-    # is_publishable_hebrew_for_main_channel() here. The explicit force button
-    # overrides all borderline/quality/duplicate/importance blocks.
+    translated, quoted_translated, quoted_author_translated = manual_force_translation(post)
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
     message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
     images = selected_post_images(post)
-    message_ids, mode = send_prepared_message_to_main(post, message, images, video_url)
+    message_ids, mode = manual_force_send_prepared_message(post, message, images, video_url)
 
     try:
         state = load_state()
@@ -3649,7 +3607,7 @@ def send_control_blocked_post_to_main(item_id: str) -> str:
         logging.debug("שמירת זיכרון אחרי שליחה ידנית נכשלה: %s", exc)
 
     save_control_state(last_sent_post={"ts": time.time(), "username": post.username, "link": post.link})
-    return f"נשלח לערוץ נטו ספורט. מצב שליחה: {mode} | תרגום: {translation_mode}"
+    return f"נשלח לערוץ נטו ספורט. מצב שליחה: {mode}"
 
 
 def last_blocked_summary_text(limit: int | None = None) -> str:
@@ -3897,13 +3855,12 @@ def send_prepared_control_post_to_main(token: str) -> str:
     translated = str(item.get("translated", "") or "")
     quoted_translated = str(item.get("quoted_translated", "") or "")
     quoted_author_translated = str(item.get("quoted_author_translated", "") or "")
-    publishable, reason = is_publishable_hebrew_for_main_channel(translated, quoted_translated)
-    if not publishable:
-        return f"לא נשלח לערוץ הראשי: {reason}"
+    if not (translated or quoted_translated):
+        translated, quoted_translated, quoted_author_translated = manual_force_translation(post)
 
     message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
     images = selected_post_images(post)
-    _message_ids, mode = send_prepared_message_to_main(post, message, images)
+    _message_ids, mode = manual_force_send_prepared_message(post, message, images)
     if "images" in mode:
         return "נשלח לערוץ נטו ספורט עם תמונות."
     if "long_text" in mode or "full_text" in mode:
@@ -4508,7 +4465,7 @@ def process_control_update(update: dict[str, Any]) -> None:
             label = "עובדות כדורגל" if value_contains_football_factly(username) else "מתאו מורטו"
             if callback_id:
                 answer_control_callback(callback_id, f"{label}: {'פעיל' if enabled else 'כבוי'}")
-            send_control_menu("👥 ניהול כתבים", writers_menu_reply_markup(), message.get("message_id"))
+            send_control_menu("👥 ניהול כתבים", writers_management_reply_markup(is_control_paused()), message.get("message_id"))
         except Exception as exc:
             if callback_id:
                 answer_control_callback(callback_id, "עדכון נכשל")
@@ -12787,26 +12744,17 @@ NETO_SPORT_FOOTER_HTML = '<a href="https://t.me/neto_sport">נטו ספורט</a
 
 
 def normalize_neto_sport_footer(message: Any) -> str:
-    """Keep exactly one Neto Sport footer without expensive regex backtracking."""
     text = str(message or "").strip()
-
-    hidden_marks = "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff"
-    visible_for_check = text.translate({ord(ch): None for ch in hidden_marks})
-
-    footer_patterns = (
-        r"(?:\s|<br\s*/?>)*(?:<a\s+[^>]*href=[\"']https://t\.me/neto_sport[\"'][^>]*>\s*)?נטו\s+ספורט\s*(?:</a>)?\s*\.?\s*📝?\s*(?:\(?https://t\.me/neto_sport\)?)?\s*$",
-        r"(?:\s|<br\s*/?>)*נטו\s+ספורט\s*\.?\s*📝?\s*$",
+    trailing_footer = re.compile(
+        r"(?:\s|<br\s*/?>)*(?:(?:<a\s+href=[\"']https://t\.me/neto_sport[\"']>\s*)?נטו\s+ספורט\s*(?:</a>)?\s*\.?\s*📝?\s*(?:\(?https://t\.me/neto_sport\)?)?)\s*$",
+        flags=re.IGNORECASE,
     )
-
-    while visible_for_check:
-        cleaned = visible_for_check
-        for pattern in footer_patterns:
-            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
-        if cleaned == visible_for_check:
+    # A short bounded loop is predictable and removes duplicate footers safely.
+    for _ in range(8):
+        cleaned = trailing_footer.sub("", text).strip()
+        if cleaned == text:
             break
-        visible_for_check = cleaned
-
-    text = visible_for_check.strip()
+        text = cleaned
     return f"{text}\n\n{NETO_SPORT_FOOTER_HTML}" if text else NETO_SPORT_FOOTER_HTML
 
 
@@ -13329,47 +13277,6 @@ def default_active_writer_row(username: str, label: str) -> list[dict[str, str]]
     ]
 
 
-def ensure_matteo_moretto_enabled_once() -> None:
-    """Enable Matteo Moretto for this upgrade without locking the toggle forever.
-
-    Existing installations may have Matteo saved as disabled. This one-time
-    migration clears that old disabled state and records a marker. Afterward,
-    the user can still switch Matteo off or on normally from writer management.
-    """
-    migration_key = "matteo_moretto_enabled_by_footer_fix_v2"
-    try:
-        state = load_control_state()
-        if bool(state.get(migration_key, False)):
-            return
-        aliases = MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES
-        updates: dict[str, Any] = {migration_key: True}
-        for key in (
-            "default_active_disabled_accounts",
-            "disabled_accounts",
-            "disabled_writers",
-            "inactive_accounts",
-            "muted_accounts",
-            "manual_disabled_accounts",
-        ):
-            value = state.get(key)
-            if isinstance(value, list):
-                updates[key] = [
-                    name for name in value
-                    if str(name or "").lower().lstrip("@") not in aliases
-                ]
-            elif isinstance(value, dict):
-                updates[key] = {
-                    name: flag for name, flag in value.items()
-                    if str(name or "").lower().lstrip("@") not in aliases
-                }
-        save_control_state(**updates)
-    except Exception as exc:
-        logging.warning("לא ניתן היה להפעיל את מתאו מורטו בעדכון הראשוני: %s", exc)
-
-
-ensure_matteo_moretto_enabled_once()
-
-
 def control_row_mentions_default_writer(row: Any) -> bool:
     text = " ".join(
         str(button.get("text", "")) + " " + str(button.get("callback_data", ""))
@@ -13391,8 +13298,22 @@ except NameError:
 
 
 def writers_menu_reply_markup() -> dict[str, Any]:
-    """Compatibility entry point for the complete writer-management screen."""
-    return _complete_writers_management_reply_markup()
+    base_markup = _base_writers_menu_reply_markup() if callable(_base_writers_menu_reply_markup) else stable_reply_markup([])
+    rows = []
+    if isinstance(base_markup, dict) and isinstance(base_markup.get("inline_keyboard"), list):
+        rows = [[dict(button) for button in row if isinstance(button, dict)] for row in base_markup.get("inline_keyboard", [])]
+    rows = [
+        row for row in rows
+        if not control_row_mentions_default_writer(row)
+        and not any(str(button.get("callback_data", "")) in {"football_bot_on", "football_bot_off"} for button in row if isinstance(button, dict))
+    ]
+    back_rows = [row for row in rows if control_row_is_back_row(row)]
+    main_rows = [row for row in rows if not control_row_is_back_row(row)]
+    default_rows = [
+        default_active_writer_row(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, "עובדות כדורגל"),
+        default_active_writer_row(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME, "מתאו מורטו"),
+    ]
+    return stable_reply_markup(default_rows + main_rows + back_rows)
 
 
 try:
@@ -13820,6 +13741,31 @@ def last_sent_post_text() -> str:
         if index != len(deduped):
             lines.append("")
     return "\n".join(lines)
+
+
+MATTEO_ACTIVE_MIGRATION_KEY = "matteo_moretto_enabled_2026_07_12_v1"
+
+
+def ensure_matteo_active_once() -> None:
+    state = load_control_state()
+    if state.get(MATTEO_ACTIVE_MIGRATION_KEY):
+        return
+    aliases = MATTEO_MORETTO_DEFAULT_ACTIVE_ALIASES
+    disabled = state.get("default_active_disabled_accounts", [])
+    if isinstance(disabled, dict):
+        disabled = [name for name, flag in disabled.items() if flag]
+    if not isinstance(disabled, list):
+        disabled = []
+    disabled = [name for name in disabled if str(name or "").lower().lstrip("@") not in aliases]
+    enabled_optional = set(enabled_optional_accounts_from_state(state))
+    enabled_optional.add(MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME)
+    save_control_state(
+        **{
+            MATTEO_ACTIVE_MIGRATION_KEY: True,
+            "default_active_disabled_accounts": disabled,
+            "enabled_optional_accounts": [name for name in OPTIONAL_CONTROLLED_ACCOUNTS if name in enabled_optional],
+        }
+    )
 
 
 def main() -> None:
