@@ -51,7 +51,7 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
-BOT_BUILD_ID = "football-control-buttons-refined-2026-06-19"
+BOT_BUILD_ID = "football-quote-context-rss-hardened-2026-07-15"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -2964,10 +2964,16 @@ def account_latest_menu_reply_markup() -> dict[str, Any]:
     accounts = all_control_test_accounts()
     for username in accounts:
         label = _hebrew_account_label(username)
-        keyboard.append([{
-            "text": label,
-            "callback_data": f"football_test_latest_account:{username}",
-        }])
+        keyboard.append([
+            {
+                "text": f"{label} — אחרון",
+                "callback_data": f"football_test_latest_account:{username}",
+            },
+            {
+                "text": "10 אחרונים",
+                "callback_data": f"football_test_last_ten_account:{username}",
+            },
+        ])
     keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return stable_reply_markup(keyboard)
@@ -3546,14 +3552,33 @@ def manual_force_send_prepared_message(
     message: str,
     images: list[str],
     video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
 ) -> tuple[dict[str, int], str]:
+    """Force-send a prepared post while preserving a Telegram reply target.
+
+    A manual send must bypass editorial blocks, but when the new post quotes a
+    post that was already published, it should still be sent as a Telegram
+    reply to that older channel message.
+    """
     clean_message = normalize_neto_sport_footer(
         strip_football_factly_author_heading(strip_leading_official_without_writer(message))
     )
     base_sender = globals().get("_base_send_prepared_message_to_main")
     if callable(base_sender):
-        return base_sender(post, clean_message, images, video_url=video_url)
-    return send_prepared_message_to_main(post, clean_message, images, video_url=video_url)
+        return base_sender(
+            post,
+            clean_message,
+            images,
+            video_url=video_url,
+            reply_message_ids=reply_message_ids,
+        )
+    return send_prepared_message_to_main(
+        post,
+        clean_message,
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
 
 
 def manual_force_translation(post: Post) -> tuple[str, str, str]:
@@ -3589,10 +3614,25 @@ def send_control_blocked_post_to_main(item_id: str) -> str:
     video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
     message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
     images = selected_post_images(post)
-    message_ids, mode = manual_force_send_prepared_message(post, message, images, video_url)
+
+    # Manual/forced publication uses the same quote-history lookup as automatic
+    # publication. This includes posts that previously reached the channel from
+    # the borderline screen or another manual send.
+    state = load_state()
+    reply_message_ids = find_bot_reply_target_for_post(post, state)
+    if reply_message_ids:
+        logging.info(
+            "↩️ שליחה ידנית: הפוסט המצוטט כבר פורסם; ההודעה החדשה תישלח כתגובה להודעה הישנה."
+        )
+    message_ids, mode = manual_force_send_prepared_message(
+        post,
+        message,
+        images,
+        video_url,
+        reply_message_ids=reply_message_ids,
+    )
 
     try:
-        state = load_state()
         confirm_recent_news_event(post, state)
         if message:
             first_message_id = next(iter(message_ids.values()), "")
@@ -4606,6 +4646,15 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "בחר כתב")
         send_control_menu("👤 בדוק כתב ספציפי\nמוצגים כל 14 הכתבים שמוגדרים בבוט, כולל כתבים שכרגע כבויים. הבחירה תשלח את הפוסט האחרון של הכתב לערוץ השקט בלבד.", account_latest_menu_reply_markup(), message.get("message_id"))
+    elif data.startswith("football_test_last_ten_account:"):
+        username = data.split(":", 1)[1]
+        if username not in all_control_test_accounts():
+            if callback_id:
+                answer_control_callback(callback_id, "כתב לא מוכר")
+            return
+        if callback_id:
+            answer_control_callback(callback_id, f"טוען 10 אחרונים של {_hebrew_account_label(username)}")
+        Thread(target=run_last_ten_account_control_test, args=(username,), daemon=True).start()
     elif data.startswith("football_test_latest_account:"):
         username = data.split(":", 1)[1]
         if username not in all_control_test_accounts():
@@ -5316,6 +5365,45 @@ def has_quoted_context_for_decision(post: Post) -> bool:
         return True
     signature = news_event_signature(quote_post) if "news_event_signature" in globals() else {"entities": [], "tokens": []}
     return bool(len(signature.get("entities", [])) >= 1 and len(signature.get("tokens", [])) >= 4)
+
+
+def quoted_post_supplies_missing_subject_context(post: Post) -> bool:
+    """Rescue a news post whose primary text is vague but its quoted post names the subject.
+
+    Some reporters write only "done", "agreement reached", "he will sign", etc.
+    The player/club is then visible only in the quoted post.  The bot cannot safely
+    infer names from an image, so this rescue is deliberately quote-only and local.
+    It requires both a recognisable tracked football entity and a real news action
+    inside the quoted body.  Ordinary reactions, broadcasts and social posts remain
+    blocked by the normal filters.
+    """
+    primary = clean_for_ai_translation(html.unescape(post.text or ""))
+    quote = clean_for_ai_translation(html.unescape(post.quoted_text or ""))
+    if not quote:
+        return False
+
+    # This path is intended only for a missing/unclear subject in the new text.
+    if primary and primary_text_has_clear_subject(post):
+        return False
+
+    quote_post = clone_post_with_text(post, quote)
+    quote_has_entity = (
+        contains_tracked_club_or_israeli_league(quote_post)
+        or _matches_any(BIG_CLUB_RUMOR_PATTERNS, quote)
+        or _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, quote)
+        or bool(central_player_affiliation_tiers(quote))
+    )
+    if not quote_has_entity:
+        return False
+
+    quote_has_news = (
+        _matches_any(TRANSFER_OR_FUTURE_PATTERNS, quote)
+        or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, quote)
+        or _matches_any(UNCLEAR_SUBJECT_NEWS_VERB_PATTERNS, quote)
+        or _matches_any(MATCH_NEWS_RESCUE_PATTERNS, quote)
+        or is_clear_player_departure_post(quote_post)
+    )
+    return bool(quote_has_news)
 
 
 def is_vague_status_without_primary_context(post: Post) -> bool:
@@ -7277,7 +7365,51 @@ def channel_reply_target_match_is_certain(post: Post, item: dict[str, Any], scor
     return False
 
 
+def quoted_reply_target_is_same_published_post(post: Post, item: dict[str, Any]) -> bool:
+    """High-confidence detection that the quoted body is an already sent post.
+
+    RSS mirrors often omit the quoted post URL/ID, so compare the quote body
+    directly with the stored channel signature. This path is intentionally
+    strict enough to avoid replying to a merely related update.
+    """
+    quote_text = clean_for_ai_translation(html.unescape(getattr(post, "quoted_text", "") or ""))
+    previous = item.get("signature", {}) if isinstance(item, dict) else {}
+    if len(quote_text) < 18 or not isinstance(previous, dict):
+        return False
+    previous_text = clean_for_ai_translation(html.unescape(str(previous.get("text", "") or "")))
+    if len(previous_text) < 18:
+        return False
+
+    def compact(value: str) -> str:
+        value = normalize_for_duplicate_match(value) if "normalize_for_duplicate_match" in globals() else value.lower()
+        return re.sub(r"[^0-9a-zא-ת]+", " ", value, flags=re.IGNORECASE).strip()
+
+    current_compact = compact(quote_text)
+    previous_compact = compact(previous_text)
+    if not current_compact or not previous_compact:
+        return False
+    if current_compact == previous_compact:
+        return True
+    if len(current_compact) >= 35 and (current_compact in previous_compact or previous_compact in current_compact):
+        shorter = min(len(current_compact), len(previous_compact))
+        longer = max(len(current_compact), len(previous_compact))
+        if shorter / max(1, longer) >= 0.78:
+            return True
+
+    ratio = SequenceMatcher(None, current_compact, previous_compact).ratio()
+    quote_sig = news_event_signature(clone_post_with_text(post, quote_text))
+    quote_tokens = set(quote_sig.get("tokens", []))
+    previous_tokens = set(previous.get("tokens", []))
+    meaningful_quote = {token for token in quote_tokens if len(token) >= 4}
+    meaningful_previous = {token for token in previous_tokens if len(token) >= 4}
+    overlap = len(meaningful_quote & meaningful_previous)
+    coverage = overlap / max(1, min(len(meaningful_quote), len(meaningful_previous)))
+    return bool(ratio >= 0.88 and overlap >= 4 and coverage >= 0.72)
+
+
 def quoted_reply_target_match_is_certain(post: Post, item: dict[str, Any]) -> bool:
+    if quoted_reply_target_is_same_published_post(post, item):
+        return True
     quote_text = clean_for_ai_translation(html.unescape(getattr(post, "quoted_text", "") or ""))
     if len(quote_text) < 20:
         return False
@@ -11081,13 +11213,14 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
     cleaned = clean_for_ai_translation(raw_text)
     if not cleaned:
         return False, "empty_after_clean", 0, ["empty"]
+    quote_context_rescue = quoted_post_supplies_missing_subject_context(post)
     if is_contextless_teaser_post(post):
         return False, "contextless_teaser", 0, ["contextless_teaser"]
-    if is_unclear_subject_news_post(post):
+    if is_unclear_subject_news_post(post) and not quote_context_rescue:
         return False, "unclear_subject_news", 0, ["unclear_subject_news"]
-    if is_vague_status_without_primary_context(post):
+    if is_vague_status_without_primary_context(post) and not quote_context_rescue:
         return False, "vague_status_without_primary_context", 0, ["vague_status_without_primary_context"]
-    if is_untracked_transfer_or_staff_news(post):
+    if is_untracked_transfer_or_staff_news(post) and not quote_context_rescue:
         return False, "untracked_transfer_or_staff_news", 0, ["untracked_transfer_or_staff_news"]
     if not contains_tracked_club_or_israeli_league(post):
         logging.debug("פוסט של %s נפסל בסינון האיכות: לא קשור לקבוצה ברשימות הדרגים.", post.username)
@@ -11110,11 +11243,11 @@ def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
         return False, "media_without_report", 0, ["media_without_report"]
     if is_too_short_without_strong_news_post(post):
         return False, "too_short_without_strong_news", 0, ["too_short_without_strong_news"]
-    if is_name_without_news_action_post(post):
+    if is_name_without_news_action_post(post) and not quote_context_rescue:
         return False, "name_without_news_action", 0, ["name_without_news_action"]
-    if is_unclear_main_club_context_post(post):
+    if is_unclear_main_club_context_post(post) and not quote_context_rescue:
         return False, "unclear_main_club_context", 0, ["unclear_main_club_context"]
-    if is_weak_copy_without_primary_value_post(post):
+    if is_weak_copy_without_primary_value_post(post) and not quote_context_rescue:
         return False, "weak_copy_without_primary_value", 0, ["weak_copy_without_primary_value"]
     if is_writer_profile_noise_post(post):
         return False, "writer_profile_noise", 0, ["writer_profile_noise"]
@@ -11416,6 +11549,7 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     post reached send_post by mistake, the bot still will not spend Gemini/video
     requests on content that is clearly not publishable.
     """
+    quote_context_rescue = quoted_post_supplies_missing_subject_context(post)
     if is_too_old_post(post):
         return "old_post"
     if is_women_or_wnba_post(post):
@@ -11442,9 +11576,9 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "untracked_destination_club"
     if is_contextless_teaser_post(post):
         return "contextless_teaser"
-    if is_unclear_subject_news_post(post):
+    if is_unclear_subject_news_post(post) and not quote_context_rescue:
         return "unclear_subject_news"
-    if is_vague_status_without_primary_context(post):
+    if is_vague_status_without_primary_context(post) and not quote_context_rescue:
         return "vague_status_without_primary_context"
     if is_live_goal_or_match_moment_post(post):
         return "live_goal_or_match_moment"
@@ -11456,11 +11590,11 @@ def pre_send_final_local_block_reason(post: Post) -> str:
         return "media_without_report"
     if is_too_short_without_strong_news_post(post):
         return "too_short_without_strong_news"
-    if is_name_without_news_action_post(post):
+    if is_name_without_news_action_post(post) and not quote_context_rescue:
         return "name_without_news_action"
-    if is_unclear_main_club_context_post(post):
+    if is_unclear_main_club_context_post(post) and not quote_context_rescue:
         return "unclear_main_club_context"
-    if is_weak_copy_without_primary_value_post(post):
+    if is_weak_copy_without_primary_value_post(post) and not quote_context_rescue:
         return "weak_copy_without_primary_value"
     if is_writer_profile_noise_post(post):
         return "writer_profile_noise"
@@ -11470,7 +11604,7 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     if temporary_block_reason:
         return temporary_block_reason
     cleaned = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
-    if is_untracked_transfer_or_staff_news(post):
+    if is_untracked_transfer_or_staff_news(post) and not quote_context_rescue:
         return "untracked_transfer_or_staff_news"
     if is_non_elite_loose_transfer_report(cleaned):
         return "non_elite_loose_transfer_talk"
@@ -13869,6 +14003,735 @@ def main() -> None:
         elapsed = time.time() - cycle_started
         time.sleep(max(0, current_check_every_seconds() - elapsed))
 
+
+
+# ====== MANUAL-SEND / FOOTBALL FACTLY RELIABILITY PATCH (2026-07-15) ======
+# Manual decisions are final: when the operator presses "send", the bot must send.
+# Daily reports remain available from the button, but are never pushed automatically.
+DAILY_QUALITY_REPORT_ENABLED = False
+
+# Keep blocked-button payloads alive even if the persisted history rotates between
+# rendering the keyboard and pressing it.
+CONTROL_MANUAL_BLOCK_CACHE: dict[str, dict[str, Any]] = {}
+CONTROL_TELEGRAM_MEDIA_CACHE: dict[str, list[int]] = {}
+
+_original_control_block_actions_reply_markup = control_block_actions_reply_markup
+
+def control_block_actions_reply_markup(items: list[dict[str, Any]], include_delete: bool = True) -> dict[str, Any]:
+    for item in items:
+        if isinstance(item, dict):
+            CONTROL_MANUAL_BLOCK_CACHE[control_item_id(item)] = dict(item)
+    # bounded in-memory cache
+    if len(CONTROL_MANUAL_BLOCK_CACHE) > 500:
+        for key in list(CONTROL_MANUAL_BLOCK_CACHE)[:-300]:
+            CONTROL_MANUAL_BLOCK_CACHE.pop(key, None)
+    return _original_control_block_actions_reply_markup(items, include_delete=include_delete)
+
+_original_find_control_block_item = find_control_block_item
+
+def find_control_block_item(state: dict[str, Any], item_id: str) -> tuple[dict[str, Any] | None, int]:
+    item, index = _original_find_control_block_item(state, item_id)
+    if item:
+        return item, index
+    wanted = str(item_id or '').strip()
+    cached = CONTROL_MANUAL_BLOCK_CACHE.get(wanted)
+    if isinstance(cached, dict):
+        return dict(cached), -1
+    # Search every relevant persisted list, not only last_blocked_posts.
+    for key in ('last_duplicate_posts', 'last_borderline_posts', 'last_filtered_posts', 'last_control_posts'):
+        values = state.get(key, [])
+        if not isinstance(values, list):
+            continue
+        for idx, candidate in enumerate(values):
+            if isinstance(candidate, dict) and control_item_id(candidate) == wanted:
+                return candidate, idx
+    return None, -1
+
+
+def send_daily_quality_report_if_due() -> None:
+    """Automatic daily summary disabled. The manual button still builds it on demand."""
+    return
+
+
+def _telegram_result_message_ids(response: Any) -> list[int]:
+    if not isinstance(response, dict):
+        return []
+    result = response.get('result')
+    if isinstance(result, dict):
+        try:
+            return [int(result.get('message_id'))]
+        except Exception:
+            return []
+    if isinstance(result, list):
+        ids: list[int] = []
+        for row in result:
+            if isinstance(row, dict):
+                try:
+                    ids.append(int(row.get('message_id')))
+                except Exception:
+                    pass
+        return ids
+    return []
+
+
+def _send_control_media_once(post: Post, token: str) -> list[int]:
+    """Upload source media once to Telegram control chat and remember Telegram IDs.
+
+    A later manual publish copies those Telegram messages inside Telegram, avoiding a
+    second fetch/upload from the RSS mirror/server.
+    """
+    if not CONTROL_CHAT_ID:
+        return []
+    cached = CONTROL_TELEGRAM_MEDIA_CACHE.get(token)
+    if cached:
+        return list(cached)
+    ids: list[int] = []
+    try:
+        video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ''
+        images = selected_post_images(post)
+        if video_url:
+            response = telegram_api('sendVideo', {
+                'chat_id': CONTROL_CHAT_ID,
+                'video': video_url,
+                'supports_streaming': True,
+            }, max_attempts=1)
+            ids.extend(_telegram_result_message_ids(response))
+        elif images:
+            if len(images) == 1:
+                response = telegram_api('sendPhoto', {
+                    'chat_id': CONTROL_CHAT_ID,
+                    'photo': images[0],
+                }, max_attempts=1)
+                ids.extend(_telegram_result_message_ids(response))
+            else:
+                response = telegram_api('sendMediaGroup', {
+                    'chat_id': CONTROL_CHAT_ID,
+                    'media': [{'type': 'photo', 'media': url} for url in images],
+                }, max_attempts=1)
+                ids.extend(_telegram_result_message_ids(response))
+    except Exception as exc:
+        logging.warning('תצוגת מדיה מלאה בערוץ השליטה נכשלה; הטקסט עדיין יוצג: %s', exc)
+    CONTROL_TELEGRAM_MEDIA_CACHE[token] = ids
+    return list(ids)
+
+
+def _copy_control_media_to_main(token: str) -> bool:
+    message_ids = CONTROL_TELEGRAM_MEDIA_CACHE.get(token, [])
+    if not message_ids or not CONTROL_CHAT_ID:
+        return False
+    copied_any = False
+    for chat_id in TELEGRAM_CHAT_IDS:
+        for message_id in message_ids:
+            try:
+                telegram_api('copyMessage', {
+                    'chat_id': chat_id,
+                    'from_chat_id': CONTROL_CHAT_ID,
+                    'message_id': int(message_id),
+                })
+                copied_any = True
+            except Exception as exc:
+                logging.warning('העתקת מדיה מטלגרם לערוץ %s נכשלה: %s', chat_id, exc)
+    return copied_any
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    item = CONTROL_PREPARED_SENDS.get(token)
+    if not item:
+        return 'הפוסט כבר לא שמור בזיכרון. בצע בדיקת כתב שוב ואז לחץ על הכפתור החדש.'
+    post: Post = item['post']
+    translated = str(item.get('translated', '') or '')
+    quoted_translated = str(item.get('quoted_translated', '') or '')
+    quoted_author_translated = str(item.get('quoted_author_translated', '') or '')
+    if not (translated or quoted_translated):
+        translated, quoted_translated, quoted_author_translated = manual_force_translation(post)
+    message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+
+    # Manual request is final. Reuse Telegram-hosted media when preview media exists.
+    copied_media = _copy_control_media_to_main(token)
+    if copied_media:
+        telegram_broadcast_full_text(normalize_neto_sport_footer(strip_football_factly_author_heading(message)))
+        remember_persistent_sent(post, message, 'manual_telegram_copy')
+        return 'נשלח לערוץ נטו ספורט במלואו, והמדיה הועתקה ישירות מטלגרם.'
+
+    images = selected_post_images(post)
+    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ''
+    _message_ids, mode = manual_force_send_prepared_message(post, message, images, video_url)
+    remember_persistent_sent(post, message, 'manual_force')
+    if 'images' in mode:
+        return 'נשלח לערוץ נטו ספורט עם תמונות ובטקסט מלא.'
+    if 'long_text' in mode or 'full_text' in mode:
+        return 'נשלח לערוץ נטו ספורט במלואו.'
+    return 'נשלח לערוץ נטו ספורט.'
+
+
+def send_control_blocked_post_to_main(item_id: str) -> str:
+    control_state = load_control_state()
+    item, _index = find_control_block_item(control_state, item_id)
+    if not item:
+        return 'הפריט הישן כבר לא נמצא, ולכן הבוט מבצע שליפה חדשה. בחר שוב את הכתב ולחץ שלח.'
+    post = post_from_control_payload(item.get('post'))
+    if not post:
+        # Older history rows may have fields at the top level.
+        post = post_from_control_payload(item)
+    if not post:
+        return 'אין בפריט הישן מספיק נתונים לשחזור. בצע בדיקת כתב חדשה והכפתור החדש ישלח תמיד.'
+
+    translated, quoted_translated, quoted_author_translated = manual_force_translation(post)
+    token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+    # If this item came from a media preview, reuse its Telegram IDs.
+    old_media = item.get('control_media_message_ids', []) if isinstance(item, dict) else []
+    if isinstance(old_media, list) and old_media:
+        CONTROL_TELEGRAM_MEDIA_CACHE[token] = [int(x) for x in old_media if str(x).isdigit()]
+    result = send_prepared_control_post_to_main(token)
+    try:
+        state = load_state()
+        confirm_recent_news_event(post, state)
+        seen = set(state.get(post.username, []))
+        seen.update(post.dedupe_ids)
+        state[post.username] = list(seen)[-500:]
+        save_state(state)
+    except Exception as exc:
+        logging.debug('שמירת זיכרון אחרי שליחה ידנית נכשלה: %s', exc)
+    save_control_state(last_sent_post={'ts': time.time(), 'username': post.username, 'link': post.link})
+    return result
+
+
+def run_latest_account_control_test(username: str) -> None:
+    """Show the latest report in full, including media, with a final-send button."""
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        posts = fetch_posts(username)
+    except Exception as exc:
+        send_control_text(f'🧪 בדיקת {label} נכשלה בשליפת RSS:\n{short_error(exc, 500)}')
+        return
+    if not posts:
+        send_control_text(f'🧪 בדיקת {label}: לא נמצאו פוסטים במקורות כרגע.')
+        return
+    post = posts[0]
+    try:
+        # Manual inspection must always show something. Gemini first, then fallback/source.
+        translated, quoted_translated, quoted_author_translated = manual_force_translation(post)
+        message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+        token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+        media_ids = _send_control_media_once(post, token)
+        CONTROL_PREPARED_SENDS[token]['control_media_message_ids'] = list(media_ids)
+        send_control_html(message, control_send_to_main_reply_markup(token))
+        logging.info('בדיקת כתב: הפוסט המלא של @%s הוצג עם מדיה ככל שנמצאה; כפתור השליחה עוקף חסימות.', username)
+    except Exception as exc:
+        send_control_text(
+            f'🧪 בדיקת {label}: הפוסט נמצא אך התצוגה נכשלה.\n'
+            f'סיבה: {short_error(exc, 700)}\nקישור: {post.link}'
+        )
+
+
+# FootballFactly / "עובדות כדורגל" is always active. Its existing quality
+# conditions stay in force for automatic publishing, and accepted posts go only
+# to the main target chats—not to the quiet/control chat.
+_original_control_state_account_disabled = control_state_account_disabled
+
+def control_state_account_disabled(username: str) -> bool:
+    if value_contains_football_factly(username):
+        return False
+    return _original_control_state_account_disabled(username)
+
+# ====== END PATCH ======
+
+
+# ====== GPT-5.6 FINAL RELIABILITY PATCH (2026-07-15) ======
+# Manual user decisions are authoritative: a manual "send" always bypasses
+# automatic importance/duplicate/age filters. Borderline previews are translated
+# and rendered exactly like the outgoing post, with only Send/Delete buttons.
+
+CONTROL_PREPARED_STATE_KEY = "control_prepared_manual_sends_v2"
+CONTROL_FORCE_ITEMS_STATE_KEY = "control_force_items_v2"
+
+
+def _persist_force_item(item: dict[str, Any]) -> None:
+    if not isinstance(item, dict):
+        return
+    state = load_control_state()
+    rows = state.get(CONTROL_FORCE_ITEMS_STATE_KEY, [])
+    if not isinstance(rows, list):
+        rows = []
+    wanted = control_item_id(item)
+    rows = [row for row in rows if not (isinstance(row, dict) and control_item_id(row) == wanted)]
+    stored = dict(item)
+    stored["saved_at"] = time.time()
+    rows.append(stored)
+    state[CONTROL_FORCE_ITEMS_STATE_KEY] = rows[-250:]
+    write_control_state(state)
+
+
+def control_item_force_send_label(item: dict[str, Any], index: int) -> str:
+    return "📤 שלח לערוץ נטו ספורט" if index == 1 else f"📤 שלח לערוץ נטו ספורט {index}"
+
+
+def control_block_actions_reply_markup(items: list[dict[str, Any]], include_delete: bool = True) -> dict[str, Any]:
+    """Exactly two actions for a single candidate: publish or delete."""
+    keyboard: list[list[dict[str, str]]] = []
+    for index, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            continue
+        item_id = control_item_id(item)
+        CONTROL_MANUAL_BLOCK_CACHE[item_id] = dict(item)
+        _persist_force_item(item)
+        keyboard.append([{
+            "text": control_item_force_send_label(item, index),
+            "callback_data": f"football_force_blocked:{item_id}",
+        }])
+    if include_delete:
+        keyboard.append([{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}])
+    return stable_reply_markup(keyboard)
+
+
+_base_find_control_block_item_v2 = find_control_block_item
+
+
+def find_control_block_item(state: dict[str, Any], item_id: str) -> tuple[dict[str, Any] | None, int]:
+    item, index = _base_find_control_block_item_v2(state, item_id)
+    if item:
+        return item, index
+    wanted = str(item_id or "").strip()
+    cached = CONTROL_MANUAL_BLOCK_CACHE.get(wanted)
+    if isinstance(cached, dict):
+        return dict(cached), -1
+    for key in (
+        CONTROL_FORCE_ITEMS_STATE_KEY,
+        "last_blocked_posts", "last_duplicate_posts", "last_borderline_posts",
+        "last_filtered_posts", "last_control_posts",
+    ):
+        values = state.get(key, [])
+        if not isinstance(values, list):
+            continue
+        for idx, candidate in enumerate(values):
+            if isinstance(candidate, dict) and control_item_id(candidate) == wanted:
+                CONTROL_MANUAL_BLOCK_CACHE[wanted] = dict(candidate)
+                return candidate, idx
+    return None, -1
+
+
+def _prepared_payload_from_memory(item: dict[str, Any]) -> dict[str, Any]:
+    post = item.get("post")
+    if isinstance(post, Post):
+        post_payload = post_to_control_payload(post)
+    elif isinstance(post, dict):
+        post_payload = dict(post)
+    else:
+        post_payload = {}
+    return {
+        "created_at": float(item.get("created_at", time.time()) or time.time()),
+        "post": post_payload,
+        "translated": str(item.get("translated", "") or ""),
+        "quoted_translated": str(item.get("quoted_translated", "") or ""),
+        "quoted_author_translated": str(item.get("quoted_author_translated", "") or ""),
+        "control_media_message_ids": list(item.get("control_media_message_ids", []) or []),
+    }
+
+
+def _persist_prepared_send(token: str, item: dict[str, Any]) -> None:
+    state = load_control_state()
+    saved = state.get(CONTROL_PREPARED_STATE_KEY, {})
+    if not isinstance(saved, dict):
+        saved = {}
+    saved[str(token)] = _prepared_payload_from_memory(item)
+    # Keep the newest 150 buttons. They remain usable across restarts.
+    ordered = sorted(saved.items(), key=lambda pair: float((pair[1] or {}).get("created_at", 0.0)), reverse=True)
+    state[CONTROL_PREPARED_STATE_KEY] = dict(ordered[:150])
+    write_control_state(state)
+
+
+_base_remember_control_prepared_send_v2 = remember_control_prepared_send
+
+
+def remember_control_prepared_send(post: Post, translated: str, quoted_translated: str, quoted_author_translated: str) -> str:
+    token = _base_remember_control_prepared_send_v2(post, translated, quoted_translated, quoted_author_translated)
+    item = CONTROL_PREPARED_SENDS.get(token)
+    if isinstance(item, dict):
+        _persist_prepared_send(token, item)
+    return token
+
+
+def _restore_prepared_send(token: str) -> dict[str, Any] | None:
+    item = CONTROL_PREPARED_SENDS.get(token)
+    if isinstance(item, dict):
+        return item
+    state = load_control_state()
+    saved = state.get(CONTROL_PREPARED_STATE_KEY, {})
+    if not isinstance(saved, dict):
+        return None
+    payload = saved.get(str(token))
+    if not isinstance(payload, dict):
+        return None
+    post = post_from_control_payload(payload.get("post"))
+    if not post:
+        return None
+    item = {
+        "created_at": float(payload.get("created_at", time.time()) or time.time()),
+        "post": post,
+        "translated": str(payload.get("translated", "") or ""),
+        "quoted_translated": str(payload.get("quoted_translated", "") or ""),
+        "quoted_author_translated": str(payload.get("quoted_author_translated", "") or ""),
+        "control_media_message_ids": list(payload.get("control_media_message_ids", []) or []),
+    }
+    CONTROL_PREPARED_SENDS[token] = item
+    media_ids = [int(x) for x in item["control_media_message_ids"] if str(x).isdigit()]
+    if media_ids:
+        CONTROL_TELEGRAM_MEDIA_CACHE[token] = media_ids
+    return item
+
+
+def _manual_translation_for_preview(post: Post) -> tuple[str, str, str]:
+    """Gemini first; clean Google fallback; source text only as last-resort visibility."""
+    translated, quoted_translated, quoted_author_translated = manual_force_translation(post)
+    translated = str(translated or "").strip()
+    quoted_translated = str(quoted_translated or "").strip()
+    quoted_author_translated = str(quoted_author_translated or "").strip()
+    return translated, quoted_translated, quoted_author_translated
+
+
+def _save_prepared_media_ids(token: str, media_ids: list[int]) -> None:
+    item = CONTROL_PREPARED_SENDS.get(token)
+    if not isinstance(item, dict):
+        return
+    item["control_media_message_ids"] = list(media_ids)
+    _persist_prepared_send(token, item)
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    item = _restore_prepared_send(token)
+    if not item:
+        return "הפוסט הישן לא ניתן לשחזור. בצע בדיקת כתב חדשה; הכפתור החדש יישמר גם אחרי הפעלה מחדש."
+    post: Post = item["post"]
+    translated = str(item.get("translated", "") or "")
+    quoted_translated = str(item.get("quoted_translated", "") or "")
+    quoted_author_translated = str(item.get("quoted_author_translated", "") or "")
+    if not (translated or quoted_translated):
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+    message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+
+    # The button is a final command. No automatic block/duplicate/age check is called here.
+    copied_media = _copy_control_media_to_main(token)
+    if copied_media:
+        telegram_broadcast_full_text(normalize_neto_sport_footer(strip_football_factly_author_heading(message)))
+        remember_persistent_sent(post, message, "manual_telegram_copy")
+        return "נשלח בכוח לערוץ נטו ספורט במלואו; המדיה הועתקה ישירות מטלגרם."
+
+    images = selected_post_images(post)
+    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    _message_ids, mode = manual_force_send_prepared_message(post, message, images, video_url)
+    remember_persistent_sent(post, message, "manual_force")
+    return f"נשלח בכוח לערוץ נטו ספורט. מצב שליחה: {mode}"
+
+
+def send_control_blocked_post_to_main(item_id: str) -> str:
+    state = load_control_state()
+    item, _index = find_control_block_item(state, item_id)
+    if not item:
+        return "הפוסט כבר לא קיים בזיכרון המקומי. בצע בדיקת כתב חדשה; מעכשיו הכפתורים נשמרים גם אחרי הפעלה מחדש."
+    post = post_from_control_payload(item.get("post")) or post_from_control_payload(item)
+    if not post:
+        return "לא נשמרו בפריט מספיק נתונים לשחזור. בצע בדיקת כתב חדשה ולחץ על שליחה."
+    translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+    token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+    old_media = item.get("control_media_message_ids", [])
+    if isinstance(old_media, list) and old_media:
+        media_ids = [int(x) for x in old_media if str(x).isdigit()]
+        CONTROL_TELEGRAM_MEDIA_CACHE[token] = media_ids
+        _save_prepared_media_ids(token, media_ids)
+    result = send_prepared_control_post_to_main(token)
+    try:
+        scan_state = load_state()
+        confirm_recent_news_event(post, scan_state)
+        seen = set(scan_state.get(post.username, []))
+        seen.update(post.dedupe_ids)
+        scan_state[post.username] = list(seen)[-500:]
+        save_state(scan_state)
+    except Exception as exc:
+        logging.debug("שמירת זיכרון אחרי שליחה ידנית נכשלה: %s", exc)
+    save_control_state(last_sent_post={"ts": time.time(), "username": post.username, "link": post.link})
+    return result
+
+
+def _render_full_control_candidate(post: Post, translated: str, quoted_translated: str, quoted_author_translated: str) -> str:
+    message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+    return normalize_neto_sport_footer(strip_football_factly_author_heading(message))
+
+
+def maybe_notify_control_borderline_item(item: dict[str, Any]) -> None:
+    """Send a complete, already translated what-you-see-is-what-will-publish preview."""
+    if not should_notify_control_borderline_item(item):
+        return
+    item_id = control_item_id(item)
+    if not item_id or item_id in CONTROL_BORDERLINE_NOTIFIED_KEYS:
+        return
+    now_ts = time.time()
+    if control_borderline_rate_limited(now_ts):
+        return
+    CONTROL_BORDERLINE_NOTIFIED_KEYS.add(item_id)
+    _persist_force_item(item)
+
+    def _notify() -> None:
+        try:
+            post = post_from_control_payload(item.get("post")) or post_from_control_payload(item)
+            if not post:
+                # Legacy row: keep a full textual preview and authoritative send/delete buttons.
+                send_control_text(
+                    str(item.get("rendered") or item.get("details") or item.get("preview") or "דיווח גבולי"),
+                    None,
+                    control_block_actions_reply_markup([item], include_delete=True),
+                )
+                return
+            translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+            token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+            media_ids = _send_control_media_once(post, token)
+            _save_prepared_media_ids(token, media_ids)
+            # Exactly two buttons: publish and delete. No extra translation button.
+            send_control_html(
+                _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated),
+                control_send_to_main_reply_markup(token),
+            )
+        except Exception as exc:
+            logging.warning("תצוגת דיווח גבולי מלאה נכשלה: %s", exc)
+            try:
+                send_control_text(
+                    str(item.get("preview") or item.get("text") or "דיווח גבולי"),
+                    None,
+                    control_block_actions_reply_markup([item], include_delete=True),
+                )
+            except Exception:
+                pass
+
+    Thread(target=_notify, daemon=True).start()
+
+
+def run_latest_account_control_test(username: str) -> None:
+    """Always show the selected writer's newest report fully translated, with media and two actions."""
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        posts = fetch_posts(username)
+    except Exception as exc:
+        send_control_text(f"🧪 בדיקת {label} נכשלה בשליפת RSS:\n{short_error(exc, 700)}")
+        return
+    if not posts:
+        send_control_text(f"🧪 בדיקת {label}: לא נמצאו פוסטים כרגע בכל מקורות ה-RSS המוגדרים.")
+        return
+    post = posts[0]
+    try:
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+        media_ids = _send_control_media_once(post, token)
+        _save_prepared_media_ids(token, media_ids)
+        send_control_html(
+            _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated),
+            control_send_to_main_reply_markup(token),
+        )
+    except Exception as exc:
+        send_control_text(
+            f"🧪 בדיקת {label}: הפוסט נמצא אך התצוגה המלאה נכשלה.\n"
+            f"סיבה: {short_error(exc, 900)}\nקישור: {post.link}"
+        )
+
+
+# Keep every configured reporter in the scanning and manual-test pools. This
+# prevents an accidentally stale control-state toggle from silently removing a writer.
+def _all_configured_reporters() -> list[str]:
+    values = list(X_ACCOUNTS) + list(OPTIONAL_CONTROLLED_ACCOUNTS) + [
+        MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME,
+        FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
+    ]
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        username = str(value or "").strip().lstrip("@")
+        key = username.lower()
+        if username and key not in seen:
+            seen.add(key)
+            result.append(username)
+    return result
+
+
+def active_x_accounts() -> list[str]:
+    return _all_configured_reporters()
+
+
+def all_control_test_accounts() -> list[str]:
+    return _all_configured_reporters()
+
+
+def control_state_account_disabled(username: str) -> bool:
+    # All configured reporters remain operational. The global pause button still
+    # pauses the bot, but an individual stale toggle cannot disable a reporter.
+    return False
+
+
+# Automatic daily summary remains disabled; only the explicit button runs it.
+def send_daily_quality_report_if_due() -> None:
+    return
+
+# ====== END GPT-5.6 FINAL RELIABILITY PATCH ======
+
+
+# ====== GPT-5.6 WRITER HISTORY / BROADCAST FILTER PATCH (2026-07-15) ======
+
+# Block live-show, watchalong and self-promotional broadcast posts more broadly.
+PODCAST_BLOCK_PATTERNS += (
+    r"\b(?:live|watch)\s*(?:show|stream|broadcast|watchalong|coverage)\b",
+    r"\b(?:join|watch|listen|tune)\s+(?:me|us|in|live|now)\b",
+    r"\b(?:i(?:'|’)m|we(?:'|’)re)\s+live\b",
+    r"\bgoing\s+live\b",
+    r"\blive\s+at\s+\d{1,2}(?::\d{2})?\b",
+    r"\b(?:youtube|twitch|spaces?)\s+live\b",
+    r"שידור\s+(?:חי|ישיר)",
+    r"עולים\s+לשידור",
+    r"אני\s+בשידור",
+    r"אנחנו\s+בשידור",
+    r"הצטרפו\s+(?:אליי|אלינו)?\s*לשידור",
+    r"צפו\s+(?:בי|בנו)?\s*בשידור",
+    r"לייב\s+(?:חדש|עכשיו|בשעה|היום)",
+    r"משדר\s+(?:חי|בלייב)",
+    r"ספייס\s+(?:חדש|חי|בלייב)",
+)
+
+_base_build_message_writer_spacing = build_message
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    """Keep every writer heading on its own visual line, including RTL clients."""
+    message = _base_build_message_writer_spacing(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+    # U+2063 keeps Telegram Desktop from visually joining the bold RTL heading
+    # with the first body line while remaining invisible to readers.
+    if message.startswith("<b>") and "</b>\n\n" in message:
+        message = message.replace("</b>\n\n", "</b>\n\u2063\n", 1)
+    return message
+
+
+def _history_item_matches_post(item: Any, post: Post) -> bool:
+    if not isinstance(item, dict):
+        return False
+    link = str(post.link or "").strip()
+    raw = json.dumps(item, ensure_ascii=False, default=str)
+    if link and link in raw:
+        return True
+    post_ids = {str(x) for x in post.dedupe_ids if str(x)}
+    candidate = post_from_control_payload(item.get("post")) or post_from_control_payload(item)
+    if candidate:
+        if link and candidate.link == link:
+            return True
+        return bool(post_ids.intersection({str(x) for x in candidate.dedupe_ids}))
+    return False
+
+
+def _control_reason_from_item(item: dict[str, Any]) -> str:
+    for key in ("reason_he", "reason", "block_reason", "details", "why", "status_reason"):
+        value = str(item.get(key, "") or "").strip()
+        if value:
+            return compact_debug_text(value, 260)
+    return "לא נשמר פירוט נוסף"
+
+
+def _history_status_for_post(post: Post) -> tuple[str, str]:
+    state = load_control_state()
+    categories = (
+        ("last_sent_posts", "✅ נשלח", "נשלח לערוץ"),
+        ("recent_sent_posts", "✅ נשלח", "נשלח לערוץ"),
+        ("manual_sent_posts", "✅ נשלח ידנית", "נשלח בכוח לפי בקשה"),
+        ("last_borderline_posts", "⚠️ גבולי", "הועבר להחלטה ידנית"),
+        ("last_duplicate_posts", "🧠 כפילות", "נחסם ככפילות"),
+        ("last_blocked_posts", "⛔ נחסם", "נחסם בסינון"),
+        ("last_filtered_posts", "⛔ סונן", "לא עבר את הסינון"),
+    )
+    for key, status, default_reason in categories:
+        rows = state.get(key, [])
+        if not isinstance(rows, list):
+            continue
+        for item in reversed(rows):
+            if _history_item_matches_post(item, post):
+                reason = _control_reason_from_item(item)
+                return status, reason if reason != "לא נשמר פירוט נוסף" else default_reason
+    # The scanner state is also authoritative for posts already consumed.
+    try:
+        scan_state = load_state()
+        seen = {str(x) for x in scan_state.get(post.username, [])}
+        if seen.intersection({str(x) for x in post.dedupe_ids}):
+            return "☑️ כבר טופל", "סומן בעבר כנצפה/טופל; לא נמצא רישום מפורט בלוח הבקרה"
+    except Exception:
+        pass
+    return "🆕 טרם טופל", "הפוסט עדיין לא מופיע בהיסטוריית השליחה או החסימה"
+
+
+def _translate_history_post(post: Post) -> str:
+    source = clean_for_ai_translation(html.unescape(post.text or "")).strip()
+    if not source:
+        source = remove_external_links(html.unescape(post.title or "")).strip()
+    if not source:
+        return "אין טקסט זמין לתרגום"
+    try:
+        translated = google_translate(source)
+        translated = tidy_translated_text(translated)
+        translated = apply_phrase_replacements(translated, TEAM_REPLACEMENTS)
+        translated = apply_phrase_replacements(translated, PLAYER_REPLACEMENTS)
+        translated = apply_phrase_replacements(translated, HEBREW_FINAL_FIXES)
+        return translated.strip() or source
+    except Exception as exc:
+        logging.warning("תרגום Google להיסטוריית כתב נכשל: %s", exc)
+        return source
+
+
+def _history_link_markup(post: Post) -> dict[str, Any]:
+    row: list[dict[str, str]] = []
+    if str(post.link or "").startswith(("http://", "https://")):
+        row.append({"text": "🔗 פתח את הפוסט המקורי", "url": post.link})
+    keyboard: list[list[dict[str, str]]] = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}])
+    return {"inline_keyboard": keyboard}
+
+
+def run_last_ten_account_control_test(username: str) -> None:
+    """Show ten newest reports with translated text, status, reason and source link."""
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        posts = fetch_posts(username)
+    except Exception as exc:
+        send_control_text(f"📚 10 אחרונים — {label}\n\nשליפת RSS נכשלה: {short_error(exc, 700)}")
+        return
+    posts = list(posts[:10])
+    if not posts:
+        send_control_text(f"📚 10 אחרונים — {label}\n\nלא נמצאו פוסטים במקורות ה-RSS כרגע.")
+        return
+    send_control_text(f"📚 10 הפוסטים האחרונים של {label}\nכל פריט כולל תרגום Google, מצב, סיבה וקישור מקורי.")
+    for index, post in enumerate(posts, 1):
+        status, reason = _history_status_for_post(post)
+        translated = _translate_history_post(post)
+        published_at = post.published_at.astimezone(ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m/%Y %H:%M") if post.published_at else "זמן לא ידוע"
+        text = (
+            f"<b>{html.escape(rtl(f'{label}:'))}</b>\n\u2063\n"
+            f"{html.escape(rtl(translated))}\n\n"
+            f"<b>{html.escape(rtl(f'פריט {index}/10'))}</b>\n"
+            f"{html.escape(rtl(f'מצב: {status}'))}\n"
+            f"{html.escape(rtl(f'סיבה: {reason}'))}\n"
+            f"{html.escape(rtl(f'פורסם: {published_at}'))}"
+        )
+        try:
+            send_control_html(text, _history_link_markup(post))
+        except Exception as exc:
+            logging.warning("שליחת פריט היסטוריה %s של @%s נכשלה: %s", index, username, exc)
+
+# ====== END GPT-5.6 WRITER HISTORY / BROADCAST FILTER PATCH ======
 
 if __name__ == "__main__":
     main()
