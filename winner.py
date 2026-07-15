@@ -75,7 +75,7 @@ from zoneinfo import ZoneInfo
 # or JSON keys. Make only the requested change and keep backward compatibility.
 # ============================================================================
 
-BOT_BUILD_ID = "football-factly-word-count-rss-split-fix-2026-07-15"
+BOT_BUILD_ID = "football-factly-two-rules-only-2026-07-15"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -4956,7 +4956,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         blocked_posts = [item for item in blocked_posts if isinstance(item, dict)][-30:]
         send_control_text(
             _control_list_text("📋 30 חסימות אחרונות", blocked_posts, "אין חסימות שמורות כרגע.", limit=30),
-            None,
+            message.get("message_id"),
             control_history_reply_markup() if blocked_posts else monitor_menu_reply_markup(),
         )
     elif data == "football_blocked_summary":
@@ -4970,7 +4970,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         duplicate_items = recent_duplicate_control_items(state, limit=10)
         send_control_text(
             _control_list_text("🧠 10 כפילויות אחרונות", duplicate_items, "אין כפילויות שמורות כרגע.", limit=10),
-            None,
+            message.get("message_id"),
             control_history_reply_markup() if duplicate_items else monitor_menu_reply_markup(),
         )
     elif False and data == "football_last_duplicate":
@@ -12147,9 +12147,8 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- For football-stat lists that repeat ball emojis or flags, put each stat item on its own line.\n"
         "- For every real list or ranking, put each item on its own consecutive line with NO empty lines between list items. Keep exactly one empty line before the list and one empty line after the list when surrounding prose exists. Repeated flags, bullets, ranks, percentages, scores or emoji-led entries are list markers.\n"
         "- Format the final Hebrew as polished Telegram news copy with deliberate editorial paragraph breaks, never as one dense block when the text contains separate factual ideas.\n"
-        "- Detect the semantic structure yourself before inserting line breaks. Do not put an empty line after every sentence. Group closely related sentences into one paragraph, normally 2-3 sentences, and create a new paragraph only when the subject, stage, comparison, explanation, or conclusion genuinely changes.\n"
-        "- For long non-list messages: use natural compact paragraphs, normally 2-3 related sentences per paragraph. A one-sentence paragraph is allowed only for a real headline/opening fact, a clearly separate conclusion, or a sentence that is long enough to stand alone. Preserve a clear opening fact, supporting comparison/context, and a short closing conclusion as separate paragraphs only when they are genuinely distinct ideas.\n"
-        "- For statistical posts from OptaJoe or FootballFactly, especially a long sentence joined by an em dash: identify the logical sections yourself. Keep related record/stat sentences together, place supporting xG/comparison/history context in another compact paragraph only when it is a different idea, and use a separate concluding paragraph only when there is a real conclusion. Do not split every sentence, do not add decorative spacing, and do not break a grammatical clause in the middle.\n"
+        "- For long non-list messages: use natural short paragraphs every 1-3 sentences when it improves readability. Preserve a clear opening fact, supporting comparison/context, and a short closing conclusion as separate paragraphs when they are distinct ideas.\n"
+        "- For statistical posts from OptaJoe or FootballFactly, especially a long sentence joined by an em dash: place the main record/stat in the first paragraph, the supporting xG/comparison/history context in a second paragraph, and a short concluding phrase in a final paragraph. Do not split randomly or break a grammatical clause in the middle.\n"
         "- Do not write explanations. JSON only.\n"
         f"{glossary_block}\n"
         "MAIN_TEXT:\n" + (main_source or "") + "\n\n"
@@ -17010,58 +17009,6 @@ _SPECIAL_FACT_LIVE_RE = re.compile(
 
 _prev_special_issue_exact = football_factly_filter_issue
 
-def special_fact_feed_original_text_for_word_limit(*parts: Any, **kwargs: Any) -> str:
-    """Return the complete original visible caption for the 15-word gate only.
-
-    Some RSS mirrors split one X post into ``text`` and ``quoted_text`` even when
-    both pieces are visibly part of the same fact/statistics post. The old check
-    examined only the longest single field, which could incorrectly report fewer
-    than 15 words. This helper joins the original RSS pieces without using the
-    translation and without changing any other filter or formatting rule.
-    """
-    pieces: list[str] = []
-
-    def add_piece(value: Any) -> None:
-        text = html.unescape(str(value or "")).strip()
-        if not text:
-            return
-        # Remove only transport/UI noise that is not part of the written caption.
-        text = re.sub(r"https?://\S+", " ", text)
-        text = re.sub(r"(?i)\b(?:pic\.twitter\.com|twitter\.com|x\.com)/\S+", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        if not text:
-            return
-        normalized = re.sub(r"[^\w\u0590-\u05ff]+", " ", text, flags=re.UNICODE).strip().casefold()
-        if normalized and all(
-            re.sub(r"[^\w\u0590-\u05ff]+", " ", old, flags=re.UNICODE).strip().casefold() != normalized
-            for old in pieces
-        ):
-            pieces.append(text)
-
-    for value in list(parts) + list(kwargs.values()):
-        if isinstance(value, Post):
-            add_piece(value.text)
-            add_piece(value.quoted_text)
-            continue
-        if isinstance(value, dict):
-            for key in ("text", "full_text", "content", "caption", "raw_text", "quoted_text"):
-                add_piece(value.get(key))
-            continue
-        if isinstance(value, str):
-            # Free strings passed to the filter can be translated/control text, so
-            # preserve the previous behavior and do not use them for this gate.
-            continue
-        for key in ("text", "full_text", "content", "caption", "raw_text", "quoted_text"):
-            try:
-                add_piece(getattr(value, key, ""))
-            except Exception:
-                pass
-
-    if pieces:
-        return " ".join(pieces)
-    return extract_original_post_caption_for_rules(*parts, **kwargs)
-
-
 def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
     source_name = special_fact_feed_name(*parts, **kwargs)
     if not source_name:
@@ -17069,7 +17016,6 @@ def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
     label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
     post = next((part for part in parts if isinstance(part, Post)), None)
     text = extract_original_post_caption_for_rules(*parts, **kwargs)
-    full_original_text = special_fact_feed_original_text_for_word_limit(*parts, **kwargs)
     if post is not None and is_women_or_wnba_post(post):
         return f"{label}: כדורגל נשים או WNBA נחסם"
     if post is not None and is_other_sport_post(post):
@@ -17078,7 +17024,7 @@ def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
         return f"{label}: ראיון, דעה או ציטוט שאינו עובדה נחסם"
     if _SPECIAL_FACT_LIVE_RE.search(str(text or "")):
         return f"{label}: שידור או לייב נחסם"
-    if count_content_words(full_original_text) < FOOTBALL_FACTLY_MIN_WORDS:
+    if count_content_words(text) < FOOTBALL_FACTLY_MIN_WORDS:
         return f"{label}: פחות מ-{FOOTBALL_FACTLY_MIN_WORDS} מילים"
     if not football_factly_has_image_or_video(*parts, **kwargs):
         return f"{label}: פוסט בלי תמונה או סרטון לא נשלח"
@@ -17760,204 +17706,6 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
     return {"inline_keyboard": keyboard}
 
 # ====== END TARGETED FINAL FIX ======
-
-
-# ====== TARGETED SMALL FIXES: LIST LAYOUT + TRANSLATION GUARD ======
-# Only these two behaviors are adjusted here:
-# 1. Better recognition of repeated flag/list items, with no leading empty rows.
-# 2. Translation-quality blocking is limited to clear technical failures, reducing false blocks.
-
-
-def format_list_line_breaks_by_source(source_text: Any, message: Any) -> str:
-    """Recognize compact lists reliably without changing existing emoji punctuation rules."""
-    value = str(message or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not value:
-        return value
-
-    # Reuse the bot's existing formatter first, then add only a conservative
-    # repeated-flag repair. This keeps all existing emoji/end-of-sentence rules.
-    value = format_stat_list_lines(value)
-    flag_re = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
-    flags = list(flag_re.finditer(value))
-    if len(flags) >= 2:
-        # Any later flag that is separated by spaces (rather than a line break)
-        # begins the next item. The first flag is also separated from prose.
-        value = re.sub(
-            r"(?<!\n)[ \t]+(?=[\U0001F1E6-\U0001F1FF]{2}(?:[ \t]|\d))",
-            "\n",
-            value,
-        )
-        first = flag_re.search(value)
-        if first and first.start() > 0:
-            prefix = value[:first.start()].rstrip()
-            suffix = value[first.start():].lstrip()
-            if prefix:
-                value = prefix + "\n" + suffix
-
-    # Lists stay consecutive, and the message can never begin with blank rows.
-    value = _compact_list_blank_lines(value)
-    value = re.sub(r"\A(?:[ \t]*\n)+", "", value)
-    value = re.sub(r"\n{3,}", "\n\n", value)
-    return value.strip()
-
-
-def _translation_guard_text(value: Any) -> str:
-    if isinstance(value, Post):
-        return "\n".join(part for part in (value.text, value.quoted_text) if part).strip()
-    return str(value or "").strip()
-
-
-def translation_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
-    """Block only unmistakable translation failures; avoid false 'suspicious' blocks."""
-    source = _translation_guard_text(source_text)
-    translated = str(translated_text or "").strip()
-
-    if not translated:
-        return "לא התקבל תרגום"
-
-    lowered = translated.lower().lstrip()
-    # Clear machine-output leakage remains blocked.
-    if "```" in translated or re.search(r'"\s*(?:main|quote|quote_author)\s*"\s*:', translated, re.I):
-        return "פלט התרגום לא נקי"
-    if lowered.startswith(("json", "{", "[")) and re.search(r"(?:main|quote|quote_author)", lowered):
-        return "פלט התרגום לא נקי"
-
-    hebrew_chars = len(re.findall(r"[\u0590-\u05ff]", translated))
-    latin_words = re.findall(r"\b[A-Za-z]{4,}\b", translated)
-
-    # Block only when a normal-sized source clearly did not become Hebrew.
-    # Names, clubs, acronyms and a few English terms are intentionally allowed.
-    if len(source) > 40 and hebrew_chars < 5 and len(latin_words) >= 5:
-        return "לא התקבל תרגום עברי מספיק"
-    if hebrew_chars < 12 and len(latin_words) >= 14:
-        return "נשארו יותר מדי מילים באנגלית"
-    return ""
-
-
-def translation_quality_issues(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> list[str]:
-    issue = translation_quality_issue(source_text, translated_text, *args, **kwargs)
-    return [issue] if issue else []
-
-
-def check_translation_quality(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> list[str]:
-    return translation_quality_issues(source_text, translated_text, *args, **kwargs)
-
-
-def translation_quality_block_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
-    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
-
-
-def is_translation_quality_blocked(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
-    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
-
-
-def control_translation_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
-    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
-
-
-def translated_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
-    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
-
-
-def translation_suspicion_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
-    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
-
-
-def suspicious_translation_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
-    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
-
-
-def is_suspicious_translation(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
-    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
-
-
-def looks_like_bad_translation(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
-    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
-
-# ====== END TARGETED SMALL FIXES ======
-
-# ====== TARGETED COMPACT PARAGRAPH SPACING FIX ======
-# Keep true lists compact and preserve meaningful section breaks, but avoid a
-# blank line after every short sentence. Consecutive short prose paragraphs are
-# grouped into readable blocks of roughly 2-3 sentences.
-
-_previous_compact_paragraph_formatter = format_special_fact_feed_paragraphs
-
-
-def _is_clear_heading_block(block: str) -> bool:
-    value = (block or "").strip()
-    if not value or "\n" in value:
-        return False
-    return bool(
-        value.endswith((':', '：'))
-        or re.match(r"^(?:<b>)?.{1,70}(?:</b>)?:$", value)
-    )
-
-
-def _compact_excessive_prose_spacing(value: str) -> str:
-    blocks = [part.strip() for part in re.split(r"\n{2,}", value or "") if part.strip()]
-    if len(blocks) < 3:
-        return (value or "").strip()
-
-    result: list[str] = []
-    run: list[str] = []
-
-    def flush_run() -> None:
-        nonlocal run
-        if not run:
-            return
-        # Only repair an actual run of excessive sentence-by-sentence spacing.
-        if len(run) < 3:
-            result.extend(run)
-            run = []
-            return
-        current: list[str] = []
-        current_chars = 0
-        for part in run:
-            addition = len(part) + (1 if current else 0)
-            # Prefer 2-3 short sentences per paragraph. Do not create a very
-            # wide block when a sentence is already substantial by itself.
-            if current and (len(current) >= 3 or (len(current) >= 2 and current_chars + addition > 260)):
-                result.append(" ".join(current).strip())
-                current = []
-                current_chars = 0
-            current.append(part)
-            current_chars += addition
-        if current:
-            # Avoid leaving a single tiny final sentence on its own when it can
-            # naturally join the preceding paragraph.
-            if len(current) == 1 and result and len(result[-1]) + 1 + len(current[0]) <= 300:
-                result[-1] = f"{result[-1]} {current[0]}".strip()
-            else:
-                result.append(" ".join(current).strip())
-        run = []
-
-    for block in blocks:
-        is_list = _is_compact_stat_list_block(block)
-        is_heading = _is_clear_heading_block(block)
-        # Multi-line blocks, headings and list blocks represent deliberate
-        # structure and must stay exactly separated.
-        if is_list or is_heading or "\n" in block or len(block) > 190:
-            flush_run()
-            result.append(block)
-        else:
-            run.append(block)
-    flush_run()
-
-    compacted = "\n\n".join(result)
-    compacted = _compact_list_blank_lines(compacted)
-    compacted = re.sub(r"\n{3,}", "\n\n", compacted)
-    return compacted.strip()
-
-
-def format_special_fact_feed_paragraphs(text: str) -> str:
-    """Final spacing: compact 2-3-sentence prose blocks, unchanged lists."""
-    value = _previous_compact_paragraph_formatter(text)
-    if not value:
-        return value
-    return _compact_excessive_prose_spacing(value)
-
-# ====== END TARGETED COMPACT PARAGRAPH SPACING FIX ======
 
 if __name__ == "__main__":
     main()
