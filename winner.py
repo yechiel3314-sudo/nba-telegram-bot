@@ -2095,18 +2095,37 @@ def app_data_path(filename: str) -> Path:
     return target
 
 
+PERSISTENCE_WRITE_LOCK = Lock()
+
+
 def _atomic_write_text_with_backup(path: Path, text: str) -> None:
-    """Atomic write while retaining the previous valid generation as .bak."""
+    """Atomically write memory without shared-.tmp races between bot threads.
+
+    IMPORTANT: every write gets its own temporary filename. The old fixed
+    ``football_control_state.json.tmp`` filename could be replaced/deleted by a
+    second thread while the first thread was still saving the 10-post preview.
+    This function is persistence-only and must not be used to alter RSS logic.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
     backup_path = path.with_suffix(path.suffix + ".bak")
-    temp_path.write_text(text, encoding="utf-8")
-    if path.exists():
+    temp_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{time.time_ns()}.{id(text)}.tmp"
+    )
+    with PERSISTENCE_WRITE_LOCK:
         try:
-            shutil.copy2(path, backup_path)
-        except Exception as exc:
-            logging.debug("יצירת גיבוי זיכרון נכשלה עבור %s: %s", path.name, exc)
-    temp_path.replace(path)
+            temp_path.write_text(text, encoding="utf-8")
+            if path.exists():
+                try:
+                    shutil.copy2(path, backup_path)
+                except Exception as exc:
+                    logging.debug("יצירת גיבוי זיכרון נכשלה עבור %s: %s", path.name, exc)
+            os.replace(temp_path, path)
+        finally:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
 
 
 def _read_json_with_backup(path: Path, default: Any) -> Any:
