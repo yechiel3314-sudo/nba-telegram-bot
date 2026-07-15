@@ -17273,6 +17273,411 @@ def run_last_ten_account_control_test(username: str) -> None:
 # ====== END ISOLATED 10-LATEST REBUILD ======
 
 
+
+# ====== GPT-5.6 TARGETED FINAL EDITORIAL / AUTO-SCAN FIX (RSS UNTOUCHED) ======
+# IMPORTANT FOR FUTURE AI EDITORS:
+# This patch must remain independent of the RSS engine. Do NOT change fetch_feed,
+# fetch_posts, fetch_posts_safely, FEED_TEMPLATES, mirror order, retries, timeouts,
+# or the automatic scan cadence here. Manual checks proving a post exists mean the
+# RSS reader succeeded; the fixes below only prevent valid concrete reports from
+# being rejected later by editorial filters.
+
+_GENERATED_SHORT_TAILS_RE = re.compile(
+    r"(?:\n\s*)?(?:מכיר\s+מקרוב|אמן|נעילה|סגירה\s+הרמטית|שליטה\s+מוחלטת|"
+    r"נתון\s+מרשים|בלתי\s+מנוצחים|מרשים\s+ביותר|פשוט\s+מדהים|איזה\s+נתון|"
+    r"חדות\s+יוצאת\s+דופן|היסטוריה|מטורף|מדהים|ענק)\s*[.!?…]*\s*$",
+    re.IGNORECASE | re.UNICODE,
+)
+_PRESERVE_SHORT_NEWS_ENDINGS_RE = re.compile(
+    r"(?:HERE\s+WE\s+GO|הנה\s+זה\s+קורה|עסקה\s+סגורה|רשמי\s+בקרוב|העסקה\s+סוכמה)\s*[.!?…]*$",
+    re.IGNORECASE | re.UNICODE,
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+(?=[\u0590-\u05FFA-Za-z0-9🇦-🇿🚨🔴🟣⚪])")
+
+
+def _source_plain_text(post: Post) -> str:
+    return clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+
+
+def _remove_generated_short_tail(post: Post, value: str) -> str:
+    """Remove only known AI-added slogan endings that were not in the source."""
+    text = str(value or "").strip()
+    if not text or _PRESERVE_SHORT_NEWS_ENDINGS_RE.search(text):
+        return text
+    match = _GENERATED_SHORT_TAILS_RE.search(text)
+    if not match:
+        return text
+    tail = re.sub(r"[.!?…\s]+$", "", match.group(0)).strip()
+    source = _source_plain_text(post)
+    if tail and tail.casefold() in source.casefold():
+        return text
+    return text[:match.start()].rstrip()
+
+
+def _looks_like_compact_list(value: str) -> bool:
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    if len(lines) >= 3:
+        listish = sum(bool(re.match(r"^(?:\d{1,2}[.)-]|[•▪▫◾◽✅❌✔️➡️]|(?:[🇦-🇿]{2}))\s*", line)) for line in lines)
+        if listish >= 2:
+            return True
+    return len(re.findall(r"(?:[🇦-🇿]{2})\s*\d+\s*[-–—]", str(value or ""))) >= 2
+
+
+def _smart_headline_paragraphs(value: str) -> str:
+    """Keep lists compact; otherwise separate a headline-like opening from its body."""
+    text = re.sub(r"[ \t]+", " ", str(value or "")).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    if not text or _looks_like_compact_list(text):
+        return text
+    if "\n\n" in text:
+        return text
+    sentences = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text) if part.strip()]
+    if len(sentences) < 2:
+        return text
+    first_words = count_content_words(sentences[0])
+    remaining_words = count_content_words(" ".join(sentences[1:]))
+    # A concise first fact works as a clean, non-bold headline. Do not create an
+    # empty-looking message when both sentences are very short.
+    if 5 <= first_words <= 28 and remaining_words >= 10:
+        return sentences[0] + "\n\n" + " ".join(sentences[1:])
+    return text
+
+
+def _final_editorial_text(post: Post, value: str) -> str:
+    text = _remove_generated_short_tail(post, value)
+    text = _smart_headline_paragraphs(text)
+    # Reuse the proven global list formatter. It keeps each item on its own line
+    # with no blank line between list items.
+    try:
+        text = format_stat_list_lines(text)
+    except Exception:
+        pass
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+_prev_build_message_targeted_editor = build_message
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _final_editorial_text(post, translated)
+    if quoted_translated:
+        quoted_translated = _final_editorial_text(post, quoted_translated)
+    return _prev_build_message_targeted_editor(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+
+
+# Concrete transfer/contract/coach reports that were incorrectly treated as vague.
+_CONCRETE_TRANSFER_REPORT_RE = re.compile(
+    r"\b(?:submitted|lodged|made|received|receives|contacted|called|approached|inquired|"
+    r"enquired|talks?|negotiations?|agreement|approved|approval|bureaucratic|paperwork|"
+    r"travel|loan|buy option|option to buy|sell-on|sell on|clause|fee|million|candidate|"
+    r"shortlist|interested|summer exit|departure)\b|"
+    r"הגיש(?:ה|ו)?\s+הצעה|הצעה\s+חדשה|פנתה|פנה|התקשר(?:ה|ו)?|התעדכן|להתעדכן|"
+    r"שיחות|מגעים|משא\s+ומתן|מו[\"״']?מ|סוכמ|אישור|בירוקרט|נסיעה|יוכל\s+לנסוע|"
+    r"השאלה|סעיף\s+רכישה|אופציית\s+רכישה|סעיף\s+מכירה|דמי\s+העברה|מיליון|"
+    r"מועמד(?:ים|ת)?|המאמן\s+החדש|מעוניינ(?:ת|ים)?|עזיבה\s+בקיץ|יציאה\s+בקיץ",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINANCIAL_TRANSFER_RE = re.compile(
+    r"(?:sell[- ]on|resale|sale clause|receiv(?:e|es|ed)|gets?|payment|€|£|\$|million)|"
+    r"סעיף\s+מכירה|אחוזים\s+ממכירה|מקבל(?:ת|ים)?|תקבל|מיליון\s+אירו|מיליון\s+ליש[\"״']?ט",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _matteo_concrete_report(post: Post, cleaned: str) -> bool:
+    if str(post.username or "").casefold() != "mattemoretto":
+        return False
+    # Moretto often posts two concise concrete items in one post. Explicit final
+    # paperwork/travel or a named coach-candidate report is still real news.
+    return bool(
+        _CONCRETE_TRANSFER_REPORT_RE.search(cleaned)
+        and (
+            _tracked_club_in_text(cleaned)
+            or re.search(r"מועמד(?:ים|ת)?.{0,80}(?:מאמן|coach)|(?:coach|manager).{0,80}candidate", cleaned, re.I)
+        )
+    )
+
+
+def concrete_tracked_football_report(post: Post) -> bool:
+    cleaned = _source_plain_text(post)
+    if not cleaned or not _CONCRETE_TRANSFER_REPORT_RE.search(cleaned):
+        return False
+    if _matteo_concrete_report(post, cleaned):
+        return True
+    # A tracked buying/approaching club is sufficient. For sell-on payments, a
+    # tracked beneficiary club is also sufficient because the payment itself is
+    # the transfer news (for example Manchester United receiving a resale fee).
+    if tracked_acquiring_club_transfer(post):
+        return True
+    if _FINANCIAL_TRANSFER_RE.search(cleaned) and _tracked_club_in_text(cleaned):
+        return True
+    # Contact/inquiry reports often do not use the words bid/offer yet, but are
+    # concrete when a tracked club contacted another club about a named player.
+    if _tracked_club_in_text(cleaned) and re.search(
+        r"contacted|called|approached|inquired|enquired|פנתה|פנה|התקשר|להתעדכן|התעדכן",
+        cleaned, re.I,
+    ):
+        return True
+    return False
+
+
+def _wrap_false_for_concrete(name: str) -> None:
+    old = globals().get(name)
+    if not callable(old):
+        return
+    def wrapper(post: Post, _old=old):
+        if concrete_tracked_football_report(post):
+            return False
+        return _old(post)
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _filter_name in (
+    "is_unclear_subject_news_post",
+    "is_vague_status_without_primary_context",
+    "is_name_without_news_action_post",
+    "is_unclear_main_club_context_post",
+    "is_weak_copy_without_primary_value_post",
+    "is_non_news_social_post",
+    "is_media_without_report_post",
+    "is_too_short_without_strong_news_post",
+):
+    _wrap_false_for_concrete(_filter_name)
+
+
+_prev_football_importance_concrete = football_importance_block_reason
+
+def football_importance_block_reason(post: Post) -> str:
+    if concrete_tracked_football_report(post):
+        return ""
+    return _prev_football_importance_concrete(post)
+
+
+_prev_pre_send_concrete = pre_send_final_local_block_reason
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _prev_pre_send_concrete(post)
+    if not reason or not concrete_tracked_football_report(post):
+        return reason
+    # Never override hard safety/editorial blocks. Rescue only the vague/relevance
+    # errors that incorrectly rejected concrete transfer/coach/financial news.
+    hard = (
+        "women", "wnba", "other_sport", "interview", "live_", "podcast", "old_post",
+        "youth", "academy", "lineup", "poll", "medical_staff", "world_cup_bracket",
+    )
+    if str(reason).startswith(hard):
+        return reason
+    return ""
+
+
+# FootballFactly 10-latest targeted repair. This only reads the already-working
+# manual readers and saved control history. It never wraps or changes automatic RSS.
+def _footballfactly_state_posts_targeted(username: str) -> list[Post]:
+    aliases = ("footballfactly", "football factly", "עובדות כדורגל")
+    found: list[Post] = []
+    state = load_control_state()
+    try:
+        durable = _load_control_prepared_durable()
+    except Exception:
+        durable = {}
+
+    def walk(value: Any, depth: int = 0) -> None:
+        if depth > 7:
+            return
+        if isinstance(value, dict):
+            raw = json.dumps(value, ensure_ascii=False, default=str).casefold()
+            if any(alias in raw for alias in aliases):
+                post = post_from_control_payload(value.get("post")) or post_from_control_payload(value)
+                if post is not None:
+                    post.username = username
+                    found.append(post)
+            for child in value.values():
+                walk(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value[-500:]:
+                walk(child, depth + 1)
+    walk(state)
+    walk(durable)
+    return found
+
+
+_prev_fetch_last_ten_targeted = fetch_last_ten_control_isolated
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    posts = list(_prev_fetch_last_ten_targeted(username, limit) or [])
+    if str(username or "").casefold() != "footballfactly" or len(posts) >= limit:
+        return posts[:limit]
+    merged: dict[str, Post] = {}
+    for post in posts + _footballfactly_state_posts_targeted(username):
+        if not isinstance(post, Post):
+            continue
+        post.username = username
+        key = _ten_history_post_identity(username, post)
+        if key and key not in merged:
+            merged[key] = post
+    # Retry only the existing manual reader, not the automatic RSS scanner.
+    try:
+        for post in fetch_control_posts_reliable("FootballFactly", limit=limit) or []:
+            post.username = username
+            key = _ten_history_post_identity(username, post)
+            if key and key not in merged:
+                merged[key] = post
+    except Exception as exc:
+        logging.debug("FootballFactly targeted 10-latest retry failed: %s", short_error(exc))
+    ordered = sorted(merged.values(), key=lambda p: float(p.published_ts or 0.0), reverse=True)
+    if ordered:
+        _ten_history_save(username, ordered)
+    return ordered[:limit]
+
+
+# Manual preview editing: the user can replace the exact outgoing text before
+# forcing publication. The automatic scanner is not involved.
+MANUAL_EDIT_STATE_KEY = "manual_prepared_edits_v1"
+
+
+def _manual_edit_map() -> dict[str, str]:
+    value = load_control_state().get(MANUAL_EDIT_STATE_KEY, {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _save_manual_edit(token: str, message_html: str) -> None:
+    edits = _manual_edit_map()
+    edits[str(token)] = str(message_html)
+    # Keep a bounded persistent map across restarts/code upgrades.
+    if len(edits) > 500:
+        edits = dict(list(edits.items())[-500:])
+    save_control_state(**{MANUAL_EDIT_STATE_KEY: edits})
+
+
+def _get_manual_edit(token: str) -> str:
+    return str(_manual_edit_map().get(str(token), "") or "")
+
+
+_prev_control_send_markup_edit = control_send_to_main_reply_markup
+
+def control_send_to_main_reply_markup(token: str) -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}],
+        [{"text": "✏️ ערוך לפני שליחה", "callback_data": f"football_edit_prepared:{token}"}],
+        [{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}],
+    ])
+
+
+_prev_send_prepared_with_edit = send_prepared_control_post_to_main
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    edited_html = _get_manual_edit(token)
+    if not edited_html:
+        return _prev_send_prepared_with_edit(token)
+    item = _restore_prepared_send(token)
+    if not item:
+        return "הפוסט הישן לא ניתן לשחזור. בצע בדיקת כתב חדשה."
+    post: Post = item["post"]
+    images = selected_post_images(post)
+    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    _message_ids, mode = manual_force_send_prepared_message(post, edited_html, images, video_url)
+    remember_persistent_sent(post, edited_html, "manual_force_edited")
+    return f"ההודעה הערוכה נשלחה בכוח לערוץ נטו ספורט. מצב שליחה: {mode}"
+
+
+_prev_process_control_update_edit = process_control_update
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if data.startswith("football_edit_prepared:"):
+        token = data.split(":", 1)[1].strip()
+        callback_id = str(callback.get("id", "") or "")
+        message = callback.get("message", {}) or {}
+        chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+        if CONTROL_CHAT_ID and chat_id != CONTROL_CHAT_ID:
+            if callback_id:
+                answer_control_callback(callback_id, "אין הרשאה")
+            return
+        if not _restore_prepared_send(token):
+            if callback_id:
+                answer_control_callback(callback_id, "הפוסט הישן לא נשמר")
+            return
+        save_control_state(pending_manual_edit_token=token)
+        if callback_id:
+            answer_control_callback(callback_id, "שלח עכשיו את הטקסט הערוך")
+        send_control_text(
+            "✏️ עריכת הודעה\n\nשלח עכשיו הודעת טקסט אחת בדיוק כפי שתרצה שתופיע בנטו ספורט. "
+            "אפשר לשנות ניסוח, למחוק חלקים ולסדר רווחי שורות. לאחר מכן תישלח תצוגה חדשה עם כפתור שליחה.",
+            None,
+            control_delete_message_reply_markup(),
+        )
+        return
+    return _prev_process_control_update_edit(update)
+
+
+_prev_process_control_text_edit = process_control_text_update
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    message = update.get("message") or {}
+    if isinstance(message, dict):
+        chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+        text_value = str(message.get("text", "") or "").strip()
+        state = load_control_state()
+        token = str(state.get("pending_manual_edit_token", "") or "").strip()
+        if token and text_value and (not CONTROL_CHAT_ID or chat_id == CONTROL_CHAT_ID):
+            item = _restore_prepared_send(token)
+            save_control_state(pending_manual_edit_token="")
+            if not item:
+                send_control_text("הפוסט הישן לא ניתן לשחזור. בצע בדיקת כתב חדשה.")
+                return
+            post: Post = item["post"]
+            # User text is authoritative. Escape it for Telegram HTML, preserve exact
+            # line breaks, and ensure the standard Neto Sport footer exists once.
+            edited_plain = re.sub(r"\n{3,}", "\n\n", text_value).strip()
+            edited_html = html.escape(edited_plain)
+            edited_html = normalize_neto_sport_footer(edited_html)
+            _save_manual_edit(token, edited_html)
+            media_ids = list(item.get("control_media_message_ids", []) or [])
+            edited_in_place = False
+            if media_ids:
+                try:
+                    telegram_api("editMessageCaption", {
+                        "chat_id": CONTROL_CHAT_ID,
+                        "message_id": int(media_ids[0]),
+                        "caption": edited_html,
+                        "parse_mode": "HTML",
+                        "reply_markup": control_send_to_main_reply_markup(token),
+                    }, max_attempts=1)
+                    edited_in_place = True
+                except Exception as exc:
+                    logging.debug("Could not edit media preview in place: %s", exc)
+            if not edited_in_place:
+                send_control_html(edited_html, control_send_to_main_reply_markup(token))
+            return
+    return _prev_process_control_text_edit(update)
+
+
+# Keep the history button only on the main menu. This active definition is placed
+# before main(), unlike dead code that may exist after the blocking main loop.
+_prev_monitor_menu_main_only_active = monitor_menu_reply_markup
+
+def monitor_menu_reply_markup() -> dict[str, Any]:
+    markup = _prev_monitor_menu_main_only_active()
+    keyboard = []
+    for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else []):
+        cleaned = [button for button in row if not (
+            isinstance(button, dict) and str(button.get("callback_data", "")) == "football_choose_account_history"
+        )]
+        if cleaned:
+            keyboard.append(cleaned)
+    return {"inline_keyboard": keyboard}
+
+# ====== END TARGETED FINAL FIX ======
+
 if __name__ == "__main__":
     main()
 
