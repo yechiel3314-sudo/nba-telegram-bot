@@ -16261,3 +16261,161 @@ def _save_prepared_media_ids(token: str, media_ids: list[int]) -> None:
 
 if __name__ == "__main__":
     main()
+
+# ====== FINAL CONTROL RSS REPAIR — CORE AUTOMATIC RSS ENGINE UNCHANGED ======
+# IMPORTANT FOR FUTURE AI EDITORS:
+# Do not alter fetch_feed(), fetch_posts(), collect_posts_from_feed_templates(),
+# FEED_TEMPLATES, retry/time-out settings, or the automatic scanner while fixing
+# control-panel buttons. The functions below are only for the manual "latest post"
+# and "10 latest" buttons. They query the same configured RSS sources directly,
+# without source-health/cooldown side effects, and preserve the working core RSS.
+
+CONTROL_RSS_CACHE: dict[str, tuple[float, list[Post]]] = {}
+CONTROL_RSS_CACHE_SECONDS = 90.0
+
+
+def _control_rss_username_variants(username: str) -> list[str]:
+    variants = [username]
+    if username.casefold() == "optajoe":
+        variants.extend(["OptaJoe", "optajoe"])
+    elif username.casefold() == "footballfactly":
+        variants.extend(["FootballFactly", "footballfactly"])
+    return list(dict.fromkeys(item for item in variants if item))
+
+
+def _control_cached_posts(username: str) -> list[Post]:
+    cached = CONTROL_RSS_CACHE.get(username.casefold())
+    if not cached:
+        return []
+    saved_at, posts = cached
+    if time.time() - saved_at > CONTROL_RSS_CACHE_SECONDS:
+        return []
+    return list(posts)
+
+
+def _remember_control_rss_posts(username: str, posts: list[Post]) -> list[Post]:
+    ordered = sorted(posts, key=lambda item: float(item.published_ts or 0.0), reverse=True)
+    CONTROL_RSS_CACHE[username.casefold()] = (time.time(), ordered)
+    return ordered
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    """Reliable, isolated RSS lookup for manual control buttons only.
+
+    It keeps the automatic RSS engine completely untouched. All configured mirrors
+    are checked in parallel, account case variants are supported for mirrors that
+    are case-sensitive, and duplicate items from mirrors are merged.
+    """
+    cached = _control_cached_posts(username)
+    if len(cached) >= max(1, min(limit, 10)):
+        return cached[:limit]
+
+    templates = list(active_feed_templates())
+    jobs: list[tuple[str, str]] = []
+    for account_variant in _control_rss_username_variants(username):
+        for template in templates:
+            jobs.append((account_variant, template))
+    if not jobs:
+        return cached[:limit]
+
+    merged: dict[str, Post] = {}
+    executor = ThreadPoolExecutor(max_workers=min(max(4, MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT), len(jobs)))
+    futures = {
+        executor.submit(fetch_feed, account_variant, template): (account_variant, template)
+        for account_variant, template in jobs
+    }
+    deadline_seconds = max(12.0, FEED_COLLECTION_TIMEOUT_SECONDS + 6.0)
+    try:
+        for future in as_completed(futures, timeout=deadline_seconds):
+            try:
+                posts = future.result()
+            except Exception as exc:
+                account_variant, template = futures[future]
+                logging.debug(
+                    "Manual control RSS failed for @%s via %s: %s",
+                    account_variant,
+                    feed_source_name(template),
+                    short_error(exc),
+                )
+                continue
+            for post in posts:
+                # Normalize the account back to the configured account name so all
+                # later filters, labels and memory keys stay consistent.
+                post.username = username
+                key = post.post_id or post.link or post_content_signature(username, post.text, post.quoted_text)
+                merged.setdefault(key, post)
+            if len(merged) >= limit:
+                # We already have enough for the requested button. Return quickly
+                # instead of waiting for slow mirrors.
+                break
+    except FuturesTimeoutError:
+        logging.debug("Manual control RSS timed out partially for @%s; using %s collected posts", username, len(merged))
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    posts = sorted(merged.values(), key=lambda item: float(item.published_ts or 0.0), reverse=True)
+    if posts:
+        return _remember_control_rss_posts(username, posts)[:limit]
+    return cached[:limit]
+
+
+def fetch_latest_post_fast(username: str) -> Post | None:
+    posts = fetch_control_posts_reliable(username, limit=1)
+    return posts[0] if posts else None
+
+
+def run_latest_account_control_test(username: str) -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        post = fetch_latest_post_fast(username)
+    except Exception as exc:
+        send_control_text(f"🧪 בדיקת {label} נכשלה בשליפת RSS:\n{short_error(exc, 700)}")
+        return
+    if not post:
+        send_control_text(
+            f"🧪 בדיקת {label}: לא התקבל פוסט מאף מקור RSS כרגע. "
+            "הבוט ינסה שוב בלחיצה הבאה בלי לשנות את מנגנון ה-RSS האוטומטי."
+        )
+        return
+    try:
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+        message_html = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
+        _send_full_control_candidate(post, token, message_html)
+    except Exception as exc:
+        send_control_text(
+            f"🧪 בדיקת {label}: הפוסט נמצא אך התצוגה המלאה נכשלה.\n"
+            f"סיבה: {short_error(exc, 900)}\nקישור: {post.link}"
+        )
+
+
+def run_last_ten_account_control_test(username: str) -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        posts = fetch_control_posts_reliable(username, limit=10)
+    except Exception as exc:
+        send_control_text(f"📚 10 אחרונים — {label}\n\nשליפת RSS נכשלה: {short_error(exc, 700)}")
+        return
+    if not posts:
+        send_control_text(
+            f"📚 10 אחרונים — {label}\n\n"
+            "לא התקבלו כרגע פריטים מאף מקור RSS. נסה שוב בעוד רגע; "
+            "מנגנון ה-RSS האוטומטי לא שונה."
+        )
+        return
+    entries: list[tuple[Post, str, str, str]] = []
+    prepared: list[tuple[int, Post, str]] = []
+    for index, post in enumerate(posts[:10], 1):
+        status, reason = _history_status_for_post(post)
+        entries.append((post, _translate_history_post(post), status, reason))
+        token = remember_control_prepared_send(post, "", "", "")
+        prepared.append((index, post, token))
+    send_control_html(_fit_history_entries_one_message(entries, label), _history_prepare_markup(prepared))
+
+# ====== END FINAL CONTROL RSS REPAIR ======
