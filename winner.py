@@ -18068,3 +18068,77 @@ def quick_control_reply_markup() -> dict[str, Any]:
     return {"inline_keyboard": keyboard}
 
 # ====== END HISTORY BUTTON — MAIN MENU ONLY ======
+
+# ====== GPT-5.6 TARGETED 10-LATEST DISPLAY REPAIR (RSS UNTOUCHED) ======
+# IMPORTANT: This patch is intentionally limited to the control-panel history
+# renderer. Do not modify fetch_feed, fetch_posts, automatic scanning, feed
+# mirrors, timeouts, retries, filtering or publishing from this section.
+
+def _translate_history_post(post: Post) -> str:
+    """Google-only history translation, compatible with every Post version.
+
+    Older history payloads and the current Post dataclass do not necessarily
+    contain a ``title`` attribute. Never fail the whole ten-post message merely
+    because an optional legacy field is absent.
+    """
+    source = clean_for_ai_translation(html.unescape(str(getattr(post, "text", "") or ""))).strip()
+    if not source:
+        legacy_title = str(getattr(post, "title", "") or "")
+        source = remove_external_links(html.unescape(legacy_title)).strip()
+    if not source:
+        quoted = str(getattr(post, "quoted_text", "") or "")
+        source = clean_for_ai_translation(html.unescape(quoted)).strip()
+    if not source:
+        return "אין טקסט זמין לתרגום"
+    try:
+        translated = google_translate(source)
+        translated = tidy_translated_text(translated)
+        translated = apply_phrase_replacements(translated, TEAM_REPLACEMENTS)
+        translated = apply_phrase_replacements(translated, PLAYER_REPLACEMENTS)
+        translated = apply_phrase_replacements(translated, HEBREW_FINAL_FIXES)
+        return translated.strip() or source
+    except Exception as exc:
+        logging.warning("תרגום Google להיסטוריית כתב נכשל: %s", exc)
+        return source
+
+
+def _history_status_for_post(post: Post) -> tuple[str, str]:
+    """Return only evidence-backed history status.
+
+    The scanner's dedupe/seen state proves only that a post was observed by the
+    scanner; it does not prove it was sent, blocked or deliberately handled.
+    Therefore it must not label every RSS item as "already handled".
+    """
+    state = load_control_state()
+    categories = (
+        ("last_sent_posts", "✅ נשלח", "נשלח לערוץ"),
+        ("recent_sent_posts", "✅ נשלח", "נשלח לערוץ"),
+        ("manual_sent_posts", "✅ נשלח ידנית", "נשלח בכוח לפי בקשה"),
+        ("last_borderline_posts", "⚠️ גבולי", "הועבר להחלטה ידנית"),
+        ("last_duplicate_posts", "🧠 כפילות", "נחסם ככפילות"),
+        ("last_blocked_posts", "⛔ נחסם", "נחסם בסינון"),
+        ("last_filtered_posts", "⛔ סונן", "לא עבר את הסינון"),
+    )
+    for key, status, default_reason in categories:
+        rows = state.get(key, [])
+        if not isinstance(rows, list):
+            continue
+        for item in reversed(rows):
+            if _history_item_matches_post(item, post):
+                reason = _control_reason_from_item(item)
+                return status, reason if reason != "לא נשמר פירוט נוסף" else default_reason
+
+    # Persistent sent memory is stronger evidence than the generic scanner state.
+    try:
+        persistent = state.get("persistent_sent_posts", [])
+        if isinstance(persistent, list):
+            for item in reversed(persistent):
+                if _history_item_matches_post(item, post):
+                    return "✅ נשלח", "נמצא רישום שמור של שליחה לערוץ"
+    except Exception:
+        pass
+
+    # Do not convert a generic RSS/dedupe sighting into a false handled status.
+    return "❔ ללא רישום החלטה", "הפוסט נקלט לקריאה, אך לא נמצא רישום שמוכיח שנשלח או נחסם"
+
+# ====== END TARGETED 10-LATEST DISPLAY REPAIR ======
