@@ -51,6 +51,27 @@ from zoneinfo import ZoneInfo
 
 # ====== SETTINGS ======
 
+# ============================================================================
+# IMPORTANT FOR EVERY FUTURE AI/CODE UPDATE — PRESERVE BOT MEMORY
+# ============================================================================
+# This bot is intentionally stateful. A future update must continue from this
+# exact file and MUST NOT reset, rename, delete, recreate, or move the persistent
+# JSON files listed in PERSISTENT_MEMORY_FILES below. Keep app_data_dir(),
+# app_data_path(), load/save functions and their existing keys backward-compatible.
+#
+# Railway requirement: attach a persistent Volume and set one of:
+#   FOOTBALL_BOT_DATA_DIR=/data   (recommended)
+#   BOT_DATA_DIR=/data
+#   RAILWAY_VOLUME_MOUNT_PATH=/data
+# Updating/replacing only the Python file is safe when the same Volume remains.
+# Never package old/empty JSON files with an update and never clear /data.
+#
+# Exact instruction for a future AI editor:
+# "Continue from the latest complete code. Preserve and migrate all existing bot
+# memory/history/settings. Do not rename or reset persistent files or JSON keys.
+# Make only the requested change and keep backward compatibility."
+# ============================================================================
+
 BOT_BUILD_ID = "football-quote-context-rss-hardened-2026-07-15"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
@@ -418,6 +439,18 @@ SEND_VIDEO_FILES = os.environ.get("SEND_VIDEO_FILES", "0") == "1"
 STATE_FILE = "football_x_to_telegram_state.json"
 AI_DECISION_CACHE_FILE = os.environ.get("AI_DECISION_CACHE_FILE", "football_ai_decision_cache.json")
 TRANSLATION_CACHE_FILE = "football_translation_cache.json"
+
+# Stable filenames: do not rename these in future releases. They are the bot's memory.
+PERSISTENT_MEMORY_FILES = (
+    STATE_FILE,
+    CONTROL_STATE_FILE,
+    TRANSLATION_CACHE_FILE,
+    AI_DECISION_CACHE_FILE,
+    DAILY_QUALITY_STATS_FILE,
+    SHABBAT_CACHE_FILE,
+)
+PERSISTENCE_SCHEMA_VERSION = 1
+PERSISTENCE_STARTUP_CHECK_DONE = False
 RTL_MARK = "\u200f"
 SIGNATURE_LINK = "https://t.me/neto_sport"
 SIGNATURE_TEXT = "נטו ספורט.📝"
@@ -2018,15 +2051,105 @@ def app_data_dir() -> Path:
     return APP_DATA_DIR_CACHE
 
 
-def app_data_path(filename: str) -> Path:
-    target = app_data_dir() / filename
-    legacy = Path(__file__).resolve().parent / filename
-    if target != legacy and not target.exists() and legacy.exists():
+def _legacy_data_directories() -> list[Path]:
+    """Known old deployment locations, ordered from most to least specific."""
+    candidates = [
+        Path(__file__).resolve().parent,
+        Path.cwd(),
+        Path("/app"),
+        Path("/workspace"),
+        Path("/data"),
+    ]
+    unique: list[Path] = []
+    for candidate in candidates:
         try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved not in unique:
+            unique.append(resolved)
+    return unique
+
+
+def app_data_path(filename: str) -> Path:
+    """Return the stable persistent path and migrate an older copy when needed."""
+    target = app_data_dir() / filename
+    if target.exists():
+        return target
+    for legacy_dir in _legacy_data_directories():
+        legacy = legacy_dir / filename
+        if legacy == target or not legacy.exists() or not legacy.is_file():
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(legacy, target)
+            logging.info("♻️ הועבר זיכרון ישן: %s -> %s", legacy, target)
+            break
         except Exception as exc:
-            logging.debug("לא הצליח להעתיק קובץ מצב ישן אל תיקיית הדאטה: %s", exc)
+            logging.warning("⚠️ לא הצליח להעתיק זיכרון ישן %s: %s", legacy, exc)
     return target
+
+
+def _atomic_write_text_with_backup(path: Path, text: str) -> None:
+    """Atomic write while retaining the previous valid generation as .bak."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    backup_path = path.with_suffix(path.suffix + ".bak")
+    temp_path.write_text(text, encoding="utf-8")
+    if path.exists():
+        try:
+            shutil.copy2(path, backup_path)
+        except Exception as exc:
+            logging.debug("יצירת גיבוי זיכרון נכשלה עבור %s: %s", path.name, exc)
+    temp_path.replace(path)
+
+
+def _read_json_with_backup(path: Path, default: Any) -> Any:
+    """Read JSON and recover automatically from the last backup if corrupted."""
+    for candidate in (path, path.with_suffix(path.suffix + ".bak")):
+        if not candidate.exists():
+            continue
+        try:
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logging.warning("⚠️ קובץ הזיכרון %s אינו קריא: %s", candidate.name, exc)
+    return default
+
+
+def persistent_storage_is_external() -> bool:
+    """True when memory is outside the deployable source-code directory."""
+    try:
+        return app_data_dir().resolve() != Path(__file__).resolve().parent
+    except Exception:
+        return False
+
+
+def ensure_persistent_memory_continuity() -> None:
+    """Migrate all known memory files once and report unsafe ephemeral storage."""
+    global PERSISTENCE_STARTUP_CHECK_DONE
+    if PERSISTENCE_STARTUP_CHECK_DONE:
+        return
+    PERSISTENCE_STARTUP_CHECK_DONE = True
+    for filename in PERSISTENT_MEMORY_FILES:
+        app_data_path(filename)
+    marker = app_data_path("football_memory_schema.json")
+    marker_data = {
+        "schema_version": PERSISTENCE_SCHEMA_VERSION,
+        "last_boot_at": int(time.time()),
+        "data_dir": str(app_data_dir()),
+        "build_id": BOT_BUILD_ID,
+    }
+    try:
+        _atomic_write_text_with_backup(marker, json.dumps(marker_data, ensure_ascii=False, indent=2))
+    except Exception as exc:
+        logging.warning("⚠️ לא הצליח לשמור סמן רציפות זיכרון: %s", exc)
+    if persistent_storage_is_external():
+        logging.info("💾 זיכרון קבוע פעיל בתיקייה: %s", app_data_dir())
+    else:
+        logging.warning(
+            "⚠️ הזיכרון נשמר ליד קובץ הקוד ועלול להימחק בעדכון. "
+            "חבר Railway Volume והגדר FOOTBALL_BOT_DATA_DIR=/data"
+        )
 
 
 def shabbat_cache_path() -> Path:
@@ -2042,7 +2165,7 @@ def load_control_state() -> dict[str, Any]:
     if not path.exists():
         return {"paused": False, CONTROL_STATE_DIMARZIO_REENABLED_KEY: True}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _read_json_with_backup(path, {})
         if not isinstance(data, dict):
             return {"paused": False, CONTROL_STATE_DIMARZIO_REENABLED_KEY: True}
         data["paused"] = bool(data.get("paused", False))
@@ -2133,9 +2256,8 @@ def save_control_state(paused: bool | None = None, **updates: Any) -> None:
 
 def write_control_state(state: dict[str, Any]) -> None:
     path = control_state_path()
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    temp_path.replace(path)
+    state.setdefault("persistence_schema_version", PERSISTENCE_SCHEMA_VERSION)
+    _atomic_write_text_with_backup(path, json.dumps(state, ensure_ascii=False, indent=2))
 
 
 def is_control_paused() -> bool:
@@ -2277,10 +2399,35 @@ def stable_reply_markup(keyboard: list[list[dict[str, str]]]) -> dict[str, Any]:
     return {"inline_keyboard": stable_keyboard}
 
 
+def persistent_memory_guide_text() -> str:
+    location = str(app_data_dir())
+    storage_status = "✅ תיקייה חיצונית לקוד" if persistent_storage_is_external() else "⚠️ תיקיית הקוד — נדרש Railway Volume"
+    existing = [name for name in PERSISTENT_MEMORY_FILES if app_data_path(name).exists()]
+    missing = [name for name in PERSISTENT_MEMORY_FILES if not app_data_path(name).exists()]
+    return (
+        "💾 שמירת זיכרון בין עדכונים\n\n"
+        f"מיקום הזיכרון: {location}\n"
+        f"מצב: {storage_status}\n"
+        f"קבצים קיימים: {len(existing)}/{len(PERSISTENT_MEMORY_FILES)}\n"
+        + (f"קבצים שעדיין לא נוצרו: {', '.join(missing)}\n" if missing else "")
+        + "\nכדי שההיסטוריה תישמר גם לאחר החלפת קובץ הקוד:\n"
+          "1. ב-Railway חבר Volume קבוע ל-/data.\n"
+          "2. הגדר FOOTBALL_BOT_DATA_DIR=/data.\n"
+          "3. בעדכון החלף רק את קובץ ה-Python. אל תמחק את /data ואל תעלה קובצי JSON ריקים.\n"
+          "4. אל תשנה שמות קובצי הזיכרון או מפתחות קיימים.\n\n"
+          "הנחיה להדבקה בכל עדכון עתידי בבינה מלאכותית:\n"
+          "המשך מהקוד המלא האחרון. שמור והעבר את כל הזיכרון, ההיסטוריה וההגדרות הקיימים. "
+          "אל תשנה שמות קובצי מצב או מפתחות JSON, אל תאפס נתונים, ובצע רק את השינוי שביקשתי תוך תאימות לאחור."
+    )
+
+
 def quick_control_reply_markup() -> dict[str, Any]:
     keyboard = [
         [
             {"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"},
+        ],
+        [
+            {"text": "📚 10 אחרונים לפי כתב", "callback_data": "football_choose_account_history"},
         ],
         [
             {"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"},
@@ -2296,6 +2443,9 @@ def quick_control_reply_markup() -> dict[str, Any]:
         ],
         [
             {"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"},
+        ],
+        [
+            {"text": "💾 זיכרון ועדכוני קוד", "callback_data": "football_persistence_guide"},
         ],
         [
             {"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"},
@@ -4577,6 +4727,10 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "חזרה לראשי")
         send_control_menu("כלים מהירים לבוט הכדורגל.", quick_control_reply_markup(), message.get("message_id"))
+    elif data == "football_persistence_guide":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג מדריך שמירת זיכרון")
+        send_control_text(persistent_memory_guide_text(), message.get("message_id"), quick_control_reply_markup())
     elif data == "football_menu_monitor":
         if callback_id:
             answer_control_callback(callback_id, "פותח בדיקה וניטור")
@@ -4642,10 +4796,14 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, "מציג הסבר")
         send_control_text(teams_help_text(mode), message.get("message_id"), teams_menu_reply_markup())
+    elif data == "football_choose_account_history":
+        if callback_id:
+            answer_control_callback(callback_id, "בחר כתב להיסטוריה")
+        send_control_menu("📚 10 אחרונים לפי כתב\nבחר כתב. כל עשרת הפוסטים יוצגו בהודעה אחת מסודרת, ללא תמונות או סרטונים.", account_history_menu_reply_markup(), message.get("message_id"))
     elif data == "football_choose_account_latest":
         if callback_id:
             answer_control_callback(callback_id, "בחר כתב")
-        send_control_menu("👤 בדוק כתב ספציפי\nמוצגים כל 14 הכתבים שמוגדרים בבוט, כולל כתבים שכרגע כבויים. הבחירה תשלח את הפוסט האחרון של הכתב לערוץ השקט בלבד.", account_latest_menu_reply_markup(), message.get("message_id"))
+        send_control_menu("👤 בדוק כתב ספציפי\nבחר כתב כדי לראות את הפוסט האחרון שלו בתצוגה זהה ככל האפשר להודעה שתישלח לנטו ספורט.", account_latest_menu_reply_markup(), message.get("message_id"))
     elif data.startswith("football_test_last_ten_account:"):
         username = data.split(":", 1)[1]
         if username not in all_control_test_accounts():
@@ -6154,7 +6312,7 @@ def load_daily_quality_stats_from_disk() -> None:
     if not path.exists():
         return
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = _read_json_with_backup(path, {})
         if isinstance(data, dict):
             DAILY_QUALITY_STATS.clear()
             DAILY_QUALITY_STATS.update(data)
@@ -6172,9 +6330,7 @@ def save_daily_quality_stats_to_disk(force: bool = False) -> None:
     DAILY_QUALITY_STATS_LAST_SAVE_AT = now
     try:
         path = daily_quality_stats_path()
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(DAILY_QUALITY_STATS, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(path)
+        _atomic_write_text_with_backup(path, json.dumps(DAILY_QUALITY_STATS, ensure_ascii=False, indent=2))
     except Exception as exc:
         logging.debug("שמירת זיכרון הדוח היומי נכשלה: %s", exc)
 
@@ -9087,8 +9243,8 @@ def load_translation_cache() -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return {str(key): str(value) for key, value in data.items()}
+        data = _read_json_with_backup(path, {})
+        return {str(key): str(value) for key, value in data.items()} if isinstance(data, dict) else {}
     except Exception:
         return {}
 
@@ -9100,9 +9256,7 @@ def save_translation_cache(cache: dict[str, str]) -> None:
     try:
         trimmed = dict(list(cache.items())[-10000:])
         path = cache_path()
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(trimmed, ensure_ascii=False), encoding="utf-8")
-        temp_path.replace(path)
+        _atomic_write_text_with_backup(path, json.dumps(trimmed, ensure_ascii=False))
         if len(trimmed) != len(cache):
             cache.clear()
             cache.update(trimmed)
@@ -12323,9 +12477,9 @@ def load_state() -> dict[str, Any]:
         STATE_LAST_SAVED_JSON = None
         return {}
     try:
-        raw = path.read_text(encoding="utf-8")
+        data = _read_json_with_backup(path, {})
+        raw = json.dumps(data, ensure_ascii=False, indent=2)
         STATE_LAST_SAVED_JSON = raw
-        data = json.loads(raw)
         if isinstance(data, dict):
             drop_unconfirmed_recent_news_events(data)
             return data
@@ -12342,13 +12496,12 @@ def save_state(state: dict[str, Any]) -> None:
     serialized = json.dumps(state, ensure_ascii=False, indent=2)
     if serialized == STATE_LAST_SAVED_JSON:
         return
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(serialized, encoding="utf-8")
-    temp_path.replace(path)
+    _atomic_write_text_with_backup(path, serialized)
     STATE_LAST_SAVED_JSON = serialized
 
 
 def validate_settings() -> None:
+    ensure_persistent_memory_continuity()
     if not TELEGRAM_BOT_TOKEN or "PASTE" in TELEGRAM_BOT_TOKEN:
         raise ValueError("Put your Telegram bot token in TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_CHAT_IDS:
@@ -14732,6 +14885,303 @@ def run_last_ten_account_control_test(username: str) -> None:
             logging.warning("שליחת פריט היסטוריה %s של @%s נכשלה: %s", index, username, exc)
 
 # ====== END GPT-5.6 WRITER HISTORY / BROADCAST FILTER PATCH ======
+
+# ====== GPT-5.6 UNIFIED PREVIEW / ONE-MESSAGE HISTORY PATCH (2026-07-15) ======
+
+def account_latest_menu_reply_markup() -> dict[str, Any]:
+    """Latest-post screen: one full-width button per writer, without history controls."""
+    keyboard: list[list[dict[str, str]]] = []
+    for username in all_control_test_accounts():
+        keyboard.append([{
+            "text": f"{_hebrew_account_label(username)} — פוסט אחרון",
+            "callback_data": f"football_test_latest_account:{username}",
+        }])
+    keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
+    keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
+    return stable_reply_markup(keyboard)
+
+
+def account_history_menu_reply_markup() -> dict[str, Any]:
+    """Dedicated screen containing only the ten-post history choices."""
+    keyboard: list[list[dict[str, str]]] = []
+    for username in all_control_test_accounts():
+        keyboard.append([{
+            "text": f"📚 {_hebrew_account_label(username)} — 10 אחרונים",
+            "callback_data": f"football_test_last_ten_account:{username}",
+        }])
+    keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
+    return stable_reply_markup(keyboard)
+
+
+def _control_candidate_media_payload(
+    post: Post,
+    message_html: str,
+    reply_markup: dict[str, Any],
+) -> tuple[list[int], bool]:
+    """Render a candidate as one Telegram media message whenever Telegram permits it.
+
+    For one photo or one video the caption, media and buttons are one message—matching
+    the normal Neto Sport delivery shape. Telegram albums cannot carry an inline
+    keyboard, so the first image is used as the actionable preview and the remaining
+    images are kept in the post object for the final main-channel delivery.
+    """
+    if not CONTROL_CHAT_ID:
+        return [], False
+    caption_fits = len(message_html) <= TELEGRAM_CAPTION_LIMIT
+    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    images = selected_post_images(post)
+    payload: dict[str, Any]
+    method = ""
+    if video_url and caption_fits:
+        method = "sendVideo"
+        payload = {
+            "chat_id": CONTROL_CHAT_ID,
+            "video": video_url,
+            "caption": message_html,
+            "parse_mode": "HTML",
+            "supports_streaming": True,
+            "reply_markup": ensure_delete_button_reply_markup(reply_markup),
+        }
+    elif images and caption_fits:
+        method = "sendPhoto"
+        payload = {
+            "chat_id": CONTROL_CHAT_ID,
+            "photo": images[0],
+            "caption": message_html,
+            "parse_mode": "HTML",
+            "reply_markup": ensure_delete_button_reply_markup(reply_markup),
+        }
+    else:
+        return [], False
+    response = telegram_api(method, payload, max_attempts=1)
+    return _telegram_result_message_ids(response), True
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    """Send the exact outgoing text with media in the same actionable message when possible."""
+    markup = control_send_to_main_reply_markup(token)
+    try:
+        ids, combined = _control_candidate_media_payload(post, message_html, markup)
+        if combined:
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, ids)
+            return ids
+    except Exception as exc:
+        logging.warning("תצוגה מאוחדת עם מדיה נכשלה; עובר לתצוגת טקסט בטוחה: %s", exc)
+    send_control_html(message_html, markup)
+    return []
+
+
+def _copy_control_media_to_main(token: str) -> bool:
+    """Copy the already-rendered Telegram preview directly, including its caption.
+
+    Inline control buttons are not copied by Telegram. Therefore the main channel gets
+    the same media+caption message without another server fetch and without duplicate text.
+    """
+    message_ids = CONTROL_TELEGRAM_MEDIA_CACHE.get(token, [])
+    if not message_ids or not CONTROL_CHAT_ID:
+        return False
+    copied_all_chats = True
+    copied_any = False
+    for chat_id in TELEGRAM_CHAT_IDS:
+        chat_copied = False
+        for message_id in message_ids[:1]:
+            try:
+                telegram_api("copyMessage", {
+                    "chat_id": chat_id,
+                    "from_chat_id": CONTROL_CHAT_ID,
+                    "message_id": int(message_id),
+                })
+                chat_copied = True
+                copied_any = True
+            except Exception as exc:
+                copied_all_chats = False
+                logging.warning("העתקת הודעת התצוגה המאוחדת לערוץ %s נכשלה: %s", chat_id, exc)
+        if not chat_copied:
+            copied_all_chats = False
+    return copied_any and copied_all_chats
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    item = _restore_prepared_send(token)
+    if not item:
+        return "הפוסט הישן לא ניתן לשחזור. בצע בדיקת כתב חדשה."
+    post: Post = item["post"]
+    translated = str(item.get("translated", "") or "")
+    quoted_translated = str(item.get("quoted_translated", "") or "")
+    quoted_author_translated = str(item.get("quoted_author_translated", "") or "")
+    if not (translated or quoted_translated):
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+    message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+
+    # A manual command remains authoritative. If the preview was a combined Telegram
+    # message, copy it as-is and do not send the text a second time.
+    if _copy_control_media_to_main(token):
+        remember_persistent_sent(post, message, "manual_telegram_copy_combined")
+        return "נשלח בכוח לערוץ נטו ספורט כהודעה אחת; המדיה והכיתוב הועתקו ישירות מטלגרם."
+
+    images = selected_post_images(post)
+    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    _message_ids, mode = manual_force_send_prepared_message(post, message, images, video_url)
+    remember_persistent_sent(post, message, "manual_force")
+    return f"נשלח בכוח לערוץ נטו ספורט. מצב שליחה: {mode}"
+
+
+def run_latest_account_control_test(username: str) -> None:
+    """Preview the newest post in the same media+caption shape used for publication."""
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        posts = fetch_posts(username)
+    except Exception as exc:
+        send_control_text(f"🧪 בדיקת {label} נכשלה בשליפת RSS:\n{short_error(exc, 700)}")
+        return
+    if not posts:
+        send_control_text(f"🧪 בדיקת {label}: לא נמצאו פוסטים כרגע בכל מקורות ה-RSS המוגדרים.")
+        return
+    post = posts[0]
+    try:
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+        message_html = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
+        _send_full_control_candidate(post, token, message_html)
+    except Exception as exc:
+        send_control_text(
+            f"🧪 בדיקת {label}: הפוסט נמצא אך התצוגה המלאה נכשלה.\n"
+            f"סיבה: {short_error(exc, 900)}\nקישור: {post.link}"
+        )
+
+
+def maybe_notify_control_borderline_item(item: dict[str, Any]) -> None:
+    """Show borderline reports already translated and formatted as their outgoing message."""
+    if not should_notify_control_borderline_item(item):
+        return
+    post = post_from_control_payload(item.get("post")) or post_from_control_payload(item)
+    if not post:
+        return
+    key = control_item_id(item)
+    if key in CONTROL_BORDERLINE_NOTIFIED_KEYS:
+        return
+    now_ts = time.time()
+    if control_borderline_rate_limited(now_ts):
+        return
+    CONTROL_BORDERLINE_NOTIFIED_KEYS.add(key)
+    CONTROL_BORDERLINE_NOTIFY_TIMES.append(now_ts)
+
+    def _notify() -> None:
+        try:
+            translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+            token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+            item["translated"] = translated
+            item["quoted_translated"] = quoted_translated
+            item["quoted_author_translated"] = quoted_author_translated
+            _persist_force_item(item)
+            message_html = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
+            _send_full_control_candidate(post, token, message_html)
+        except Exception as exc:
+            logging.warning("תצוגת דיווח גבולי מאוחדת נכשלה: %s", exc)
+            try:
+                send_control_text(
+                    str(item.get("preview") or item.get("text") or "דיווח גבולי"),
+                    None,
+                    control_block_actions_reply_markup([item], include_delete=True),
+                )
+            except Exception:
+                pass
+
+    Thread(target=_notify, daemon=True).start()
+
+
+def _history_entry_html(index: int, total: int, post: Post, label: str, translated: str, status: str, reason: str) -> str:
+    published_at = datetime.fromtimestamp(post.published_ts, tz=ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m/%Y %H:%M") if post.published_ts else "זמן לא ידוע"
+    link = str(post.link or "").strip()
+    link_part = f'<a href="{html.escape(link, quote=True)}">קישור מקורי</a>' if link.startswith(("http://", "https://")) else "אין קישור"
+    return (
+        f"<b>{index}/{total} — {html.escape(label)}</b>\n"
+        f"{html.escape(rtl(translated))}\n"
+        f"מצב: {html.escape(status)}\n"
+        f"סיבה: {html.escape(reason)}\n"
+        f"פורסם: {html.escape(published_at)} | {link_part}"
+    )
+
+
+def _fit_history_entries_one_message(entries: list[tuple[Post, str, str, str]], label: str) -> str:
+    """Fit all ten translated items into Telegram's single-message 4096-char limit."""
+    header = f"<b>📚 10 הפוסטים האחרונים של {html.escape(label)}</b>\nללא תמונות או סרטונים.\n\n"
+    if not entries:
+        return header + "לא נמצאו פוסטים."
+    # Reserve a fair text budget for every item so none disappears from the message.
+    fixed_allowance = 1250
+    available = max(1200, TELEGRAM_HTML_TEXT_LIMIT - len(header) - fixed_allowance)
+    per_translation = max(70, available // len(entries))
+    parts: list[str] = []
+    for index, (post, translated, status, reason) in enumerate(entries, 1):
+        compact_translation = re.sub(r"\s+", " ", translated or "").strip()
+        compact_reason = re.sub(r"\s+", " ", reason or "").strip()
+        compact_translation = trim(compact_translation, per_translation)
+        compact_reason = trim(compact_reason, 105)
+        parts.append(_history_entry_html(index, len(entries), post, label, compact_translation, status, compact_reason))
+    result = header + "\n\n".join(parts)
+    # Last-resort deterministic shrinking while preserving every one of the ten entries.
+    while len(result) > TELEGRAM_HTML_TEXT_LIMIT and per_translation > 35:
+        per_translation -= 10
+        parts = []
+        for index, (post, translated, status, reason) in enumerate(entries, 1):
+            parts.append(_history_entry_html(
+                index, len(entries), post, label,
+                trim(re.sub(r"\s+", " ", translated or "").strip(), per_translation),
+                status,
+                trim(re.sub(r"\s+", " ", reason or "").strip(), 75),
+            ))
+        result = header + "\n\n".join(parts)
+    return trim(result, TELEGRAM_HTML_TEXT_LIMIT)
+
+
+def run_last_ten_account_control_test(username: str) -> None:
+    """Send all ten translated reports in one ordered text message, with no media."""
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        posts = list(fetch_posts(username)[:10])
+    except Exception as exc:
+        send_control_text(f"📚 10 אחרונים — {label}\n\nשליפת RSS נכשלה: {short_error(exc, 700)}")
+        return
+    if not posts:
+        send_control_text(f"📚 10 אחרונים — {label}\n\nלא נמצאו פוסטים במקורות ה-RSS כרגע.")
+        return
+    entries: list[tuple[Post, str, str, str]] = []
+    for post in posts:
+        status, reason = _history_status_for_post(post)
+        entries.append((post, _translate_history_post(post), status, reason))
+    send_control_html(_fit_history_entries_one_message(entries, label), control_delete_message_reply_markup())
+
+
+def _nico_schira_format_simulation() -> str:
+    """Offline formatting self-test used during release validation; it makes no API calls."""
+    sample = Post(
+        post_id="simulation:schira:1",
+        username="NicoSchira",
+        text="Chelsea are in advanced talks to sign Example Player.",
+        link="https://x.com/NicoSchira/status/123456789",
+        image_urls=["https://example.invalid/photo.jpg"],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=["NicoSchira:status:123456789"],
+        source_name="simulation",
+    )
+    rendered = build_message(sample, "צ'לסי נמצאת בשיחות מתקדמות לצירוף שחקן לדוגמה.")
+    assert "ניקולו שירה" in rendered, "Nico Schira heading is missing"
+    assert "</b>\n\u2063\n" in rendered or "</b>\n\n" in rendered, "Writer heading is not separated from body"
+    return rendered
+
+# ====== END GPT-5.6 UNIFIED PREVIEW / ONE-MESSAGE HISTORY PATCH ======
 
 if __name__ == "__main__":
     main()
