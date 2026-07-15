@@ -75,7 +75,7 @@ from zoneinfo import ZoneInfo
 # or JSON keys. Make only the requested change and keep backward compatibility.
 # ============================================================================
 
-BOT_BUILD_ID = "football-quote-context-rss-hardened-2026-07-15"
+BOT_BUILD_ID = "football-factly-two-rules-only-2026-07-15"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -11715,6 +11715,9 @@ def pre_send_final_local_block_reason(post: Post) -> str:
     requests on content that is clearly not publishable.
     """
     quote_context_rescue = quoted_post_supplies_missing_subject_context(post)
+    if is_football_factly_context(post):
+        # Do not apply the normal reporter filters to FootballFactly.
+        return football_factly_filter_issue(post)
     if is_too_old_post(post):
         return "old_post"
     if is_women_or_wnba_post(post):
@@ -12711,6 +12714,21 @@ def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_publi
                             continue
                         candidate_posts.append((username, post, time.perf_counter() - cycle_started))
                         continue
+                    if is_football_factly_context(post, username):
+                        factly_issue = football_factly_filter_issue(post)
+                        if factly_issue:
+                            seen.update(post.dedupe_ids)
+                            log_skip_once(
+                                "football_factly_only_rule:" + factly_issue,
+                                post,
+                                "דילוג עובדות כדורגל: %s | %s | טקסט: %s",
+                                factly_issue,
+                                post.link,
+                                filtered_post_text_preview(post),
+                            )
+                            continue
+                        candidate_posts.append((username, post, time.perf_counter() - cycle_started))
+                        continue
                     if is_too_old_post(post) and not (username == "FabrizioRomano" and startup_cycle and SEND_LAST_POST_ON_EVERY_START):
                         seen.update(post.dedupe_ids)
                         log_skip_once(
@@ -12999,6 +13017,13 @@ FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES = {
     "עובדות כדורגל",
 }
 FOOTBALL_FACTLY_MIN_WORDS = 15
+# FOOTBALLFACTLY IMMUTABLE BEHAVIOR FOR FUTURE AI EDITS:
+# Automatic posts from FootballFactly / "עובדות כדורגל" bypass every normal
+# reporter/editorial filter. They are blocked only when (1) the original caption
+# has fewer than 15 words, or (2) the post has no image and no video. Exact RSS
+# state/dedupe and technical translation safety remain. A user-forced manual send
+# must always bypass even those two automatic rules via manual_force_send_prepared_message.
+
 
 
 def is_forbidden_staff_role_update(*parts: Any) -> bool:
@@ -13406,16 +13431,14 @@ def send_prepared_message_to_main(
 ) -> tuple[dict[str, int], str]:
     clean_message = strip_leading_official_without_writer(message)
     clean_message = format_list_line_breaks_by_source(getattr(post, "text", "") or getattr(post, "raw_text", ""), clean_message)
-    if is_negative_criticism_or_opinion(post, message, clean_message):
-        raise RuntimeError("ביקורת/דעה שלילית לא נשלחה")
     if is_football_factly_context(post, message, clean_message):
+        # FootballFactly has only two automatic editorial gates: 15+ words and media.
         factly_issue = football_factly_filter_issue(post, message, clean_message)
         if factly_issue:
             raise RuntimeError(factly_issue)
-        factly_duplicate = persistent_duplicate_candidate_no_writer(post, message, clean_message, threshold=0.91)
-        if factly_duplicate:
-            raise RuntimeError("עובדות כדורגל: כפילות מול דיווח בלי שם כתב שכבר נשלח")
         clean_message = strip_football_factly_author_heading(clean_message)
+    elif is_negative_criticism_or_opinion(post, message, clean_message):
+        raise RuntimeError("ביקורת/דעה שלילית לא נשלחה")
     clean_message = normalize_neto_sport_footer(clean_message)
     result = _base_send_prepared_message_to_main(post, clean_message, images, video_url=video_url, reply_message_ids=reply_message_ids)
     remember_persistent_sent(post, clean_message, "button_or_auto")
@@ -13804,18 +13827,43 @@ def post_has_sensitive_or_blurred_media(*parts: Any, **kwargs: Any) -> bool:
     return any(marker in text for marker in ("sensitive content", "content warning", "blurred", "תוכן רגיש", "מטושטש", "אזהרת תוכן"))
 
 
+def football_factly_has_image_or_video(*parts: Any, **kwargs: Any) -> bool:
+    """Return True only when the FootballFactly post itself carries photo/video media."""
+    for part in list(parts) + list(kwargs.values()):
+        if isinstance(part, dict):
+            if part.get("image_urls") or part.get("images") or part.get("photo_urls"):
+                return True
+            if part.get("video_urls") or part.get("video_url") or part.get("has_video") or part.get("primary_has_video"):
+                return True
+        for key in ("image_urls", "images", "photo_urls"):
+            try:
+                if getattr(part, key, None):
+                    return True
+            except Exception:
+                pass
+        for key in ("video_urls", "video_url", "has_video", "primary_has_video"):
+            try:
+                if getattr(part, key, None):
+                    return True
+            except Exception:
+                pass
+    return False
+
+
 def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    """The only automatic editorial rules for FootballFactly.
+
+    Exact-post dedupe/state handling and technical translation validation still
+    protect the bot, but all normal reporter relevance/content filters are bypassed.
+    A manual force-send bypasses this function through the existing base sender.
+    """
     if not is_football_factly_context(*parts, **kwargs):
         return ""
     text = extract_original_post_caption_for_rules(*parts, **kwargs)
-    if not post_has_own_text_caption(*parts, **kwargs):
-        return "עובדות כדורגל: פוסט בלי כיתוב לא נשלח"
     if count_content_words(text) < FOOTBALL_FACTLY_MIN_WORDS:
         return f"עובדות כדורגל: פחות מ-{FOOTBALL_FACTLY_MIN_WORDS} מילים"
-    if post_is_repost_or_quote(*parts, **kwargs):
-        return "עובדות כדורגל: ריפוסט/ציטוט/שיתוף של מקור אחר לא נשלח"
-    if post_has_sensitive_or_blurred_media(*parts, **kwargs):
-        return "עובדות כדורגל: מדיה רגישה/מטושטשת לא נשלחה"
+    if not football_factly_has_image_or_video(*parts, **kwargs):
+        return "עובדות כדורגל: פוסט בלי תמונה או סרטון לא נשלח"
     return ""
 
 
@@ -13890,20 +13938,19 @@ def translation_quality_issue(source_text: Any, translated_text: Any = "", *args
     translated = str(translated_text or "").strip()
     source = str(source_text or "").strip()
     factly_context = is_football_factly_context(source, translated, *args, **kwargs)
-    if is_forbidden_staff_role_update(source, translated, *args, *kwargs.values()):
-        return "דיווח על מאמן שוערים/צוות שוערים לא נשלח"
-    if is_negative_criticism_or_opinion(source, translated, *args, *kwargs.values()):
-        return "ביקורת/דעה שלילית לא נשלחה"
-    factly_issue = football_factly_filter_issue(source, translated, *args, **kwargs)
-    if factly_issue:
-        return factly_issue
     if factly_context:
-        factly_duplicate = persistent_duplicate_candidate_no_writer(source, translated, *args, *kwargs.values(), threshold=0.91)
-        if factly_duplicate:
-            return "עובדות כדורגל: כפילות מול דיווח בלי שם כתב שכבר נשלח"
-    duplicate_memory_check = globals().get("persistent_duplicate_candidate")
-    if (not factly_context) and callable(duplicate_memory_check) and duplicate_memory_check(source, translated, *args, *kwargs.values(), threshold=0.92):
-        return "כפילות מול זיכרון שליחות מתמשך"
+        # Only FootballFactly's explicit 15-word + media rules apply editorially.
+        factly_issue = football_factly_filter_issue(source, translated, *args, **kwargs)
+        if factly_issue:
+            return factly_issue
+    else:
+        if is_forbidden_staff_role_update(source, translated, *args, *kwargs.values()):
+            return "דיווח על מאמן שוערים/צוות שוערים לא נשלח"
+        if is_negative_criticism_or_opinion(source, translated, *args, *kwargs.values()):
+            return "ביקורת/דעה שלילית לא נשלחה"
+        duplicate_memory_check = globals().get("persistent_duplicate_candidate")
+        if callable(duplicate_memory_check) and duplicate_memory_check(source, translated, *args, *kwargs.values(), threshold=0.92):
+            return "כפילות מול זיכרון שליחות מתמשך"
     if not translated:
         return "לא התקבל תרגום"
     lowered = translated.lower()
@@ -15361,6 +15408,486 @@ def prepare_history_post_with_ai(token: str) -> None:
         send_control_text(f"הכנת ההודעה באמצעות Gemini נכשלה:\n{short_error(exc, 900)}")
 
 # ====== END GPT-5.6 MONITOR HISTORY / FAST LATEST / CHANNEL MEMORY PATCH ======
+
+
+# ====== GPT-5.6 OPTAJOE + FOOTBALLFACTLY SPECIAL SOURCES PATCH ======
+# FUTURE AI MAINTENANCE RULE — DO NOT REMOVE:
+# FootballFactly ("עובדות כדורגל") and OptaJoe are two special statistic/fact
+# feeds. They must stay active and use the same automatic rules only:
+#   1) at least 15 words in the original post text;
+#   2) at least one photo or video.
+# They bypass all normal reporter/editorial filters. Manual force-send always
+# bypasses even these two rules. Their author heading must never appear in the
+# Neto Sport message. Content dedupe is allowed ONLY between these two special
+# feeds (FootballFactly <-> OptaJoe), never between either special feed and a
+# normal reporter. Exact RSS/post-id dedupe remains enabled for every account.
+
+OPTAJOE_DEFAULT_ACTIVE_USERNAME = "OptaJoe"
+OPTAJOE_DEFAULT_ACTIVE_ALIASES = {
+    "optajoe",
+    "opta_joe",
+    "opta joe",
+    "אופטה ג׳ו",
+    "אופטה ג'ו",
+    "אופטה",
+}
+SPECIAL_FACT_FEED_ALIASES = FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES | OPTAJOE_DEFAULT_ACTIVE_ALIASES
+SPECIAL_FACT_FEED_CANONICAL = {
+    "footballfactly": FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
+    "optajoe": OPTAJOE_DEFAULT_ACTIVE_USERNAME,
+}
+
+
+def value_contains_optajoe(value: Any) -> bool:
+    lowered = str(value or "").lower().lstrip("@").strip()
+    return any(alias in lowered for alias in OPTAJOE_DEFAULT_ACTIVE_ALIASES)
+
+
+def special_fact_feed_name(*parts: Any, **kwargs: Any) -> str:
+    values = list(parts) + list(kwargs.values())
+    for part in values:
+        candidates = [part]
+        if isinstance(part, dict):
+            candidates.extend(part.get(key) for key in ("username", "source", "author", "account", "screen_name", "link", "url"))
+        else:
+            for key in ("username", "source", "author", "account", "screen_name", "link", "url"):
+                try:
+                    candidates.append(getattr(part, key, ""))
+                except Exception:
+                    pass
+        for candidate in candidates:
+            if value_contains_football_factly(candidate):
+                return FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME
+            if value_contains_optajoe(candidate):
+                return OPTAJOE_DEFAULT_ACTIVE_USERNAME
+    return ""
+
+
+def is_special_fact_feed_context(*parts: Any, **kwargs: Any) -> bool:
+    return bool(special_fact_feed_name(*parts, **kwargs))
+
+
+# Keep compatibility with all earlier direct FootballFactly checks in the code.
+# Those checks now intentionally cover both special fact feeds.
+def is_football_factly_context(*parts: Any, **kwargs: Any) -> bool:
+    return is_special_fact_feed_context(*parts, **kwargs)
+
+
+def special_fact_feed_has_image_or_video(*parts: Any, **kwargs: Any) -> bool:
+    return football_factly_has_image_or_video(*parts, **kwargs)
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    """Only automatic editorial gates for FootballFactly and OptaJoe."""
+    source_name = special_fact_feed_name(*parts, **kwargs)
+    if not source_name:
+        return ""
+    label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
+    source_text = extract_original_post_caption_for_rules(*parts, **kwargs)
+    if count_content_words(source_text) < FOOTBALL_FACTLY_MIN_WORDS:
+        return f"{label}: פחות מ-{FOOTBALL_FACTLY_MIN_WORDS} מילים"
+    if not special_fact_feed_has_image_or_video(*parts, **kwargs):
+        return f"{label}: פוסט בלי תמונה או סרטון לא נשלח"
+    return ""
+
+
+def strip_football_factly_author_heading(message: Any) -> str:
+    """Hide both special-feed author headings from outgoing Neto Sport copy."""
+    text = str(message or "")
+    names = r"(?:עובדות כדורגל|FootballFactly|@FootballFactly|OptaJoe|@OptaJoe|Opta Joe|אופטה(?:\s+ג['׳]?ו)?)"
+    text = re.sub(rf"^\s*(?:<b>)?\s*{names}\s*(?:</b>)?\s*[:：\\-–—]?\s*(?:<br\s*/?>|\n|\r)+", "", text, flags=re.IGNORECASE)
+    text = re.sub(rf"^\s*(?:<b>)?\s*{names}\s*(?:</b>)?\s*[:：\\-–—]?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(rf"(?:<b>)?\s*{names}\s*(?:</b>)?\s*[:：\\-–—]?\s*(?:<br\s*/?>|\n|\r)", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(rf"(?:^|\n)\s*{names}\s*(?=\n|$)", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(rf"\s*(?:<b>)?\s*{names}\s*(?:</b>)?\s*[:：\\-–—]?\s*", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
+
+
+def _special_feed_key(value: Any) -> str:
+    if value_contains_football_factly(value):
+        return "footballfactly"
+    if value_contains_optajoe(value):
+        return "optajoe"
+    return ""
+
+
+def _memory_item_special_feed(item: dict[str, Any]) -> str:
+    for key in ("username", "source", "writer", "link", "preview"):
+        found = _special_feed_key(item.get(key, ""))
+        if found:
+            return found
+    return ""
+
+
+def special_fact_feed_cross_duplicate_candidate(*parts: Any, threshold: float = 0.88, **kwargs: Any) -> dict[str, Any] | None:
+    """Find content duplicates only across FootballFactly and OptaJoe.
+
+    Same-account repeat protection remains the exact RSS/post-id state system.
+    This function intentionally ignores all normal reporters.
+    """
+    current_name = special_fact_feed_name(*parts, **kwargs)
+    current_key = _special_feed_key(current_name)
+    if not current_key:
+        return None
+    text = extract_post_text_for_rules(*parts, **kwargs)
+    normalized = normalize_memory_text(text)
+    if len(normalized) < 30:
+        return None
+    for item in reversed(load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-500:]):
+        previous_key = _memory_item_special_feed(item)
+        if not previous_key or previous_key == current_key:
+            continue
+        previous = item.get("preview", "")
+        if memory_similarity(text, previous) >= threshold:
+            return item
+    return None
+
+
+# Override content-memory dedupe so special feeds are isolated from reporters.
+def persistent_duplicate_candidate(*parts: Any, threshold: float = 0.86) -> dict[str, Any] | None:
+    current_special = special_fact_feed_name(*parts)
+    text = " ".join(str(part or "") for part in parts)
+    if len(normalize_memory_text(text)) < 30:
+        return None
+    if current_special:
+        return special_fact_feed_cross_duplicate_candidate(*parts, threshold=max(threshold, 0.88))
+    # Normal reporters compare only with normal reporters; special-feed posts are excluded.
+    for item in reversed(load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-250:]):
+        if _memory_item_special_feed(item):
+            continue
+        previous = item.get("preview", "")
+        link = str(item.get("link") or "")
+        if link and link in text:
+            return item
+        if memory_similarity(text, previous) >= threshold:
+            return item
+    return None
+
+
+# Add the cross-feed check to the final cheap gate, before Gemini/network work.
+_pre_opta_send_final_local_block_reason = pre_send_final_local_block_reason
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if is_special_fact_feed_context(post):
+        issue = football_factly_filter_issue(post)
+        if issue:
+            return issue
+        if special_fact_feed_cross_duplicate_candidate(post):
+            return "special_fact_feed_cross_duplicate"
+        return ""
+    return _pre_opta_send_final_local_block_reason(post)
+
+
+# Add OptaJoe to active scans and all monitoring/account lists.
+_pre_opta_active_x_accounts = active_x_accounts
+
+def _append_optajoe_account(accounts: Any) -> list[str]:
+    values = list(accounts or [])
+    normalized = {str(account or "").lower().lstrip("@") for account in values}
+    if not control_state_account_disabled(OPTAJOE_DEFAULT_ACTIVE_USERNAME) and not (normalized & OPTAJOE_DEFAULT_ACTIVE_ALIASES):
+        values.append(OPTAJOE_DEFAULT_ACTIVE_USERNAME)
+    return values
+
+
+def active_x_accounts() -> list[str]:
+    return _append_optajoe_account(_pre_opta_active_x_accounts())
+
+
+_pre_opta_all_control_test_accounts = all_control_test_accounts
+
+def all_control_test_accounts() -> list[str]:
+    return _append_optajoe_account(_pre_opta_all_control_test_accounts())
+
+
+for _name in ("all_x_accounts", "all_writer_accounts", "control_writer_accounts", "writer_control_accounts", "writers_menu_accounts"):
+    _old = globals().get(_name)
+    if callable(_old):
+        globals()[f"_pre_opta_{_name}"] = _old
+
+
+def all_x_accounts() -> list[str]:
+    return _append_optajoe_account(globals()["_pre_opta_all_x_accounts"]())
+
+
+def all_writer_accounts() -> list[str]:
+    return _append_optajoe_account(globals()["_pre_opta_all_writer_accounts"]())
+
+
+def control_writer_accounts() -> list[str]:
+    return _append_optajoe_account(globals()["_pre_opta_control_writer_accounts"]())
+
+
+def writer_control_accounts() -> list[str]:
+    return _append_optajoe_account(globals()["_pre_opta_writer_control_accounts"]())
+
+
+def writers_menu_accounts() -> list[str]:
+    return _append_optajoe_account(globals()["_pre_opta_writers_menu_accounts"]())
+
+
+_pre_opta_hebrew_account_label = _hebrew_account_label
+
+def _hebrew_account_label(username: str) -> str:
+    if value_contains_optajoe(username):
+        return "אופטה"
+    return _pre_opta_hebrew_account_label(username)
+
+
+# Extend default-active enable/disable support to OptaJoe.
+_pre_opta_control_state_account_disabled = control_state_account_disabled
+
+def control_state_account_disabled(username: str) -> bool:
+    wanted = str(username or "").lower().lstrip("@").strip()
+    if wanted in OPTAJOE_DEFAULT_ACTIVE_ALIASES:
+        state = load_control_state()
+        disabled = state.get("default_active_disabled_accounts", [])
+        if isinstance(disabled, dict):
+            disabled = [name for name, flag in disabled.items() if flag]
+        if not isinstance(disabled, list):
+            disabled = []
+        return any(str(name or "").lower().lstrip("@").strip() in OPTAJOE_DEFAULT_ACTIVE_ALIASES for name in disabled)
+    return _pre_opta_control_state_account_disabled(username)
+
+
+_pre_opta_default_active_writer_aliases = default_active_writer_aliases
+
+def default_active_writer_aliases(username: str) -> set[str]:
+    if value_contains_optajoe(username):
+        return OPTAJOE_DEFAULT_ACTIVE_ALIASES
+    return _pre_opta_default_active_writer_aliases(username)
+
+
+_pre_opta_set_default_active_writer_enabled = set_default_active_writer_enabled
+
+def set_default_active_writer_enabled(username: str, enabled: bool) -> None:
+    if not value_contains_optajoe(username):
+        return _pre_opta_set_default_active_writer_enabled(username, enabled)
+    state = load_control_state()
+    disabled = state.get("default_active_disabled_accounts", [])
+    if isinstance(disabled, dict):
+        disabled = [name for name, flag in disabled.items() if flag]
+    if not isinstance(disabled, list):
+        disabled = []
+    disabled = [name for name in disabled if str(name or "").lower().lstrip("@").strip() not in OPTAJOE_DEFAULT_ACTIVE_ALIASES]
+    if not enabled:
+        disabled.append(OPTAJOE_DEFAULT_ACTIVE_USERNAME)
+    save_control_state(default_active_disabled_accounts=disabled)
+
+
+_pre_opta_writers_menu_reply_markup = writers_menu_reply_markup
+
+def writers_menu_reply_markup() -> dict[str, Any]:
+    markup = _pre_opta_writers_menu_reply_markup()
+    rows = [list(row) for row in markup.get("inline_keyboard", [])] if isinstance(markup, dict) else []
+    # Avoid duplicates if an earlier version already inserted OptaJoe.
+    rows = [row for row in rows if not any(value_contains_optajoe(str(button.get("text", "")) + " " + str(button.get("callback_data", ""))) for button in row if isinstance(button, dict))]
+    opta_row = default_active_writer_row(OPTAJOE_DEFAULT_ACTIVE_USERNAME, "אופטה")
+    insert_at = 0
+    while insert_at < len(rows) and any("football_default_writer_toggle" in str(button.get("callback_data", "")) for button in rows[insert_at] if isinstance(button, dict)):
+        insert_at += 1
+    rows.insert(insert_at, opta_row)
+    return stable_reply_markup(rows)
+
+
+# Ensure persistent sent-memory records correctly mark both special feeds as no-writer.
+_pre_opta_remember_persistent_sent = remember_persistent_sent
+
+def remember_persistent_sent(post: Any, message: Any, sent_via: str = "auto") -> None:
+    _pre_opta_remember_persistent_sent(post, message, sent_via)
+    # The base function already writes username/source. Rewrite only its final flags
+    # for OptaJoe if needed, preserving all previous history and file format.
+    if not value_contains_optajoe(getattr(post, "username", "")):
+        return
+    path = persistent_memory_path("football_sent_memory.json")
+    items = load_json_list_file(path)
+    if items:
+        items[-1]["no_writer"] = True
+        items[-1]["writer_hidden"] = True
+        items[-1]["special_fact_feed"] = "optajoe"
+        save_json_list_file(path, items, limit=700)
+
+
+# Friendly reason text, if the original mapper does not know this new blocker.
+_pre_opta_hebrew_block_reason = globals().get("hebrew_block_reason")
+
+def hebrew_block_reason(reason: Any) -> str:
+    if str(reason or "") == "special_fact_feed_cross_duplicate":
+        return "כפילות בין עובדות כדורגל לאופטה"
+    return _pre_opta_hebrew_block_reason(reason) if callable(_pre_opta_hebrew_block_reason) else str(reason or "")
+
+# ====== END GPT-5.6 OPTAJOE + FOOTBALLFACTLY SPECIAL SOURCES PATCH ======
+
+
+# ====== GPT-5.6 OPTA MANAGEMENT + MONITORING PATCH ======
+# FUTURE AI MAINTENANCE RULE — DO NOT REMOVE:
+# OptaJoe must remain a normal controllable source in the writers-management
+# screen, defaulting to ACTIVE unless the saved control state explicitly turns
+# it off. The writers-management list must always show active sources first and
+# disabled sources afterwards. OptaJoe must remain available in both manual
+# monitoring screens (latest post and ten latest posts), even while disabled,
+# because monitoring must not silently hide a source just because automation is off.
+
+
+def _writer_is_enabled_for_menu(username: str) -> bool:
+    """Return the saved automatic-scan state without changing any history."""
+    username = str(username or "").strip()
+    if username in LOCKED_DISABLED_BASE_ACCOUNTS:
+        return False
+    if username in X_ACCOUNTS:
+        state = load_control_state()
+        return username not in set(disabled_base_accounts_from_state(state))
+    if username in OPTIONAL_CONTROLLED_ACCOUNTS and username != MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME:
+        state = load_control_state()
+        return username in set(enabled_optional_accounts_from_state(state))
+    if (
+        value_contains_football_factly(username)
+        or value_contains_matteo_moretto(username)
+        or value_contains_optajoe(username)
+    ):
+        return not control_state_account_disabled(username)
+    return username in set(active_x_accounts())
+
+
+def _writer_management_row(username: str) -> list[dict[str, str]]:
+    enabled = _writer_is_enabled_for_menu(username)
+    if username in X_ACCOUNTS:
+        label = CONTROLLED_BASE_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
+        status = "כבוי קבוע" if username in LOCKED_DISABLED_BASE_ACCOUNTS else ("פעיל" if enabled else "כבוי")
+        callback_data = f"football_base_account:{username}"
+    elif username in OPTIONAL_CONTROLLED_ACCOUNTS and username != MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME:
+        label = OPTIONAL_CONTROLLED_ACCOUNT_LABELS.get(username, ACCOUNT_DISPLAY_NAMES.get(username, username))
+        status = "פעיל" if enabled else "כבוי"
+        callback_data = f"football_account:{username}"
+    else:
+        label = _hebrew_account_label(username)
+        status = "פעיל" if enabled else "כבוי"
+        callback_data = f"football_default_writer_toggle:{username}:{'off' if enabled else 'on'}"
+    return [{"text": f"{label}: {status}", "callback_data": callback_data}]
+
+
+def _all_management_writer_usernames() -> list[str]:
+    ordered: list[str] = []
+    for username in (
+        list(X_ACCOUNTS)
+        + [u for u in OPTIONAL_CONTROLLED_ACCOUNTS if u != MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME]
+        + [
+            FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
+            OPTAJOE_DEFAULT_ACTIVE_USERNAME,
+            MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME,
+        ]
+    ):
+        if username and username not in ordered:
+            ordered.append(username)
+    return ordered
+
+
+def _sorted_writer_usernames(usernames: list[str]) -> list[str]:
+    """Active first, disabled second; stable Hebrew label sorting inside each group."""
+    unique: list[str] = []
+    for username in usernames:
+        if username and username not in unique:
+            unique.append(username)
+    return sorted(
+        unique,
+        key=lambda username: (
+            0 if _writer_is_enabled_for_menu(username) else 1,
+            _hebrew_account_label(username),
+        ),
+    )
+
+
+def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
+    """Complete management menu with OptaJoe and active sources grouped first."""
+    keyboard = [_writer_management_row(username) for username in _sorted_writer_usernames(_all_management_writer_usernames())]
+    keyboard.append([{"text": "⬅️ חזרה לתפריט הראשי", "callback_data": "football_quick_main"}])
+    return stable_reply_markup(keyboard)
+
+
+def writers_menu_reply_markup() -> dict[str, Any]:
+    """Alias used by older menu paths; keep the exact same sorted management view."""
+    return writers_management_reply_markup(control_state_is_paused())
+
+
+_pre_opta_monitor_all_control_test_accounts = all_control_test_accounts
+
+def all_control_test_accounts() -> list[str]:
+    """Monitoring includes every configured source, including disabled OptaJoe."""
+    values = list(_pre_opta_monitor_all_control_test_accounts() or [])
+    for username in (
+        FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
+        OPTAJOE_DEFAULT_ACTIVE_USERNAME,
+        MATTEO_MORETTO_DEFAULT_ACTIVE_USERNAME,
+    ):
+        if username not in values:
+            values.append(username)
+    return _sorted_writer_usernames(values)
+
+
+def account_latest_menu_reply_markup() -> dict[str, Any]:
+    """Latest-post checks for every source; active sources appear first."""
+    keyboard: list[list[dict[str, str]]] = []
+    for username in all_control_test_accounts():
+        status = "פעיל" if _writer_is_enabled_for_menu(username) else "כבוי"
+        keyboard.append([{
+            "text": f"{_hebrew_account_label(username)} — פוסט אחרון ({status})",
+            "callback_data": f"football_test_latest_account:{username}",
+        }])
+    keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
+    keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
+    return stable_reply_markup(keyboard)
+
+
+def account_history_menu_reply_markup() -> dict[str, Any]:
+    """Ten-post checks for every source; no media is sent in this screen."""
+    keyboard: list[list[dict[str, str]]] = []
+    for username in all_control_test_accounts():
+        status = "פעיל" if _writer_is_enabled_for_menu(username) else "כבוי"
+        keyboard.append([{
+            "text": f"📚 {_hebrew_account_label(username)} — 10 אחרונים ({status})",
+            "callback_data": f"football_test_last_ten_account:{username}",
+        }])
+    keyboard.append([{"text": "⬅️ חזרה לבדיקה וניטור", "callback_data": "football_menu_monitor"}])
+    return stable_reply_markup(keyboard)
+
+
+_pre_opta_management_process_control_update = process_control_update
+
+def process_control_update(update: dict[str, Any]) -> None:
+    """Handle OptaJoe's saved on/off toggle before the older generic callback code."""
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", ""))
+    if data.startswith("football_default_writer_toggle:"):
+        try:
+            _prefix, username, action = data.split(":", 2)
+        except ValueError:
+            return _pre_opta_management_process_control_update(update)
+        if value_contains_optajoe(username):
+            callback_id = str(callback.get("id", ""))
+            message = callback.get("message", {}) or {}
+            chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+            if CONTROL_CHAT_ID and chat_id != CONTROL_CHAT_ID:
+                if callback_id:
+                    answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+                return
+            try:
+                enabled = action == "on"
+                set_default_active_writer_enabled(OPTAJOE_DEFAULT_ACTIVE_USERNAME, enabled)
+                if callback_id:
+                    answer_control_callback(callback_id, f"אופטה: {'פעיל' if enabled else 'כבוי'}")
+                send_control_menu(
+                    "👥 ניהול כתבים\nהפעילים מוצגים למעלה והכבויים למטה.",
+                    writers_management_reply_markup(is_control_paused()),
+                    message.get("message_id"),
+                )
+            except Exception as exc:
+                if callback_id:
+                    answer_control_callback(callback_id, "עדכון אופטה נכשל")
+                send_control_text(f"ניהול אופטה נכשל:\n{short_error(exc, 500)}", None, control_delete_message_reply_markup())
+            return
+    return _pre_opta_management_process_control_update(update)
+
+# ====== END GPT-5.6 OPTA MANAGEMENT + MONITORING PATCH ======
 
 if __name__ == "__main__":
     main()
