@@ -17093,149 +17093,185 @@ def log_active_writer_rss_health_once() -> None:
 
 
 
-# ====== GPT-5.6 SPECIAL-FEED HISTORY RELIABILITY PATCH ======
+
+# ====== GPT-5.6 ISOLATED 10-LATEST REBUILD (DO NOT TOUCH AUTOMATIC RSS) ======
 # IMPORTANT FOR FUTURE AI EDITORS:
-# This patch does NOT change RSS mirrors, fetch_feed(), fetch_posts(), timeouts,
-# retry order or the automatic scanner. It only remembers successful automatic
-# RSS results for the control-panel "10 latest" screen. FootballFactly mirrors
-# can temporarily return an empty list to a manual button even though the normal
-# scanner fetched posts shortly before; the saved scan snapshot prevents a false
-# "no posts" message and is preserved across bot restarts/code updates.
+# This feature is deliberately isolated from the automatic scanner. Never wrap,
+# replace or monkey-patch fetch_posts_safely(), fetch_posts(), fetch_feed(),
+# process_account(), the scan loop, RSS mirrors, retries or timeouts merely to
+# support the control-panel "10 אחרונים" button. The button may READ from the
+# existing RSS path/cache/history, but must never alter automatic publishing.
 
-SPECIAL_FEED_CONTROL_HISTORY_STATE_KEY = "special_feed_control_recent_posts_v1"
-SPECIAL_FEED_CONTROL_HISTORY_MAX_ITEMS = 30
-
-
-def _special_feed_history_canonical(username: str) -> str:
-    key = str(username or "").strip().lstrip("@").casefold()
-    if key in {"footballfactly", "football_factly"}:
-        return FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME
-    if key in {"optajoe", "opta_joe"}:
-        return OPTA_JOE_USERNAME
-    return str(username or "").strip().lstrip("@")
+TEN_HISTORY_CONTROL_STATE_KEY = "control_last_ten_seen_posts_v2"
+TEN_HISTORY_MAX_PER_ACCOUNT = 40
 
 
-def _remember_successful_special_feed_posts(username: str, posts: list[Post]) -> None:
-    canonical = _special_feed_history_canonical(username)
-    if canonical.casefold() not in {FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME.casefold(), OPTA_JOE_USERNAME.casefold()}:
-        return
-    valid = [post for post in (posts or []) if isinstance(post, Post)]
+def _ten_history_account_key(username: str) -> str:
+    value = str(username or "").strip().lstrip("@").casefold()
+    aliases = {
+        "football_factly": "footballfactly",
+        "עובדות כדורגל": "footballfactly",
+        "opta_joe": "optajoe",
+    }
+    return aliases.get(value, value)
+
+
+def _ten_history_post_identity(username: str, post: Post) -> str:
+    return str(
+        getattr(post, "post_id", "")
+        or getattr(post, "link", "")
+        or post_content_signature(username, getattr(post, "text", ""), getattr(post, "quoted_text", ""))
+    )
+
+
+def _ten_history_save(username: str, posts: list[Post]) -> None:
+    valid = [item for item in (posts or []) if isinstance(item, Post)]
     if not valid:
         return
+    key = _ten_history_account_key(username)
     state = load_control_state()
-    snapshots = state.get(SPECIAL_FEED_CONTROL_HISTORY_STATE_KEY, {})
-    if not isinstance(snapshots, dict):
-        snapshots = {}
-    existing_raw = snapshots.get(canonical, [])
-    existing_posts: list[Post] = []
-    if isinstance(existing_raw, list):
-        for item in existing_raw:
-            restored = post_from_control_payload(item)
-            if restored is not None:
-                existing_posts.append(restored)
-    merged: dict[str, Post] = {}
-    for post in list(valid) + existing_posts:
-        post.username = canonical
-        key = post.post_id or post.link or post_content_signature(canonical, post.text, post.quoted_text)
-        if key and key not in merged:
-            merged[key] = post
-    ordered = sorted(merged.values(), key=lambda p: float(p.published_ts or 0.0), reverse=True)
-    new_payload = [post_to_control_payload(post) for post in ordered[:SPECIAL_FEED_CONTROL_HISTORY_MAX_ITEMS]]
-    if snapshots.get(canonical) == new_payload:
-        return
-    snapshots[canonical] = new_payload
-    save_control_state(**{SPECIAL_FEED_CONTROL_HISTORY_STATE_KEY: snapshots})
-
-
-def _load_saved_special_feed_posts(username: str) -> list[Post]:
-    canonical = _special_feed_history_canonical(username)
-    state = load_control_state()
-    snapshots = state.get(SPECIAL_FEED_CONTROL_HISTORY_STATE_KEY, {})
-    if not isinstance(snapshots, dict):
-        return []
-    raw_items = snapshots.get(canonical, [])
-    if not isinstance(raw_items, list):
-        return []
-    restored_posts: list[Post] = []
-    for item in raw_items:
-        post = post_from_control_payload(item)
+    store = state.get(TEN_HISTORY_CONTROL_STATE_KEY, {})
+    if not isinstance(store, dict):
+        store = {}
+    restored: list[Post] = []
+    for payload in store.get(key, []) if isinstance(store.get(key, []), list) else []:
+        post = post_from_control_payload(payload)
         if post is not None:
-            post.username = canonical
-            restored_posts.append(post)
-    restored_posts.sort(key=lambda p: float(p.published_ts or 0.0), reverse=True)
-    return restored_posts
+            restored.append(post)
+    merged: dict[str, Post] = {}
+    for post in list(valid) + restored:
+        post.username = username
+        identity = _ten_history_post_identity(username, post)
+        if identity and identity not in merged:
+            merged[identity] = post
+    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    payloads = [post_to_control_payload(post) for post in ordered[:TEN_HISTORY_MAX_PER_ACCOUNT]]
+    if store.get(key) != payloads:
+        store[key] = payloads
+        save_control_state(**{TEN_HISTORY_CONTROL_STATE_KEY: store})
 
 
-_previous_fetch_posts_safely_special_history = fetch_posts_safely
+def _ten_history_load(username: str) -> list[Post]:
+    key = _ten_history_account_key(username)
+    state = load_control_state()
+    store = state.get(TEN_HISTORY_CONTROL_STATE_KEY, {})
+    if not isinstance(store, dict):
+        return []
+    result: list[Post] = []
+    for payload in store.get(key, []) if isinstance(store.get(key, []), list) else []:
+        post = post_from_control_payload(payload)
+        if post is not None:
+            post.username = username
+            result.append(post)
+    return sorted(result, key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
 
 
-def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    resolved_username, posts = _previous_fetch_posts_safely_special_history(username)
+def _ten_history_collect_existing_state_posts(username: str) -> list[Post]:
+    """Read old sent/blocked/prepared history without changing any bot state."""
+    wanted = _ten_history_account_key(username)
+    state = load_control_state()
+    found: list[Post] = []
+
+    def walk(value: Any, depth: int = 0) -> None:
+        if depth > 6:
+            return
+        if isinstance(value, dict):
+            post = post_from_control_payload(value)
+            if post is not None:
+                source = _ten_history_account_key(getattr(post, "username", "") or value.get("username", "") or value.get("source", ""))
+                if source == wanted:
+                    post.username = username
+                    found.append(post)
+            for child in value.values():
+                walk(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value[-250:]:
+                walk(child, depth + 1)
+
+    walk(state)
+    return found
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    """Build the control history from proven readers only; never affects sending."""
+    merged: dict[str, Post] = {}
+
+    def add_many(items: Any) -> None:
+        for post in items or []:
+            if not isinstance(post, Post):
+                continue
+            post.username = username
+            identity = _ten_history_post_identity(username, post)
+            if identity and identity not in merged:
+                merged[identity] = post
+
+    # 1) Instant control cache from a prior successful button press.
     try:
-        _remember_successful_special_feed_posts(resolved_username, posts)
+        add_many(_control_cached_posts(username))
+    except Exception:
+        pass
+
+    # 2) The exact existing RSS aggregation used by the working bot.
+    try:
+        add_many(fetch_posts(username) or [])
     except Exception as exc:
-        logging.debug("Could not remember special-feed RSS snapshot for @%s: %s", resolved_username, short_error(exc))
-    return resolved_username, posts
+        logging.debug("10-latest core lookup failed for @%s: %s", username, short_error(exc))
 
+    # 3) Existing isolated control reader (case aliases + mirrors), only if needed.
+    if len(merged) < limit:
+        try:
+            add_many(fetch_control_posts_reliable(username, limit=limit) or [])
+        except Exception as exc:
+            logging.debug("10-latest control lookup failed for @%s: %s", username, short_error(exc))
 
-_previous_run_last_ten_special_history = run_last_ten_account_control_test
+    # 4) Persistent button history and already-known sent/blocked/prepared posts.
+    add_many(_ten_history_load(username))
+    add_many(_ten_history_collect_existing_state_posts(username))
+
+    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    if ordered:
+        try:
+            _remember_control_rss_posts(username, ordered)
+        except Exception:
+            pass
+        try:
+            _ten_history_save(username, ordered)
+        except Exception as exc:
+            logging.debug("Could not save 10-latest history for @%s: %s", username, short_error(exc))
+    return ordered[:limit]
 
 
 def run_last_ten_account_control_test(username: str) -> None:
-    """Show ten items; special feeds may supplement live RSS from the last successful scan."""
+    """One organized message, Google Translate only; Gemini only on Prepare."""
     if not CONTROL_CHAT_ID:
         return
-    canonical = _special_feed_history_canonical(username)
-    is_special = canonical.casefold() in {
-        FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME.casefold(),
-        OPTA_JOE_USERNAME.casefold(),
-    }
-    if not is_special:
-        return _previous_run_last_ten_special_history(username)
-
-    label = _hebrew_account_label(canonical)
-    live_posts: list[Post] = []
-    live_error = ""
+    label = _hebrew_account_label(username)
     try:
-        live_posts = fetch_control_posts_reliable(canonical, limit=10) or []
+        posts = fetch_last_ten_control_isolated(username, limit=10)
     except Exception as exc:
-        live_error = short_error(exc, 700)
-        logging.debug("Special-feed live history lookup failed for @%s: %s", canonical, live_error)
-
-    saved_posts = _load_saved_special_feed_posts(canonical)
-    merged: dict[str, Post] = {}
-    for post in list(live_posts) + saved_posts:
-        post.username = canonical
-        key = post.post_id or post.link or post_content_signature(canonical, post.text, post.quoted_text)
-        if key and key not in merged:
-            merged[key] = post
-    posts = sorted(merged.values(), key=lambda p: float(p.published_ts or 0.0), reverse=True)[:10]
-
-    if live_posts:
-        try:
-            _remember_successful_special_feed_posts(canonical, live_posts)
-        except Exception as exc:
-            logging.debug("Could not persist manual special-feed history for @%s: %s", canonical, short_error(exc))
-
+        send_control_text(f"📚 10 אחרונים — {label}\n\nהבדיקה נכשלה: {short_error(exc, 700)}")
+        return
     if not posts:
-        detail = f"\n\nשליפת RSS נכשלה: {live_error}" if live_error else ""
         send_control_text(
             f"📚 10 אחרונים — {label}\n\n"
-            "לא נמצאו כרגע פוסטים חיים וגם אין תוצאות שמורות מסריקה מוצלחת קודמת."
-            f"{detail}"
+            "עדיין אין לבוט עשרה פוסטים שמורים עבור מקור זה, וגם השליפה הנוכחית לא החזירה פוסט. "
+            "השליחה האוטומטית לא שונתה ולא נעצרה."
         )
         return
 
     entries: list[tuple[Post, str, str, str]] = []
     prepared: list[tuple[int, Post, str]] = []
-    for index, post in enumerate(posts, 1):
+    for index, post in enumerate(posts[:10], 1):
         status, reason = _history_status_for_post(post)
-        entries.append((post, _translate_history_post(post), status, reason))
+        # This function is the established Google Translate preview path.
+        translated = _translate_history_post(post)
+        entries.append((post, translated, status, reason))
         token = remember_control_prepared_send(post, "", "", "")
         prepared.append((index, post, token))
     send_control_html(_fit_history_entries_one_message(entries, label), _history_prepare_markup(prepared))
 
-# ====== END SPECIAL-FEED HISTORY RELIABILITY PATCH ======
+# ====== END ISOLATED 10-LATEST REBUILD ======
+
 
 if __name__ == "__main__":
     main()
