@@ -12147,8 +12147,9 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- For football-stat lists that repeat ball emojis or flags, put each stat item on its own line.\n"
         "- For every real list or ranking, put each item on its own consecutive line with NO empty lines between list items. Keep exactly one empty line before the list and one empty line after the list when surrounding prose exists. Repeated flags, bullets, ranks, percentages, scores or emoji-led entries are list markers.\n"
         "- Format the final Hebrew as polished Telegram news copy with deliberate editorial paragraph breaks, never as one dense block when the text contains separate factual ideas.\n"
-        "- For long non-list messages: use natural short paragraphs every 1-3 sentences when it improves readability. Preserve a clear opening fact, supporting comparison/context, and a short closing conclusion as separate paragraphs when they are distinct ideas.\n"
-        "- For statistical posts from OptaJoe or FootballFactly, especially a long sentence joined by an em dash: place the main record/stat in the first paragraph, the supporting xG/comparison/history context in a second paragraph, and a short concluding phrase in a final paragraph. Do not split randomly or break a grammatical clause in the middle.\n"
+        "- Detect the semantic structure yourself before inserting line breaks. Do not put an empty line after every sentence. Group closely related sentences into one paragraph, normally 2-3 sentences, and create a new paragraph only when the subject, stage, comparison, explanation, or conclusion genuinely changes.\n"
+        "- For long non-list messages: use natural compact paragraphs, normally 2-3 related sentences per paragraph. A one-sentence paragraph is allowed only for a real headline/opening fact, a clearly separate conclusion, or a sentence that is long enough to stand alone. Preserve a clear opening fact, supporting comparison/context, and a short closing conclusion as separate paragraphs only when they are genuinely distinct ideas.\n"
+        "- For statistical posts from OptaJoe or FootballFactly, especially a long sentence joined by an em dash: identify the logical sections yourself. Keep related record/stat sentences together, place supporting xG/comparison/history context in another compact paragraph only when it is a different idea, and use a separate concluding paragraph only when there is a real conclusion. Do not split every sentence, do not add decorative spacing, and do not break a grammatical clause in the middle.\n"
         "- Do not write explanations. JSON only.\n"
         f"{glossary_block}\n"
         "MAIN_TEXT:\n" + (main_source or "") + "\n\n"
@@ -17874,6 +17875,89 @@ def looks_like_bad_translation(source_text: Any, translated_text: Any = "", *arg
     return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
 
 # ====== END TARGETED SMALL FIXES ======
+
+# ====== TARGETED COMPACT PARAGRAPH SPACING FIX ======
+# Keep true lists compact and preserve meaningful section breaks, but avoid a
+# blank line after every short sentence. Consecutive short prose paragraphs are
+# grouped into readable blocks of roughly 2-3 sentences.
+
+_previous_compact_paragraph_formatter = format_special_fact_feed_paragraphs
+
+
+def _is_clear_heading_block(block: str) -> bool:
+    value = (block or "").strip()
+    if not value or "\n" in value:
+        return False
+    return bool(
+        value.endswith((':', '：'))
+        or re.match(r"^(?:<b>)?.{1,70}(?:</b>)?:$", value)
+    )
+
+
+def _compact_excessive_prose_spacing(value: str) -> str:
+    blocks = [part.strip() for part in re.split(r"\n{2,}", value or "") if part.strip()]
+    if len(blocks) < 3:
+        return (value or "").strip()
+
+    result: list[str] = []
+    run: list[str] = []
+
+    def flush_run() -> None:
+        nonlocal run
+        if not run:
+            return
+        # Only repair an actual run of excessive sentence-by-sentence spacing.
+        if len(run) < 3:
+            result.extend(run)
+            run = []
+            return
+        current: list[str] = []
+        current_chars = 0
+        for part in run:
+            addition = len(part) + (1 if current else 0)
+            # Prefer 2-3 short sentences per paragraph. Do not create a very
+            # wide block when a sentence is already substantial by itself.
+            if current and (len(current) >= 3 or (len(current) >= 2 and current_chars + addition > 260)):
+                result.append(" ".join(current).strip())
+                current = []
+                current_chars = 0
+            current.append(part)
+            current_chars += addition
+        if current:
+            # Avoid leaving a single tiny final sentence on its own when it can
+            # naturally join the preceding paragraph.
+            if len(current) == 1 and result and len(result[-1]) + 1 + len(current[0]) <= 300:
+                result[-1] = f"{result[-1]} {current[0]}".strip()
+            else:
+                result.append(" ".join(current).strip())
+        run = []
+
+    for block in blocks:
+        is_list = _is_compact_stat_list_block(block)
+        is_heading = _is_clear_heading_block(block)
+        # Multi-line blocks, headings and list blocks represent deliberate
+        # structure and must stay exactly separated.
+        if is_list or is_heading or "\n" in block or len(block) > 190:
+            flush_run()
+            result.append(block)
+        else:
+            run.append(block)
+    flush_run()
+
+    compacted = "\n\n".join(result)
+    compacted = _compact_list_blank_lines(compacted)
+    compacted = re.sub(r"\n{3,}", "\n\n", compacted)
+    return compacted.strip()
+
+
+def format_special_fact_feed_paragraphs(text: str) -> str:
+    """Final spacing: compact 2-3-sentence prose blocks, unchanged lists."""
+    value = _previous_compact_paragraph_formatter(text)
+    if not value:
+        return value
+    return _compact_excessive_prose_spacing(value)
+
+# ====== END TARGETED COMPACT PARAGRAPH SPACING FIX ======
 
 if __name__ == "__main__":
     main()
