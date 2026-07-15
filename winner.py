@@ -9788,7 +9788,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
         "- For odds/probability lists such as '33% - France 19% - Argentina', put each percentage item on its own line.\n"
         "- For football-stat lists that repeat ball emojis or flags, put each stat item on its own line.\n"
-        "- For lists: use one item per line. If list/news items start with emojis such as 🚨, 💥, ✅, ❌ or ⚽, separate those emoji-led items with a blank line for Telegram readability.\n"
+        "- For every real list or ranking, put each item on its own consecutive line with NO empty lines between list items. Keep exactly one empty line before the list and one empty line after the list when surrounding prose exists. Repeated flags, bullets, ranks, percentages, scores or emoji-led entries are list markers.\n"
         "- If GE is used as a country/flag marker, output the Georgia flag emoji 🇬🇪, not the letters GE.\n"
         "- If a two-letter country code is used as a flag marker, output the correct flag emoji instead of the letters. Preserve real flag emojis from the source and never replace a flag with a generic black flag.\n"
         "- Remove down arrows or pointing-down emojis when they only pointed to a removed link or quoted post.\n"
@@ -10102,6 +10102,36 @@ def format_news_paragraphs(text: str) -> str:
     if len(paragraphs) <= 1:
         return value
     return "\n\n".join(paragraphs)
+
+
+def format_special_fact_feed_paragraphs(text: str) -> str:
+    """Editorial fallback for OptaJoe/FootballFactly dense statistical copy.
+
+    Gemini is instructed to create the paragraphing. This function only repairs
+    a dense one-line result when the source clearly contains distinct complete
+    ideas (record/stat — supporting context — short conclusion). It never adds
+    arbitrary line breaks inside a grammatical clause.
+    """
+    value = (text or "").strip()
+    if not value or "\n\n" in value or len(value) < 150:
+        return value
+
+    # A long statistical headline followed by supporting context after a dash.
+    match = re.match(r"^(.{45,}?)(?:\s+[–—]\s+)(.{55,})$", value, flags=re.DOTALL)
+    if not match:
+        return value
+    opening = match.group(1).strip()
+    remainder = match.group(2).strip()
+
+    # Keep a short editorial conclusion (for example: "סגירה הרמטית.") separate.
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", remainder) if part.strip()]
+    if len(sentences) >= 2 and len(sentences[-1]) <= 55:
+        context = " ".join(sentences[:-1]).strip()
+        conclusion = sentences[-1]
+        if context:
+            return f"{opening}.\n\n{context}\n\n{conclusion}".replace("..", ".")
+
+    return f"{opening}.\n\n{remainder}".replace("..", ".")
 
 
 def translation_contradicts_source(original: str, translated: str) -> bool:
@@ -10805,6 +10835,9 @@ def build_message(
     quoted_translated = polish_team_names_with_original_context(post, quoted_translated)
     translated = format_news_paragraphs(translated)
     quoted_translated = format_news_paragraphs(quoted_translated)
+    if is_special_fact_feed_context(post):
+        translated = format_special_fact_feed_paragraphs(translated)
+        quoted_translated = format_special_fact_feed_paragraphs(quoted_translated)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
     hide_writer_header = should_hide_writer_header(post, translated)
     if hide_writer_header:
@@ -12092,8 +12125,10 @@ def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, st
         "- If the source contains an inline list of stats, countries, teams, players, checkmarks, crosses, medals, bullets, or many flag emojis, format it as a readable Telegram list.\n"
         "- For odds/probability lists such as '33% - France 19% - Argentina', put each percentage item on its own line.\n"
         "- For football-stat lists that repeat ball emojis or flags, put each stat item on its own line.\n"
-        "- For lists: use one item per line. If list/news items start with emojis such as 🚨, 💥, ✅, ❌ or ⚽, separate those emoji-led items with a blank line for Telegram readability.\n"
-        "- For long non-list messages only: use natural short paragraphs every 2-3 sentences when it improves readability.\n"
+        "- For every real list or ranking, put each item on its own consecutive line with NO empty lines between list items. Keep exactly one empty line before the list and one empty line after the list when surrounding prose exists. Repeated flags, bullets, ranks, percentages, scores or emoji-led entries are list markers.\n"
+        "- Format the final Hebrew as polished Telegram news copy with deliberate editorial paragraph breaks, never as one dense block when the text contains separate factual ideas.\n"
+        "- For long non-list messages: use natural short paragraphs every 1-3 sentences when it improves readability. Preserve a clear opening fact, supporting comparison/context, and a short closing conclusion as separate paragraphs when they are distinct ideas.\n"
+        "- For statistical posts from OptaJoe or FootballFactly, especially a long sentence joined by an em dash: place the main record/stat in the first paragraph, the supporting xG/comparison/history context in a second paragraph, and a short concluding phrase in a final paragraph. Do not split randomly or break a grammatical clause in the middle.\n"
         "- Do not write explanations. JSON only.\n"
         f"{glossary_block}\n"
         "MAIN_TEXT:\n" + (main_source or "") + "\n\n"
@@ -15888,6 +15923,214 @@ def process_control_update(update: dict[str, Any]) -> None:
     return _pre_opta_management_process_control_update(update)
 
 # ====== END GPT-5.6 OPTA MANAGEMENT + MONITORING PATCH ======
+
+
+# ====== GPT-5.6 STABLE WRITER MENU + CLEAN MONITOR LABELS PATCH ======
+# FUTURE AI MAINTENANCE RULE — DO NOT REMOVE:
+# The writers-management button order is persistent. Toggling a source between
+# active and disabled must only change its status text and must NEVER move the
+# button to another row. The initial saved order is active sources first and
+# disabled sources second, but after that the order is preserved across toggles
+# and bot restarts. Monitoring menus must display only the source/author name;
+# do not append "active", "disabled", "latest post" or "10 latest" to each row.
+
+WRITER_MANAGEMENT_ORDER_STATE_KEY = "writer_management_stable_order_v1"
+
+
+def _stable_writer_management_order() -> list[str]:
+    """Return a persistent order so toggle actions never move a writer button."""
+    available = _all_management_writer_usernames()
+    available_set = set(available)
+    state = load_control_state()
+    raw_order = state.get(WRITER_MANAGEMENT_ORDER_STATE_KEY, [])
+    order: list[str] = []
+    if isinstance(raw_order, list):
+        for username in raw_order:
+            username = str(username or "").strip()
+            if username in available_set and username not in order:
+                order.append(username)
+
+    changed = False
+    if not order:
+        # First migration only: preserve the previously requested layout of
+        # active sources first and disabled sources afterwards.
+        order = _sorted_writer_usernames(available)
+        changed = True
+    else:
+        # Future sources are appended without moving any existing button.
+        for username in available:
+            if username not in order:
+                order.append(username)
+                changed = True
+
+    if raw_order != order:
+        changed = True
+    if changed:
+        try:
+            save_control_state(**{WRITER_MANAGEMENT_ORDER_STATE_KEY: order})
+        except Exception as exc:
+            logging.warning("לא ניתן לשמור סדר כתבים קבוע: %s", short_error(exc, 300))
+    return order
+
+
+def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
+    """Management menu whose rows stay fixed when active state changes."""
+    keyboard = [_writer_management_row(username) for username in _stable_writer_management_order()]
+    keyboard.append([{"text": "⬅️ חזרה לתפריט הראשי", "callback_data": "football_quick_main"}])
+    return stable_reply_markup(keyboard)
+
+
+def writers_menu_reply_markup() -> dict[str, Any]:
+    return writers_management_reply_markup(control_state_is_paused())
+
+
+def account_latest_menu_reply_markup() -> dict[str, Any]:
+    """Show only the author/channel name on every latest-post button."""
+    keyboard: list[list[dict[str, str]]] = []
+    for username in all_control_test_accounts():
+        keyboard.append([{
+            "text": _hebrew_account_label(username),
+            "callback_data": f"football_test_latest_account:{username}",
+        }])
+    keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
+    keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
+    return stable_reply_markup(keyboard)
+
+
+def account_history_menu_reply_markup() -> dict[str, Any]:
+    """Show only the author/channel name on every ten-post button."""
+    keyboard: list[list[dict[str, str]]] = []
+    for username in all_control_test_accounts():
+        keyboard.append([{
+            "text": _hebrew_account_label(username),
+            "callback_data": f"football_test_last_ten_account:{username}",
+        }])
+    keyboard.append([{"text": "⬅️ חזרה לבדיקה וניטור", "callback_data": "football_menu_monitor"}])
+    return stable_reply_markup(keyboard)
+
+# ====== END GPT-5.6 STABLE WRITER MENU + CLEAN MONITOR LABELS PATCH ======
+
+
+# ====== GPT-5.6 COMPACT SMART LIST FORMATTER PATCH ======
+# FUTURE AI MAINTENANCE RULE — DO NOT REMOVE:
+# Lists must be compact: one item per line, with NO blank line between items.
+# Preserve the existing paragraph style outside a list. Use one blank line only
+# before and after the complete list when there is surrounding prose.
+
+_pre_compact_smart_list_formatter = format_stat_list_lines
+
+_LIST_START_TOKEN = re.compile(
+    r"(?:"
+    r"[\U0001F1E6-\U0001F1FF]{2}"                       # country flag
+    r"|🥇|🥈|🥉|✅|❌|☑️|✔️|🔹|🔸|▪️|▫️|•|⚽️?|📊|⭐|🔥"
+    r"|(?:\d{1,3}(?:[.,]\d+)?\s*%)"                   # percentage item
+    r")"
+)
+
+
+def _split_repeated_flag_items(value: str) -> str:
+    """Put repeated flag-led list entries on consecutive lines.
+
+    A single flag in prose is untouched. The rule activates only when at least
+    two flag-led entries are detected, avoiding accidental paragraph damage.
+    """
+    flag_entry = re.compile(
+        r"[\U0001F1E6-\U0001F1FF]{2}\s*"
+        r"(?:\d{1,3}(?:[.,]\d+)?\s*(?:[-–—:]\s*)?)?"
+    )
+    matches = list(flag_entry.finditer(value))
+    if len(matches) < 2:
+        return value
+    # Every repeated flag after the first starts a new compact list line.
+    first_start = matches[0].start()
+    value = re.sub(
+        r"(?<!\n)[ \t]+(?=[\U0001F1E6-\U0001F1FF]{2}\s*(?:\d{1,3}(?:[.,]\d+)?\s*(?:[-–—:]\s*)?)?)",
+        "\n",
+        value,
+    )
+    # Separate introductory prose from the first item, but do not add blank
+    # lines inside the list itself.
+    current_first = re.search(r"[\U0001F1E6-\U0001F1FF]{2}\s*(?:\d{1,3}(?:[.,]\d+)?\s*(?:[-–—:]\s*)?)?", value)
+    if current_first and current_first.start() > 0:
+        prefix = value[:current_first.start()].rstrip()
+        suffix = value[current_first.start():].lstrip()
+        if prefix and not prefix.endswith("\n\n"):
+            value = prefix + "\n\n" + suffix
+    return value
+
+
+def _split_compact_marker_items(value: str) -> str:
+    """Split dense bullet/emoji/ranking lists without empty rows."""
+    marker_pattern = r"(?:🥇|🥈|🥉|✅|❌|☑️|✔️|🔹|🔸|▪️|▫️|•|⚽️?|📊|⭐|🔥)"
+    marker_count = len(re.findall(marker_pattern, value))
+    if marker_count >= 2:
+        value = re.sub(rf"(?<!\n)[ \t]+(?={marker_pattern}\s*)", "\n", value)
+
+    # Inline ordinal/ranking items: 1 - Name 2 - Name ...
+    numbered = re.findall(r"(?<!\d)\d{1,2}\s*[-–—]\s+", value)
+    if len(numbered) >= 3:
+        value = re.sub(r"(?<!\n)[ \t]+(?=\d{1,2}\s*[-–—]\s+)", "\n", value)
+
+    # Percentage rankings: 33% - France 19% - Argentina ...
+    percentages = re.findall(r"\d{1,3}(?:[.,]\d+)?\s*%\s*[-–—:]", value)
+    if len(percentages) >= 2:
+        value = re.sub(r"(?<!\n)[ \t]+(?=\d{1,3}(?:[.,]\d+)?\s*%\s*[-–—:])", "\n", value)
+    return value
+
+
+def _compact_list_blank_lines(value: str) -> str:
+    """Remove blank lines only inside contiguous list blocks."""
+    lines = [line.rstrip() for line in value.splitlines()]
+
+    def is_item(line: str) -> bool:
+        stripped = line.strip()
+        return bool(re.match(
+            r"^(?:[\U0001F1E6-\U0001F1FF]{2}|🥇|🥈|🥉|✅|❌|☑️|✔️|🔹|🔸|▪️|▫️|•|⚽️?|📊|⭐|🔥|\d{1,3}(?:[.,]\d+)?\s*%\s*[-–—:]|\d{1,2}\s*[-–—]\s+)",
+            stripped,
+        ))
+
+    output: list[str] = []
+    for index, line in enumerate(lines):
+        if not line.strip():
+            prev_item = bool(output and is_item(output[-1]))
+            next_item = False
+            for following in lines[index + 1:]:
+                if following.strip():
+                    next_item = is_item(following)
+                    break
+            if prev_item and next_item:
+                continue
+            if output and output[-1] == "":
+                continue
+            output.append("")
+        else:
+            output.append(line.strip())
+    return "\n".join(output).strip()
+
+
+def format_stat_list_lines(text: str) -> str:
+    """Smart list layout: compact list rows, normal paragraph spacing outside."""
+    value = _pre_compact_smart_list_formatter(text)
+    if not value:
+        return value
+    value = _split_repeated_flag_items(value)
+    value = _split_compact_marker_items(value)
+    # Older formatting stages may put a flag and its number on separate lines.
+    # They are one list item and must stay on the same line.
+    value = re.sub(r"([\U0001F1E6-\U0001F1FF]{2})\n(?=\d{1,3}(?:[.,]\d+)?\s*[-–—:])", r"\1 ", value)
+    value = _compact_list_blank_lines(value)
+    value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
+    # Exactly one blank line before the first compact list item when prose precedes it.
+    value = re.sub(
+        r"(?<!\n)\n(?=(?:[\U0001F1E6-\U0001F1FF]{2}|🥇|🥈|🥉|✅|❌|☑️|✔️|🔹|🔸|▪️|▫️|•|⚽️?|📊|⭐|🔥|\d{1,3}(?:[.,]\d+)?\s*%\s*[-–—:]))",
+        "\n\n",
+        value,
+        count=1,
+    )
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+# ====== END GPT-5.6 COMPACT SMART LIST FORMATTER PATCH ======
 
 if __name__ == "__main__":
     main()
