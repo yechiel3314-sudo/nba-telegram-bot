@@ -16132,17 +16132,13 @@ def format_stat_list_lines(text: str) -> str:
 
 # ====== END GPT-5.6 COMPACT SMART LIST FORMATTER PATCH ======
 
-if __name__ == "__main__":
-    main()
 
-# ====== GPT-5.6 CONTROL PREVIEW / PERSISTENT BUTTON / RSS-SAFE PATCH (2026-07-15) ======
+# ====== FINAL SAFE MEMORY PATCH — RSS ENGINE UNTOUCHED ======
 # IMPORTANT FOR FUTURE AI EDITS:
-# - Do not alter the automatic RSS scanner, fetch_posts(), fetch_feed(), source order,
-#   timeouts, fallback policy, parsing, or dedupe behavior in this patch.
-# - Manual control previews must use the same final build_message() formatting that is
-#   published to Neto Sport, including paragraph/list spacing.
-# - Prepared-send buttons must remain recoverable after restarts and code deployments.
-# - Control-only RSS recovery below is isolated from the automatic scanner.
+# This patch intentionally does NOT modify fetch_posts(), fetch_feed(), RSS templates,
+# source order, timeouts, fallback behavior, parsing, account scanning, or RSS dedupe.
+# Manual preview buttons are persisted in a dedicated file so changing control settings
+# cannot erase old prepared posts. Keep this behavior across future code updates.
 
 CONTROL_PREPARED_DURABLE_FILE = "football_control_prepared_sends.json"
 CONTROL_PREPARED_DURABLE_LOCK = Lock()
@@ -16153,26 +16149,22 @@ def _control_prepared_durable_path() -> Path:
 
 
 def _load_control_prepared_durable() -> dict[str, Any]:
-    path = _control_prepared_durable_path()
     with CONTROL_PREPARED_DURABLE_LOCK:
-        data = _read_json_with_backup(path, {})
+        data = _read_json_with_backup(_control_prepared_durable_path(), {})
     return data if isinstance(data, dict) else {}
 
 
 def _save_control_prepared_durable(data: dict[str, Any]) -> None:
-    path = _control_prepared_durable_path()
     with CONTROL_PREPARED_DURABLE_LOCK:
-        _atomic_write_text_with_backup(path, json.dumps(data, ensure_ascii=False, indent=2))
+        _atomic_write_text_with_backup(
+            _control_prepared_durable_path(),
+            json.dumps(data, ensure_ascii=False, indent=2),
+        )
 
 
 def _durable_prepared_payload(item: dict[str, Any]) -> dict[str, Any]:
     post = item.get("post")
-    if isinstance(post, Post):
-        post_payload = post_to_control_payload(post)
-    elif isinstance(post, dict):
-        post_payload = dict(post)
-    else:
-        post_payload = {}
+    post_payload = post_to_control_payload(post) if isinstance(post, Post) else dict(post or {})
     return {
         "created_at": float(item.get("created_at", time.time()) or time.time()),
         "post": post_payload,
@@ -16192,19 +16184,21 @@ def _persist_prepared_send_durable(token: str, item: dict[str, Any]) -> None:
         return
     saved = _load_control_prepared_durable()
     saved[token] = _durable_prepared_payload(item)
-    newest = sorted(
+    ordered = sorted(
         saved.items(),
         key=lambda pair: float((pair[1] or {}).get("created_at", 0.0) or 0.0),
         reverse=True,
     )[:500]
-    _save_control_prepared_durable(dict(newest))
+    _save_control_prepared_durable(dict(ordered))
 
 
-_previous_remember_control_prepared_send_durable = remember_control_prepared_send
+_previous_remember_control_prepared_send_final = remember_control_prepared_send
 
 
 def remember_control_prepared_send(post: Post, translated: str, quoted_translated: str, quoted_author_translated: str) -> str:
-    token = _previous_remember_control_prepared_send_durable(post, translated, quoted_translated, quoted_author_translated)
+    token = _previous_remember_control_prepared_send_final(
+        post, translated, quoted_translated, quoted_author_translated
+    )
     item = CONTROL_PREPARED_SENDS.get(token)
     if isinstance(item, dict):
         _persist_prepared_send_durable(token, item)
@@ -16217,20 +16211,16 @@ def _restore_prepared_send(token: str) -> dict[str, Any] | None:
     if isinstance(item, dict):
         return item
 
-    # First try the dedicated durable store. It is intentionally independent of
-    # control-state menu writes, so toggling settings cannot overwrite old buttons.
-    saved = _load_control_prepared_durable()
-    payload = saved.get(token)
-
-    # Backward compatibility with prepared items saved by earlier versions.
+    payload = _load_control_prepared_durable().get(token)
     if not isinstance(payload, dict):
+        # Backward compatibility with buttons created by older versions.
         state = load_control_state()
         legacy = state.get(CONTROL_PREPARED_STATE_KEY, {})
         if isinstance(legacy, dict):
             payload = legacy.get(token)
-
     if not isinstance(payload, dict):
         return None
+
     post = post_from_control_payload(payload.get("post"))
     if not post:
         return None
@@ -16248,7 +16238,6 @@ def _restore_prepared_send(token: str) -> dict[str, Any] | None:
     CONTROL_PREPARED_SENDS[token] = item
     if item["control_media_message_ids"]:
         CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(item["control_media_message_ids"])
-    # Migrate an old control-state item into the safer dedicated file.
     _persist_prepared_send_durable(token, item)
     return item
 
@@ -16257,146 +16246,18 @@ def _save_prepared_media_ids(token: str, media_ids: list[int]) -> None:
     item = _restore_prepared_send(token)
     if not isinstance(item, dict):
         return
-    item["control_media_message_ids"] = [int(value) for value in media_ids if str(value).isdigit()]
+    item["control_media_message_ids"] = [
+        int(value) for value in media_ids if str(value).isdigit()
+    ]
     CONTROL_PREPARED_SENDS[token] = item
     _persist_prepared_send_durable(token, item)
-    # Preserve compatibility with the previous control-state store too.
+    # Keep compatibility with the existing control-state memory too.
     try:
         _persist_prepared_send(token, item)
     except Exception as exc:
         logging.debug("Legacy prepared-send persistence failed: %s", exc)
 
+# ====== END FINAL SAFE MEMORY PATCH ======
 
-def _control_fetch_posts_resilient(username: str, limit: int = 10) -> list[Post]:
-    """Control-button-only retrieval without changing the automatic RSS engine.
-
-    1. Uses the existing fetch_posts() unchanged.
-    2. If all primary/fallback sources transiently return empty, performs a sequential
-       read of the already configured templates for the control request only.
-    3. Tries only a case-normalized username alias for known case-sensitive mirrors.
-    """
-    wanted = max(1, int(limit))
-    try:
-        posts = list(fetch_posts(username))
-    except Exception as exc:
-        logging.warning("Control RSS regular fetch failed for @%s: %s", username, exc)
-        posts = []
-    if posts:
-        return sorted(posts, key=lambda post: post.published_ts, reverse=True)[:wanted]
-
-    usernames = [str(username or "").strip().lstrip("@")]
-    if usernames[0].lower() == "optajoe":
-        usernames.extend(["OptaJoe", "optajoe"])
-    usernames = list(dict.fromkeys(value for value in usernames if value))
-
-    merged: dict[str, Post] = {}
-    for candidate_username in usernames:
-        for template in active_feed_templates():
-            try:
-                for post in fetch_feed(candidate_username, template):
-                    key = str(post.post_id or post.link or "").strip()
-                    if key:
-                        merged.setdefault(key, post)
-            except Exception as exc:
-                logging.debug(
-                    "Control RSS recovery failed for @%s via %s: %s",
-                    candidate_username,
-                    feed_source_name(template),
-                    exc,
-                )
-            if len(merged) >= wanted:
-                break
-        if len(merged) >= wanted:
-            break
-    return sorted(merged.values(), key=lambda post: post.published_ts, reverse=True)[:wanted]
-
-
-def fetch_latest_post_fast(username: str) -> Post | None:
-    posts = _control_fetch_posts_resilient(username, 1)
-    return posts[0] if posts else None
-
-
-def run_latest_account_control_test(username: str) -> None:
-    """Show the exact final Neto Sport layout in the control channel."""
-    if not CONTROL_CHAT_ID:
-        return
-    label = _hebrew_account_label(username)
-    try:
-        post = fetch_latest_post_fast(username)
-    except Exception as exc:
-        send_control_text(f"🧪 בדיקת {label} נכשלה בשליפת RSS:\n{short_error(exc, 700)}")
-        return
-    if not post:
-        send_control_text(f"🧪 בדיקת {label}: לא נמצאו פוסטים כרגע בכל מקורות ה-RSS המוגדרים.")
-        return
-    try:
-        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
-        token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
-        message_html = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
-        _send_full_control_candidate(post, token, message_html)
-    except Exception as exc:
-        send_control_text(
-            f"🧪 בדיקת {label}: הפוסט נמצא אך התצוגה המלאה נכשלה.\n"
-            f"סיבה: {short_error(exc, 900)}\nקישור: {post.link}"
-        )
-
-
-def run_last_ten_account_control_test(username: str) -> None:
-    """Use the unchanged RSS engine plus isolated control recovery, then one summary."""
-    if not CONTROL_CHAT_ID:
-        return
-    label = _hebrew_account_label(username)
-    try:
-        posts = _control_fetch_posts_resilient(username, 10)
-    except Exception as exc:
-        send_control_text(f"📚 10 אחרונים — {label}\n\nשליפת RSS נכשלה: {short_error(exc, 700)}")
-        return
-    if not posts:
-        send_control_text(
-            f"📚 10 אחרונים — {label}\n\n"
-            "לא התקבלו פוסטים מאף מקור RSS מוגדר כרגע. מנגנון הסריקה האוטומטי לא שונה."
-        )
-        return
-    entries: list[tuple[Post, str, str, str]] = []
-    prepared: list[tuple[int, Post, str]] = []
-    for index, post in enumerate(posts[:10], 1):
-        status, reason = _history_status_for_post(post)
-        entries.append((post, _translate_history_post(post), status, reason))
-        token = remember_control_prepared_send(post, "", "", "")
-        prepared.append((index, post, token))
-    send_control_html(_fit_history_entries_one_message(entries, label), _history_prepare_markup(prepared))
-
-
-def send_prepared_control_post_to_main(token: str) -> str:
-    item = _restore_prepared_send(token)
-    if not item:
-        return "לא הצלחתי לשחזר את הפוסט מהזיכרון הקבוע. פתח שוב את הפוסט האחרון או את 10 האחרונים."
-    post: Post = item["post"]
-    translated = str(item.get("translated", "") or "")
-    quoted_translated = str(item.get("quoted_translated", "") or "")
-    quoted_author_translated = str(item.get("quoted_author_translated", "") or "")
-    if not (translated or quoted_translated):
-        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
-        item.update({
-            "translated": translated,
-            "quoted_translated": quoted_translated,
-            "quoted_author_translated": quoted_author_translated,
-        })
-        CONTROL_PREPARED_SENDS[token] = item
-        _persist_prepared_send_durable(token, item)
-
-    # Rebuild using the same formatter used by automatic Neto Sport publication.
-    message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
-    message = normalize_neto_sport_footer(strip_football_factly_author_heading(message))
-
-    if _copy_control_media_to_main(token):
-        remember_persistent_sent(post, message, "manual_telegram_copy_combined")
-        return "נשלח בכוח לערוץ נטו ספורט כהודעה אחת, בדיוק לפי התצוגה בערוץ הניהול."
-
-    images = selected_post_images(post)
-    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
-    _message_ids, mode = manual_force_send_prepared_message(post, message, images, video_url)
-    remember_persistent_sent(post, message, "manual_force")
-    return f"נשלח בכוח לערוץ נטו ספורט. מצב שליחה: {mode}"
-
-# ====== END GPT-5.6 CONTROL PREVIEW / PERSISTENT BUTTON / RSS-SAFE PATCH ======
+if __name__ == "__main__":
+    main()
