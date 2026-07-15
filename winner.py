@@ -17092,5 +17092,389 @@ def log_active_writer_rss_health_once() -> None:
 # ====== END GPT-5.6 WRITER RELIABILITY + BUYER-AWARE FILTER PATCH ======
 
 
+
+# ====== GPT-5.6 SPECIAL-FEED HISTORY RELIABILITY PATCH ======
+# IMPORTANT FOR FUTURE AI EDITORS:
+# This patch does NOT change RSS mirrors, fetch_feed(), fetch_posts(), timeouts,
+# retry order or the automatic scanner. It only remembers successful automatic
+# RSS results for the control-panel "10 latest" screen. FootballFactly mirrors
+# can temporarily return an empty list to a manual button even though the normal
+# scanner fetched posts shortly before; the saved scan snapshot prevents a false
+# "no posts" message and is preserved across bot restarts/code updates.
+
+SPECIAL_FEED_CONTROL_HISTORY_STATE_KEY = "special_feed_control_recent_posts_v1"
+SPECIAL_FEED_CONTROL_HISTORY_MAX_ITEMS = 30
+
+
+def _special_feed_history_canonical(username: str) -> str:
+    key = str(username or "").strip().lstrip("@").casefold()
+    if key in {"footballfactly", "football_factly"}:
+        return FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME
+    if key in {"optajoe", "opta_joe"}:
+        return OPTA_JOE_USERNAME
+    return str(username or "").strip().lstrip("@")
+
+
+def _remember_successful_special_feed_posts(username: str, posts: list[Post]) -> None:
+    canonical = _special_feed_history_canonical(username)
+    if canonical.casefold() not in {FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME.casefold(), OPTA_JOE_USERNAME.casefold()}:
+        return
+    valid = [post for post in (posts or []) if isinstance(post, Post)]
+    if not valid:
+        return
+    state = load_control_state()
+    snapshots = state.get(SPECIAL_FEED_CONTROL_HISTORY_STATE_KEY, {})
+    if not isinstance(snapshots, dict):
+        snapshots = {}
+    existing_raw = snapshots.get(canonical, [])
+    existing_posts: list[Post] = []
+    if isinstance(existing_raw, list):
+        for item in existing_raw:
+            restored = post_from_control_payload(item)
+            if restored is not None:
+                existing_posts.append(restored)
+    merged: dict[str, Post] = {}
+    for post in list(valid) + existing_posts:
+        post.username = canonical
+        key = post.post_id or post.link or post_content_signature(canonical, post.text, post.quoted_text)
+        if key and key not in merged:
+            merged[key] = post
+    ordered = sorted(merged.values(), key=lambda p: float(p.published_ts or 0.0), reverse=True)
+    new_payload = [post_to_control_payload(post) for post in ordered[:SPECIAL_FEED_CONTROL_HISTORY_MAX_ITEMS]]
+    if snapshots.get(canonical) == new_payload:
+        return
+    snapshots[canonical] = new_payload
+    save_control_state(**{SPECIAL_FEED_CONTROL_HISTORY_STATE_KEY: snapshots})
+
+
+def _load_saved_special_feed_posts(username: str) -> list[Post]:
+    canonical = _special_feed_history_canonical(username)
+    state = load_control_state()
+    snapshots = state.get(SPECIAL_FEED_CONTROL_HISTORY_STATE_KEY, {})
+    if not isinstance(snapshots, dict):
+        return []
+    raw_items = snapshots.get(canonical, [])
+    if not isinstance(raw_items, list):
+        return []
+    restored_posts: list[Post] = []
+    for item in raw_items:
+        post = post_from_control_payload(item)
+        if post is not None:
+            post.username = canonical
+            restored_posts.append(post)
+    restored_posts.sort(key=lambda p: float(p.published_ts or 0.0), reverse=True)
+    return restored_posts
+
+
+_previous_fetch_posts_safely_special_history = fetch_posts_safely
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    resolved_username, posts = _previous_fetch_posts_safely_special_history(username)
+    try:
+        _remember_successful_special_feed_posts(resolved_username, posts)
+    except Exception as exc:
+        logging.debug("Could not remember special-feed RSS snapshot for @%s: %s", resolved_username, short_error(exc))
+    return resolved_username, posts
+
+
+_previous_run_last_ten_special_history = run_last_ten_account_control_test
+
+
+def run_last_ten_account_control_test(username: str) -> None:
+    """Show ten items; special feeds may supplement live RSS from the last successful scan."""
+    if not CONTROL_CHAT_ID:
+        return
+    canonical = _special_feed_history_canonical(username)
+    is_special = canonical.casefold() in {
+        FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME.casefold(),
+        OPTA_JOE_USERNAME.casefold(),
+    }
+    if not is_special:
+        return _previous_run_last_ten_special_history(username)
+
+    label = _hebrew_account_label(canonical)
+    live_posts: list[Post] = []
+    live_error = ""
+    try:
+        live_posts = fetch_control_posts_reliable(canonical, limit=10) or []
+    except Exception as exc:
+        live_error = short_error(exc, 700)
+        logging.debug("Special-feed live history lookup failed for @%s: %s", canonical, live_error)
+
+    saved_posts = _load_saved_special_feed_posts(canonical)
+    merged: dict[str, Post] = {}
+    for post in list(live_posts) + saved_posts:
+        post.username = canonical
+        key = post.post_id or post.link or post_content_signature(canonical, post.text, post.quoted_text)
+        if key and key not in merged:
+            merged[key] = post
+    posts = sorted(merged.values(), key=lambda p: float(p.published_ts or 0.0), reverse=True)[:10]
+
+    if live_posts:
+        try:
+            _remember_successful_special_feed_posts(canonical, live_posts)
+        except Exception as exc:
+            logging.debug("Could not persist manual special-feed history for @%s: %s", canonical, short_error(exc))
+
+    if not posts:
+        detail = f"\n\nשליפת RSS נכשלה: {live_error}" if live_error else ""
+        send_control_text(
+            f"📚 10 אחרונים — {label}\n\n"
+            "לא נמצאו כרגע פוסטים חיים וגם אין תוצאות שמורות מסריקה מוצלחת קודמת."
+            f"{detail}"
+        )
+        return
+
+    entries: list[tuple[Post, str, str, str]] = []
+    prepared: list[tuple[int, Post, str]] = []
+    for index, post in enumerate(posts, 1):
+        status, reason = _history_status_for_post(post)
+        entries.append((post, _translate_history_post(post), status, reason))
+        token = remember_control_prepared_send(post, "", "", "")
+        prepared.append((index, post, token))
+    send_control_html(_fit_history_entries_one_message(entries, label), _history_prepare_markup(prepared))
+
+# ====== END SPECIAL-FEED HISTORY RELIABILITY PATCH ======
+
+
+# ====== GPT-5.6 UNIVERSAL 10-LATEST HISTORY RELIABILITY PATCH ======
+# FUTURE AI MAINTENANCE — DO NOT REMOVE:
+# The automatic RSS engine is deliberately untouched. This layer only remembers
+# posts that the normal scanner/control lookup has already fetched successfully,
+# so the "10 אחרונים לפי כתב" button works for every configured writer/source
+# even when one RSS mirror is temporarily empty. Never reset or rename this state
+# key during future code updates; it is part of the bot's persistent history.
+
+ALL_WRITERS_CONTROL_HISTORY_STATE_KEY = "all_writers_control_recent_posts_v1"
+ALL_WRITERS_CONTROL_HISTORY_MAX_ITEMS = 40
+
+
+def _control_history_username(username: str) -> str:
+    """Return the configured canonical handle without changing ordinary writers."""
+    raw = str(username or "").strip().lstrip("@")
+    if not raw:
+        return raw
+    try:
+        special = _special_feed_history_canonical(raw)
+        if special:
+            return special
+    except Exception:
+        pass
+    # Preserve the exact configured casing whenever possible.
+    for configured in all_control_test_accounts():
+        if str(configured).casefold() == raw.casefold():
+            return str(configured)
+    return raw
+
+
+def _remember_all_writer_control_posts(username: str, posts: list[Post]) -> None:
+    canonical = _control_history_username(username)
+    valid = [post for post in (posts or []) if isinstance(post, Post)]
+    if not canonical or not valid:
+        return
+    state = load_control_state()
+    snapshots = state.get(ALL_WRITERS_CONTROL_HISTORY_STATE_KEY, {})
+    if not isinstance(snapshots, dict):
+        snapshots = {}
+
+    # Locate an older differently-cased key, if one exists.
+    stored_key = next((key for key in snapshots if str(key).casefold() == canonical.casefold()), canonical)
+    existing_raw = snapshots.get(stored_key, [])
+    existing_posts: list[Post] = []
+    if isinstance(existing_raw, list):
+        for item in existing_raw:
+            restored = post_from_control_payload(item)
+            if restored is not None:
+                existing_posts.append(restored)
+
+    merged: dict[str, Post] = {}
+    for post in list(valid) + existing_posts:
+        post.username = canonical
+        key = post.post_id or post.link or post_content_signature(canonical, post.text, post.quoted_text)
+        if key and key not in merged:
+            merged[key] = post
+    ordered = sorted(merged.values(), key=lambda item: float(item.published_ts or 0.0), reverse=True)
+    payload = [post_to_control_payload(post) for post in ordered[:ALL_WRITERS_CONTROL_HISTORY_MAX_ITEMS]]
+    if snapshots.get(stored_key) == payload:
+        return
+    if stored_key != canonical:
+        snapshots.pop(stored_key, None)
+    snapshots[canonical] = payload
+    save_control_state(**{ALL_WRITERS_CONTROL_HISTORY_STATE_KEY: snapshots})
+
+
+def _load_all_writer_control_posts(username: str) -> list[Post]:
+    canonical = _control_history_username(username)
+    state = load_control_state()
+    snapshots = state.get(ALL_WRITERS_CONTROL_HISTORY_STATE_KEY, {})
+    if not isinstance(snapshots, dict):
+        return []
+    raw_items = []
+    for key, value in snapshots.items():
+        if str(key).casefold() == canonical.casefold() and isinstance(value, list):
+            raw_items = value
+            break
+    restored: list[Post] = []
+    for item in raw_items:
+        post = post_from_control_payload(item)
+        if post is not None:
+            post.username = canonical
+            restored.append(post)
+    restored.sort(key=lambda item: float(item.published_ts or 0.0), reverse=True)
+    return restored
+
+
+# Remember every successful normal scanner result, for every writer/source.
+_previous_fetch_posts_safely_all_history = fetch_posts_safely
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    resolved_username, posts = _previous_fetch_posts_safely_all_history(username)
+    try:
+        _remember_all_writer_control_posts(resolved_username, posts)
+    except Exception as exc:
+        logging.debug("Could not remember control history for @%s: %s", resolved_username, short_error(exc))
+    return resolved_username, posts
+
+
+# Remember successful manual-control RSS results as well, without changing how
+# those results are fetched or which mirrors are used.
+_previous_fetch_control_posts_reliable_all_history = fetch_control_posts_reliable
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    posts = _previous_fetch_control_posts_reliable_all_history(username, limit=limit) or []
+    if posts:
+        try:
+            _remember_all_writer_control_posts(username, posts)
+        except Exception as exc:
+            logging.debug("Could not persist manual control history for @%s: %s", username, short_error(exc))
+    return posts
+
+
+_previous_run_last_ten_all_history = run_last_ten_account_control_test
+
+
+def run_last_ten_account_control_test(username: str) -> None:
+    """Show up to ten items for every writer by merging live RSS with saved history."""
+    if not CONTROL_CHAT_ID:
+        return
+    canonical = _control_history_username(username)
+    label = _hebrew_account_label(canonical)
+    live_posts: list[Post] = []
+    live_error = ""
+    try:
+        live_posts = fetch_control_posts_reliable(canonical, limit=10) or []
+    except Exception as exc:
+        live_error = short_error(exc, 700)
+        logging.debug("10-latest live lookup failed for @%s: %s", canonical, live_error)
+
+    saved_posts = _load_all_writer_control_posts(canonical)
+    # Keep compatibility with the earlier dedicated special-feed memory.
+    try:
+        saved_posts.extend(_load_saved_special_feed_posts(canonical))
+    except Exception:
+        pass
+    # Also use the short in-memory control cache when available.
+    try:
+        saved_posts.extend(_control_cached_posts(canonical))
+    except Exception:
+        pass
+
+    merged: dict[str, Post] = {}
+    for post in list(live_posts) + saved_posts:
+        if not isinstance(post, Post):
+            continue
+        post.username = canonical
+        key = post.post_id or post.link or post_content_signature(canonical, post.text, post.quoted_text)
+        if key and key not in merged:
+            merged[key] = post
+    posts = sorted(merged.values(), key=lambda item: float(item.published_ts or 0.0), reverse=True)[:10]
+
+    if live_posts:
+        try:
+            _remember_all_writer_control_posts(canonical, live_posts)
+        except Exception as exc:
+            logging.debug("Could not save live 10-latest results for @%s: %s", canonical, short_error(exc))
+
+    if not posts:
+        detail = f"\n\nשליפת RSS נכשלה: {live_error}" if live_error else ""
+        send_control_text(
+            f"📚 10 אחרונים — {label}\n\n"
+            "לא נמצאו כרגע פוסטים חיים וגם לא קיימת היסטוריה שמורה מסריקה מוצלחת קודמת."
+            f"{detail}"
+        )
+        return
+
+    entries: list[tuple[Post, str, str, str]] = []
+    prepared: list[tuple[int, Post, str]] = []
+    for index, post in enumerate(posts, 1):
+        status, reason = _history_status_for_post(post)
+        # This remains Google Translate only. Gemini is used only after the
+        # explicit prepare button is pressed.
+        entries.append((post, _translate_history_post(post), status, reason))
+        token = remember_control_prepared_send(post, "", "", "")
+        prepared.append((index, post, token))
+    send_control_html(_fit_history_entries_one_message(entries, label), _history_prepare_markup(prepared))
+
+# ====== END UNIVERSAL 10-LATEST HISTORY RELIABILITY PATCH ======
+
 if __name__ == "__main__":
     main()
+
+# ====== GPT-5.6 HISTORY BUTTON — MAIN MENU ONLY ======
+# FUTURE AI MAINTENANCE:
+# Keep "10 אחרונים לפי כתב" only in the main menu. Never duplicate it inside
+# "בדיקה וניטור" or any nested monitoring keyboard.
+
+_previous_monitor_menu_reply_markup_main_only = monitor_menu_reply_markup
+
+
+def monitor_menu_reply_markup() -> dict[str, Any]:
+    """Monitoring menu without the separate 10-latest-by-writer entry."""
+    markup = _previous_monitor_menu_reply_markup_main_only()
+    keyboard = []
+    for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else []):
+        cleaned_row = [
+            button for button in row
+            if not (
+                isinstance(button, dict)
+                and str(button.get("callback_data", "")) == "football_choose_account_history"
+            )
+        ]
+        if cleaned_row:
+            keyboard.append(cleaned_row)
+    return {"inline_keyboard": keyboard}
+
+
+_previous_quick_control_reply_markup_main_only = quick_control_reply_markup
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    """Main menu contains exactly one 10-latest-by-writer button."""
+    markup = _previous_quick_control_reply_markup_main_only()
+    source_keyboard = markup.get("inline_keyboard", []) if isinstance(markup, dict) else []
+    keyboard: list[list[dict[str, str]]] = []
+    found = False
+    for row in source_keyboard:
+        cleaned_row: list[dict[str, str]] = []
+        for button in row:
+            if not isinstance(button, dict):
+                continue
+            if str(button.get("callback_data", "")) == "football_choose_account_history":
+                if found:
+                    continue
+                found = True
+            cleaned_row.append(button)
+        if cleaned_row:
+            keyboard.append(cleaned_row)
+    if not found:
+        insert_at = 1 if keyboard else 0
+        keyboard.insert(insert_at, [{
+            "text": stable_button_label("📚 10 אחרונים לפי כתב"),
+            "callback_data": "football_choose_account_history",
+        }])
+    return {"inline_keyboard": keyboard}
+
+# ====== END HISTORY BUTTON — MAIN MENU ONLY ======
