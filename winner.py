@@ -17242,33 +17242,115 @@ def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post
 
 
 def run_last_ten_account_control_test(username: str) -> None:
-    """One organized message, Google Translate only; Gemini only on Prepare."""
+    """Always show progress, then one organized result or an exact failure reason.
+
+    This control-only flow does not alter the automatic scanner or any RSS settings.
+    Google Translate is used for the ten-item preview; Gemini runs only after
+    pressing a dedicated "prepare report" button.
+    """
     if not CONTROL_CHAT_ID:
         return
+
     label = _hebrew_account_label(username)
+    loading_id: int | None = None
+    try:
+        loading_id = send_control_text(
+            f"📚 10 אחרונים — {label}\n\n⏳ מכין את ההודעה...\n"
+            "בודק פוסטים חיים, מטמון והיסטוריה שמורה.",
+            None,
+            control_delete_message_reply_markup(),
+        )
+    except Exception as exc:
+        logging.debug("Could not send 10-latest loading message for @%s: %s", username, short_error(exc))
+
+    started_at = time.time()
     try:
         posts = fetch_last_ten_control_isolated(username, limit=10)
     except Exception as exc:
-        send_control_text(f"📚 10 אחרונים — {label}\n\nהבדיקה נכשלה: {short_error(exc, 700)}")
-        return
-    if not posts:
+        elapsed = max(0.0, time.time() - started_at)
         send_control_text(
-            f"📚 10 אחרונים — {label}\n\n"
-            "עדיין אין לבוט עשרה פוסטים שמורים עבור מקור זה, וגם השליפה הנוכחית לא החזירה פוסט. "
-            "השליחה האוטומטית לא שונתה ולא נעצרה."
+            f"📚 10 אחרונים — {label}\n\n❌ ההכנה נכשלה.\n"
+            f"סיבה: חריגה בזמן איסוף הפוסטים — {short_error(exc, 700)}\n"
+            f"משך הבדיקה: {elapsed:.1f} שניות.\n\n"
+            "השליחה האוטומטית ומנגנון ה־RSS לא שונו ולא נעצרו.",
+            loading_id,
+            control_delete_message_reply_markup(),
+        )
+        return
+
+    if not posts:
+        elapsed = max(0.0, time.time() - started_at)
+        try:
+            cached_count = len(_control_cached_posts(username) or [])
+        except Exception:
+            cached_count = 0
+        try:
+            history_count = len(_ten_history_load(username) or [])
+        except Exception:
+            history_count = 0
+        try:
+            state_count = len(_ten_history_collect_existing_state_posts(username) or [])
+        except Exception:
+            state_count = 0
+        enabled_text = "פעיל" if username in active_x_accounts() else "כבוי או זמין לבדיקה בלבד"
+        send_control_text(
+            f"📚 10 אחרונים — {label}\n\n❌ לא ניתן היה להכין את ההודעה.\n"
+            "סיבה: אף פוסט לא התקבל מכל מקורות הקריאה הזמינים לכפתור הזה.\n\n"
+            f"מצב המקור: {enabled_text}\n"
+            f"מטמון מהיר: {cached_count} פוסטים\n"
+            f"היסטוריית 10 אחרונים: {history_count} פוסטים\n"
+            f"היסטוריית נשלח/נחסם/הוכן: {state_count} פוסטים\n"
+            f"משך הבדיקה: {elapsed:.1f} שניות.\n\n"
+            "המשמעות היא שהשליפה החיה החזירה ריק וגם לא נמצא גיבוי שמור. "
+            "השליחה האוטומטית ומנגנון ה־RSS לא שונו ולא נעצרו.",
+            loading_id,
+            control_delete_message_reply_markup(),
         )
         return
 
     entries: list[tuple[Post, str, str, str]] = []
     prepared: list[tuple[int, Post, str]] = []
-    for index, post in enumerate(posts[:10], 1):
-        status, reason = _history_status_for_post(post)
-        # This function is the established Google Translate preview path.
-        translated = _translate_history_post(post)
-        entries.append((post, translated, status, reason))
-        token = remember_control_prepared_send(post, "", "", "")
-        prepared.append((index, post, token))
-    send_control_html(_fit_history_entries_one_message(entries, label), _history_prepare_markup(prepared))
+    try:
+        for index, post in enumerate(posts[:10], 1):
+            status, reason = _history_status_for_post(post)
+            # Established Google Translate preview path; no Gemini here.
+            translated = _translate_history_post(post)
+            entries.append((post, translated, status, reason))
+            token = remember_control_prepared_send(post, "", "", "")
+            prepared.append((index, post, token))
+
+        final_html = _fit_history_entries_one_message(entries, label)
+        markup = _history_prepare_markup(prepared)
+        if loading_id:
+            try:
+                telegram_api(
+                    "editMessageText",
+                    {
+                        "chat_id": CONTROL_CHAT_ID,
+                        "message_id": int(loading_id),
+                        "text": trim(rtl(final_html), 4090),
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": True,
+                        "reply_markup": ensure_delete_button_reply_markup(markup),
+                    },
+                    max_attempts=1,
+                    timeout=max(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS, 2.0),
+                )
+                return
+            except Exception as exc:
+                logging.debug("Could not replace 10-latest loading message for @%s: %s", username, short_error(exc))
+        send_control_html(final_html, markup)
+    except Exception as exc:
+        elapsed = max(0.0, time.time() - started_at)
+        send_control_text(
+            f"📚 10 אחרונים — {label}\n\n❌ הפוסטים נמצאו, אך בניית ההודעה נכשלה.\n"
+            f"סיבה: {short_error(exc, 700)}\n"
+            f"נמצאו לפני הכשל: {len(posts)} פוסטים.\n"
+            f"משך הבדיקה: {elapsed:.1f} שניות.\n\n"
+            "השליחה האוטומטית ומנגנון ה־RSS לא שונו.",
+            loading_id,
+            control_delete_message_reply_markup(),
+        )
 
 # ====== END ISOLATED 10-LATEST REBUILD ======
 
@@ -17566,7 +17648,6 @@ _prev_control_send_markup_edit = control_send_to_main_reply_markup
 def control_send_to_main_reply_markup(token: str) -> dict[str, Any]:
     return stable_reply_markup([
         [{"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}],
-        [{"text": "✏️ ערוך לפני שליחה", "callback_data": f"football_edit_prepared:{token}"}],
         [{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}],
     ])
 
@@ -17677,6 +17758,257 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
     return {"inline_keyboard": keyboard}
 
 # ====== END TARGETED FINAL FIX ======
+
+# ====== GPT-5.6 TARGETED QUALITY FIXES — RSS/SCANNER CORE UNTOUCHED ======
+# FUTURE AI MAINTENANCE:
+# - Do not modify fetch_feed(), fetch_posts(), RSS mirrors/order/timeouts/retries,
+#   or the automatic scanning loop in this patch.
+# - FootballFactly and OptaJoe are special feeds: text-only factual posts are valid.
+#   They do not require media. Media-only/very-short posts still fail the 15-word rule.
+# - Keep compact lists for every writer. A country flag that belongs to the end of
+#   a list row must remain on that row, not on a separate line.
+# - OptaJoe only: remove an AI-added final slogan of 1-3 words when it is absent
+#   from the source. Never invent a replacement slogan.
+
+# Requested threshold: only a clearly stated fee below EUR/GBP/USD 10m is small.
+# No amount mentioned means "unknown", never "below threshold".
+MIN_TRANSFER_FEE_MILLIONS_TO_SEND = 10.0
+
+_SPECIAL_BETTING_RE = re.compile(
+    r"\b(?:bet(?:ting)?|odds?|bookmaker|1xbet|bet365|stake|parlay|accumulator|promo\s*code|registration\s*code)\b|"
+    r"הימור(?:ים)?|יחס(?:ים)?|סיכוי(?:ים)?\s+של\s+\d|קוד\s+רישום|קוד\s+הטבה|טופס\s+הימורים|ווינר|1xBet|18\+|\+18",
+    re.IGNORECASE | re.UNICODE,
+)
+_SPECIAL_PREDICTION_RE = re.compile(
+    r"\b(?:predict(?:ed|ion|s)?|prediction|tip(?:s)?|pick(?:s)?|forecast|will\s+win|to\s+win)\b|"
+    r"ניחוש(?:ים)?|ניבא(?:ה|ו)?|חזתה|תחזית|הימר(?:ה|ו)?|מי\s+תזכה|מי\s+ינצח|פייבוריט(?:ית|ים)?\s+הברורה",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _special_feed_best_caption(*parts: Any, **kwargs: Any) -> str:
+    """Choose the fullest real caption available, avoiding the old under-count bug."""
+    candidates: list[str] = []
+
+    def add(value: Any) -> None:
+        if value is None:
+            return
+        text = str(value or "").strip()
+        if text:
+            candidates.append(text)
+
+    for value in list(parts) + list(kwargs.values()):
+        if isinstance(value, Post):
+            for key in ("text", "raw_text", "full_text", "content", "caption", "description"):
+                add(getattr(value, key, ""))
+        elif isinstance(value, dict):
+            for key in ("text", "raw_text", "full_text", "content", "caption", "description", "translated"):
+                add(value.get(key))
+        elif isinstance(value, str):
+            add(value)
+    try:
+        add(extract_original_post_caption_for_rules(*parts, **kwargs))
+    except Exception:
+        pass
+
+    cleaned: list[str] = []
+    for text in candidates:
+        text = html.unescape(text)
+        text = re.sub(r"^\s*(?:עובדות כדורגל|FootballFactly|@FootballFactly|OptaJoe|@OptaJoe|אופטה)\s*[:：\-–—]?\s*", "", text, flags=re.I)
+        text = re.sub(r"https?://\S+", " ", text)
+        text = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", text)
+        cleaned.append(re.sub(r"\s+", " ", text).strip())
+    return max(cleaned, key=count_content_words, default="")
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    """Final special-feed rules, deliberately independent of normal writer filters."""
+    source_name = special_fact_feed_name(*parts, **kwargs)
+    if not source_name:
+        return ""
+    label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
+    post = next((part for part in parts if isinstance(part, Post)), None)
+    text = _special_feed_best_caption(*parts, **kwargs)
+
+    if post is not None and is_women_or_wnba_post(post):
+        return f"{label}: כדורגל נשים או WNBA נחסם"
+    if post is not None and is_other_sport_post(post):
+        return f"{label}: ענף ספורט שאינו כדורגל גברים נחסם"
+    if special_fact_feed_is_interview_or_mere_quote(*parts, **kwargs):
+        return f"{label}: ראיון, דעה או ציטוט שאינו עובדה נחסם"
+    if _SPECIAL_FACT_LIVE_RE.search(text):
+        return f"{label}: שידור או לייב נחסם"
+    if _SPECIAL_BETTING_RE.search(text):
+        return f"{label}: הימורים, יחסי זכייה או תוכן 18+ נחסמו"
+    if _SPECIAL_PREDICTION_RE.search(text):
+        return f"{label}: ניחוש, תחזית או הימור שאינם עובדה נחסמו"
+    words = count_content_words(text)
+    if words < FOOTBALL_FACTLY_MIN_WORDS:
+        return f"{label}: פחות מ-{FOOTBALL_FACTLY_MIN_WORDS} מילים ({words} מילים זוהו)"
+    # Text-only factual posts are valid. No photo/video requirement.
+    return ""
+
+
+def _is_emoji_only_line(value: str) -> bool:
+    plain = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff\s]", "", value or "")
+    if not plain:
+        return False
+    # Emoji/flags/punctuation only; any Hebrew/Latin/digit means it is real text.
+    return not bool(re.search(r"[\u0590-\u05ffA-Za-z0-9]", plain))
+
+
+def _attach_orphan_end_emojis(value: str) -> str:
+    """Attach a flag/checkmark-only line to the preceding list sentence."""
+    out: list[str] = []
+    for raw in str(value or "").splitlines():
+        line = raw.strip()
+        if line and _is_emoji_only_line(line) and out:
+            previous = out[-1].rstrip()
+            # Never attach across a deliberate blank paragraph.
+            if previous and not _is_emoji_only_line(previous):
+                out[-1] = f"{previous} {line}".strip()
+                continue
+        out.append(raw.rstrip())
+    return "\n".join(out)
+
+
+def _remove_gibberish_tokens(value: str) -> str:
+    """Remove obvious elongated garbage tokens while preserving ordinary emphasis."""
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        letters = re.sub(r"[^\u0590-\u05ffA-Za-z]", "", token)
+        if len(letters) < 12:
+            return token
+        low = letters.casefold()
+        if re.search(r"(.)\1{5,}", low) or len(set(low)) <= 4:
+            return ""
+        return token
+    text = re.sub(r"[\u0590-\u05ffA-Za-z]{12,}", repl, str(value or ""))
+    return re.sub(r"[ \t]{2,}", " ", text)
+
+
+def _same_writer_aliases(post: Post) -> list[str]:
+    username = str(getattr(post, "username", "") or "")
+    aliases = list(SELF_QUOTE_ALIASES.get(username, []))
+    display = ACCOUNT_DISPLAY_NAMES.get(username, "")
+    if display:
+        aliases.append(display)
+    return [alias for alias in dict.fromkeys(aliases) if alias]
+
+
+def _remove_duplicate_self_attribution(post: Post, value: str) -> str:
+    """Remove 'also X reports...' when X is already the message heading."""
+    text = str(value or "")
+    for alias in _same_writer_aliases(post):
+        esc = re.escape(alias)
+        patterns = (
+            rf"(?:^|(?<=[.!?])\s+)(?:גם\s+)?{esc}\s+(?:מדווח|דיווח|מאשר|אישר)(?:\s+על\s+המהלך)?\s*[.!?]*",
+            rf"(?:^|(?<=[.!?])\s+)(?:also\s+)?{esc}\s+(?:reports?|reported|confirms?|confirmed)(?:\s+the\s+move)?\s*[.!?]*",
+        )
+        for pattern in patterns:
+            text = re.sub(pattern, " ", text, flags=re.I | re.UNICODE)
+    return re.sub(r"\s+([,.!?])", r"\1", re.sub(r"[ \t]{2,}", " ", text)).strip()
+
+
+def _remove_opta_short_generated_tail(post: Post, value: str) -> str:
+    """Opta only: drop a final 1-3 word AI slogan absent from the source."""
+    if not value_contains_optajoe(getattr(post, "username", "")):
+        return str(value or "")
+    text = str(value or "").strip()
+    source = _source_plain_text(post)
+    # Last sentence/paragraph of 1-3 words.
+    match = re.search(r"(?:\n\s*\n|(?<=[.!?])\s+)([\u0590-\u05ffA-Za-z][\u0590-\u05ffA-Za-z'״׳-]*(?:\s+[\u0590-\u05ffA-Za-z][\u0590-\u05ffA-Za-z'״׳-]*){0,2})[.!?…]*\s*$", text)
+    if not match:
+        return text
+    tail = match.group(1).strip()
+    if tail and tail.casefold() not in source.casefold():
+        return text[:match.start()].rstrip()
+    return text
+
+
+def _final_targeted_layout(post: Post, value: str) -> str:
+    text = _remove_duplicate_self_attribution(post, value)
+    text = _remove_opta_short_generated_tail(post, text)
+    text = _remove_gibberish_tokens(text)
+    try:
+        text = format_stat_list_lines(text)
+    except Exception:
+        pass
+    text = _attach_orphan_end_emojis(text)
+    # Keep list rows compact, ordinary paragraphs separated by one blank line.
+    try:
+        text = _compact_list_blank_lines(text)
+    except Exception:
+        pass
+    text = re.sub(r"(?<!\.)\.\s*\.(?=\s|$)", ".", text)
+    text = re.sub(r"([!?])\s*\.(?=\s|$)", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+_prev_build_message_final_quality = build_message
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _final_targeted_layout(post, translated)
+    if quoted_translated:
+        quoted_translated = _final_targeted_layout(post, quoted_translated)
+    rendered = _prev_build_message_final_quality(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+    # Final guard after all older wrappers: no doubled terminal punctuation.
+    rendered = re.sub(r"\.\s*\.(?=(?:\s|<|$))", ".", rendered)
+    rendered = re.sub(r"([!?])\s*\.(?=(?:\s|<|$))", r"\1", rendered)
+    return rendered
+
+
+# Every item in the 10-latest summary contains its own clickable source link;
+# the existing source/prepare buttons below the message remain too.
+def _history_entry_html(index: int, total: int, post: Post, label: str, translated: str, status: str, reason: str) -> str:
+    published_at = datetime.fromtimestamp(post.published_ts, tz=ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m %H:%M") if post.published_ts else "זמן לא ידוע"
+    link = str(post.link or "").strip()
+    source_link = f' · <a href="{html.escape(link, quote=True)}">קישור לפוסט</a>' if link.startswith(("http://", "https://")) else ""
+    return (
+        f"<b>{index}/{total}</b> — {html.escape(rtl(translated))}\n"
+        f"{html.escape(status)} | {html.escape(trim(reason, 92))} | {html.escape(published_at)}{source_link}"
+    )
+
+
+# A bare 'seen' bit is not proof that Telegram received the post.
+_prev_history_status_final_quality = _history_status_for_post
+
+def _history_status_for_post(post: Post) -> tuple[str, str]:
+    status, reason = _prev_history_status_final_quality(post)
+    if status == "☑️ כבר טופל" and "לא נמצא רישום מפורט" in str(reason):
+        return "⚠️ סומן כנצפה", "אין רישום שמוכיח שנשלח; ייתכן שסומן בלי שליחה"
+    return status, reason
+
+
+# When an administrator edits the bot's preview message directly in Telegram,
+# use the current edited text/caption when the Send button is pressed.
+_prev_process_control_update_capture_edit = process_control_update
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if data.startswith("football_send_test:"):
+        token = data.split(":", 1)[1].strip()
+        message = callback.get("message") or {}
+        current = str(message.get("caption") or message.get("text") or "").strip()
+        if current and "נטו ספורט" in current and not current.startswith("⚠️ ספק"):
+            # Telegram returns entities separately; escaping preserves the admin's
+            # exact visible wording and line breaks safely for the main channel.
+            current_html = normalize_neto_sport_footer(html.escape(re.sub(r"\n{3,}", "\n\n", current)))
+            _save_manual_edit(token, current_html)
+    return _prev_process_control_update_capture_edit(update)
+
+# ====== END GPT-5.6 TARGETED QUALITY FIXES ======
+
 
 if __name__ == "__main__":
     main()
