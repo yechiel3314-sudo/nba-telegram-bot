@@ -3129,7 +3129,6 @@ def account_latest_menu_reply_markup() -> dict[str, Any]:
                 "callback_data": f"football_test_last_ten_account:{username}",
             },
         ])
-    keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return stable_reply_markup(keyboard)
 
@@ -14991,7 +14990,6 @@ def account_latest_menu_reply_markup() -> dict[str, Any]:
             "text": f"{_hebrew_account_label(username)} — פוסט אחרון",
             "callback_data": f"football_test_latest_account:{username}",
         }])
-    keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return stable_reply_markup(keyboard)
 
@@ -15173,12 +15171,22 @@ def maybe_notify_control_borderline_item(item: dict[str, Any]) -> None:
             item["quoted_author_translated"] = quoted_author_translated
             _persist_force_item(item)
             message_html = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
-            _send_full_control_candidate(post, token, message_html)
+            raw_reason = str(item.get("raw_reason") or item.get("reason") or "").strip()
+            reason_text = hebrew_block_reason(raw_reason) if raw_reason else "הדיווח לא עבר בוודאות את הסינון האוטומטי"
+            borderline_html = (
+                "<b>⚠️ ספק</b>\n"
+                f"<b>סיבה:</b> {html.escape(reason_text)}\n\n"
+                f"{message_html}"
+            )
+            _send_full_control_candidate(post, token, borderline_html)
         except Exception as exc:
             logging.warning("תצוגת דיווח גבולי מאוחדת נכשלה: %s", exc)
             try:
+                raw_reason = str(item.get("raw_reason") or item.get("reason") or "").strip()
+                reason_text = hebrew_block_reason(raw_reason) if raw_reason else "הדיווח לא עבר בוודאות את הסינון האוטומטי"
+                fallback_preview = str(item.get("preview") or item.get("text") or "דיווח גבולי")
                 send_control_text(
-                    str(item.get("preview") or item.get("text") or "דיווח גבולי"),
+                    f"⚠️ ספק\nסיבה: {reason_text}\n\n{fallback_preview}",
                     None,
                     control_block_actions_reply_markup([item], include_delete=True),
                 )
@@ -15297,7 +15305,6 @@ def quick_control_reply_markup() -> dict[str, Any]:
 
 def monitor_menu_reply_markup() -> dict[str, Any]:
     keyboard = [
-        [{"text": "📚 10 אחרונים לפי כתב", "callback_data": "football_choose_account_history"}],
         [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
         [{"text": "📡 בדיקת RSS", "callback_data": "football_rss_status"}],
         [{"text": "🤖 מצב Gemini", "callback_data": "football_gemini_status"}],
@@ -15870,7 +15877,6 @@ def account_latest_menu_reply_markup() -> dict[str, Any]:
             "text": f"{_hebrew_account_label(username)} — פוסט אחרון ({status})",
             "callback_data": f"football_test_latest_account:{username}",
         }])
-    keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return stable_reply_markup(keyboard)
 
@@ -15994,7 +16000,6 @@ def account_latest_menu_reply_markup() -> dict[str, Any]:
             "text": _hebrew_account_label(username),
             "callback_data": f"football_test_latest_account:{username}",
         }])
-    keyboard.append([{"text": "ℹ️ הסבר בדיקת כתב", "callback_data": "football_category_help:account_latest"}])
     keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
     return stable_reply_markup(keyboard)
 
@@ -16579,8 +16584,6 @@ assert "google_translate" in _translate_history_post.__code__.co_names
 
 # ====== END GPT-5.6 SPECIAL FEEDS FINAL QUALITY PATCH ======
 
-if __name__ == "__main__":
-    main()
 
 # ====== FINAL CONTROL RSS REPAIR — CORE AUTOMATIC RSS ENGINE UNCHANGED ======
 # IMPORTANT FOR FUTURE AI EDITORS:
@@ -16739,3 +16742,355 @@ def run_last_ten_account_control_test(username: str) -> None:
     send_control_html(_fit_history_entries_one_message(entries, label), _history_prepare_markup(prepared))
 
 # ====== END FINAL CONTROL RSS REPAIR ======
+
+# ====== GPT-5.6 TARGETED EDITORIAL PATCH — RSS UNTOUCHED ======
+# FUTURE AI MAINTENANCE:
+# - Do not change RSS functions, mirrors, retries, timeouts, cache or source order here.
+# - NicoSchira must not auto-publish World Cup / national-team tournament updates.
+# - OptaJoe and FootballFactly items that pass their dedicated automatic rules go
+#   directly to the main Neto Sport channel. They must not be surfaced as
+#   borderline previews in the quiet/control channel.
+# - Manual force-send behavior remains authoritative and unchanged.
+
+_NICO_NATIONAL_TOURNAMENT_RE = re.compile(
+    r"\b(?:World\s+Cup|FIFA\s+World\s+Cup|national\s+team|international\s+duty|"
+    r"EURO(?:s)?|Copa\s+America|AFCON|Nations\s+League|qualifiers?)\b|"
+    r"מונדיאל|גביע\s+העולם|נבחרת|נבחרות|סגל\s+הנבחרת|זימון\s+לנבחרת|"
+    r"מוקדמות|יורו|קופה\s+אמריקה|אליפות\s+אפריקה|ליגת\s+האומות",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _nico_world_cup_or_national_update(post: Post) -> bool:
+    if str(getattr(post, "username", "") or "").casefold() != "nicoschira":
+        return False
+    text = clean_for_ai_translation(
+        html.unescape("\n".join([getattr(post, "text", "") or "", getattr(post, "quoted_text", "") or ""]))
+    )
+    return bool(_NICO_NATIONAL_TOURNAMENT_RE.search(text or ""))
+
+
+_previous_pre_send_final_local_block_reason_targeted = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    """Add only the requested Nico source rule; preserve every existing gate."""
+    if _nico_world_cup_or_national_update(post):
+        return "nico_world_cup_or_national_update"
+    return _previous_pre_send_final_local_block_reason_targeted(post)
+
+
+_previous_hebrew_block_reason_targeted = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    base = (reason or "").split(";", 1)[0].strip()
+    if base == "nico_world_cup_or_national_update":
+        return "ניקולו שירה: דיווח מונדיאל או נבחרות נחסם"
+    return _previous_hebrew_block_reason_targeted(reason)
+
+
+_previous_should_notify_control_borderline_targeted = should_notify_control_borderline_item
+
+
+def should_notify_control_borderline_item(item: dict[str, Any]) -> bool:
+    """Never route special fact feeds (or Nico national-team blocks) to quiet previews."""
+    if isinstance(item, dict):
+        post = post_from_control_payload(item.get("post")) or post_from_control_payload(item)
+        source = str(item.get("source", "") or "")
+        if post is not None and is_special_fact_feed_context(post):
+            return False
+        if is_special_fact_feed_context(source):
+            return False
+        raw_reason = str(item.get("raw_reason", "") or "")
+        if raw_reason.startswith("nico_world_cup_or_national_update"):
+            return False
+    return _previous_should_notify_control_borderline_targeted(item)
+
+
+def _repair_optajoe_bad_closing_word(text: str) -> str:
+    """Repair the occasional nonsensical standalone Hebrew 'אמן' ending in Opta copy."""
+    value = str(text or "").strip()
+    if not value:
+        return value
+    # Replace only a final standalone closing word/paragraph, never a name or quote.
+    if not re.search(r"(?:^|\n|[.!?]\s+)אמן[.!?]?\s*$", value, re.UNICODE):
+        return value
+    body = re.sub(r"(?:\n\s*)?אמן[.!?]?\s*$", "", value, flags=re.UNICODE).rstrip()
+    low = body.casefold()
+    if re.search(r"מסיר|מסירות|passes?|pass completion|completed", low, re.IGNORECASE):
+        closing = "שליטה מוחלטת."
+    elif re.search(r"שער נקי|רשת נקייה|clean sheets?", low, re.IGNORECASE):
+        closing = "סגירה הרמטית."
+    elif re.search(r"שערים|goals?|כיבושים", low, re.IGNORECASE):
+        closing = "חדות יוצאת דופן."
+    else:
+        closing = "נתון מרשים."
+    return f"{body}\n\n{closing}".strip()
+
+
+_previous_build_message_targeted = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    """Apply the Opta closing-word repair before the unchanged final renderer."""
+    if value_contains_optajoe(getattr(post, "username", "")):
+        translated = _repair_optajoe_bad_closing_word(translated)
+    return _previous_build_message_targeted(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+
+# ====== END GPT-5.6 TARGETED EDITORIAL PATCH ======
+
+
+# ====== GPT-5.6 WRITER RELIABILITY + BUYER-AWARE FILTER PATCH (RSS CORE UNTOUCHED) ======
+# FUTURE AI MAINTENANCE — KEEP THESE GUARANTEES:
+# 1. Do not modify fetch_feed(), fetch_posts(), FEED_TEMPLATES, mirror order,
+#    retry/time-out values or the automatic RSS scanner for this patch.
+# 2. A concrete transfer report is eligible when the ACQUIRING club is in any
+#    managed/allowed tier, even when the selling club is outside the tiers.
+#    The inverse is not enough: an allowed selling club moving a player to an
+#    untracked destination remains blocked.
+# 3. FootballFactly and OptaJoe are never ordinary borderline/idea feeds. They
+#    either pass their dedicated automatic gates and go directly to Neto Sport,
+#    or are blocked with a precise reason. Manual force-send always overrides.
+# 4. Manual "prepare/send" always uses the complete final renderer, including
+#    paragraph/list spacing, before showing or sending the message.
+# 5. The 10-latest screen remains Google Translate only; Gemini is used only by
+#    the explicit "prepare report" button.
+# 6. Every ordinary borderline preview sent to the control/quiet channel must be
+#    headed "ספק" and show the exact Hebrew reason. The final Neto Sport message
+#    itself remains unchanged when the user presses force-send.
+
+# Di Marzio must not be punished by an extra source-wide strictness layer. His
+# posts still pass every normal content/relevance/duplicate rule.
+EXTRA_STRICT_SOURCE_ACCOUNTS = {name for name in EXTRA_STRICT_SOURCE_ACCOUNTS if name != "DiMarzio"}
+
+_TRANSFER_BUYER_ACTION_RE = re.compile(
+    r"(?:submitted|made|lodged|sent|preparing|readying|have made|has made|open(?:ed)?|"
+    r"want(?:s)?|keen|interested|push(?:ing)?|working|talks?|negotiat(?:e|es|ing)|"
+    r"close|agree(?:d)?|sign(?:ing)?|move(?:s|d|ing)?|bid|offer|proposal|"
+    r"הגיש(?:ה|ו)?|הגישה|הגישו|הציע(?:ה|ו)?|הצעה|מעוניינ(?:ת|ים)?|רוצה|רוצים|"
+    r"דוחפ(?:ת|ים)?|פועל(?:ת|ים)?|בשיחות|מגעים|משא ומתן|מו[\"״']?מ|קרוב(?:ה|ים)?|"
+    r"סיכמ(?:ה|ו)?|להחתים|לצרף|לרכוש|להשאיל|יחתים|יצרף)",
+    re.IGNORECASE | re.UNICODE,
+)
+_TRANSFER_NEWS_MECHANIC_RE = re.compile(
+    r"\b(?:bid|offer|proposal|club[- ]to[- ]club|talks?|negotiations?|loan|buy option|"
+    r"option to buy|obligation to buy|fee|million|sign|transfer|deal|agreement)\b|"
+    r"הצעה|שיחות|מועדון\s+למועדון|משא\s+ומתן|מו[\"״']?מ|השאלה|סעיף\s+רכישה|"
+    r"אופציית\s+רכישה|חובת\s+רכישה|מיליון|להחתים|לצרף|העברה|עסקה|סיכום",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _tracked_club_in_text(value: str) -> bool:
+    return bool(
+        _matches_any(ALLOWED_CLUB_PATTERNS, value)
+        or _matches_any(FINAL_ONLY_ALLOWED_CLUB_PATTERNS, value)
+        or _matches_any(POPULAR_OR_RECENT_UCL_CLUB_PATTERNS, value)
+        or matches_managed_team_tier("tier1", value)
+        or matches_managed_team_tier("tier2", value)
+        or matches_managed_team_tier("tier3", value)
+        or _matches_any(ISRAELI_LEAGUE_PATTERNS, value)
+    )
+
+
+def tracked_acquiring_club_transfer(post: Post) -> bool:
+    """Recognize the buyer, not merely any club mentioned in a transfer post.
+
+    Most reporter copy places the acquiring club before the first transfer action:
+    "Fiorentina submitted...", "Arsenal want...". We therefore inspect the
+    leading clause before that action. This avoids approving a move merely because
+    the SELLING club is tracked.
+    """
+    raw = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if not raw or not _TRANSFER_NEWS_MECHANIC_RE.search(raw):
+        return False
+    # Preserve enough leading context for emoji/"exclusive" prefixes and names.
+    match = _TRANSFER_BUYER_ACTION_RE.search(raw)
+    if not match:
+        return False
+    prefix = raw[:match.start()].strip()
+    if len(prefix) > 240:
+        prefix = prefix[-240:]
+    return _tracked_club_in_text(prefix)
+
+
+_prev_unclear_main_club_context_post_buyer = is_unclear_main_club_context_post
+
+def is_unclear_main_club_context_post(post: Post) -> bool:
+    if tracked_acquiring_club_transfer(post):
+        return False
+    return _prev_unclear_main_club_context_post_buyer(post)
+
+
+_prev_explicit_untracked_destination_buyer = is_explicit_untracked_destination_club
+
+def is_explicit_untracked_destination_club(post: Post) -> bool:
+    if tracked_acquiring_club_transfer(post):
+        return False
+    return _prev_explicit_untracked_destination_buyer(post)
+
+
+_prev_importance_block_buyer = football_importance_block_reason
+
+def football_importance_block_reason(post: Post) -> str:
+    if tracked_acquiring_club_transfer(post):
+        return ""
+    return _prev_importance_block_buyer(post)
+
+
+_prev_pre_send_buyer = pre_send_final_local_block_reason
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _prev_pre_send_buyer(post)
+    if not reason:
+        return ""
+    # Rescue only relevance/club-identification failures. Safety filters such as
+    # women, other sport, interview, live, old, youth and duplicates stay intact.
+    rescue_prefixes = (
+        "untracked_destination_club", "unclear_main_club_context",
+        "importance_score_too_low", "top5_weak_interest", "top5_club_but_no_transfer",
+        "small_club_not_important", "final_only_club_requires", "minor_destination",
+        "low_interest_club", "allowed_club",
+    )
+    if tracked_acquiring_club_transfer(post) and str(reason).startswith(rescue_prefixes):
+        return ""
+    return reason
+
+
+# Special feeds have a small, explicit automatic block list. They do NOT inherit
+# the large reporter relevance filter. These are the only editorial blocks here:
+# - fewer than 15 original words
+# - no photo/video
+# - women's football / WNBA
+# - another sport
+# - interview, opinion-only quotation, live/broadcast promotion
+_SPECIAL_FACT_LIVE_RE = re.compile(
+    r"\b(?:live|watch live|live stream|broadcast|streaming|spaces?|twitch|youtube live)\b|"
+    r"שידור\s+חי|שידור|לייב|הצטרפו\s+לשידור|צפו\s+בשידור",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_prev_special_issue_exact = football_factly_filter_issue
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    source_name = special_fact_feed_name(*parts, **kwargs)
+    if not source_name:
+        return ""
+    label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
+    post = next((part for part in parts if isinstance(part, Post)), None)
+    text = extract_original_post_caption_for_rules(*parts, **kwargs)
+    if post is not None and is_women_or_wnba_post(post):
+        return f"{label}: כדורגל נשים או WNBA נחסם"
+    if post is not None and is_other_sport_post(post):
+        return f"{label}: ענף ספורט שאינו כדורגל גברים נחסם"
+    if special_fact_feed_is_interview_or_mere_quote(*parts, **kwargs):
+        return f"{label}: ראיון, דעה או ציטוט שאינו עובדה נחסם"
+    if _SPECIAL_FACT_LIVE_RE.search(str(text or "")):
+        return f"{label}: שידור או לייב נחסם"
+    if count_content_words(text) < FOOTBALL_FACTLY_MIN_WORDS:
+        return f"{label}: פחות מ-{FOOTBALL_FACTLY_MIN_WORDS} מילים"
+    if not football_factly_has_image_or_video(*parts, **kwargs):
+        return f"{label}: פוסט בלי תמונה או סרטון לא נשלח"
+    return ""
+
+
+_prev_borderline_no_ideas = should_notify_control_borderline_item
+
+def should_notify_control_borderline_item(item: dict[str, Any]) -> bool:
+    if isinstance(item, dict):
+        post = post_from_control_payload(item.get("post")) or post_from_control_payload(item)
+        source = str(item.get("source", "") or "")
+        if (post is not None and is_special_fact_feed_context(post)) or is_special_fact_feed_context(source):
+            return False
+        reason = str(item.get("raw_reason", "") or "").casefold()
+        # Do not automatically send vague ideas/interest suggestions to quiet.
+        if any(token in reason for token in (
+            "idea", "vague", "weak_interest", "importance_score_too_low",
+            "not_important", "rumour_without", "player_idea",
+        )):
+            return False
+    return _prev_borderline_no_ideas(item)
+
+
+# Manual controls: first use the proven core fetch_posts path, then supplement
+# from the already-existing direct mirror helper. This changes no automatic RSS.
+_prev_fetch_control_reliable_combined = fetch_control_posts_reliable
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    cached = _control_cached_posts(username)
+    merged: dict[str, Post] = {}
+    for post in cached:
+        key = post.post_id or post.link or post_content_signature(username, post.text, post.quoted_text)
+        merged[key] = post
+    try:
+        for post in (fetch_posts(username) or []):
+            post.username = username
+            key = post.post_id or post.link or post_content_signature(username, post.text, post.quoted_text)
+            merged.setdefault(key, post)
+    except Exception as exc:
+        logging.debug("Core RSS manual lookup failed for @%s: %s", username, short_error(exc))
+    if len(merged) < limit:
+        try:
+            for post in (_prev_fetch_control_reliable_combined(username, limit) or []):
+                post.username = username
+                key = post.post_id or post.link or post_content_signature(username, post.text, post.quoted_text)
+                merged.setdefault(key, post)
+        except Exception as exc:
+            logging.debug("Supplemental manual RSS lookup failed for @%s: %s", username, short_error(exc))
+    posts = sorted(merged.values(), key=lambda item: float(item.published_ts or 0.0), reverse=True)
+    if posts:
+        _remember_control_rss_posts(username, posts)
+    return posts[:limit]
+
+
+# Keep writer checks responsive: one recent item returns as soon as the core path
+# succeeds; 10-latest is assembled in one message, Google-only as before.
+def fetch_latest_post_fast(username: str) -> Post | None:
+    cached = _control_cached_posts(username)
+    if cached:
+        return cached[0]
+    try:
+        posts = fetch_posts(username) or []
+        if posts:
+            posts = _remember_control_rss_posts(username, posts)
+            return posts[0]
+    except Exception as exc:
+        logging.debug("Fast latest core RSS failed for @%s: %s", username, short_error(exc))
+    posts = fetch_control_posts_reliable(username, limit=1)
+    return posts[0] if posts else None
+
+
+# In-code concise diagnostics for active writers. It does not disable anyone and
+# does not change scanning. It records whether RSS returned items so Railway logs
+# distinguish an RSS-source outage from an editorial block.
+def log_active_writer_rss_health_once() -> None:
+    active = list(active_x_accounts())
+    logging.info("Active writer scan set (%s): %s", len(active), ", ".join(active))
+    for username in active:
+        try:
+            posts = fetch_posts(username) or []
+            newest = max((float(p.published_ts or 0.0) for p in posts), default=0.0)
+            age = int(max(0.0, time.time() - newest)) if newest else -1
+            logging.info("RSS health @%s: posts=%s newest_age_seconds=%s", username, len(posts), age)
+        except Exception as exc:
+            logging.warning("RSS health @%s failed: %s", username, short_error(exc, 500))
+
+
+# ====== END GPT-5.6 WRITER RELIABILITY + BUYER-AWARE FILTER PATCH ======
+
+
+if __name__ == "__main__":
+    main()
