@@ -75,7 +75,7 @@ from zoneinfo import ZoneInfo
 # or JSON keys. Make only the requested change and keep backward compatibility.
 # ============================================================================
 
-BOT_BUILD_ID = "football-factly-two-rules-only-2026-07-15"
+BOT_BUILD_ID = "football-factly-word-count-rss-split-fix-2026-07-15"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -4956,7 +4956,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         blocked_posts = [item for item in blocked_posts if isinstance(item, dict)][-30:]
         send_control_text(
             _control_list_text("📋 30 חסימות אחרונות", blocked_posts, "אין חסימות שמורות כרגע.", limit=30),
-            message.get("message_id"),
+            None,
             control_history_reply_markup() if blocked_posts else monitor_menu_reply_markup(),
         )
     elif data == "football_blocked_summary":
@@ -4970,7 +4970,7 @@ def process_control_update(update: dict[str, Any]) -> None:
         duplicate_items = recent_duplicate_control_items(state, limit=10)
         send_control_text(
             _control_list_text("🧠 10 כפילויות אחרונות", duplicate_items, "אין כפילויות שמורות כרגע.", limit=10),
-            message.get("message_id"),
+            None,
             control_history_reply_markup() if duplicate_items else monitor_menu_reply_markup(),
         )
     elif False and data == "football_last_duplicate":
@@ -17009,6 +17009,58 @@ _SPECIAL_FACT_LIVE_RE = re.compile(
 
 _prev_special_issue_exact = football_factly_filter_issue
 
+def special_fact_feed_original_text_for_word_limit(*parts: Any, **kwargs: Any) -> str:
+    """Return the complete original visible caption for the 15-word gate only.
+
+    Some RSS mirrors split one X post into ``text`` and ``quoted_text`` even when
+    both pieces are visibly part of the same fact/statistics post. The old check
+    examined only the longest single field, which could incorrectly report fewer
+    than 15 words. This helper joins the original RSS pieces without using the
+    translation and without changing any other filter or formatting rule.
+    """
+    pieces: list[str] = []
+
+    def add_piece(value: Any) -> None:
+        text = html.unescape(str(value or "")).strip()
+        if not text:
+            return
+        # Remove only transport/UI noise that is not part of the written caption.
+        text = re.sub(r"https?://\S+", " ", text)
+        text = re.sub(r"(?i)\b(?:pic\.twitter\.com|twitter\.com|x\.com)/\S+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return
+        normalized = re.sub(r"[^\w\u0590-\u05ff]+", " ", text, flags=re.UNICODE).strip().casefold()
+        if normalized and all(
+            re.sub(r"[^\w\u0590-\u05ff]+", " ", old, flags=re.UNICODE).strip().casefold() != normalized
+            for old in pieces
+        ):
+            pieces.append(text)
+
+    for value in list(parts) + list(kwargs.values()):
+        if isinstance(value, Post):
+            add_piece(value.text)
+            add_piece(value.quoted_text)
+            continue
+        if isinstance(value, dict):
+            for key in ("text", "full_text", "content", "caption", "raw_text", "quoted_text"):
+                add_piece(value.get(key))
+            continue
+        if isinstance(value, str):
+            # Free strings passed to the filter can be translated/control text, so
+            # preserve the previous behavior and do not use them for this gate.
+            continue
+        for key in ("text", "full_text", "content", "caption", "raw_text", "quoted_text"):
+            try:
+                add_piece(getattr(value, key, ""))
+            except Exception:
+                pass
+
+    if pieces:
+        return " ".join(pieces)
+    return extract_original_post_caption_for_rules(*parts, **kwargs)
+
+
 def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
     source_name = special_fact_feed_name(*parts, **kwargs)
     if not source_name:
@@ -17016,6 +17068,7 @@ def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
     label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
     post = next((part for part in parts if isinstance(part, Post)), None)
     text = extract_original_post_caption_for_rules(*parts, **kwargs)
+    full_original_text = special_fact_feed_original_text_for_word_limit(*parts, **kwargs)
     if post is not None and is_women_or_wnba_post(post):
         return f"{label}: כדורגל נשים או WNBA נחסם"
     if post is not None and is_other_sport_post(post):
@@ -17024,7 +17077,7 @@ def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
         return f"{label}: ראיון, דעה או ציטוט שאינו עובדה נחסם"
     if _SPECIAL_FACT_LIVE_RE.search(str(text or "")):
         return f"{label}: שידור או לייב נחסם"
-    if count_content_words(text) < FOOTBALL_FACTLY_MIN_WORDS:
+    if count_content_words(full_original_text) < FOOTBALL_FACTLY_MIN_WORDS:
         return f"{label}: פחות מ-{FOOTBALL_FACTLY_MIN_WORDS} מילים"
     if not football_factly_has_image_or_video(*parts, **kwargs):
         return f"{label}: פוסט בלי תמונה או סרטון לא נשלח"
@@ -17706,6 +17759,121 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
     return {"inline_keyboard": keyboard}
 
 # ====== END TARGETED FINAL FIX ======
+
+
+# ====== TARGETED SMALL FIXES: LIST LAYOUT + TRANSLATION GUARD ======
+# Only these two behaviors are adjusted here:
+# 1. Better recognition of repeated flag/list items, with no leading empty rows.
+# 2. Translation-quality blocking is limited to clear technical failures, reducing false blocks.
+
+
+def format_list_line_breaks_by_source(source_text: Any, message: Any) -> str:
+    """Recognize compact lists reliably without changing existing emoji punctuation rules."""
+    value = str(message or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not value:
+        return value
+
+    # Reuse the bot's existing formatter first, then add only a conservative
+    # repeated-flag repair. This keeps all existing emoji/end-of-sentence rules.
+    value = format_stat_list_lines(value)
+    flag_re = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
+    flags = list(flag_re.finditer(value))
+    if len(flags) >= 2:
+        # Any later flag that is separated by spaces (rather than a line break)
+        # begins the next item. The first flag is also separated from prose.
+        value = re.sub(
+            r"(?<!\n)[ \t]+(?=[\U0001F1E6-\U0001F1FF]{2}(?:[ \t]|\d))",
+            "\n",
+            value,
+        )
+        first = flag_re.search(value)
+        if first and first.start() > 0:
+            prefix = value[:first.start()].rstrip()
+            suffix = value[first.start():].lstrip()
+            if prefix:
+                value = prefix + "\n" + suffix
+
+    # Lists stay consecutive, and the message can never begin with blank rows.
+    value = _compact_list_blank_lines(value)
+    value = re.sub(r"\A(?:[ \t]*\n)+", "", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _translation_guard_text(value: Any) -> str:
+    if isinstance(value, Post):
+        return "\n".join(part for part in (value.text, value.quoted_text) if part).strip()
+    return str(value or "").strip()
+
+
+def translation_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    """Block only unmistakable translation failures; avoid false 'suspicious' blocks."""
+    source = _translation_guard_text(source_text)
+    translated = str(translated_text or "").strip()
+
+    if not translated:
+        return "לא התקבל תרגום"
+
+    lowered = translated.lower().lstrip()
+    # Clear machine-output leakage remains blocked.
+    if "```" in translated or re.search(r'"\s*(?:main|quote|quote_author)\s*"\s*:', translated, re.I):
+        return "פלט התרגום לא נקי"
+    if lowered.startswith(("json", "{", "[")) and re.search(r"(?:main|quote|quote_author)", lowered):
+        return "פלט התרגום לא נקי"
+
+    hebrew_chars = len(re.findall(r"[\u0590-\u05ff]", translated))
+    latin_words = re.findall(r"\b[A-Za-z]{4,}\b", translated)
+
+    # Block only when a normal-sized source clearly did not become Hebrew.
+    # Names, clubs, acronyms and a few English terms are intentionally allowed.
+    if len(source) > 40 and hebrew_chars < 5 and len(latin_words) >= 5:
+        return "לא התקבל תרגום עברי מספיק"
+    if hebrew_chars < 12 and len(latin_words) >= 14:
+        return "נשארו יותר מדי מילים באנגלית"
+    return ""
+
+
+def translation_quality_issues(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> list[str]:
+    issue = translation_quality_issue(source_text, translated_text, *args, **kwargs)
+    return [issue] if issue else []
+
+
+def check_translation_quality(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> list[str]:
+    return translation_quality_issues(source_text, translated_text, *args, **kwargs)
+
+
+def translation_quality_block_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def is_translation_quality_blocked(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
+    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
+
+
+def control_translation_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def translated_quality_issue(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def translation_suspicion_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def suspicious_translation_reason(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_text, translated_text, *args, **kwargs)
+
+
+def is_suspicious_translation(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
+    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
+
+
+def looks_like_bad_translation(source_text: Any, translated_text: Any = "", *args: Any, **kwargs: Any) -> bool:
+    return bool(translation_quality_issue(source_text, translated_text, *args, **kwargs))
+
+# ====== END TARGETED SMALL FIXES ======
 
 if __name__ == "__main__":
     main()
