@@ -68,8 +68,11 @@ from zoneinfo import ZoneInfo
 #
 # Exact instruction for a future AI editor:
 # "Continue from the latest complete code. Preserve and migrate all existing bot
-# memory/history/settings. Do not rename or reset persistent files or JSON keys.
-# Make only the requested change and keep backward compatibility."
+# memory/history/settings, including messages already sent to the Neto Sport
+# channels, Telegram message IDs used for reply-to-old-message behavior, blocked
+# and duplicate history, manual approvals/deletions, prepared control messages,
+# writer settings and translation cache. Do not rename or reset persistent files
+# or JSON keys. Make only the requested change and keep backward compatibility.
 # ============================================================================
 
 BOT_BUILD_ID = "football-quote-context-rss-hardened-2026-07-15"
@@ -448,6 +451,8 @@ PERSISTENT_MEMORY_FILES = (
     AI_DECISION_CACHE_FILE,
     DAILY_QUALITY_STATS_FILE,
     SHABBAT_CACHE_FILE,
+    "football_sent_memory.json",
+    "football_learning_memory.json",
 )
 PERSISTENCE_SCHEMA_VERSION = 1
 PERSISTENCE_STARTUP_CHECK_DONE = False
@@ -4681,6 +4686,12 @@ def process_control_update(update: dict[str, Any]) -> None:
             )
         except Exception as exc:
             logging.debug("מחיקת הודעת בקרה נכשלה: %s", exc)
+        return
+    if data.startswith("football_prepare_history_ai:"):
+        token = data.split(":", 1)[1].strip()
+        if callback_id:
+            answer_control_callback(callback_id, "מכין הודעה מלאה באמצעות Gemini")
+        Thread(target=prepare_history_post_with_ai, args=(token,), daemon=True).start()
         return
     if data.startswith("football_force_blocked:"):
         token = data.split(":", 1)[1].strip()
@@ -15182,6 +15193,174 @@ def _nico_schira_format_simulation() -> str:
     return rendered
 
 # ====== END GPT-5.6 UNIFIED PREVIEW / ONE-MESSAGE HISTORY PATCH ======
+
+
+# ====== GPT-5.6 MONITOR HISTORY / FAST LATEST / CHANNEL MEMORY PATCH ======
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    """Main menu stays compact; history now lives under Monitoring."""
+    keyboard = [
+        [{"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"}],
+        [{"text": "🔎 בדיקה וניטור", "callback_data": "football_menu_monitor"}],
+        [{"text": "👥 ניהול כתבים", "callback_data": "football_menu_writers"}],
+        [{"text": "🏟️ ניהול קבוצות", "callback_data": "football_menu_teams"}],
+        [{"text": "🛡️ הגדרות וסינון", "callback_data": "football_menu_filter"}],
+        [{"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"}],
+        [{"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
+    ]
+    return stable_reply_markup(keyboard)
+
+
+def monitor_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [
+        [{"text": "📚 10 אחרונים לפי כתב", "callback_data": "football_choose_account_history"}],
+        [{"text": "🔄 בדוק את כל הכתבים עכשיו", "callback_data": "football_check_all_accounts_now"}],
+        [{"text": "📡 בדיקת RSS", "callback_data": "football_rss_status"}],
+        [{"text": "🤖 מצב Gemini", "callback_data": "football_gemini_status"}],
+        [{"text": "🧪 בדיקת חיבורים מלאה", "callback_data": "football_system_health"}],
+        [{"text": "📋 30 חסימות אחרונות", "callback_data": "football_last_blocked"}],
+        [{"text": "🧠 10 כפילויות אחרונות", "callback_data": "football_last_duplicate"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ]
+    return stable_reply_markup(keyboard)
+
+
+def account_history_menu_reply_markup() -> dict[str, Any]:
+    keyboard: list[list[dict[str, str]]] = []
+    for username in all_control_test_accounts():
+        keyboard.append([{
+            "text": f"📚 {_hebrew_account_label(username)} — 10 אחרונים",
+            "callback_data": f"football_test_last_ten_account:{username}",
+        }])
+    keyboard.append([{"text": "⬅️ חזרה לבדיקה וניטור", "callback_data": "football_menu_monitor"}])
+    return stable_reply_markup(keyboard)
+
+
+def fetch_latest_post_fast(username: str) -> Post | None:
+    """Fast control-button lookup: use the first healthy primary RSS source first.
+
+    The full existing RSS chain remains untouched for normal scans. Only the manual
+    latest-post button gets this low-latency path and falls back to fetch_posts.
+    """
+    templates = active_feed_templates()
+    for template in templates[:max(1, min(2, RSS_PRIMARY_SOURCE_COUNT))]:
+        try:
+            posts = fetch_feed(username, template)
+            if posts:
+                return sorted(posts, key=lambda item: item.published_ts, reverse=True)[0]
+        except Exception as exc:
+            logging.debug("Fast latest RSS failed for @%s via %s: %s", username, feed_source_name(template), exc)
+    posts = fetch_posts(username)
+    return posts[0] if posts else None
+
+
+def run_latest_account_control_test(username: str) -> None:
+    """Fast latest-post preview with the same final Gemini-formatted layout."""
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        post = fetch_latest_post_fast(username)
+    except Exception as exc:
+        send_control_text(f"🧪 בדיקת {label} נכשלה בשליפת RSS:\n{short_error(exc, 700)}")
+        return
+    if not post:
+        send_control_text(f"🧪 בדיקת {label}: לא נמצאו פוסטים כרגע בכל מקורות ה-RSS המוגדרים.")
+        return
+    try:
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+        message_html = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
+        _send_full_control_candidate(post, token, message_html)
+    except Exception as exc:
+        send_control_text(
+            f"🧪 בדיקת {label}: הפוסט נמצא אך התצוגה המלאה נכשלה.\n"
+            f"סיבה: {short_error(exc, 900)}\nקישור: {post.link}"
+        )
+
+
+def _history_prepare_markup(prepared: list[tuple[int, Post, str]]) -> dict[str, Any]:
+    keyboard: list[list[dict[str, str]]] = []
+    for index, post, token in prepared:
+        row: list[dict[str, str]] = []
+        if str(post.link or "").startswith(("http://", "https://")):
+            row.append({"text": f"🔗 מקור {index}", "url": post.link})
+        row.append({"text": f"🤖 הכן דיווח {index}", "callback_data": f"football_prepare_history_ai:{token}"})
+        keyboard.append(row)
+    keyboard.append([{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}])
+    return {"inline_keyboard": keyboard}
+
+
+def _history_entry_html(index: int, total: int, post: Post, label: str, translated: str, status: str, reason: str) -> str:
+    published_at = datetime.fromtimestamp(post.published_ts, tz=ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m %H:%M") if post.published_ts else "זמן לא ידוע"
+    return (
+        f"<b>{index}/{total}</b> — {html.escape(rtl(translated))}\n"
+        f"{html.escape(status)} | {html.escape(trim(reason, 92))} | {html.escape(published_at)}"
+    )
+
+
+def _fit_history_entries_one_message(entries: list[tuple[Post, str, str, str]], label: str) -> str:
+    """Use the maximum practical Telegram budget, about twice the former text per item."""
+    header = f"<b>📚 10 הפוסטים האחרונים של {html.escape(label)}</b>\nתרגום Google בלבד · ללא תמונות או סרטונים.\n\n"
+    if not entries:
+        return header + "לא נמצאו פוסטים."
+    per_translation = 320
+    while per_translation >= 90:
+        parts: list[str] = []
+        for index, (post, translated, status, reason) in enumerate(entries, 1):
+            clean_text = re.sub(r"\s+", " ", translated or "").strip()
+            parts.append(_history_entry_html(index, len(entries), post, label, trim(clean_text, per_translation), status, reason))
+        result = header + "\n\n".join(parts)
+        if len(result) <= TELEGRAM_HTML_TEXT_LIMIT:
+            return result
+        per_translation -= 15
+    return trim(result, TELEGRAM_HTML_TEXT_LIMIT)
+
+
+def run_last_ten_account_control_test(username: str) -> None:
+    """One ordered Google-translated summary plus source/AI buttons for every item."""
+    if not CONTROL_CHAT_ID:
+        return
+    label = _hebrew_account_label(username)
+    try:
+        posts = list(fetch_posts(username)[:10])
+    except Exception as exc:
+        send_control_text(f"📚 10 אחרונים — {label}\n\nשליפת RSS נכשלה: {short_error(exc, 700)}")
+        return
+    if not posts:
+        send_control_text(f"📚 10 אחרונים — {label}\n\nלא נמצאו פוסטים במקורות ה-RSS כרגע.")
+        return
+    entries: list[tuple[Post, str, str, str]] = []
+    prepared: list[tuple[int, Post, str]] = []
+    for index, post in enumerate(posts, 1):
+        status, reason = _history_status_for_post(post)
+        entries.append((post, _translate_history_post(post), status, reason))
+        # Persist the exact source post now, so its AI button survives a bot restart.
+        token = remember_control_prepared_send(post, "", "", "")
+        prepared.append((index, post, token))
+    send_control_html(_fit_history_entries_one_message(entries, label), _history_prepare_markup(prepared))
+
+
+def prepare_history_post_with_ai(token: str) -> None:
+    """Build a brand-new full Gemini preview from a selected history item."""
+    item = _restore_prepared_send(token)
+    if not item:
+        send_control_text("הפוסט כבר לא נמצא בזיכרון. פתח שוב את 10 האחרונים של הכתב.")
+        return
+    post: Post = item["post"]
+    try:
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        item["translated"] = translated
+        item["quoted_translated"] = quoted_translated
+        item["quoted_author_translated"] = quoted_author_translated
+        CONTROL_PREPARED_SENDS[token] = item
+        _persist_prepared_send(token, item)
+        message_html = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
+        _send_full_control_candidate(post, token, message_html)
+    except Exception as exc:
+        send_control_text(f"הכנת ההודעה באמצעות Gemini נכשלה:\n{short_error(exc, 900)}")
+
+# ====== END GPT-5.6 MONITOR HISTORY / FAST LATEST / CHANNEL MEMORY PATCH ======
 
 if __name__ == "__main__":
     main()
