@@ -10835,9 +10835,11 @@ def build_message(
     quoted_translated = polish_team_names_with_original_context(post, quoted_translated)
     translated = format_news_paragraphs(translated)
     quoted_translated = format_news_paragraphs(quoted_translated)
-    if is_special_fact_feed_context(post):
-        translated = format_special_fact_feed_paragraphs(translated)
-        quoted_translated = format_special_fact_feed_paragraphs(quoted_translated)
+    # Apply the same final paragraph/list layout to every writer and channel.
+    # This is formatting-only: it does not touch RSS, filters, translation requests,
+    # account logic, media handling, or delivery behavior.
+    translated = format_special_fact_feed_paragraphs(translated)
+    quoted_translated = format_special_fact_feed_paragraphs(quoted_translated)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
     hide_writer_header = should_hide_writer_header(post, translated)
     if hide_writer_header:
@@ -16133,6 +16135,68 @@ def format_stat_list_lines(text: str) -> str:
 # ====== END GPT-5.6 COMPACT SMART LIST FORMATTER PATCH ======
 
 
+
+# ====== GPT-5.6 SPECIAL FACT PARAGRAPH REPAIR — RSS UNTOUCHED ======
+# FUTURE AI MAINTENANCE RULE:
+# Do not remove this formatter and do not modify RSS code for this feature.
+# Every writer/channel must keep the same polished Telegram layout as the
+# final Neto Sport message: distinct complete ideas are separated by exactly
+# one blank line, while detected list items remain consecutive with no empty
+# lines between them. This is a local formatting pass and uses no extra AI call.
+
+_pre_special_fact_paragraph_repair = format_special_fact_feed_paragraphs
+
+
+def _is_compact_stat_list_block(block: str) -> bool:
+    lines = [line.strip() for line in (block or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    item_re = re.compile(
+        r"^(?:[\U0001F1E6-\U0001F1FF]{2}|🥇|🥈|🥉|✅|❌|☑️|✔️|🔹|🔸|▪️|▫️|•|⚽️?|📊|⭐|🔥|\d{1,3}(?:[.,]\d+)?\s*%\s*[-–—:]|\d{1,2}\s*[-–—]\s+)"
+    )
+    return sum(bool(item_re.match(line)) for line in lines) >= 2
+
+
+def _split_dense_stat_prose_block(block: str) -> list[str]:
+    """Split complete statistical ideas, never clauses or compact list rows."""
+    value = (block or "").strip()
+    if not value or _is_compact_stat_list_block(value):
+        return [value] if value else []
+
+    # Only split dense prose. Short ordinary captions remain exactly as Gemini
+    # formatted them. Sentence punctuation is retained in every paragraph.
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", value) if part.strip()]
+    if len(sentences) < 2 or len(value) < 125:
+        return [value]
+
+    # A special-feed statistical post normally contains a headline/record,
+    # supporting context, and sometimes a short editorial closing. Give each
+    # complete idea its own paragraph, matching the existing writer layout.
+    return sentences
+
+
+def format_special_fact_feed_paragraphs(text: str) -> str:
+    """Reliable paragraph layout for every final message, without touching RSS."""
+    value = _pre_special_fact_paragraph_repair(text)
+    if not value:
+        return value
+
+    rebuilt: list[str] = []
+    for block in re.split(r"\n{2,}", value.strip()):
+        block = block.strip()
+        if not block:
+            continue
+        rebuilt.extend(_split_dense_stat_prose_block(block))
+
+    value = "\n\n".join(part for part in rebuilt if part)
+    # Keep lists compact even if an older formatting stage inserted blank rows.
+    value = _compact_list_blank_lines(value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+# ====== END GPT-5.6 SPECIAL FACT PARAGRAPH REPAIR ======
+
+
 # ====== FINAL SAFE MEMORY PATCH — RSS ENGINE UNTOUCHED ======
 # IMPORTANT FOR FUTURE AI EDITS:
 # This patch intentionally does NOT modify fetch_posts(), fetch_feed(), RSS templates,
@@ -16258,6 +16322,262 @@ def _save_prepared_media_ids(token: str, media_ids: list[int]) -> None:
         logging.debug("Legacy prepared-send persistence failed: %s", exc)
 
 # ====== END FINAL SAFE MEMORY PATCH ======
+
+
+
+# ====== GPT-5.6 FINAL DISPLAY + SPECIAL-FACT QUALITY PATCH (RSS UNTOUCHED) ======
+# FUTURE AI MAINTENANCE RULE — DO NOT REMOVE OR MOVE INTO RSS CODE:
+# 1. This patch is formatting/filtering only. Never change fetch_posts(), fetch_feed(),
+#    FEED_TEMPLATES, RSS source order, timeouts, retries, fallbacks or automatic scanning
+#    for these requests.
+# 2. Compact lists apply to EVERY writer/channel: one item per line, with no blank
+#    line between list rows. Ordinary paragraphs keep exactly one blank line.
+# 3. FootballFactly and OptaJoe remain special fact feeds. Besides their existing
+#    15-word + media gates, interviews and mere quotations/opinions are blocked.
+#    Manual force-send still bypasses every automatic gate.
+# 4. Emoji paragraph splitting is deliberately conservative so short messages do not
+#    become visually empty. Split only when an emoji cluster clearly separates two
+#    substantial clauses in a long prose paragraph.
+
+_SPECIAL_FACT_QUOTE_ONLY_PATTERNS = (
+    r"\b(?:interview|press conference|mixed zone|speaking to|spoke to|told|asked about)\b",
+    r"\b(?:said|says|tells|told)\s+(?:to\s+)?(?:@[A-Za-z0-9_]{2,}|[A-Z][A-Za-z0-9_.-]{2,})",
+    r"ראיון|בראיון|מסיבת\s+עיתונאים|אזור\s+מעורב|נשאל(?:ה|ו)?\s+על|דיבר(?:ה|ו)?\s+עם",
+    r"(?m)^\s*(?:[A-Z][A-Za-zÀ-ÿ'’.-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]+){0,5}|[א-ת][א-ת'״\".-]+(?:\s+[א-ת][א-ת'״\".-]+){0,5})\s*:\s*[\"“”'‘’]",
+)
+
+
+def special_fact_feed_is_interview_or_mere_quote(*parts: Any, **kwargs: Any) -> bool:
+    """Block interviews/opinion quotes on OptaJoe and FootballFactly only.
+
+    These channels are intended to publish facts/statistics. A manually forced send
+    still bypasses this automatic decision elsewhere in the existing control flow.
+    """
+    if not special_fact_feed_name(*parts, **kwargs):
+        return False
+    post = next((part for part in parts if isinstance(part, Post)), None)
+    if post is not None and is_interview_post(post):
+        return True
+    text = extract_post_text_for_rules(*parts, **kwargs)
+    cleaned = clean_for_ai_translation(html.unescape(text or ""))
+    if not cleaned:
+        return False
+    return any(re.search(pattern, cleaned, re.IGNORECASE | re.UNICODE) for pattern in _SPECIAL_FACT_QUOTE_ONLY_PATTERNS)
+
+
+_previous_special_fact_filter_issue_final = football_factly_filter_issue
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    """Special-feed gates: no interview/quote, 15+ words, and photo/video."""
+    source_name = special_fact_feed_name(*parts, **kwargs)
+    if not source_name:
+        return ""
+    label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
+    if special_fact_feed_is_interview_or_mere_quote(*parts, **kwargs):
+        return f"{label}: ראיון או ציטוט שאינו עובדה נחסם"
+    return _previous_special_fact_filter_issue_final(*parts, **kwargs)
+
+
+_EMOJI_SEPARATOR_CLUSTER_RE = re.compile(
+    r"(?P<emoji>(?:[\U0001F1E6-\U0001F1FF]{2}|[⚫⚪🔴🟠🟡🟢🔵🟣🟤🚨⚠️✅❌🔥⭐📊🏆⚽]+)(?:\ufe0f)?(?:\s*(?:[\U0001F1E6-\U0001F1FF]{2}|[⚫⚪🔴🟠🟡🟢🔵🟣🟤🚨⚠️✅❌🔥⭐📊🏆⚽]+)(?:\ufe0f)?){0,4})"
+)
+
+
+def _conservative_emoji_paragraph_breaks(block: str) -> str:
+    """Insert a paragraph break after a separator emoji only in long dense prose.
+
+    This avoids making short messages such as the Luka Modric example look empty.
+    List rows are left untouched and remain compact.
+    """
+    value = (block or "").strip()
+    if len(value) < 220 or "\n" in value or _is_compact_stat_list_block(value):
+        return value
+
+    matches = list(_EMOJI_SEPARATOR_CLUSTER_RE.finditer(value))
+    for match in reversed(matches):
+        left = value[:match.start()].rstrip()
+        right = value[match.end():].lstrip()
+        # Both sides must be substantial. This is intentionally conservative.
+        if len(left) < 85 or len(right) < 85:
+            continue
+        # Split only when the right side looks like a fresh clause/sentence.
+        if not re.match(r"^(?:[א-תA-Z0-9]|(?:הוא|היא|הם|עבור|בנוסף|לאחר|לפי|כאשר)\b)", right):
+            continue
+        value = f"{left} {match.group('emoji')}\n\n{right}"
+        break
+    return value
+
+
+_previous_global_message_formatter_final = format_special_fact_feed_paragraphs
+
+
+def format_special_fact_feed_paragraphs(text: str) -> str:
+    """Final layout for all writers: polished paragraphs and compact lists."""
+    value = _previous_global_message_formatter_final(text)
+    if not value:
+        return value
+    blocks = []
+    for block in re.split(r"\n{2,}", value.strip()):
+        block = block.strip()
+        if not block:
+            continue
+        blocks.append(_conservative_emoji_paragraph_breaks(block))
+    value = "\n\n".join(blocks)
+    value = _compact_list_blank_lines(value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+# Keep the separate "10 latest by writer" entry in the main menu. The existing
+# callback and RSS implementation are intentionally reused unchanged.
+_previous_quick_control_reply_markup_final = quick_control_reply_markup
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    markup = _previous_quick_control_reply_markup_final()
+    keyboard = list(markup.get("inline_keyboard", [])) if isinstance(markup, dict) else []
+    has_history = any(
+        str(button.get("callback_data", "")) == "football_choose_account_history"
+        for row in keyboard if isinstance(row, list)
+        for button in row if isinstance(button, dict)
+    )
+    if not has_history:
+        insert_at = 1 if keyboard else 0
+        keyboard.insert(insert_at, [{
+            "text": stable_button_label("📚 10 אחרונים לפי כתב"),
+            "callback_data": "football_choose_account_history",
+        }])
+    return {"inline_keyboard": keyboard}
+
+# ====== END GPT-5.6 FINAL DISPLAY + SPECIAL-FACT QUALITY PATCH ======
+
+
+
+# ====== GPT-5.6 SPECIAL FEEDS FINAL QUALITY PATCH (RSS UNTOUCHED) ======
+# FUTURE AI MAINTENANCE — MANDATORY:
+# - Do not modify RSS fetching, mirrors, source order, retries, timeouts, caches or scanning here.
+# - FootballFactly and OptaJoe must remain available in every writer-check screen,
+#   but always appear at the bottom of those check lists.
+# - Their automatic posts are men's-football facts/statistics only: block women's
+#   football, basketball and every non-football sport, as well as interviews and
+#   mere opinion/quote posts. Manual force-send still bypasses automatic filters.
+# - The 10-latest screen must use Google Translate only. Gemini is used only after
+#   the user presses the separate prepare-message button.
+# - OptaJoe's leading statistic counter (for example "5 - ") is editorial metadata
+#   and must be removed only from the beginning of OptaJoe messages.
+
+_SPECIAL_CHECK_BOTTOM = (
+    FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
+    OPTAJOE_DEFAULT_ACTIVE_USERNAME,
+)
+
+_pre_special_bottom_test_accounts = all_control_test_accounts
+
+
+def all_control_test_accounts() -> list[str]:
+    """Keep all ordinary writers in their existing order and special feeds last."""
+    values = list(_pre_special_bottom_test_accounts() or [])
+    ordinary = [u for u in values if u not in _SPECIAL_CHECK_BOTTOM]
+    for username in _SPECIAL_CHECK_BOTTOM:
+        if username in values or username in _all_management_writer_usernames():
+            ordinary.append(username)
+    return ordinary
+
+
+_pre_special_quality_filter_issue = football_factly_filter_issue
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    """Men's-football fact feeds only, in addition to the existing special gates."""
+    source_name = special_fact_feed_name(*parts, **kwargs)
+    if not source_name:
+        return ""
+    label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
+    post = next((part for part in parts if isinstance(part, Post)), None)
+    if post is not None:
+        if is_women_or_wnba_post(post):
+            return f"{label}: כדורגל נשים או WNBA נחסם"
+        if is_other_sport_post(post):
+            return f"{label}: ענף ספורט שאינו כדורגל גברים נחסם"
+    return _pre_special_quality_filter_issue(*parts, **kwargs)
+
+
+def _strip_optajoe_leading_counter(text: str) -> str:
+    """Remove only OptaJoe's first number-dash counter, never internal list numbers."""
+    value = str(text or "")
+    return re.sub(r"^\s*[\u200e\u200f\u202a-\u202e\u2066-\u2069]*\d{1,3}\s*[-–—]\s*", "", value, count=1)
+
+
+_pre_optajoe_counter_build_message = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    """Apply the Opta counter cleanup before the unchanged final message renderer."""
+    if value_contains_optajoe(getattr(post, "username", "")):
+        translated = _strip_optajoe_leading_counter(translated)
+    return _pre_optajoe_counter_build_message(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+
+
+_pre_special_daily_report = build_daily_quality_report_text
+
+
+def _special_feed_daily_section(username: str, title: str) -> list[str]:
+    bucket = _daily_stats_bucket()
+    sent_map = bucket.get("sent", {}) if isinstance(bucket.get("sent", {}), dict) else {}
+    skip_map = bucket.get("skips", {}) if isinstance(bucket.get("skips", {}), dict) else {}
+    new_map = bucket.get("new", {}) if isinstance(bucket.get("new", {}), dict) else {}
+    scanned_map = bucket.get("scanned", {}) if isinstance(bucket.get("scanned", {}), dict) else {}
+    by_reason = bucket.get("skip_by_writer_reason", {}) if isinstance(bucket.get("skip_by_writer_reason", {}), dict) else {}
+    reasons: list[tuple[str, int]] = []
+    prefix = f"{username}|"
+    for key, count in by_reason.items():
+        key = str(key or "")
+        if key.startswith(prefix):
+            reasons.append((key[len(prefix):], int(count or 0)))
+    reasons.sort(key=lambda item: (-item[1], item[0]))
+    lines = [
+        "",
+        f"📌 {title} — סיכום נפרד",
+        "────────────",
+        f"🔎 סריקות: {int(scanned_map.get(username, 0) or 0)}",
+        f"🆕 פוסטים חדשים: {int(new_map.get(username, 0) or 0)}",
+        f"✅ נשלחו: {int(sent_map.get(username, 0) or 0)}",
+        f"⛔ נחסמו: {int(skip_map.get(username, 0) or 0)}",
+        "סיבות חסימה:",
+    ]
+    if reasons:
+        lines.extend(f"- {reason}: {count}" for reason, count in reasons[:12])
+    else:
+        lines.append("- לא נרשמו חסימות היום")
+    return lines
+
+
+def build_daily_quality_report_text() -> str:
+    """Append a dedicated FootballFactly block to the manually requested daily report."""
+    base = _pre_special_daily_report()
+    lines = [base.rstrip()]
+    lines.extend(_special_feed_daily_section(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, "עובדות כדורגל"))
+    return "\n".join(lines).strip()
+
+
+# Explicit invariant for the 10-latest screen: this function remains Google-only.
+# Do not replace it with translate_text()/Gemini. The separate prepare button may use Gemini.
+assert "google_translate" in _translate_history_post.__code__.co_names
+
+# ====== END GPT-5.6 SPECIAL FEEDS FINAL QUALITY PATCH ======
 
 if __name__ == "__main__":
     main()
