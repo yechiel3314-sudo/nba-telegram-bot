@@ -21684,23 +21684,35 @@ def explicit_untracked_transfer_destination(post: Post) -> str:
 
 
 def _hard_transfer_policy_block_reason(post: Post) -> str:
-    """Non-bypassable automatic gate for the user's club/value policy."""
+    """Non-bypassable automatic gate for the user's club/value policy.
+
+    The fee rule and the managed-club rule are independent.  A post is blocked
+    when either rule fails, and when both fail both reasons are kept in the
+    diagnostic string.  This prevents a trusted-writer/final-deal rescue from
+    hiding the fact that no club in the actual report is tracked.
+    """
     if not _strict_normal_transfer_report(post):
         return ""
+
+    reasons: list[str] = []
+
     if has_small_total_transfer_fee(post):
         total = explicit_transfer_fee_total_millions(post)
         if total is not None:
-            return f"hard_small_transfer_fee:{total:g}m<{MIN_TRANSFER_FEE_MILLIONS_TO_SEND:g}m"
-        return "hard_small_transfer_fee"
+            reasons.append(f"hard_small_transfer_fee:{total:g}m<{MIN_TRANSFER_FEE_MILLIONS_TO_SEND:g}m")
+        else:
+            reasons.append("hard_small_transfer_fee")
+
     destination = explicit_untracked_transfer_destination(post)
     if destination:
-        return f"hard_untracked_destination:{destination}"
-    # If this is plainly a transfer report and not a single managed club appears
-    # anywhere, it cannot be approved merely because the writer is trusted or the
-    # deal is final.
-    if not _strict_text_contains_managed_club(_strict_transfer_source_text(post)):
-        return "hard_transfer_without_tracked_team"
-    return ""
+        reasons.append(f"hard_untracked_destination:{destination}")
+    elif not _strict_text_contains_managed_club(_strict_transfer_source_text(post)):
+        # This is a separate hard failure even when a fee was also below the
+        # threshold.  No source-priority, final wording, medical, HERE WE GO or
+        # trusted reporter may rescue a transfer with no managed club at all.
+        reasons.append("hard_transfer_without_tracked_team")
+
+    return ";".join(dict.fromkeys(reasons))
 
 
 _previous_pre_send_strict_transfer_gate = pre_send_final_local_block_reason
@@ -21718,18 +21730,263 @@ _previous_hebrew_block_reason_strict_transfer_gate = hebrew_block_reason
 
 def hebrew_block_reason(reason: str) -> str:
     raw = str(reason or "")
-    base = raw.split(";", 1)[0].strip()
-    if base.startswith("hard_small_transfer_fee"):
-        detail = base.split(":", 1)[1] if ":" in base else ""
-        return f"דמי ההעברה נמוכים מהרף המוגדר{f' ({detail})' if detail else ''}"
-    if base.startswith("hard_untracked_destination"):
-        destination = base.split(":", 1)[1] if ":" in base else ""
-        return f"יעד המעבר אינו נמצא ברשימות הקבוצות{f': {destination}' if destination else ''}"
-    if base == "hard_transfer_without_tracked_team":
-        return "דיווח העברה ללא אף קבוצה שנמצאת ברשימות"
+    parts = [part.strip() for part in raw.split(";") if part.strip()]
+    hard_messages: list[str] = []
+    remaining: list[str] = []
+    for base in parts:
+        if base.startswith("hard_small_transfer_fee"):
+            detail = base.split(":", 1)[1] if ":" in base else ""
+            hard_messages.append(f"דמי ההעברה נמוכים מהרף המוגדר{f' ({detail})' if detail else ''}")
+        elif base.startswith("hard_untracked_destination"):
+            destination = base.split(":", 1)[1] if ":" in base else ""
+            hard_messages.append(f"יעד המעבר אינו נמצא ברשימות הקבוצות{f': {destination}' if destination else ''}")
+        elif base == "hard_transfer_without_tracked_team":
+            hard_messages.append("דיווח העברה ללא אף קבוצה שנמצאת ברשימות")
+        else:
+            remaining.append(base)
+    if hard_messages:
+        if remaining:
+            hard_messages.append(_previous_hebrew_block_reason_strict_transfer_gate(";".join(remaining)))
+        return " | ".join(dict.fromkeys(message for message in hard_messages if message))
     return _previous_hebrew_block_reason_strict_transfer_gate(reason)
 
 # ====== END FINAL STRICT TRANSFER VALUE / DESTINATION GATE ======
+
+
+# ====== EMERGENCY RSS RESILIENCE + FILTER ISOLATION PATCH ======
+# Purpose:
+# - RSS mirror/network/XML failures must stay inside the RSS layer.
+# - Editorial/team/fee filter failures must never be reported as RSS failures.
+# - One malformed RSS representation must fall back to the proven basic parser.
+# - Existing state/history filenames and keys remain untouched.
+
+_RSS_STRUCTURE_PARSER_BEFORE_EMERGENCY_PATCH = parse_posts
+_RSS_HTTP_GET_BEFORE_EMERGENCY_PATCH = http_get_feed
+_RSS_PRE_SEND_GATE_BEFORE_EMERGENCY_PATCH = pre_send_final_local_block_reason
+_RSS_HEBREW_REASON_BEFORE_EMERGENCY_PATCH = hebrew_block_reason
+_RSS_TEAM_CATALOG_CACHE: tuple[float, dict[str, Any]] | None = None
+_RSS_TEAM_CATALOG_CACHE_SECONDS = 300.0
+
+
+def _rss_basic_fallback_parse_posts(username: str, xml_bytes: bytes, source_name: str) -> list[Post]:
+    """The earlier conservative parser, used only if the structure parser fails.
+
+    It intentionally avoids any editorial/filter logic.  Its only job is to turn
+    valid RSS/Atom items into Post objects so a formatting enhancement can never
+    break account fetching.
+    """
+    try:
+        root = ET.fromstring(xml_bytes.lstrip())
+    except ET.ParseError:
+        root = ET.fromstring(sanitize_rss_xml(xml_bytes))
+    items = [element for element in root.iter() if strip_namespace(element.tag) in ("item", "entry")]
+    posts: list[Post] = []
+    for item in items:
+        try:
+            title = child_text(item, ("title",))
+            description = child_text(item, ("description", "summary", "content"))
+            raw_text = description or title
+            text_value, quoted_author, quoted_text = split_primary_and_quoted_text(clean_text(raw_text))
+            link = normalize_link(child_text(item, ("link",)), username)
+            if not link:
+                for child in item:
+                    if strip_namespace(child.tag) == "link" and child.attrib.get("href"):
+                        link = normalize_link(child.attrib["href"], username)
+                        break
+            guid = child_text(item, ("guid", "id")) or link or title
+            post_id = canonical_post_id(username, guid, link, title)
+            dedupe_ids = list(dict.fromkeys(value for value in [
+                post_id,
+                f"{username}:{guid}",
+                f"{username}:{link}",
+                post_content_signature(username, text_value, quoted_text),
+            ] if value))
+            images = extract_images(raw_text, item)
+            videos = extract_videos(raw_text, item)
+            raw_has_video = bool(videos) or has_video_marker(raw_text, item)
+            primary_has_video = text_has_video_marker(text_value)
+            quoted_has_video = text_has_video_marker(quoted_text)
+            if raw_has_video and not primary_has_video and not quoted_has_video:
+                quoted_has_video = bool(quoted_text)
+                primary_has_video = not quoted_has_video
+            post = Post(
+                post_id=post_id,
+                username=username,
+                text=text_value,
+                link=link,
+                image_urls=images,
+                video_urls=videos,
+                has_video=raw_has_video or primary_has_video or quoted_has_video,
+                primary_has_video=primary_has_video,
+                quoted_has_video=quoted_has_video,
+                quoted_author=quoted_author,
+                quoted_text=quoted_text,
+                published_ts=parse_timestamp(item),
+                dedupe_ids=dedupe_ids,
+                source_name=source_name,
+            )
+            post.raw_source_html = raw_text
+            post.original_text = text_value
+            post.original_quoted_text = quoted_text
+            post.source_structure_available = bool(re.search(r"<br\s*/?>|</(?:p|div|li|blockquote)>|\n", raw_text, re.I))
+            posts.append(post)
+        except Exception as item_exc:
+            # A single malformed item must not discard the other valid items.
+            logging.debug(
+                "RSS item skipped safely for @%s via %s: %s",
+                username,
+                source_name,
+                short_error(item_exc, 300),
+            )
+            continue
+    posts.sort(key=lambda post: float(post.published_ts or 0.0), reverse=True)
+    return posts
+
+
+def parse_posts(username: str, xml_bytes: bytes, source_name: str) -> list[Post]:
+    """Parse RSS with structure preservation, then fall back safely.
+
+    This wrapper makes paragraph-preservation optional from the RSS engine's
+    perspective.  If the enhanced parser rejects a mirror's unusual XML, the
+    proven basic parser still returns the feed instead of producing an RSS outage.
+    """
+    primary_error: Exception | None = None
+    try:
+        posts = _RSS_STRUCTURE_PARSER_BEFORE_EMERGENCY_PATCH(username, xml_bytes, source_name)
+        if posts:
+            return posts
+    except Exception as exc:
+        primary_error = exc
+        logging.debug(
+            "Enhanced RSS parser failed for @%s via %s; trying basic parser: %s",
+            username,
+            source_name,
+            short_error(exc, 400),
+        )
+    try:
+        fallback_posts = _rss_basic_fallback_parse_posts(username, xml_bytes, source_name)
+        if fallback_posts and primary_error is not None:
+            logging.info(
+                "RSS parser fallback recovered @%s via %s with %s posts.",
+                username,
+                source_name,
+                len(fallback_posts),
+            )
+        return fallback_posts
+    except Exception as fallback_exc:
+        if primary_error is not None:
+            raise RuntimeError(
+                "RSS parse failed in both parsers: "
+                f"enhanced={short_error(primary_error, 300)} | "
+                f"basic={short_error(fallback_exc, 300)}"
+            ) from fallback_exc
+        raise
+
+
+def http_get_feed(url: str, timeout: int = 7) -> bytes:
+    """Fetch RSS without allowing a transient first request to become an outage."""
+    effective_timeout = max(5, int(float(timeout or 0)))
+    first_error: Exception | None = None
+    try:
+        return _RSS_HTTP_GET_BEFORE_EMERGENCY_PATCH(url, timeout=effective_timeout)
+    except Exception as exc:
+        first_error = exc
+    # One isolated recovery attempt with no-cache headers.  The existing function
+    # already performs its own configured retries; this is only for stale/broken
+    # proxy responses and does not change source order or account state.
+    separator = "&" if "?" in url else "?"
+    recovery_url = f"{url}{separator}_rss_retry={int(time.time())}"
+    request = urllib.request.Request(
+        recovery_url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Accept-Encoding": "identity",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=max(8, effective_timeout)) as response:
+            return response.read()
+    except Exception as recovery_exc:
+        raise RuntimeError(
+            f"RSS GET failed after normal and recovery attempts: {url}. "
+            f"normal={short_error(first_error, 300)} | recovery={short_error(recovery_exc, 300)}"
+        ) from recovery_exc
+
+
+def _rss_cached_team_catalog() -> dict[str, Any]:
+    global _RSS_TEAM_CATALOG_CACHE
+    now = time.time()
+    if _RSS_TEAM_CATALOG_CACHE is not None:
+        saved_at, catalog = _RSS_TEAM_CATALOG_CACHE
+        if now - saved_at < _RSS_TEAM_CATALOG_CACHE_SECONDS:
+            return catalog
+    try:
+        catalog = all_team_catalog_items()
+        if not isinstance(catalog, dict):
+            catalog = {}
+    except Exception as exc:
+        logging.warning("Team catalog load failed independently of RSS: %s", short_error(exc, 500))
+        catalog = {}
+    _RSS_TEAM_CATALOG_CACHE = (now, catalog)
+    return catalog
+
+
+def _strict_text_contains_managed_club(text: str) -> bool:
+    """Cached, exception-safe club lookup; never touches the RSS fetch path."""
+    value = str(text or "")
+    if not value:
+        return False
+    for item in _rss_cached_team_catalog().values():
+        if not isinstance(item, dict):
+            continue
+        aliases = [item.get("name", ""), *(item.get("aliases", []) or [])]
+        for alias in aliases:
+            alias = str(alias or "").strip()
+            if not alias:
+                continue
+            try:
+                if re.search(_strict_team_alias_pattern(alias), value, re.IGNORECASE | re.UNICODE):
+                    return True
+            except re.error as exc:
+                logging.debug("Invalid managed-team alias ignored: %r | %s", alias, exc)
+    try:
+        return bool("ISRAELI_LEAGUE_PATTERNS" in globals() and _matches_any(ISRAELI_LEAGUE_PATTERNS, value))
+    except Exception:
+        return False
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    """Keep filter failures isolated from RSS and fail safely for transfers."""
+    try:
+        return _RSS_PRE_SEND_GATE_BEFORE_EMERGENCY_PATCH(post)
+    except Exception as exc:
+        logging.exception(
+            "Editorial pre-send filter failed for @%s; RSS fetch remains healthy: %s",
+            getattr(post, "username", "unknown"),
+            exc,
+        )
+        try:
+            if _strict_normal_transfer_report(post):
+                # Do not accidentally publish a transfer when the hard club/value
+                # policy could not be evaluated.
+                return "hard_transfer_policy_internal_error"
+        except Exception:
+            return "hard_transfer_policy_internal_error"
+        return "local_filter_internal_error"
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if raw == "hard_transfer_policy_internal_error":
+        return "תקלה פנימית בבדיקת הקבוצה או סכום העסקה — הדיווח נחסם בבטחה"
+    if raw == "local_filter_internal_error":
+        return "תקלה פנימית בסינון — הדיווח נחסם בלי לפגוע בשליפת ה-RSS"
+    return _RSS_HEBREW_REASON_BEFORE_EMERGENCY_PATCH(reason)
+
+# ====== END EMERGENCY RSS RESILIENCE + FILTER ISOLATION PATCH ======
 
 if __name__ == "__main__":
     main()
