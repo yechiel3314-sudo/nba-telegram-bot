@@ -21988,5 +21988,643 @@ def hebrew_block_reason(reason: str) -> str:
 
 # ====== END EMERGENCY RSS RESILIENCE + FILTER ISOLATION PATCH ======
 
+# ====== FOOTBALLTWEET / "ציוצי כדורגל" DEDICATED SOURCE PATCH (2026-07-22) ======
+BOT_BUILD_ID = "winner-footballtweet-dedicated-2026-07-22"
+# Backward compatibility: no persistent filename or existing JSON key is renamed,
+# removed or reset. The source is enabled by default and can be disabled from the
+# existing writers-management screen. Automatic publishing uses only the explicit
+# rules below; manual force-send remains the user's deliberate override.
+
+FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME = "Footballtweet"
+FOOTBALLTWEET_DEFAULT_ACTIVE_ALIASES = {
+    "footballtweet",
+    "football_tweet",
+    "ציוצי כדורגל",
+}
+FOOTBALLTWEET_DISPLAY_NAME = "ציוצי כדורגל"
+FOOTBALLTWEET_MIN_WORDS = 15
+FOOTBALLTWEET_MAX_SENDS_PER_HOUR = 2
+FOOTBALLTWEET_OWN_DUPLICATE_WINDOW_SECONDS = 24 * 60 * 60
+FOOTBALLTWEET_CROSS_DUPLICATE_WINDOW_SECONDS = 24 * 60 * 60
+FOOTBALLTWEET_PENDING_RESERVATION_SECONDS = 10 * 60
+_FOOTBALLTWEET_RATE_LOCK = RLock()
+_FOOTBALLTWEET_PENDING_SENDS: dict[str, float] = {}
+
+ACCOUNT_DISPLAY_NAMES[FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME] = FOOTBALLTWEET_DISPLAY_NAME
+HANDLE_REPLACEMENTS[FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME] = FOOTBALLTWEET_DISPLAY_NAME
+SOURCE_PRIORITY[FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME] = max(
+    int(SOURCE_PRIORITY.get(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, 0) or 0),
+    int(SOURCE_PRIORITY.get(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, 0) or 0),
+)
+
+
+def value_contains_footballtweet(value: Any) -> bool:
+    lowered = str(value or "").strip().lstrip("@").casefold()
+    return lowered in FOOTBALLTWEET_DEFAULT_ACTIVE_ALIASES or any(
+        alias in lowered for alias in FOOTBALLTWEET_DEFAULT_ACTIVE_ALIASES
+    )
+
+
+def _is_footballtweet_post(value: Any) -> bool:
+    if isinstance(value, Post):
+        return value_contains_footballtweet(getattr(value, "username", ""))
+    return value_contains_footballtweet(value)
+
+
+def _append_footballtweet_account(values: Any) -> list[str]:
+    result: list[str] = []
+    for username in list(values or []):
+        username = str(username or "").strip()
+        if username and username not in result and not value_contains_footballtweet(username):
+            result.append(username)
+    result.append(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)
+    return result
+
+
+_PRE_FOOTBALLTWEET_CONTROL_DISABLED = control_state_account_disabled
+
+
+def control_state_account_disabled(username: str) -> bool:
+    if not value_contains_footballtweet(username):
+        return _PRE_FOOTBALLTWEET_CONTROL_DISABLED(username)
+    state = load_control_state()
+    disabled = state.get("default_active_disabled_accounts", [])
+    if isinstance(disabled, dict):
+        disabled = [name for name, flag in disabled.items() if flag]
+    if not isinstance(disabled, list):
+        disabled = []
+    return any(value_contains_footballtweet(name) for name in disabled)
+
+
+_PRE_FOOTBALLTWEET_SET_DEFAULT_ACTIVE = set_default_active_writer_enabled
+
+
+def set_default_active_writer_enabled(username: str, enabled: bool) -> None:
+    if not value_contains_footballtweet(username):
+        return _PRE_FOOTBALLTWEET_SET_DEFAULT_ACTIVE(username, enabled)
+    state = load_control_state()
+    disabled = state.get("default_active_disabled_accounts", [])
+    if isinstance(disabled, dict):
+        disabled = [name for name, flag in disabled.items() if flag]
+    if not isinstance(disabled, list):
+        disabled = []
+    disabled = [name for name in disabled if not value_contains_footballtweet(name)]
+    if not enabled:
+        disabled.append(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)
+    save_control_state(default_active_disabled_accounts=disabled)
+
+
+_PRE_FOOTBALLTWEET_ACTIVE_ACCOUNTS = active_x_accounts
+
+
+def active_x_accounts() -> list[str]:
+    values = list(_PRE_FOOTBALLTWEET_ACTIVE_ACCOUNTS() or [])
+    values = [value for value in values if not value_contains_footballtweet(value)]
+    if not control_state_account_disabled(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME):
+        values.append(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)
+    return values
+
+
+_PRE_FOOTBALLTWEET_ALL_TEST_ACCOUNTS = all_control_test_accounts
+
+
+def all_control_test_accounts() -> list[str]:
+    return _append_footballtweet_account(_PRE_FOOTBALLTWEET_ALL_TEST_ACCOUNTS())
+
+
+_PRE_FOOTBALLTWEET_ALL_X_ACCOUNTS = all_x_accounts
+
+
+def all_x_accounts() -> list[str]:
+    return _append_footballtweet_account(_PRE_FOOTBALLTWEET_ALL_X_ACCOUNTS())
+
+
+_PRE_FOOTBALLTWEET_MANAGEMENT_ACCOUNTS = _all_management_writer_usernames
+
+
+def _all_management_writer_usernames() -> list[str]:
+    return _append_footballtweet_account(_PRE_FOOTBALLTWEET_MANAGEMENT_ACCOUNTS())
+
+
+_PRE_FOOTBALLTWEET_WRITER_ENABLED = _writer_is_enabled_for_menu
+
+
+def _writer_is_enabled_for_menu(username: str) -> bool:
+    if value_contains_footballtweet(username):
+        return not control_state_account_disabled(username)
+    return _PRE_FOOTBALLTWEET_WRITER_ENABLED(username)
+
+
+_PRE_FOOTBALLTWEET_HEBREW_LABEL = _hebrew_account_label
+
+
+def _hebrew_account_label(username: str) -> str:
+    if value_contains_footballtweet(username):
+        return FOOTBALLTWEET_DISPLAY_NAME
+    return _PRE_FOOTBALLTWEET_HEBREW_LABEL(username)
+
+
+_PRE_FOOTBALLTWEET_TEN_HISTORY_KEY = _ten_history_account_key
+
+
+def _ten_history_account_key(username: str) -> str:
+    if value_contains_footballtweet(username):
+        return "footballtweet"
+    return _PRE_FOOTBALLTWEET_TEN_HISTORY_KEY(username)
+
+
+# Existing dedicated-source wrappers resolve this function dynamically. Extending
+# it here makes Footballtweet bypass transfer tiers, fee thresholds, club lists,
+# youth/importance heuristics and vague-copy filters, while the explicit source
+# gate below still enforces football-men, media, length, quote and rate rules.
+_PRE_FOOTBALLTWEET_DEDICATED_POST = _is_dedicated_fact_post
+
+
+def _is_dedicated_fact_post(post: Any) -> bool:
+    return _is_footballtweet_post(post) or _PRE_FOOTBALLTWEET_DEDICATED_POST(post)
+
+
+_FOOTBALLTWEET_LIVE_RE = re.compile(
+    r"\b(?:live|watch\s+live|live\s+stream|livestream|broadcast|streaming|watchalong|spaces?)\b|"
+    r"שידור\s+חי|שידור|לייב|הצטרפו\s+לשידור|צפו\s+בשידור",
+    re.IGNORECASE | re.UNICODE,
+)
+_FOOTBALLTWEET_INTERVIEW_RE = re.compile(
+    r"\b(?:interview|exclusive\s+interview|press\s+conference|mixed\s+zone|podcast|"
+    r"speaking\s+to|spoke\s+to|sat\s+down\s+with|asked\s+about|on\s+the\s+pod|"
+    r"in\s+conversation\s+with|q\s*&\s*a|quotes?\s+from)\b|"
+    r"ראיון|בראיון|מסיבת\s+עיתונאים|אזור\s+מעורב|פודקאסט|נשאל\s+על|דיבר\s+עם|"
+    r"בשיחה\s+עם|ציטוטים\s+מ",
+    re.IGNORECASE | re.UNICODE,
+)
+_FOOTBALLTWEET_SPEECH_RE = re.compile(
+    r"\b(?:said|says|told|added|admitted|insisted|believes?|thinks?|feels?|claims?|"
+    r"reacted|responded|explained|commented|on\s+[A-Z][^:]{1,80}:)\b|"
+    r"אמר|אומר|לדבריו|טען|הוסיף|הודה|מתעקש|מאמין|חושב|מרגיש|הגיב|הסביר|התייחס",
+    re.IGNORECASE | re.UNICODE,
+)
+_FOOTBALLTWEET_OPINION_RE = re.compile(
+    r"\b(?:opinion|column|editorial|analysis|debate|hot\s+take|prediction|rank(?:ing|ed)?|"
+    r"best\s+ever|greatest|should|deserves?|overrated|underrated|who\s+is\s+better|poll)\b|"
+    r"דעה|טור|פרשנות|ניתוח|ויכוח|דיון|תחזית|דירוג|הטוב\s+ביותר|הגדול\s+ביותר|"
+    r"צריך|מגיע\s+לו|אוברייטד|אנדרייטד|מי\s+טוב\s+יותר|סקר",
+    re.IGNORECASE | re.UNICODE,
+)
+_FOOTBALLTWEET_MEDIA_TALK_RE = re.compile(
+    r"\b(?:the\s+media|media\s+treatment|media\s+coverage|journalists?|pundits?|newspapers?|"
+    r"television|tv\s+show|radio\s+show|talk\s*show|critici[sz]ed\s+the\s+press|"
+    r"spoke\s+to\s+the\s+press)\b|"
+    r"התקשורת|סיקור\s+תקשורתי|עיתונאים|פרשנים|עיתונים|תכנית\s+טלוויזיה|תוכנית\s+טלוויזיה|"
+    r"תכנית\s+רדיו|תוכנית\s+רדיו|דיבר\s+עם\s+התקשורת|תקף\s+את\s+התקשורת",
+    re.IGNORECASE | re.UNICODE,
+)
+_FOOTBALLTWEET_SOCIAL_STATEMENT_RE = re.compile(
+    r"\b(?:instagram\s+(?:post|story|statement)|social\s+media\s+post|open\s+letter|"
+    r"message\s+to\s+(?:fans|supporters)|tribute|reaction)\b|"
+    r"פוסט\s+באינסטגרם|סטורי|רשתות\s+חברתיות|מכתב\s+פתוח|מסר\s+לאוהדים|מחווה|תגובה",
+    re.IGNORECASE | re.UNICODE,
+)
+_FOOTBALLTWEET_QUOTE_MARK_RE = re.compile(
+    r"(?:^|[\s:])(?:[\"“”„‟«»]|[׳״])[^\n]{8,}(?:[\"“”„‟«»]|[׳״])",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _footballtweet_original_text(post: Post) -> str:
+    main = _post_original_text(post) if "_post_original_text" in globals() else str(post.text or "")
+    quote = _post_original_text(post, quoted=True) if "_post_original_text" in globals() else str(post.quoted_text or "")
+    return html.unescape("\n".join(part for part in (main, quote) if part)).strip()
+
+
+def footballtweet_quote_or_opinion_reason(post: Post) -> str:
+    text = _footballtweet_original_text(post)
+    quoted = str(getattr(post, "original_quoted_text", "") or getattr(post, "quoted_text", "") or "").strip()
+    if count_content_words(quoted) >= 4:
+        return "footballtweet_quoted_post"
+    if _FOOTBALLTWEET_INTERVIEW_RE.search(text):
+        return "footballtweet_interview"
+    if "🗣" in text or "💬" in text:
+        return "footballtweet_quote"
+    if _FOOTBALLTWEET_QUOTE_MARK_RE.search(text):
+        return "footballtweet_quote"
+    if re.search(r"(?m)^\s*(?:[🚨⚠️🔴🟡🟢🔵⚫💥🔥]+\s*)?[\"“”„‟«»׳״]", text):
+        return "footballtweet_quote"
+    if re.search(
+        r"(?im)^\s*(?:[🚨⚠️🔴🟡🟢🔵⚫]+\s*)?"
+        r"(?:[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+){0,4}|[א-ת][א-ת'׳״-]+(?:\s+[א-ת][א-ת'׳״-]+){0,4})"
+        r"\s*[:：]\s*(?:I\b|We\b|My\b|Our\b|אני\b|אנחנו\b|שלי\b|שלנו\b)",
+        text,
+    ):
+        return "footballtweet_quote"
+    if _FOOTBALLTWEET_MEDIA_TALK_RE.search(text):
+        return "footballtweet_media_talk"
+    if _FOOTBALLTWEET_OPINION_RE.search(text):
+        return "footballtweet_opinion"
+    if _FOOTBALLTWEET_SOCIAL_STATEMENT_RE.search(text):
+        return "footballtweet_social_statement"
+    # Speech verbs alone can occur in ordinary reports. Block them only when the
+    # post is clearly framed as somebody's words (colon, quote or media setting).
+    if _FOOTBALLTWEET_SPEECH_RE.search(text) and re.search(r"(?:[:：]\s*$|[:：]\s*[\"“”׳״]|\b(?:on|about)\b)", text, re.I | re.M):
+        return "footballtweet_quote"
+    return ""
+
+
+_PRE_FOOTBALLTWEET_INTERVIEW_POST = is_interview_post
+
+
+def is_interview_post(post: Post) -> bool:
+    if _is_footballtweet_post(post):
+        return bool(footballtweet_quote_or_opinion_reason(post))
+    return _PRE_FOOTBALLTWEET_INTERVIEW_POST(post)
+
+
+def _footballtweet_identity(post: Post) -> str:
+    return str(post.post_id or post.link or post_content_signature(post.username, post.text, post.quoted_text) or "")
+
+
+def _footballtweet_source_group(value: Any) -> str:
+    if value_contains_footballtweet(value):
+        return "footballtweet"
+    if value_contains_football_factly(value):
+        return "footballfactly"
+    if value_contains_optajoe(value):
+        return "optajoe"
+    return ""
+
+
+def _footballtweet_memory_text(item: dict[str, Any]) -> str:
+    return str(
+        item.get("original_text")
+        or item.get("source_text")
+        or item.get("original_preview")
+        or item.get("preview")
+        or ""
+    ).strip()
+
+
+
+_FOOTBALLTWEET_DUPLICATE_GENERIC_TOKENS = {
+    "completed", "complete", "signing", "signed", "sign", "joins", "joined", "join",
+    "agreement", "agreed", "medical", "tests", "test", "contract", "season", "seasons",
+    "today", "tomorrow", "defender", "midfielder", "striker", "player", "players", "club",
+    "clubs", "team", "teams", "reached", "full", "after", "running", "years", "year",
+    "transfer", "deal", "official", "documents", "exchanged", "scheduled", "planned",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "השלימה", "הושלמה", "החתמה", "חתם", "יחתום", "הסכם", "סיכום", "רפואיות",
+    "בדיקות", "חוזה", "עונות", "היום", "מחר", "בלם", "קשר", "חלוץ", "שחקן",
+    "מועדון", "קבוצה", "העברה", "עסקה", "רשמי", "מסמכים",
+}
+
+
+def _footballtweet_concrete_subject_tokens(value: str) -> set[str]:
+    text = html.unescape(str(value or ""))
+    text = remove_external_links(text) if "remove_external_links" in globals() else re.sub(r"https?://\S+", " ", text)
+    tokens: set[str] = set()
+    for token in re.findall(r"[A-Za-zא-ת][A-Za-zא-ת'׳״’\-]{3,}", text):
+        # English source subjects (players/clubs/managers) are normally capitalized.
+        # Lower-case prose words are deliberately excluded so recycled templates
+        # about different teams are never treated as the same story.
+        if re.match(r"[A-Za-z]", token) and not token[0].isupper():
+            continue
+        normalized = _normalize_news_duplicate_token(token) if "_normalize_news_duplicate_token" in globals() else token.casefold()
+        if (
+            len(normalized) >= 4
+            and normalized not in NEWS_DUP_STOPWORDS
+            and normalized not in NEWS_DUP_ACTION_WORDS
+            and normalized not in _FOOTBALLTWEET_DUPLICATE_GENERIC_TOKENS
+        ):
+            tokens.add(normalized)
+    return tokens
+
+def _footballtweet_duplicate_memory_candidate(post: Post) -> dict[str, Any] | None:
+    now = time.time()
+    current_group = "footballtweet"
+    current_text = _footballtweet_original_text(post)
+    current_normalized = normalize_memory_text(current_text)
+    if len(current_normalized) < 24:
+        return None
+    current_signature = news_event_signature(clone_post_with_text(post, current_text))
+    current_post = clone_post_with_text(post, current_text)
+    current_post.username = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+
+    rows = load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-1000:]
+    for item in reversed(rows):
+        if not isinstance(item, dict):
+            continue
+        previous_group = _footballtweet_source_group(
+            item.get("special_source") or item.get("special_fact_feed") or item.get("username") or item.get("source")
+        )
+        if previous_group not in {"footballtweet", "footballfactly", "optajoe"}:
+            continue
+        age = now - float(item.get("ts", 0.0) or 0.0)
+        window = (
+            FOOTBALLTWEET_OWN_DUPLICATE_WINDOW_SECONDS
+            if previous_group == current_group
+            else FOOTBALLTWEET_CROSS_DUPLICATE_WINDOW_SECONDS
+        )
+        if age < 0 or age > window:
+            continue
+        previous_text = _footballtweet_memory_text(item)
+        if not previous_text:
+            continue
+        previous_normalized = normalize_memory_text(previous_text)
+        if not previous_normalized:
+            continue
+        if str(item.get("post_id", "") or "") and str(item.get("post_id", "") or "") == str(post.post_id or ""):
+            return item
+        if str(item.get("link", "") or "") and str(item.get("link", "") or "") == str(post.link or ""):
+            return item
+
+        previous_post = clone_post_with_text(post, previous_text)
+        previous_post.username = str(item.get("username") or item.get("source") or previous_group)
+        previous_item = {
+            "ts": float(item.get("ts", 0.0) or 0.0),
+            "username": previous_post.username,
+            "link": str(item.get("link", "") or ""),
+            "signature": news_event_signature(previous_post),
+        }
+        score = _event_similarity(current_signature, previous_item["signature"])
+        verdict = local_duplicate_verdict(current_post, previous_item, score)
+        sequence_ratio = SequenceMatcher(None, current_normalized, previous_normalized).ratio()
+        token_similarity = memory_similarity(current_text, previous_text)
+        current_players, current_teams = _canonical_sets_from_signature(current_signature)
+        previous_players, previous_teams = _canonical_sets_from_signature(previous_item["signature"])
+        shared_subject_tokens = (
+            _footballtweet_concrete_subject_tokens(current_text)
+            & _footballtweet_concrete_subject_tokens(previous_text)
+        )
+        same_concrete_subject = bool(
+            (current_players & previous_players)
+            or len(shared_subject_tokens) >= 2
+            or any(len(token) >= 7 for token in shared_subject_tokens)
+            or ((current_teams & previous_teams) and shared_subject_tokens)
+        )
+
+        # Never call two generic transfer templates duplicates merely because the
+        # wording is similar. A concrete shared player/club/subject is mandatory.
+        if not same_concrete_subject:
+            continue
+        if previous_group == current_group:
+            if verdict == "SAME_DUPLICATE" or sequence_ratio >= 0.94 or token_similarity >= 0.90:
+                return item
+        else:
+            if verdict == "SAME_DUPLICATE" and score >= 0.58:
+                return item
+            if sequence_ratio >= 0.94 or token_similarity >= 0.90:
+                return item
+    return None
+
+
+def _footballtweet_sent_last_hour_count(now: float | None = None) -> int:
+    now = float(now or time.time())
+    unique: set[str] = set()
+    for item in load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-700:]:
+        if not isinstance(item, dict) or not value_contains_footballtweet(item.get("username") or item.get("source")):
+            continue
+        if now - float(item.get("ts", 0.0) or 0.0) > 60 * 60:
+            continue
+        identity = str(item.get("post_id") or item.get("link") or item.get("original_text") or item.get("preview") or "").strip()
+        if identity:
+            unique.add(identity)
+    return len(unique)
+
+
+def _footballtweet_reserve_rate_slot(post: Post) -> bool:
+    identity = _footballtweet_identity(post)
+    now = time.time()
+    with _FOOTBALLTWEET_RATE_LOCK:
+        stale = [key for key, ts in _FOOTBALLTWEET_PENDING_SENDS.items() if now - ts > FOOTBALLTWEET_PENDING_RESERVATION_SECONDS]
+        for key in stale:
+            _FOOTBALLTWEET_PENDING_SENDS.pop(key, None)
+        if identity in _FOOTBALLTWEET_PENDING_SENDS:
+            return True
+        sent_count = _footballtweet_sent_last_hour_count(now)
+        if sent_count + len(_FOOTBALLTWEET_PENDING_SENDS) >= FOOTBALLTWEET_MAX_SENDS_PER_HOUR:
+            return False
+        _FOOTBALLTWEET_PENDING_SENDS[identity] = now
+        return True
+
+
+def _footballtweet_release_rate_slot(post: Post) -> None:
+    with _FOOTBALLTWEET_RATE_LOCK:
+        _FOOTBALLTWEET_PENDING_SENDS.pop(_footballtweet_identity(post), None)
+
+
+def footballtweet_filter_issue(post: Post, reserve_rate_slot: bool = True) -> str:
+    if not _is_footballtweet_post(post):
+        return ""
+    original = _footballtweet_original_text(post)
+    if is_women_or_wnba_post(post):
+        return "footballtweet_women"
+    if is_other_sport_post(post):
+        return "footballtweet_other_sport"
+    quote_reason = footballtweet_quote_or_opinion_reason(post)
+    if quote_reason:
+        return quote_reason
+    if _FOOTBALLTWEET_LIVE_RE.search(original):
+        return "footballtweet_live"
+    if count_content_words(original) < FOOTBALLTWEET_MIN_WORDS:
+        return "footballtweet_too_short"
+    if not _special_fact_has_media(post):
+        return "footballtweet_no_media"
+    if _footballtweet_duplicate_memory_candidate(post):
+        return "footballtweet_duplicate_24h"
+    if reserve_rate_slot and not _footballtweet_reserve_rate_slot(post):
+        return "footballtweet_hourly_limit"
+    return ""
+
+
+_PRE_FOOTBALLTWEET_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _is_footballtweet_post(post):
+        try:
+            return footballtweet_filter_issue(post, reserve_rate_slot=True)
+        except Exception as exc:
+            logging.exception("Footballtweet dedicated filter failed safely: %s", exc)
+            return "footballtweet_filter_internal_error"
+    return _PRE_FOOTBALLTWEET_PRE_SEND(post)
+
+
+# The existing dedicated-source wrappers suppress generic fuzzy duplicate checks.
+# For Footballtweet, install a stricter, source-limited 24-hour duplicate check
+# that compares only Footballtweet, FootballFactly and OptaJoe.
+def _footballtweet_duplicate_event(post: Post, state: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if not _is_footballtweet_post(post):
+        return None
+    candidate = _footballtweet_duplicate_memory_candidate(post)
+    if not candidate:
+        return None
+    previous_text = _footballtweet_memory_text(candidate)
+    previous_post = clone_post_with_text(post, previous_text or str(candidate.get("preview", "") or ""))
+    previous_post.username = str(candidate.get("username") or candidate.get("source") or "")
+    return {
+        "ts": float(candidate.get("ts", 0.0) or 0.0),
+        "username": previous_post.username,
+        "link": str(candidate.get("link", "") or ""),
+        "pending": False,
+        "ai_text": _news_duplicate_clean_text(previous_post),
+        "signature": news_event_signature(previous_post),
+    }
+
+
+def _install_footballtweet_duplicate_wrapper(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(post: Post, *args: Any, _previous=previous, **kwargs: Any):
+        if _is_footballtweet_post(post):
+            state = next((value for value in args if isinstance(value, dict)), kwargs.get("state"))
+            return _footballtweet_duplicate_event(post, state)
+        return _previous(post, *args, **kwargs)
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _footballtweet_duplicate_name in (
+    "find_channel_duplicate_event",
+    "find_recent_duplicate_event",
+    "find_recent_duplicate_event_ai_aware",
+    "find_post_translation_duplicate_event",
+    "find_recent_burst_spam_event",
+):
+    _install_footballtweet_duplicate_wrapper(_footballtweet_duplicate_name)
+
+
+_PRE_FOOTBALLTWEET_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        return _PRE_FOOTBALLTWEET_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    finally:
+        if _is_footballtweet_post(post):
+            _footballtweet_release_rate_slot(post)
+
+
+_PRE_FOOTBALLTWEET_REMEMBER_SENT = remember_persistent_sent
+
+
+def remember_persistent_sent(post: Any, message: Any, sent_via: str = "auto") -> None:
+    _PRE_FOOTBALLTWEET_REMEMBER_SENT(post, message, sent_via)
+    if not isinstance(post, Post):
+        return
+    group = _footballtweet_source_group(getattr(post, "username", ""))
+    if group not in {"footballtweet", "footballfactly", "optajoe"}:
+        return
+    path = persistent_memory_path("football_sent_memory.json")
+    items = load_json_list_file(path)
+    if not items:
+        return
+    # Enrich only the row written for this exact post. This keeps the existing
+    # file format and all historical keys fully backward compatible.
+    target_index = None
+    for index in range(len(items) - 1, max(-1, len(items) - 8), -1):
+        item = items[index]
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("post_id", "") or "") == str(post.post_id or "") or str(item.get("link", "") or "") == str(post.link or ""):
+            target_index = index
+            break
+    if target_index is None:
+        target_index = len(items) - 1
+    items[target_index]["original_text"] = _footballtweet_original_text(post)
+    items[target_index]["special_source"] = group
+    items[target_index]["duplicate_memory_hours"] = 24
+    if group == "footballtweet":
+        items[target_index]["no_writer"] = True
+        items[target_index]["writer_hidden"] = True
+    save_json_list_file(path, items, limit=700)
+
+
+_PRE_FOOTBALLTWEET_HIDE_WRITER = should_hide_writer_header
+
+
+def should_hide_writer_header(post: Post, translated: str) -> bool:
+    if _is_footballtweet_post(post):
+        return True
+    return _PRE_FOOTBALLTWEET_HIDE_WRITER(post, translated)
+
+
+_PRE_FOOTBALLTWEET_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    mapping = {
+        "footballtweet_women": "ציוצי כדורגל: כדורגל נשים נחסם",
+        "footballtweet_other_sport": "ציוצי כדורגל: ענף שאינו כדורגל גברים נחסם",
+        "footballtweet_quoted_post": "ציוצי כדורגל: פוסט מצוטט נחסם",
+        "footballtweet_interview": "ציוצי כדורגל: ראיון או מסיבת עיתונאים נחסמו",
+        "footballtweet_opinion": "ציוצי כדורגל: דעה, פרשנות או דירוג נחסמו",
+        "footballtweet_media_talk": "ציוצי כדורגל: דיבור על התקשורת או פרשנים נחסם",
+        "footballtweet_social_statement": "ציוצי כדורגל: תגובה או פוסט רשתות חברתיות נחסמו",
+        "footballtweet_quote": "ציוצי כדורגל: ציטוט או דברי אדם נחסמו",
+        "footballtweet_live": "ציוצי כדורגל: שידור או לייב נחסמו",
+        "footballtweet_too_short": f"ציוצי כדורגל: פחות מ-{FOOTBALLTWEET_MIN_WORDS} מילים רגילות",
+        "footballtweet_no_media": "ציוצי כדורגל: פוסט בלי תמונה או סרטון נחסם",
+        "footballtweet_duplicate_24h": "ציוצי כדורגל: דיווח ממוחזר או כפילות מול ציוצי כדורגל, עובדות כדורגל או אופטה ב-24 השעות האחרונות",
+        "footballtweet_hourly_limit": "ציוצי כדורגל: נחסם כדי לא לעבור שני עדכונים בשעה",
+        "footballtweet_filter_internal_error": "ציוצי כדורגל: תקלה פנימית בסינון — הפוסט נחסם בבטחה",
+    }
+    return mapping.get(str(reason or ""), _PRE_FOOTBALLTWEET_HEBREW_REASON(reason))
+
+
+# Extend the existing source diagnostics without creating a second menu system.
+_PRE_FOOTBALLTWEET_SPECIAL_DIAGNOSTICS = special_sources_diagnostics_text
+
+
+def special_sources_diagnostics_text() -> str:
+    base = _PRE_FOOTBALLTWEET_SPECIAL_DIAGNOSTICS()
+    state = load_control_state()
+    items: list[dict[str, Any]] = []
+    for key in ("last_blocked_posts", "last_duplicate_posts"):
+        value = state.get(key, [])
+        if isinstance(value, list):
+            items.extend(item for item in value if isinstance(item, dict))
+    lines = [
+        base,
+        "",
+        "⚽ ציוצי כדורגל",
+        f"• מצב: {'כבוי' if control_state_account_disabled(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME) else 'פעיל'}.",
+        f"• לפחות {FOOTBALLTWEET_MIN_WORDS} מילים רגילות ומדיה.",
+        "• רק כדורגל גברים; נשים, ענפים אחרים ושידורים נחסמים.",
+        "• כל ראיון, ציטוט, דעה, פרשנות, דיבור תקשורתי או תגובת רשת נחסמים.",
+        "• בלי כותרת מקור בראש ההודעה.",
+        f"• עד {FOOTBALLTWEET_MAX_SENDS_PER_HOUR} עדכונים בשעה.",
+        "• כפילויות נבדקות מול המקור עצמו, עובדות כדורגל ואופטה; זיכרון המקור עצמו נשמר לפחות 24 שעות.",
+    ]
+    matching = []
+    for item in reversed(items):
+        source = str(item.get("source") or item.get("username") or "")
+        if value_contains_footballtweet(source):
+            matching.append(item)
+        if len(matching) >= 10:
+            break
+    if matching:
+        lines.extend(["", "חסימות אחרונות של ציוצי כדורגל:"])
+        for index, item in enumerate(matching, 1):
+            reason = hebrew_block_reason(str(item.get("raw_reason") or item.get("reason") or ""))
+            preview = trim(str(item.get("preview") or item.get("text") or ""), 150)
+            lines.append(f"{index}. {reason} — {preview}")
+    return "\n".join(lines)
+
+
+_PRE_FOOTBALLTWEET_MONITOR_MENU = monitor_menu_reply_markup
+
+
+def monitor_menu_reply_markup() -> dict[str, Any]:
+    markup = _PRE_FOOTBALLTWEET_MONITOR_MENU()
+    rows = [[dict(button) for button in row if isinstance(button, dict)] for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])]
+    for row in rows:
+        for button in row:
+            if str(button.get("callback_data", "")) == "football_special_sources_diagnostics":
+                button["text"] = "🧪 כללים וחסימות: עובדות + אופטה + ציוצי כדורגל"
+    return stable_reply_markup(rows)
+
+# ====== END FOOTBALLTWEET / "ציוצי כדורגל" DEDICATED SOURCE PATCH ======
+
 if __name__ == "__main__":
     main()
