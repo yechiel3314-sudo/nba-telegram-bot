@@ -20682,5 +20682,104 @@ def strip_football_factly_author_heading(message: Any) -> str:
     return text.strip()
 
 
+
+# ====== RELIABLE STARTUP CONTROL PANEL PATCH (2026-07-21) ======
+# The operator expects a fresh complete control keyboard after every process start.
+# Startup message delivery must not use the sub-second timeout reserved for button
+# edits/callbacks; Telegram can legitimately take several seconds to accept a new
+# message. Keep state filenames and keys unchanged.
+CONTROL_SEND_PANEL_ON_STARTUP = True
+CONTROL_STARTUP_PANEL_TIMEOUT_SECONDS = float(os.environ.get("CONTROL_STARTUP_PANEL_TIMEOUT_SECONDS", "12"))
+CONTROL_STARTUP_PANEL_ATTEMPTS = max(2, int(os.environ.get("CONTROL_STARTUP_PANEL_ATTEMPTS", "3")))
+
+_startup_base_quick_control_reply_markup = quick_control_reply_markup
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    """Return the complete root keyboard, including one current on/off button."""
+    markup = _startup_base_quick_control_reply_markup()
+    source_rows = markup.get("inline_keyboard", []) if isinstance(markup, dict) else []
+    rows: list[list[dict[str, str]]] = []
+    for row in source_rows:
+        cleaned: list[dict[str, str]] = []
+        for button in row if isinstance(row, list) else []:
+            if not isinstance(button, dict):
+                continue
+            callback = str(button.get("callback_data", ""))
+            if callback in {"football_bot_on", "football_bot_off"}:
+                continue
+            cleaned.append(dict(button))
+        if cleaned:
+            rows.append(cleaned)
+    paused = control_state_is_paused()
+    rows.insert(0, [{
+        "text": stable_button_label("▶️ הפעל בוט" if paused else "⏸️ כבה בוט"),
+        "callback_data": "football_bot_on" if paused else "football_bot_off",
+    }])
+    return stable_reply_markup(rows)
+
+
+def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> None:
+    """Send/edit the root menu; fresh startup sends use a robust timeout and retries."""
+    if not CONTROL_CHAT_ID:
+        logging.error("לוח שליטה: CONTROL_CHAT_ID חסר ולכן לא ניתן לשלוח את כפתורי ההפעלה.")
+        return
+    # A forced startup send is explicitly required even if an older deployment left
+    # CONTROL_PANEL_MESSAGES_ENABLED=0 in Railway. Non-startup calls still respect it.
+    if not force_new and not CONTROL_PANEL_MESSAGES_ENABLED:
+        return
+
+    text = action_done or "כלים מהירים לבוט הכדורגל."
+    state = load_control_state()
+    message_id = state.get("quick_control_message_id")
+    payload = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": rtl(text),
+        "reply_markup": quick_control_reply_markup(),
+        "disable_web_page_preview": True,
+    }
+
+    if message_id and not force_new:
+        try:
+            telegram_api(
+                "editMessageText",
+                {**payload, "message_id": int(message_id)},
+                max_attempts=1,
+                timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS,
+            )
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logging.warning("⚠️ לוח כלים מהירים: העריכה נכשלה; נשלחת הודעה חדשה: %s", exc)
+
+    timeout = CONTROL_STARTUP_PANEL_TIMEOUT_SECONDS if force_new else max(REQUEST_TIMEOUT_SECONDS, 6)
+    attempts = CONTROL_STARTUP_PANEL_ATTEMPTS if force_new else max(2, HTTP_RETRIES)
+    try:
+        response = telegram_api(
+            "sendMessage",
+            payload,
+            max_attempts=attempts,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logging.error(
+            "⛔ לוח שליטה: שליחת כל הכפתורים בהפעלה נכשלה אחרי %s ניסיונות (timeout=%ss): %s",
+            attempts,
+            timeout,
+            exc,
+        )
+        return
+
+    new_message_id = response.get("result", {}).get("message_id") if isinstance(response, dict) else None
+    if new_message_id:
+        save_control_state(quick_control_message_id=new_message_id)
+        if force_new:
+            logging.info("✅ לוח השליטה המלא נשלח מחדש. message_id=%s", new_message_id)
+    else:
+        logging.error("⛔ לוח שליטה: Telegram לא החזיר message_id לאחר שליחת התפריט.")
+
+# ====== END RELIABLE STARTUP CONTROL PANEL PATCH ======
+
 if __name__ == "__main__":
     main()
