@@ -22626,5 +22626,325 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
 
 # ====== END FOOTBALLTWEET / "ציוצי כדורגל" DEDICATED SOURCE PATCH ======
 
+
+# ====== FINAL FOOTBALLTWEET RSS ISOLATION + ONE-MESSAGE CONTROL RESULTS (2026-07-22) ======
+# This patch deliberately does not change the shared RSS engine used by existing
+# reporters, FootballFactly or OptaJoe.  Footballtweet gets an isolated adapter so
+# a slow/broken mirror for this one new source cannot be reported as a failure of
+# the whole RSS scan and cannot delay the other writers.  Existing persistent file
+# names and JSON keys remain unchanged.
+
+BOT_BUILD_ID = "winner-footballtweet-rss-isolated-one-message-control-2026-07-22"
+
+_FOOTBALLTWEET_SHARED_FETCH_POSTS = fetch_posts
+_FOOTBALLTWEET_SHARED_FETCH_POSTS_SAFELY = fetch_posts_safely
+_FOOTBALLTWEET_SHARED_CONTROL_VARIANTS = _control_rss_username_variants
+_FOOTBALLTWEET_SHARED_CONTROL_FETCH = fetch_control_posts_reliable
+_FOOTBALLTWEET_SHARED_LAST_TEN_FETCH = fetch_last_ten_control_isolated
+_FOOTBALLTWEET_SHARED_PROCESS_CONTROL = process_control_update
+
+# Prefer redirecting/independent mirrors for this large aggregation account.  The
+# remaining configured mirrors are still tried as a second isolated batch.
+FOOTBALLTWEET_PREFERRED_FEED_HOSTS = (
+    "twiiit.com",
+    "lightbrd.com",
+    "rsshub.rssforever.com",
+)
+FOOTBALLTWEET_RSS_FAILURE_LOG_SECONDS = 15 * 60
+FOOTBALLTWEET_RSS_STALE_CACHE_MAX_SECONDS = 24 * 60 * 60
+_FOOTBALLTWEET_RSS_LAST_FAILURE_LOG_AT = 0.0
+_FOOTBALLTWEET_RSS_LAST_STATUS: dict[str, Any] = {
+    "ok": False,
+    "checked_at": 0.0,
+    "posts": 0,
+    "errors": [],
+    "timeouts": [],
+    "used_cache": False,
+}
+
+
+def _footballtweet_template_host(template: str) -> str:
+    try:
+        return urllib.parse.urlparse(str(template or "")).netloc.casefold()
+    except Exception:
+        return ""
+
+
+def _footballtweet_feed_batches() -> list[list[str]]:
+    templates = list(dict.fromkeys(active_feed_templates()))
+    preferred = [
+        template for template in templates
+        if any(host in _footballtweet_template_host(template) for host in FOOTBALLTWEET_PREFERRED_FEED_HOSTS)
+    ]
+    remaining = [template for template in templates if template not in preferred]
+    batches: list[list[str]] = []
+    if preferred:
+        batches.append(preferred[:3])
+    if remaining:
+        batches.append(remaining[:2])
+    return batches
+
+
+def _footballtweet_cached_posts_any_age(limit: int = 20) -> list[Post]:
+    """Read source-local cache/history without causing another network sweep."""
+    merged: dict[str, Post] = {}
+    candidates: list[Post] = []
+    cached = CONTROL_RSS_CACHE.get(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME.casefold())
+    if cached:
+        _saved_at, values = cached
+        candidates.extend(post for post in values if isinstance(post, Post))
+    try:
+        candidates.extend(_ten_history_load(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME))
+    except Exception as exc:
+        logging.debug("Footballtweet persistent history read failed safely: %s", short_error(exc, 300))
+    try:
+        candidates.extend(_ten_history_collect_existing_state_posts(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME))
+    except Exception as exc:
+        logging.debug("Footballtweet control-state history read failed safely: %s", short_error(exc, 300))
+    for post in candidates:
+        try:
+            post.username = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+            identity = post.post_id or post.link or post_content_signature(post.username, post.text, post.quoted_text)
+            if identity:
+                merged.setdefault(str(identity), post)
+        except Exception:
+            continue
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    return ordered[:max(1, int(limit))]
+
+
+def _footballtweet_log_rss_failure_once(errors: list[str], timeouts: list[str]) -> None:
+    global _FOOTBALLTWEET_RSS_LAST_FAILURE_LOG_AT
+    now = time.time()
+    if now - _FOOTBALLTWEET_RSS_LAST_FAILURE_LOG_AT < FOOTBALLTWEET_RSS_FAILURE_LOG_SECONDS:
+        return
+    _FOOTBALLTWEET_RSS_LAST_FAILURE_LOG_AT = now
+    details: list[str] = []
+    if errors:
+        details.append("errors=" + "; ".join(errors[:5]))
+    if timeouts:
+        details.append("timeouts=" + ", ".join(timeouts[:5]))
+    logging.info(
+        "Footballtweet RSS mirrors did not return a fresh feed; source-local cache will be used and all other writers continue normally.%s",
+        (" " + " | ".join(details)) if details else "",
+    )
+
+
+def _fetch_footballtweet_posts_isolated(limit: int = 25) -> list[Post]:
+    """Fetch only Footballtweet without mutating shared source-health counters.
+
+    Each mirror batch is independently protected.  A complete failure returns the
+    last source-local history instead of raising into fetch_all_accounts().  Exact
+    post IDs/state still prevent stale cached rows from being published again.
+    """
+    merged: dict[str, Post] = {}
+    all_errors: list[str] = []
+    all_timeouts: list[str] = []
+    for batch in _footballtweet_feed_batches():
+        try:
+            posts, errors, timeouts = collect_posts_from_feed_templates(
+                FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+                batch,
+            )
+        except Exception as exc:
+            posts, errors, timeouts = [], [f"batch: {type(exc).__name__}: {short_error(exc, 240)}"], []
+        all_errors.extend(errors or [])
+        all_timeouts.extend(timeouts or [])
+        for post in posts or []:
+            if not isinstance(post, Post):
+                continue
+            try:
+                post.username = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+                _ensure_post_original_structure(post)
+                identity = post.post_id or post.link or post_content_signature(post.username, post.text, post.quoted_text)
+                if identity:
+                    merged.setdefault(str(identity), post)
+            except Exception as exc:
+                logging.debug("Footballtweet RSS item normalization failed safely: %s", short_error(exc, 300))
+        if merged:
+            # One healthy batch is enough.  Do not continue into slower mirrors.
+            break
+
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    if ordered:
+        result = ordered[:max(1, int(limit))]
+        try:
+            _remember_control_rss_posts(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, result)
+            _ten_history_save(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, result)
+        except Exception as exc:
+            logging.debug("Footballtweet RSS cache save failed safely: %s", short_error(exc, 300))
+        _FOOTBALLTWEET_RSS_LAST_STATUS.update({
+            "ok": True,
+            "checked_at": time.time(),
+            "posts": len(result),
+            "errors": all_errors[-8:],
+            "timeouts": all_timeouts[-8:],
+            "used_cache": False,
+        })
+        return result
+
+    cached = _footballtweet_cached_posts_any_age(limit=limit)
+    _FOOTBALLTWEET_RSS_LAST_STATUS.update({
+        "ok": False,
+        "checked_at": time.time(),
+        "posts": len(cached),
+        "errors": all_errors[-8:],
+        "timeouts": all_timeouts[-8:],
+        "used_cache": bool(cached),
+    })
+    _footballtweet_log_rss_failure_once(all_errors, all_timeouts)
+    return cached
+
+
+def fetch_posts(username: str) -> list[Post]:
+    if value_contains_footballtweet(username):
+        return _fetch_footballtweet_posts_isolated(limit=max(25, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    return _FOOTBALLTWEET_SHARED_FETCH_POSTS(username)
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    if not value_contains_footballtweet(username):
+        return _FOOTBALLTWEET_SHARED_FETCH_POSTS_SAFELY(username)
+    started = time.perf_counter()
+    try:
+        posts = fetch_posts(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        return FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, posts
+    except Exception as exc:
+        # This source must never create a global RSS warning or stop another writer.
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        logging.debug("Footballtweet isolated RSS fetch failed safely: %s", short_error(exc, 500))
+        return FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, _footballtweet_cached_posts_any_age(limit=25)
+
+
+def _control_rss_username_variants(username: str) -> list[str]:
+    if value_contains_footballtweet(username):
+        return [
+            FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+            "footballtweet",
+            "FootballTweet",
+        ]
+    return _FOOTBALLTWEET_SHARED_CONTROL_VARIANTS(username)
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    if value_contains_footballtweet(username):
+        posts = _fetch_footballtweet_posts_isolated(limit=max(10, int(limit)))
+        return posts[:max(1, int(limit))]
+    return _FOOTBALLTWEET_SHARED_CONTROL_FETCH(username, limit=limit)
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    if not value_contains_footballtweet(username):
+        return _FOOTBALLTWEET_SHARED_LAST_TEN_FETCH(username, limit=limit)
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+    merged: dict[str, Post] = {}
+    diagnostics: dict[str, Any] = {"sources": {}, "errors": [], "requested": int(limit)}
+    try:
+        _collect_history_nonnetwork(canonical, merged, diagnostics)
+    except Exception as exc:
+        diagnostics["errors"].append(f"history: {short_error(exc, 220)}")
+    before = len(merged)
+    try:
+        fetched = _fetch_footballtweet_posts_isolated(limit=max(10, int(limit)))
+    except Exception as exc:
+        fetched = []
+        diagnostics["errors"].append(f"rss: {short_error(exc, 220)}")
+    for post in fetched:
+        if not isinstance(post, Post):
+            continue
+        post.username = canonical
+        identity = _ten_history_post_identity(canonical, post)
+        if identity and identity not in merged:
+            merged[identity] = post
+    diagnostics["sources"]["isolated_rss"] = len(merged) - before
+    ordered = sorted(merged.values(), key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
+    diagnostics["after_dedupe"] = len(ordered)
+    diagnostics["returned"] = min(int(limit), len(ordered))
+    diagnostics["rss_status"] = dict(_FOOTBALLTWEET_RSS_LAST_STATUS)
+    LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diagnostics
+    if ordered:
+        try:
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception as exc:
+            diagnostics["errors"].append(f"history_write: {short_error(exc, 180)}")
+    return ordered[:max(1, int(limit))]
+
+
+# ----- Selected-writer check: one NEW loading message, then edit that exact message -----
+def _latest_writer_result_markup(token: str, post: Post) -> dict[str, Any]:
+    markup = control_send_to_main_reply_markup(token)
+    rows = [list(row) for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])]
+    link = str(getattr(post, "link", "") or "")
+    if link.startswith(("http://", "https://")):
+        rows.insert(0, [{"text": "🔗 פתח פוסט מקורי", "url": link}])
+    return stable_reply_markup(rows)
+
+
+def run_latest_account_control_test_replace(username: str, loading_message_id: Any) -> None:
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "")
+    label = _hebrew_account_label(canonical)
+    try:
+        post = fetch_latest_post_fast(canonical)
+        if not post:
+            result = f"🧪 בדיקת {label}\n\nלא התקבל פוסט מהמטמון, מההיסטוריה או ממקורות ה-RSS כרגע."
+            if not _edit_control_result_html(loading_message_id, html.escape(result), control_delete_message_reply_markup()):
+                send_control_text(result, None, control_delete_message_reply_markup())
+            return
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        token = remember_control_prepared_send(post, translated, quoted_translated, quoted_author_translated)
+        rendered = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
+        markup = _latest_writer_result_markup(token, post)
+        if not _edit_control_result_html(loading_message_id, rendered, markup):
+            # Fallback only when Telegram can no longer edit the loading message.
+            send_control_html(rendered, markup)
+    except Exception as exc:
+        logging.exception("Latest-writer one-message task failed for @%s", canonical)
+        result = f"🧪 בדיקת {label} נכשלה:\n{short_error(exc, 900)}"
+        if not _edit_control_result_html(loading_message_id, html.escape(result), control_delete_message_reply_markup()):
+            try:
+                send_control_text(result, None, control_delete_message_reply_markup())
+            except Exception:
+                pass
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if not data.startswith("football_test_latest_account:"):
+        return _FOOTBALLTWEET_SHARED_PROCESS_CONTROL(update)
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    username = data.split(":", 1)[1].strip()
+    if username not in all_control_test_accounts():
+        if callback_id:
+            answer_control_callback(callback_id, "כתב לא מוכר")
+        return
+    label = _hebrew_account_label(username)
+    if callback_id:
+        answer_control_callback(callback_id, f"בודק את {label}")
+    try:
+        loading_message_id = send_control_text(
+            f"⏳ בודק את הפוסט האחרון של {label}...",
+            None,
+            control_delete_message_reply_markup(),
+        )
+    except Exception as exc:
+        logging.warning("Could not send latest-writer loading message: %s", short_error(exc, 500))
+        loading_message_id = None
+    Thread(
+        target=run_latest_account_control_test_replace,
+        args=(username, loading_message_id),
+        daemon=True,
+    ).start()
+
+# ====== END FINAL FOOTBALLTWEET RSS ISOLATION + ONE-MESSAGE CONTROL RESULTS ======
+
 if __name__ == "__main__":
     main()
