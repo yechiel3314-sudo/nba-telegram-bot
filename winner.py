@@ -17997,6 +17997,57 @@ def build_message(
 
 # ====== END FINAL SOURCE ROUTING / FABRIZIO CONFIRMATION FIX ======
 
+
+# ====== LIVE-VERIFIED SPECIAL FEED DELIVERY FIX (2026-07-21) ======
+# Verified against the automatic RSS path on 2026-07-21:
+# - FootballFactly and OptaJoe both returned 20 parsed posts with media.
+# - FootballFactly's newest media post contained 14 content words and was rejected
+#   only by the shared 15-word threshold, making the working feed look inactive.
+# - Opta score-led statistics such as "0-0 - ..." also begin with a number and
+#   must use the statistic route rather than ordinary reporter filtering.
+
+FOOTBALL_FACTLY_AUTO_MIN_WORDS = 12
+OPTAJOE_AUTO_MIN_WORDS = FOOTBALL_FACTLY_MIN_WORDS
+
+_OPTA_STAT_COUNTER_RE = re.compile(
+    r"^\s*[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
+    r"\d{1,3}(?:\s*[-:]\s*\d{1,3})?\s*[-–—]\s+",
+    re.UNICODE,
+)
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    """Final, source-specific automatic gates for the two dedicated feeds."""
+    source_name = special_fact_feed_name(*parts, **kwargs)
+    if not source_name:
+        return ""
+    label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
+    post = next((part for part in parts if isinstance(part, Post)), None)
+    text = extract_original_post_caption_for_rules(*parts, **kwargs)
+
+    if post is not None and is_women_or_wnba_post(post):
+        return f"{label}: כדורגל נשים או WNBA נחסם"
+    if post is not None and is_other_sport_post(post):
+        return f"{label}: ענף ספורט שאינו כדורגל גברים נחסם"
+    if special_fact_feed_is_interview_or_mere_quote(*parts, **kwargs):
+        return f"{label}: ראיון, דעה או ציטוט שאינו עובדה נחסם"
+    if _SPECIAL_FACT_LIVE_RE.search(str(text or "")):
+        return f"{label}: שידור או לייב נחסם"
+
+    minimum_words = (
+        FOOTBALL_FACTLY_AUTO_MIN_WORDS
+        if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME
+        else OPTAJOE_AUTO_MIN_WORDS
+    )
+    if count_content_words(text) < minimum_words:
+        return f"{label}: פחות מ-{minimum_words} מילים"
+    if not football_factly_has_image_or_video(*parts, **kwargs):
+        return f"{label}: פוסט בלי תמונה או סרטון לא נשלח"
+    return ""
+
+
+# ====== END LIVE-VERIFIED SPECIAL FEED DELIVERY FIX ======
+
 if __name__ == "__main__":
     main()
 
