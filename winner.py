@@ -12284,7 +12284,10 @@ def google_translate_full_hebrew_stronger(text: str, max_chars: int = 2500) -> s
         except Exception:
             translated_units.append(unit)
     if translated_units:
-        candidates.append("\n".join(translated_units))
+        # Sentence/unit fallback is a translation technique, not an instruction
+        # to create Telegram line breaks.  Join units as continuous prose; the
+        # final source-layout renderer restores only genuine X/RSS paragraphs.
+        candidates.append(" ".join(translated_units))
     # Candidate 3: if leftovers remain, translate only leftover Latin/Arabic fragments inside the best candidate.
     best = ""
     def score(value: str) -> tuple[int, float, int]:
@@ -12303,7 +12306,7 @@ def google_translate_full_hebrew_stronger(text: str, max_chars: int = 2500) -> s
                     repaired.append(google_translate(unit) if has_non_hebrew_leftovers(unit) else unit)
                 except Exception:
                     repaired.append(unit)
-            best = "\n".join(repaired).strip() or best
+            best = " ".join(repaired).strip() or best
     best = final_visual_cleanup(final_hebrew_polish(normalize_country_flags(best)))
     best = remove_untranslated_tail_tokens(best)
     return best.strip() or original
@@ -18664,9 +18667,13 @@ def build_message(
     quoted_author_translated: str = "",
     include_video_link: bool = False,
 ) -> str:
-    """Single final renderer: source layout, safe HTML, one heading and one signature."""
+    """Final renderer: publish only the main X post body.
+
+    Quoted-post text may still be used internally for filtering, duplicate checks
+    and context, but it is never shown as a second ``פוסט מצוטט`` block.  This
+    prevents duplicated or unrelated reports from appearing below the real post.
+    """
     body = _outgoing_body_text(post, translated)
-    quoted_body = _outgoing_body_text(post, quoted_translated, quoted=True) if quoted_translated else ""
     body = body or "עדכון חדש"
     hide_writer = _is_footballfactly_post(post) or _is_optajoe_post(post) or should_hide_writer_header(post, body)
     display_name = ACCOUNT_DISPLAY_NAMES.get(post.username, post.username)
@@ -18681,11 +18688,6 @@ def build_message(
         parts.append(f"<b>{html.escape(rtl(display_name + ':'), quote=False)}</b>")
         parts.append("")
     parts.append(_safe_markdown_to_telegram_html(rtl(body)))
-    if quoted_body:
-        parts.extend(["", f"<b>{html.escape(rtl('פוסט מצוטט:'), quote=False)}</b>"])
-        if quoted_author_translated:
-            parts.append(html.escape(rtl(_strip_internal_translation_output(quoted_author_translated)), quote=False))
-        parts.append(_safe_markdown_to_telegram_html(rtl(f'"{quoted_body}"')))
     signature = f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">{html.escape(rtl(SIGNATURE_TEXT), quote=False)}</a>'
     parts.extend(["", signature])
     message = "\n".join(parts)
@@ -19216,11 +19218,44 @@ def _allocate_translation_to_source_segments(source_segments: list[str], transla
     return result
 
 
-def _restore_source_layout(post: Post, translated: str, quoted: bool = False) -> str:
-    """Restore X/Twitter logical rows after one combined Gemini request.
+def _source_layout_is_artificial_sentence_rows(
+    source_segments: list[str],
+    source_separators: list[str],
+) -> bool:
+    """Detect RSS/translator sentence-per-line noise, not genuine X paragraphs.
 
-    Primary behavior is exact source layout. If an RSS mirror already flattened
-    the source, the fallback stays conservative and does not split every sentence.
+    Some RSS mirrors turn an ordinary one-paragraph tweet into one physical row
+    per sentence.  Those rows must not be reproduced in Telegram.  Genuine
+    paragraphs (blank-line separators), lists, headings and quote blocks remain
+    untouched.
+    """
+    if len(source_segments) < 3 or not source_separators:
+        return False
+    if any(separator == "\n\n" for separator in source_separators):
+        return False
+    if any(_LIST_LINE_RE.match(segment) for segment in source_segments):
+        return False
+    if any(segment.rstrip().endswith(":") for segment in source_segments[:-1]):
+        return False
+
+    # A run of ordinary prose sentences separated only by single newlines is the
+    # exact shape produced by the problematic RSS/Google-Translate fallback.
+    sentence_like = 0
+    for segment in source_segments:
+        plain = segment.strip().strip('"“”׳״')
+        if not plain:
+            continue
+        if re.search(r"[.!?…][\"'”׳״)]?$", plain) or count_content_words(plain) >= 5:
+            sentence_like += 1
+    return sentence_like >= max(3, len(source_segments) - 1)
+
+
+def _restore_source_layout(post: Post, translated: str, quoted: bool = False) -> str:
+    """Restore X/Twitter paragraphs while removing artificial sentence rows.
+
+    Real blank-line paragraphs and lists are preserved.  When an RSS mirror or
+    Google Translate split a normal paragraph into one sentence per line, the
+    final Telegram body is joined back into natural continuous prose.
     """
     source = _post_original_text(post, quoted=quoted)
     value = _strip_internal_translation_output(translated)
@@ -19228,11 +19263,16 @@ def _restore_source_layout(post: Post, translated: str, quoted: bool = False) ->
     value = _attach_orphan_emoji_lines(value)
     source_segments, source_separators = _source_logical_layout(source)
 
+    source_is_single_prose_block = (
+        len(source_segments) == 1
+        or _source_layout_is_artificial_sentence_rows(source_segments, source_separators)
+    )
+
     if not source_segments:
         value = re.sub(r"\n{3,}", "\n\n", value).strip()
-    elif len(source_segments) == 1:
-        # A one-paragraph X post stays one paragraph. This specifically prevents
-        # Gemini/editorial cleanup from turning each sentence into a new block.
+    elif source_is_single_prose_block:
+        # One ordinary X paragraph must stay one paragraph, even if Google
+        # translated each sentence separately or an RSS mirror inserted rows.
         value = re.sub(r"\s*\n+\s*", " ", value).strip()
     else:
         translated_segments = _allocate_translation_to_source_segments(source_segments, value)
@@ -20781,7 +20821,915 @@ def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> 
 
 # ====== END RELIABLE STARTUP CONTROL PANEL PATCH ======
 
+
+# ====== FINAL CONTROL UX + FORWARDED SOURCE DETAILS PATCH (2026-07-21) ======
+# Requested behavior:
+# 1) New prepared previews no longer show "ערוך לפני שליחה".
+# 2) Forwarding a channel post back to the control chat receives one immediate
+#    NEW reply containing the exact saved source metadata. Never try to edit the
+#    forwarded message itself.
+# 3) The "10 אחרונים" loading message is replaced in place by the final list,
+#    so the action creates one message rather than a loading message plus result.
+# Existing state files and keys remain unchanged. One optional backward-compatible
+# index key is added inside the existing main state JSON.
+
+BOT_BUILD_ID = "winner-natural-spacing-no-quoted-block-2026-07-21"
+FORWARDED_SOURCE_INDEX_KEY = "__forwarded_source_index_v3__"
+FORWARDED_SOURCE_INDEX_MAX_ITEMS = int(os.environ.get("FORWARDED_SOURCE_INDEX_MAX_ITEMS", "2500"))
+FORWARDED_SOURCE_INDEX_MAX_AGE_SECONDS = int(
+    os.environ.get("FORWARDED_SOURCE_INDEX_MAX_AGE_SECONDS", str(120 * 24 * 60 * 60))
+)
+
+
+# ----- Remove manual edit button from every newly rendered prepared preview -----
+def control_send_to_main_reply_markup(token: str) -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}],
+        [{"text": "🗑️ מחק הודעה", "callback_data": "football_delete_message"}],
+    ])
+
+
+# ----- Durable exact delivery index for messages forwarded back from the channel -----
+def _forward_source_index_from_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = state.get(FORWARDED_SOURCE_INDEX_KEY, []) if isinstance(state, dict) else []
+    values = [dict(item) for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    now = time.time()
+    kept = [
+        item for item in values
+        if now - float(item.get("ts", 0.0) or 0.0) <= FORWARDED_SOURCE_INDEX_MAX_AGE_SECONDS
+    ]
+    return kept[-FORWARDED_SOURCE_INDEX_MAX_ITEMS:]
+
+
+def _forward_message_range(first_message_id: int, image_count: int, mode: str) -> tuple[int, int]:
+    start = int(first_message_id)
+    # sendMediaGroup returns the first album message. Telegram assigns consecutive
+    # message IDs to the remaining media items in the same album.
+    count = max(1, int(image_count or 0)) if "images" in str(mode or "") else 1
+    if "images_plus_full_text" in str(mode or ""):
+        # In this mode the returned ID belongs to the separate text message. Do not
+        # guess earlier album IDs because concurrent sends can interleave.
+        count = 1
+    return start, start + count - 1
+
+
+def _remember_forwarded_source_delivery(
+    post: Post,
+    rendered_message: str,
+    message_ids: dict[str, int],
+    images: list[str],
+    mode: str,
+) -> None:
+    if not message_ids:
+        return
+    try:
+        state = load_state()
+    except Exception:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    rows = _forward_source_index_from_state(state)
+    clean_rendered = _finalize_outgoing_message_only(rendered_message)
+    original_text = _post_original_text(_ensure_post_original_structure(post))
+    ranges: dict[str, dict[str, int]] = {}
+    normalized_ids: dict[str, int] = {}
+    for chat_id, raw_message_id in message_ids.items():
+        try:
+            message_id = int(raw_message_id)
+        except Exception:
+            continue
+        normalized_ids[str(chat_id)] = message_id
+        start, end = _forward_message_range(message_id, len(images or []), mode)
+        ranges[str(chat_id)] = {"start": start, "end": end}
+    if not normalized_ids:
+        return
+    row = {
+        "ts": time.time(),
+        "username": str(post.username or ""),
+        "source_label": _hebrew_account_label(str(post.username or "")),
+        "source_name": str(post.source_name or ""),
+        "post_id": str(post.post_id or ""),
+        "link": str(post.link or ""),
+        "published_ts": float(post.published_ts or 0.0),
+        "original_text": str(original_text or ""),
+        "rendered": str(clean_rendered or ""),
+        "message_ids": normalized_ids,
+        "message_ranges": ranges,
+        "mode": str(mode or ""),
+    }
+    # Replace an identical delivery row rather than growing duplicates when an
+    # outer send path records the same successful send again.
+    delivery_key = json.dumps(normalized_ids, sort_keys=True, ensure_ascii=False)
+    rows = [
+        item for item in rows
+        if json.dumps(item.get("message_ids", {}), sort_keys=True, ensure_ascii=False) != delivery_key
+    ]
+    rows.append(row)
+    state[FORWARDED_SOURCE_INDEX_KEY] = rows[-FORWARDED_SOURCE_INDEX_MAX_ITEMS:]
+    try:
+        save_state(state)
+    except Exception as exc:
+        logging.warning("Forwarded-source delivery index save failed: %s", short_error(exc, 500))
+
+
+_previous_send_prepared_message_forward_index = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    message_ids, mode = _previous_send_prepared_message_forward_index(
+        post,
+        message,
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+    try:
+        _remember_forwarded_source_delivery(post, message, message_ids, images, mode)
+    except Exception as exc:
+        logging.warning("Automatic forwarded-source indexing failed: %s", short_error(exc, 500))
+    return message_ids, mode
+
+
+_previous_manual_force_send_forward_index = manual_force_send_prepared_message
+
+
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    message_ids, mode = _previous_manual_force_send_forward_index(
+        post,
+        message,
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+    try:
+        _remember_forwarded_source_delivery(post, message, message_ids, images, mode)
+    except Exception as exc:
+        logging.warning("Manual forwarded-source indexing failed: %s", short_error(exc, 500))
+    return message_ids, mode
+
+
+# ----- Forward/reply parsing and exact metadata lookup -----
+def _forward_target_message(message: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(message, dict):
+        return {}
+    if (
+        isinstance(message.get("forward_origin"), dict)
+        or message.get("forward_from_chat")
+        or message.get("forward_from_message_id")
+        or message.get("forward_date")
+        or message.get("forward_sender_name")
+    ):
+        return message
+    reply = message.get("reply_to_message")
+    if isinstance(reply, dict) and (
+        isinstance(reply.get("forward_origin"), dict)
+        or reply.get("forward_from_chat")
+        or reply.get("forward_from_message_id")
+        or reply.get("forward_date")
+        or reply.get("forward_sender_name")
+    ):
+        return reply
+    return message
+
+
+def _forward_context_v3(message: dict[str, Any]) -> dict[str, Any]:
+    target = _forward_target_message(message)
+    origin = target.get("forward_origin") if isinstance(target.get("forward_origin"), dict) else {}
+    origin_chat = origin.get("chat") if isinstance(origin.get("chat"), dict) else {}
+    legacy_chat = target.get("forward_from_chat") if isinstance(target.get("forward_from_chat"), dict) else {}
+    chat = origin_chat or legacy_chat or {}
+    sender_user = origin.get("sender_user") if isinstance(origin.get("sender_user"), dict) else {}
+    message_id = origin.get("message_id") or target.get("forward_from_message_id")
+    chat_id = chat.get("id")
+    body = str(target.get("text") or target.get("caption") or "")
+    source_name = str(
+        origin.get("sender_user_name")
+        or origin.get("author_signature")
+        or target.get("forward_sender_name")
+        or target.get("forward_signature")
+        or target.get("author_signature")
+        or chat.get("title")
+        or chat.get("username")
+        or sender_user.get("username")
+        or ""
+    ).strip()
+    origin_date = origin.get("date") or target.get("forward_date") or target.get("date")
+    return {
+        "target": target,
+        "chat": chat,
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "body": body,
+        "source_name": source_name,
+        "origin_date": origin_date,
+        "media_group_id": str(target.get("media_group_id") or ""),
+    }
+
+
+def _same_telegram_chat(stored_chat: Any, origin_chat: Any) -> bool:
+    if origin_chat in (None, ""):
+        return True
+    return str(stored_chat) == str(origin_chat)
+
+
+def _row_contains_forward_message(row: dict[str, Any], chat_id: Any, message_id: Any) -> bool:
+    if message_id in (None, ""):
+        return False
+    try:
+        wanted = int(message_id)
+    except Exception:
+        return False
+    ranges = row.get("message_ranges", {})
+    if isinstance(ranges, dict):
+        for stored_chat, bounds in ranges.items():
+            if not _same_telegram_chat(stored_chat, chat_id) or not isinstance(bounds, dict):
+                continue
+            try:
+                if int(bounds.get("start")) <= wanted <= int(bounds.get("end")):
+                    return True
+            except Exception:
+                continue
+    ids = row.get("message_ids", {})
+    if isinstance(ids, dict):
+        for stored_chat, stored_id in ids.items():
+            if _same_telegram_chat(stored_chat, chat_id) and str(stored_id) == str(wanted):
+                return True
+    return False
+
+
+def _writer_from_forwarded_body(body: str) -> tuple[str, str]:
+    plain = html_message_to_plain_text(str(body or ""))
+    mappings: list[dict[str, str]] = []
+    for name in ("ACCOUNT_DISPLAY_NAMES", "CONTROLLED_BASE_ACCOUNT_LABELS", "OPTIONAL_CONTROLLED_ACCOUNT_LABELS"):
+        value = globals().get(name, {})
+        if isinstance(value, dict):
+            mappings.append(value)
+    for mapping in mappings:
+        for username, label in mapping.items():
+            if str(label or "").strip() and str(label).strip() in plain[:260]:
+                return str(username), str(label)
+    return "", ""
+
+
+def _lookup_forwarded_source_v3(message: dict[str, Any]) -> dict[str, Any]:
+    context = _forward_context_v3(message)
+    chat_id = context.get("chat_id")
+    message_id = context.get("message_id")
+    body = str(context.get("body") or "")
+    try:
+        state = load_state()
+    except Exception:
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+
+    # 1. Exact delivery index, including every ID in a captioned media album.
+    index_rows = _forward_source_index_from_state(state)
+    for row in reversed(index_rows):
+        if _row_contains_forward_message(row, chat_id, message_id):
+            result = dict(row)
+            result["matched"] = "exact_delivery"
+            result["context"] = context
+            return result
+
+    # 2. Existing historical reply-target memory for posts sent before this patch.
+    raw_targets = state.get(BOT_SENT_REPLY_STATE_KEY, [])
+    target_rows = [item for item in raw_targets if isinstance(item, dict)] if isinstance(raw_targets, list) else []
+    for row in reversed(target_rows):
+        if _row_contains_forward_message(row, chat_id, message_id):
+            result = dict(row)
+            result["matched"] = "exact_legacy"
+            result["context"] = context
+            return result
+
+    # 3. Very strong body match against the exact rendered channel text.
+    normalized_body = html_message_to_plain_text(body).strip()
+    if normalized_body:
+        best_score = 0.0
+        best_row: dict[str, Any] | None = None
+        for row in reversed(index_rows[-1000:]):
+            previous = str(row.get("rendered") or row.get("original_text") or "")
+            if not previous:
+                continue
+            score = memory_similarity(normalized_body, html_message_to_plain_text(previous))
+            if score > best_score:
+                best_score, best_row = score, row
+        if best_row is not None and best_score >= 0.80:
+            result = dict(best_row)
+            result["matched"] = "strong_text"
+            result["match_score"] = best_score
+            result["context"] = context
+            return result
+
+    # 4. Fallback details Telegram exposes directly, plus writer heading/link parsing.
+    username, label = _writer_from_forwarded_body(body)
+    external = re.search(r"https?://(?:x\.com|twitter\.com)/[^\s<>]+", body)
+    return {
+        "ts": float(context.get("origin_date") or time.time()),
+        "username": username,
+        "source_label": label or str(context.get("source_name") or "מקור לא מזוהה"),
+        "source_name": str(context.get("source_name") or ""),
+        "post_id": "",
+        "link": external.group(0).rstrip(".,)") if external else "",
+        "published_ts": float(context.get("origin_date") or 0.0),
+        "rendered": body,
+        "matched": "telegram_fallback",
+        "context": context,
+    }
+
+
+def _format_local_datetime(timestamp: Any) -> str:
+    try:
+        value = float(timestamp or 0.0)
+        if value <= 0:
+            return "לא ידוע"
+        return datetime.fromtimestamp(value, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return "לא ידוע"
+
+
+def _telegram_channel_link_from_context(context: dict[str, Any]) -> str:
+    chat = context.get("chat") if isinstance(context.get("chat"), dict) else {}
+    username = str(chat.get("username") or "").lstrip("@")
+    message_id = context.get("message_id")
+    chat_id = context.get("chat_id")
+    if username and message_id:
+        return f"https://t.me/{username}/{message_id}"
+    if chat_id and message_id:
+        internal = _telegram_internal_chat_id(chat_id)
+        if internal:
+            return f"https://t.me/c/{internal}/{message_id}"
+    return ""
+
+
+def _forwarded_source_details_text(message: dict[str, Any]) -> str:
+    row = _lookup_forwarded_source_v3(message)
+    context = row.get("context") if isinstance(row.get("context"), dict) else {}
+    username = str(row.get("username") or "").strip().lstrip("@")
+    source_label = str(row.get("source_label") or "").strip()
+    if not source_label and username:
+        source_label = _hebrew_account_label(username)
+    if not source_label:
+        source_label = str(context.get("source_name") or "מקור לא מזוהה")
+    chat = context.get("chat") if isinstance(context.get("chat"), dict) else {}
+    channel_name = str(chat.get("title") or chat.get("username") or "לא ידוע")
+    telegram_link = _telegram_channel_link_from_context(context)
+    lines = [
+        "🔎 פרטי ההודעה",
+        "",
+        f"מקור הדיווח: {source_label}",
+    ]
+    if username:
+        lines.append(f"חשבון X: @{username}")
+    lines.append(f"תאריך ושעת הפוסט: {_format_local_datetime(row.get('published_ts'))}")
+    if row.get("post_id"):
+        lines.append(f"מזהה הפוסט: {row.get('post_id')}")
+    if row.get("link"):
+        lines.append(f"קישור לפוסט המקורי: {row.get('link')}")
+    else:
+        lines.append("קישור לפוסט המקורי: לא נמצא בזיכרון הישן")
+    lines.extend([
+        f"ערוץ Telegram: {channel_name}",
+        f"מזהה הודעת Telegram: {context.get('message_id') or 'לא ידוע'}",
+    ])
+    if telegram_link:
+        lines.append(f"קישור להודעה בערוץ: {telegram_link}")
+    sent_ts = row.get("ts")
+    if sent_ts:
+        lines.append(f"זמן השליחה על ידי הבוט: {_format_local_datetime(sent_ts)}")
+    match_labels = {
+        "exact_delivery": "התאמה מדויקת לפי ערוץ ומזהה הודעה",
+        "exact_legacy": "התאמה מדויקת לזיכרון הישן",
+        "strong_text": "התאמת תוכן חזקה",
+        "telegram_fallback": "פרטים ש-Telegram חשפה; לא נמצאה התאמה מלאה בזיכרון",
+    }
+    lines.append(f"אופן הזיהוי: {match_labels.get(str(row.get('matched') or ''), 'זיהוי חלקי')}")
+    return "\n".join(lines)
+
+
+def _message_has_forward_source_context(message: dict[str, Any]) -> bool:
+    if not isinstance(message, dict):
+        return False
+    target = _forward_target_message(message)
+    return bool(
+        isinstance(target.get("forward_origin"), dict)
+        or target.get("forward_from_chat")
+        or target.get("forward_from_message_id")
+        or target.get("forward_date")
+        or target.get("forward_sender_name")
+    )
+
+
+def send_control_reply_text(text: str, reply_to_message_id: Any = None, message_thread_id: Any = None) -> int | None:
+    """Send a NEW control message. The second argument is a reply target, never an edit target."""
+    if not CONTROL_CHAT_ID:
+        return None
+    payload: dict[str, Any] = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": trim(rtl(text), 3900),
+        "disable_web_page_preview": True,
+        "reply_markup": control_delete_message_reply_markup(),
+    }
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = int(reply_to_message_id)
+        payload["allow_sending_without_reply"] = True
+    if message_thread_id:
+        payload["message_thread_id"] = int(message_thread_id)
+    try:
+        response = telegram_api("sendMessage", payload, max_attempts=max(2, HTTP_RETRIES), timeout=max(6, REQUEST_TIMEOUT_SECONDS))
+    except Exception as exc:
+        # Some channel/control configurations do not permit reply_to_message_id.
+        # Retry once as a normal new message rather than losing the source details.
+        logging.warning("Control source-details reply failed; retrying as normal message: %s", short_error(exc, 500))
+        payload.pop("reply_to_message_id", None)
+        payload.pop("allow_sending_without_reply", None)
+        response = telegram_api("sendMessage", payload, max_attempts=max(2, HTTP_RETRIES), timeout=max(6, REQUEST_TIMEOUT_SECONDS))
+    return _control_sent_message_id(response)
+
+
+_previous_process_control_text_forward_details = process_control_text_update
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    message = update.get("message") or update.get("channel_post") or update.get("edited_channel_post") or {}
+    if isinstance(message, dict):
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        is_control = bool(CONTROL_CHAT_ID and chat_id == str(CONTROL_CHAT_ID))
+        if is_control and _message_has_forward_source_context(message):
+            try:
+                details = _forwarded_source_details_text(message)
+                send_control_reply_text(
+                    details,
+                    reply_to_message_id=message.get("message_id"),
+                    message_thread_id=message.get("message_thread_id"),
+                )
+            except Exception as exc:
+                logging.exception("Immediate forwarded-source details failed")
+                try:
+                    send_control_reply_text(
+                        f"לא הצלחתי להשלים את פרטי ההודעה:\n{short_error(exc, 900)}",
+                        reply_to_message_id=message.get("message_id"),
+                        message_thread_id=message.get("message_thread_id"),
+                    )
+                except Exception:
+                    pass
+            return
+    return _previous_process_control_text_forward_details(update)
+
+
+# ----- One loading message -> same message becomes the final 10-post list -----
+def _edit_control_result_html(message_id: Any, text: str, reply_markup: dict[str, Any] | None = None) -> int | None:
+    if not CONTROL_CHAT_ID or not message_id:
+        return None
+    markup = ensure_delete_button_reply_markup(reply_markup) if reply_markup is not None else control_delete_message_reply_markup()
+    payload: dict[str, Any] = {
+        "chat_id": CONTROL_CHAT_ID,
+        "message_id": int(message_id),
+        "text": trim(rtl(text), 4096),
+        "disable_web_page_preview": True,
+        "parse_mode": "HTML",
+        "reply_markup": markup,
+    }
+    try:
+        telegram_api("editMessageText", payload, max_attempts=2, timeout=max(6, REQUEST_TIMEOUT_SECONDS))
+        return int(message_id)
+    except Exception as html_exc:
+        logging.warning("10-latest HTML edit failed; editing same message as plain text: %s", short_error(html_exc, 500))
+        plain_payload = dict(payload)
+        plain_payload.pop("parse_mode", None)
+        plain_payload["text"] = trim(rtl(html_message_to_plain_text(text)), 3900)
+        try:
+            telegram_api("editMessageText", plain_payload, max_attempts=2, timeout=max(6, REQUEST_TIMEOUT_SECONDS))
+            return int(message_id)
+        except Exception as plain_exc:
+            logging.warning("10-latest plain edit also failed: %s", short_error(plain_exc, 500))
+            return None
+
+
+def run_last_ten_account_control_test_replace(username: str, loading_message_id: Any) -> None:
+    username = _canonical_control_source_username(username) if "_canonical_control_source_username" in globals() else str(username or "")
+    label = _hebrew_account_label(username)
+    try:
+        posts = fetch_last_ten_control_isolated(username, limit=10)
+        diagnostics = LAST_TEN_HISTORY_DIAGNOSTICS.get(_ten_history_account_key(username), {})
+        if not posts:
+            error_text = "\n".join(f"• {item}" for item in diagnostics.get("errors", [])[:5])
+            result = (
+                f"📚 10 אחרונים — {label}\n\n"
+                "לא התקבלו פוסטים מהמטמון, מההיסטוריה או מה-RSS."
+                + (f"\n\nפרטי בדיקה:\n{error_text}" if error_text else "")
+            )
+            if not _edit_control_result_html(loading_message_id, html.escape(result), control_delete_message_reply_markup()):
+                send_control_text(result, None, control_delete_message_reply_markup())
+            return
+
+        translations = _translate_history_posts_parallel(posts[:10])
+        entries: list[tuple[Post, str, str, str]] = []
+        prepared: list[tuple[int, Post, str]] = []
+        for index, (post, translated) in enumerate(zip(posts[:10], translations), 1):
+            try:
+                status, reason = _history_status_for_post(post)
+            except Exception as exc:
+                status, reason = "נמצא ב-RSS", f"בדיקת הסינון לא הושלמה: {short_error(exc, 120)}"
+            entries.append((post, translated, status, reason))
+            try:
+                token = remember_control_prepared_send(post, "", "", "")
+                if token:
+                    prepared.append((index, post, token))
+            except Exception as exc:
+                logging.warning("History prepare token failed for @%s item %s: %s", username, index, short_error(exc, 300))
+        rendered = _fit_history_entries_one_message(entries, label)
+        markup = _history_prepare_markup(prepared)
+        if not _edit_control_result_html(loading_message_id, rendered, markup):
+            # Only when Telegram can no longer edit the original loading message
+            # (deleted/too old) do we send one fallback result message.
+            try:
+                send_control_html(rendered, markup)
+            except Exception:
+                send_control_text(html_message_to_plain_text(rendered), None, markup)
+    except Exception as exc:
+        logging.exception("10-latest replacement task crashed for @%s", username)
+        result = f"📚 10 אחרונים — {label}\n\nהפעולה נעצרה בתקלה שטופלה: {short_error(exc, 900)}"
+        if not _edit_control_result_html(loading_message_id, html.escape(result), control_delete_message_reply_markup()):
+            try:
+                send_control_text(result, None, control_delete_message_reply_markup())
+            except Exception:
+                pass
+
+
+_previous_process_control_update_one_message_history = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if not data.startswith("football_test_last_ten_account:"):
+        return _previous_process_control_update_one_message_history(update)
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    username = data.split(":", 1)[1].strip()
+    if username not in all_control_test_accounts():
+        if callback_id:
+            answer_control_callback(callback_id, "כתב לא מוכר")
+        return
+    label = _hebrew_account_label(username)
+    if callback_id:
+        answer_control_callback(callback_id, f"טוען 10 אחרונים של {label}")
+    try:
+        loading_message_id = send_control_text(
+            f"⏳ מכין את 10 הפוסטים האחרונים של {label}...",
+            None,
+            control_delete_message_reply_markup(),
+        )
+    except Exception as exc:
+        logging.warning("Could not send 10-latest loading message: %s", short_error(exc, 500))
+        loading_message_id = None
+    Thread(
+        target=run_last_ten_account_control_test_replace,
+        args=(username, loading_message_id),
+        daemon=True,
+    ).start()
+
+# ====== END FINAL CONTROL UX + FORWARDED SOURCE DETAILS PATCH ======
+
+
+# ====== FINAL STRICT TRANSFER VALUE / DESTINATION GATE ======
+# Normal reporter transfer posts must satisfy BOTH editorial requirements:
+# 1) an explicitly stated transfer fee/package must meet the configured threshold;
+# 2) the acquiring/destination club must be in the managed club lists.
+# This final gate runs after source-specific "open" rescues (Fabrizio, Ben Jacobs,
+# trusted writers), so those rescues cannot publish a low-value or untracked move.
+# Dedicated FootballFactly and number-led Opta statistics keep their own rules.
+# Manual force-send remains the user's explicit override and is intentionally unchanged.
+
+_TRANSFER_FEE_CONTEXT_RE = re.compile(
+    r"\b(?:transfer\s+fee|fee|package|deal\s+worth|total\s+package|fixed\s+fee|"
+    r"add-?ons?|bonuses?|compensation)\b|"
+    r"דמי\s+העברה|סכום\s+(?:העסקה|העברה)|שווי\s+(?:העסקה|החבילה)|"
+    r"עסקה\s+בשווי|תמורת|חבילה|סכום\s+קבוע|בונוסים",
+    re.IGNORECASE | re.UNICODE,
+)
+_TRANSFER_NON_FEE_CONTEXT_RE = re.compile(
+    r"\b(?:salary|wages?|per\s+season|per\s+year|annual|release\s+clause|"
+    r"buyout\s+clause|sell-?on\s+clause)\b|"
+    r"שכר|משכורת|לעונה|לשנה|שנתי|סעיף\s+שחרור|סעיף\s+מכירה",
+    re.IGNORECASE | re.UNICODE,
+)
+_TRANSFER_NO_FEE_RE = re.compile(
+    r"\b(?:no|without|zero)\s+(?:transfer\s+)?fee\b|\bfree\s+transfer\b|"
+    r"ללא\s+דמי\s+העברה|בלי\s+דמי\s+העברה|העברה\s+חופשית|שחקן\s+חופשי",
+    re.IGNORECASE | re.UNICODE,
+)
+_TRANSFER_AMOUNT_UNIT_RE = r"(?:k|thousand|אלף|m|mn|mio|million|millions|מיליון|מיליונים)"
+_TRANSFER_CURRENCY_RE = r"(?:€|£|\$|EUR|GBP|USD|euros?|euro|pounds?|dollars?|יורו|אירו|ליש[\"״']?ט|דולר(?:ים)?)"
+_TRANSFER_AMOUNT_PATTERNS = (
+    re.compile(
+        rf"(?P<currency>{_TRANSFER_CURRENCY_RE})\s*"
+        rf"(?P<number>\d{{1,3}}(?:[\s.,'’]\d{{3}})+|\d+(?:[.,]\d+)?)\s*"
+        rf"(?P<unit>{_TRANSFER_AMOUNT_UNIT_RE})?",
+        re.IGNORECASE | re.UNICODE,
+    ),
+    re.compile(
+        rf"(?P<number>\d{{1,3}}(?:[\s.,'’]\d{{3}})+|\d+(?:[.,]\d+)?)\s*"
+        rf"(?P<unit>{_TRANSFER_AMOUNT_UNIT_RE})?\s*"
+        rf"(?P<currency>{_TRANSFER_CURRENCY_RE})",
+        re.IGNORECASE | re.UNICODE,
+    ),
+    # Currency can be omitted only when the number has an explicit thousand/million
+    # unit and the nearby sentence clearly discusses a transfer fee/package.
+    re.compile(
+        rf"(?P<number>\d+(?:[.,]\d+)?)\s*(?P<unit>{_TRANSFER_AMOUNT_UNIT_RE})",
+        re.IGNORECASE | re.UNICODE,
+    ),
+)
+_TRANSFER_PLUS_RE = re.compile(
+    r"\+|\b(?:plus|and\s+another|add-?ons?|bonuses?|including\s+bonuses?)\b|"
+    r"בתוספת|ועוד|\+\s*בונוסים|בונוסים\s+נוספים|כולל\s+בונוסים",
+    re.IGNORECASE | re.UNICODE,
+)
+_TRANSFER_REPORT_MECHANIC_RE = re.compile(
+    r"\b(?:transfer|deal|agreement|agreed|sign(?:s|ed|ing)?|join(?:s|ed|ing)?|"
+    r"move(?:s|d|ing)?|loan(?:s|ed|ing)?|bid|offer|medical|done\s+deal|"
+    r"here\s+we\s+go|personal\s+terms)\b|"
+    r"העברה|עסקה|הסכם|סיכום|סוכם|חתם|יחתום|מצטרף|יצטרף|עובר|יעבור|"
+    r"השאלה|מושאל|הצעה|בדיקות\s+רפואיות|עסקה\s+סגורה|תנאים\s+אישיים",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _strict_transfer_source_text(post: Post) -> str:
+    """Untouched source text for deterministic fee/destination checks."""
+    if not isinstance(post, Post):
+        return ""
+    main = _post_original_text(post) if "_post_original_text" in globals() else str(post.text or "")
+    quote = _post_original_text(post, quoted=True) if "_post_original_text" in globals() else str(post.quoted_text or "")
+    value = html.unescape("\n".join(part for part in (main, quote) if part))
+    value = unicodedata.normalize("NFKC", value)
+    value = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", value)
+    return value.strip()
+
+
+def _strict_normal_transfer_report(post: Post) -> bool:
+    if not isinstance(post, Post):
+        return False
+    if "_is_dedicated_fact_post" in globals() and _is_dedicated_fact_post(post):
+        return False
+    value = _strict_transfer_source_text(post)
+    if not value:
+        return False
+    return bool(
+        _TRANSFER_REPORT_MECHANIC_RE.search(value)
+        or _matches_any(TRANSFER_OR_FUTURE_PATTERNS, value)
+        or _matches_any(STRONG_PLAYER_MOVE_PATTERNS, value)
+        or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, value)
+        or _matches_any(FINAL_ONLY_STRICT_PATTERNS, value)
+    )
+
+
+def _number_to_transfer_millions(number: str, unit: str = "") -> float | None:
+    raw = re.sub(r"[\s'’]", "", str(number or "").strip())
+    unit_low = str(unit or "").strip().casefold()
+    if not raw:
+        return None
+
+    is_thousand = unit_low in {"k", "thousand", "אלף"}
+    is_million = unit_low in {"m", "mn", "mio", "million", "millions", "מיליון", "מיליונים"}
+
+    try:
+        if is_thousand or is_million:
+            # With an explicit unit, a single comma/dot followed by 1-2 digits is
+            # decimal punctuation; grouped 3-digit blocks are thousands separators.
+            if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", raw):
+                numeric = float(re.sub(r"[.,]", "", raw))
+            elif "," in raw and "." in raw:
+                last_comma, last_dot = raw.rfind(","), raw.rfind(".")
+                decimal = "," if last_comma > last_dot else "."
+                thousands = "." if decimal == "," else ","
+                numeric = float(raw.replace(thousands, "").replace(decimal, "."))
+            else:
+                numeric = float(raw.replace(",", "."))
+            return numeric / 1000.0 if is_thousand else numeric
+
+        # No unit: accept only an unambiguous full currency amount (100,000,
+        # 100.000, 1500000). A bare €8.5 is not silently treated as €8.5m.
+        if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", raw):
+            absolute = float(re.sub(r"[.,]", "", raw))
+        elif raw.isdigit() and int(raw) >= 1000:
+            absolute = float(raw)
+        else:
+            return None
+        return absolute / 1_000_000.0
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def explicit_transfer_fee_amounts_millions(post: Post) -> list[float]:
+    """Extract actual transfer fee/package figures from common X formats.
+
+    Supported examples include €100k, 100k euros, €100,000, 100.000 euros,
+    €0.1m, 14m euros and Hebrew אלף/מיליון forms. Salary and clause figures are
+    ignored unless the same local phrase explicitly says fee/package.
+    """
+    if not _strict_normal_transfer_report(post):
+        return []
+    value = _strict_transfer_source_text(post)
+    results: list[tuple[int, int, float]] = []
+    occupied: list[tuple[int, int]] = []
+    for pattern_index, pattern in enumerate(_TRANSFER_AMOUNT_PATTERNS):
+        for match in pattern.finditer(value):
+            start, end = match.span()
+            if any(not (end <= old_start or start >= old_end) for old_start, old_end in occupied):
+                continue
+            window = value[max(0, start - 85):min(len(value), end + 85)]
+            has_fee_context = bool(_TRANSFER_FEE_CONTEXT_RE.search(window))
+            has_non_fee_context = bool(_TRANSFER_NON_FEE_CONTEXT_RE.search(window))
+            has_no_fee_statement = bool(_TRANSFER_NO_FEE_RE.search(window))
+            has_currency = bool(match.groupdict().get("currency"))
+            # The unit-only pattern is legal only next to an explicit fee/package cue.
+            if pattern_index == 2 and not has_fee_context:
+                continue
+            if has_no_fee_statement and has_non_fee_context:
+                continue
+            if has_non_fee_context and not has_fee_context:
+                continue
+            if not has_currency and not has_fee_context:
+                continue
+            amount = _number_to_transfer_millions(
+                match.groupdict().get("number", ""),
+                match.groupdict().get("unit", ""),
+            )
+            if amount is None or amount <= 0 or amount > 1000:
+                continue
+            occupied.append((start, end))
+            results.append((start, end, amount))
+    results.sort(key=lambda row: row[0])
+    return [round(item[2], 6) for item in results]
+
+
+def explicit_transfer_fee_total_millions(post: Post) -> float | None:
+    amounts = explicit_transfer_fee_amounts_millions(post)
+    if not amounts:
+        return None
+    value = _strict_transfer_source_text(post)
+    # "€10m plus €5m add-ons" is a €15m package, not a sub-threshold fee.
+    if len(amounts) >= 2 and _TRANSFER_PLUS_RE.search(value):
+        return round(sum(amounts), 6)
+    # Competing/former bids should not cause a false block when a qualifying
+    # higher current/package amount is also stated.
+    return max(amounts)
+
+
+def has_small_total_transfer_fee(post: Post) -> bool:
+    """Hard low-value gate for every normal reporter, including trusted sources."""
+    if not _strict_normal_transfer_report(post) or MIN_TRANSFER_FEE_MILLIONS_TO_SEND <= 0:
+        return False
+    total = explicit_transfer_fee_total_millions(post)
+    return bool(total is not None and 0 < total < MIN_TRANSFER_FEE_MILLIONS_TO_SEND)
+
+
+_ENGLISH_DESTINATION_RE = re.compile(
+    r"(?:\bto\s+|"
+    r"(?i:\bset\s+to\s+join\b|\bwill\s+join\b|\bagreed\s+to\s+join\b|"
+    r"\bjoin(?:s|ed|ing)?\b|\bsign(?:s|ed|ing)?\s+(?:for|with)\b|"
+    r"\bmove(?:s|d|ing)?\s+to\b|\bloan(?:s|ed|ing)?\s+to\b)\s+)"
+    r"(?P<dest>[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÿ'’.-]{1,}(?:\s+(?:[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÿ'’.-]{1,}|FC|CF|SC|AC|United|City|Town|County|Club|Sporting)){0,4})"
+    r"(?=\s*(?:[–—-]|,|;|\.|\n|$))",
+    re.UNICODE,
+)
+_HEBREW_DESTINATION_RE = re.compile(
+    r"(?:מצטרף|יצטרף|חתם|יחתום|עובר|יעבור|הושאל|יושאל|נמכר|יימכר)\s*"
+    r"(?:אל\s+|ל-|ל|ב-|ב)"
+    r"(?P<dest>[א-ת][א-ת׳'״\-־ ]{1,45}?)(?=\s*(?:[–—-]|,|;|\.|\n|$))",
+    re.IGNORECASE | re.UNICODE,
+)
+_DESTINATION_STOPWORDS = {
+    "medical", "medicals", "today", "tomorrow", "agreement", "deal", "done",
+    "the club", "a club", "new club", "training", "camp", "hospital",
+    "בדיקות", "רפואיות", "היום", "מחר", "עסקה", "הסכם", "המועדון", "קבוצה חדשה",
+}
+
+
+def explicit_transfer_destination_candidates(post: Post) -> list[str]:
+    if not _strict_normal_transfer_report(post):
+        return []
+    value = _strict_transfer_source_text(post)
+    found: list[str] = []
+    for pattern in (_ENGLISH_DESTINATION_RE, _HEBREW_DESTINATION_RE):
+        for match in pattern.finditer(value):
+            candidate = re.sub(r"\s+", " ", match.group("dest")).strip(" .,:;–—-()[]")
+            candidate = re.sub(r"^(?:the\s+|FC\s+)", "", candidate, flags=re.IGNORECASE)
+            if len(candidate) < 3 or candidate.casefold() in _DESTINATION_STOPWORDS:
+                continue
+            if candidate not in found:
+                found.append(candidate)
+    return found
+
+
+def _strict_team_alias_pattern(alias: str) -> str:
+    raw = re.sub(r"\s+", " ", str(alias or "").strip())
+    if not raw:
+        return r"$^"
+    parts = [part for part in re.split(r"[\s\-]+", raw) if part]
+    body = r"[\s\-]+".join(re.escape(part) for part in parts) if parts else re.escape(raw)
+    if re.search(r"[א-ת]", raw) and not re.search(r"[A-Za-z0-9]", raw):
+        return rf"(?<![א-ת]){body}(?![א-ת])"
+    return rf"(?<![A-Za-z0-9]){body}(?![A-Za-z0-9])"
+
+
+def _strict_text_contains_managed_club(text: str) -> bool:
+    value = str(text or "")
+    if not value:
+        return False
+    try:
+        catalog = all_team_catalog_items()
+    except Exception:
+        catalog = {}
+    for item in catalog.values() if isinstance(catalog, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        aliases = [item.get("name", ""), *(item.get("aliases", []) or [])]
+        for alias in aliases:
+            alias = str(alias or "").strip()
+            if alias and re.search(_strict_team_alias_pattern(alias), value, re.IGNORECASE | re.UNICODE):
+                return True
+    # Israeli-league teams are maintained in a separate existing allow-list.
+    if "ISRAELI_LEAGUE_PATTERNS" in globals() and _matches_any(ISRAELI_LEAGUE_PATTERNS, value):
+        return True
+    return False
+
+
+def explicit_untracked_transfer_destination(post: Post) -> str:
+    """Return the acquiring club when it is explicitly named but not managed."""
+    for candidate in explicit_transfer_destination_candidates(post):
+        if not _strict_text_contains_managed_club(candidate):
+            return candidate
+    return ""
+
+
+def _hard_transfer_policy_block_reason(post: Post) -> str:
+    """Non-bypassable automatic gate for the user's club/value policy."""
+    if not _strict_normal_transfer_report(post):
+        return ""
+    if has_small_total_transfer_fee(post):
+        total = explicit_transfer_fee_total_millions(post)
+        if total is not None:
+            return f"hard_small_transfer_fee:{total:g}m<{MIN_TRANSFER_FEE_MILLIONS_TO_SEND:g}m"
+        return "hard_small_transfer_fee"
+    destination = explicit_untracked_transfer_destination(post)
+    if destination:
+        return f"hard_untracked_destination:{destination}"
+    # If this is plainly a transfer report and not a single managed club appears
+    # anywhere, it cannot be approved merely because the writer is trusted or the
+    # deal is final.
+    if not _strict_text_contains_managed_club(_strict_transfer_source_text(post)):
+        return "hard_transfer_without_tracked_team"
+    return ""
+
+
+_previous_pre_send_strict_transfer_gate = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    hard_reason = _hard_transfer_policy_block_reason(post)
+    if hard_reason:
+        return hard_reason
+    return _previous_pre_send_strict_transfer_gate(post)
+
+
+_previous_hebrew_block_reason_strict_transfer_gate = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    base = raw.split(";", 1)[0].strip()
+    if base.startswith("hard_small_transfer_fee"):
+        detail = base.split(":", 1)[1] if ":" in base else ""
+        return f"דמי ההעברה נמוכים מהרף המוגדר{f' ({detail})' if detail else ''}"
+    if base.startswith("hard_untracked_destination"):
+        destination = base.split(":", 1)[1] if ":" in base else ""
+        return f"יעד המעבר אינו נמצא ברשימות הקבוצות{f': {destination}' if destination else ''}"
+    if base == "hard_transfer_without_tracked_team":
+        return "דיווח העברה ללא אף קבוצה שנמצאת ברשימות"
+    return _previous_hebrew_block_reason_strict_transfer_gate(reason)
+
+# ====== END FINAL STRICT TRANSFER VALUE / DESTINATION GATE ======
+
 if __name__ == "__main__":
     main()
-
-
