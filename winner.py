@@ -17707,6 +17707,296 @@ def monitor_menu_reply_markup() -> dict[str, Any]:
 
 # ====== END TARGETED FINAL FIX ======
 
+
+# ====== FINAL SOURCE ROUTING / FABRIZIO CONFIRMATION FIX (2026-07-21) ======
+# Compatibility contract:
+# - No persistent filename or JSON/state key is renamed or reset here.
+# - FootballFactly keeps its dedicated facts path.
+# - OptaJoe is a statistic feed only when the ORIGINAL caption begins with the
+#   familiar number-dash counter. Every other OptaJoe post is ordinary news.
+# - Every OptaJoe/FootballFactly outgoing message remains writer-less.
+# - A Fabrizio transfer report is never rejected merely because another source
+#   or the translated channel text already reported the same event.
+
+_OPTA_STAT_COUNTER_RE = re.compile(
+    r"^\s*[\u200e\u200f\u202a-\u202e\u2066-\u2069]*\d{1,3}\s*[-–—]\s+",
+    re.UNICODE,
+)
+
+
+def is_optajoe_statistical_post(post: Any) -> bool:
+    """Return True only for Opta's numbered statistical-caption format."""
+    if not isinstance(post, Post) or not value_contains_optajoe(getattr(post, "username", "")):
+        return False
+    original = html.unescape(str(getattr(post, "text", "") or ""))
+    original = re.sub(r"^\s*(?:<[^>]+>\s*)+", "", original)
+    return bool(_OPTA_STAT_COUNTER_RE.match(original))
+
+
+_pre_final_special_fact_feed_name = special_fact_feed_name
+
+
+def special_fact_feed_name(*parts: Any, **kwargs: Any) -> str:
+    """Classify a real post precisely while retaining string-only UI lookups."""
+    values = list(parts) + list(kwargs.values())
+    posts = [part for part in values if isinstance(part, Post)]
+    if posts:
+        for post in posts:
+            username = getattr(post, "username", "")
+            if value_contains_football_factly(username):
+                return FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME
+            if value_contains_optajoe(username) and is_optajoe_statistical_post(post):
+                return OPTAJOE_DEFAULT_ACTIVE_USERNAME
+        # A concrete Post is authoritative. Do not let a second string argument
+        # turn non-statistical Opta news back into a special-feed item.
+        return ""
+    return _pre_final_special_fact_feed_name(*parts, **kwargs)
+
+
+# These ordinary gates appear before the special-feed branch in run_once.
+# Neutralize them only for a correctly classified dedicated fact post so the
+# dedicated rule set remains the sole editorial authority for that item.
+def _wrap_special_fact_false(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(post: Post, *args: Any, _previous=previous, **kwargs: Any):
+        if is_special_fact_feed_context(post):
+            return False
+        return _previous(post, *args, **kwargs)
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _special_early_filter in (
+    "is_lineup_or_teamsheet_post",
+    "is_poll_or_audience_post",
+    "has_small_total_transfer_fee",
+    "is_minor_destination_from_big_club_source",
+):
+    _wrap_special_fact_false(_special_early_filter)
+
+
+# The older Opta wrapper called this function without the Post and therefore
+# could erase a legitimate leading number in a non-statistical report. Make the
+# legacy call a no-op; the Post-aware build wrapper below performs cleanup.
+def _strip_optajoe_leading_counter(text: str) -> str:
+    return str(text or "")
+
+
+def _strip_numbered_opta_counter(text: str) -> str:
+    return _OPTA_STAT_COUNTER_RE.sub("", str(text or ""), count=1)
+
+
+_FABRIZIO_USERNAME = "fabrizioromano"
+_FABRIZIO_CONFIRMATION_SOURCES = {
+    "nicoschira": "ניקולו שירה",
+    "dimarzio": "ג'אנלוקה די מארציו",
+    "mattemoretto": "מתאו מורטו",
+}
+_FABRIZIO_OPEN_TRANSFER_RE = re.compile(
+    r"\b(?:transfer|move|deal|agreement|agree(?:d|ment)?|sign(?:s|ed|ing)?|joins?|"
+    r"contract|renewal|extension|bid|offer|proposal|talks?|negotiations?|contacts?|"
+    r"approach(?:ed)?|inquir(?:y|ed)|documents?|paperwork|medical|free agent|loan|"
+    r"buy option|sell[- ]on|release clause|fee|million|departure|exit|leave|reject(?:ed)?|"
+    r"here we go|matter of time|advanced talks?)\b|"
+    r"העבר(?:ה|ת|ות)|עסק(?:ה|ת)|הסכ(?:ם|מה|ימו)|סיכמ(?:ה|ו)?|חתמ(?:ה|ו)?|להחתים|"
+    r"יצטרף|מצטרף|חוזה|הארכת חוזה|הצעה|מגעים|שיחות|משא\s+ומתן|מו[\"״']?מ|"
+    r"מסמכים|בדיקות רפואיות|שחקן חופשי|השאלה|סעיף רכישה|סעיף מכירה|סעיף שחרור|"
+    r"דמי העברה|מיליון|עזיבה|לעזוב|דחה|דחתה|נדחתה|עניין של זמן|הנה זה קורה",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def is_fabrizio_open_transfer_report(post: Any) -> bool:
+    if not isinstance(post, Post) or str(getattr(post, "username", "") or "").casefold() != _FABRIZIO_USERNAME:
+        return False
+    cleaned = clean_for_ai_translation(
+        html.unescape("\n".join([getattr(post, "text", "") or "", getattr(post, "quoted_text", "") or ""]))
+    )
+    if not cleaned:
+        return False
+    return bool(
+        _FABRIZIO_OPEN_TRANSFER_RE.search(cleaned)
+        or _CONCRETE_TRANSFER_REPORT_RE.search(cleaned)
+        or _TRANSFER_NEWS_MECHANIC_RE.search(cleaned)
+        or _matches_any(TRANSFER_OR_FUTURE_PATTERNS, cleaned)
+        or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, cleaned)
+    )
+
+
+# Existing vague/relevance wrappers resolve this name dynamically, so extending
+# it here also repairs concrete Fabrizio reports in the early scan and final gate.
+_pre_final_concrete_tracked_football_report = concrete_tracked_football_report
+
+
+def concrete_tracked_football_report(post: Post) -> bool:
+    if is_fabrizio_open_transfer_report(post):
+        return True
+    return _pre_final_concrete_tracked_football_report(post)
+
+
+def _wrap_fabrizio_false(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(post: Post, *args: Any, _previous=previous, **kwargs: Any):
+        if is_fabrizio_open_transfer_report(post):
+            return False
+        return _previous(post, *args, **kwargs)
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+# These checks occur before the shared concrete-report rescue in run_once.
+for _fabrizio_early_filter in (
+    "has_small_total_transfer_fee",
+    "is_minor_destination_from_big_club_source",
+    "is_youth_or_academy_post",
+):
+    _wrap_fabrizio_false(_fabrizio_early_filter)
+
+
+_pre_final_find_recent_burst_spam_event = find_recent_burst_spam_event
+
+
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    if str(getattr(post, "username", "") or "").casefold() == _FABRIZIO_USERNAME:
+        return None
+    return _pre_final_find_recent_burst_spam_event(post, state)
+
+
+_pre_final_is_duplicate_false_positive_post = is_duplicate_false_positive_post
+
+
+def is_duplicate_false_positive_post(post: Post) -> bool:
+    # Exact RSS/post-id state dedupe is unaffected. This bypasses only fuzzy
+    # event/text dedupe, which must not suppress a later Fabrizio publication.
+    if str(getattr(post, "username", "") or "").casefold() == _FABRIZIO_USERNAME:
+        return True
+    return _pre_final_is_duplicate_false_positive_post(post)
+
+
+_pre_final_persistent_duplicate_candidate = persistent_duplicate_candidate
+
+
+def persistent_duplicate_candidate(*parts: Any, threshold: float = 0.86) -> dict[str, Any] | None:
+    if any(
+        isinstance(part, Post)
+        and str(getattr(part, "username", "") or "").casefold() == _FABRIZIO_USERNAME
+        for part in parts
+    ):
+        return None
+    return _pre_final_persistent_duplicate_candidate(*parts, threshold=threshold)
+
+
+def _fabrizio_confirmation_match(post: Post, item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    source = str(item.get("username") or item.get("source") or "").strip().lstrip("@").casefold()
+    if source not in _FABRIZIO_CONFIRMATION_SOURCES or is_pending_memory_item(item):
+        return False
+    previous = item.get("signature", {})
+    if not isinstance(previous, dict) or not previous:
+        return False
+    current = news_event_signature(post)
+    score = _event_similarity(current, previous)
+    local = local_duplicate_verdict(post, item, score)
+    if local == "SAME_DUPLICATE":
+        return True
+    if local in {"ADVANCED_NEW", "DIFFERENT"}:
+        return False
+    return strict_duplicate_match(current, previous, score, local)
+
+
+def mark_fabrizio_confirmation_from_state(post: Post, state: dict[str, Any]) -> str:
+    if str(getattr(post, "username", "") or "").casefold() != _FABRIZIO_USERNAME:
+        return ""
+    for item in reversed(cleanup_recent_news_events(state)):
+        if _fabrizio_confirmation_match(post, item):
+            source_key = str(item.get("username") or "").strip().lstrip("@").casefold()
+            setattr(post, "fabrizio_confirmation", True)
+            setattr(post, "fabrizio_confirmation_source", source_key)
+            return source_key
+    return ""
+
+
+_pre_final_find_bot_reply_target_for_post = find_bot_reply_target_for_post
+
+
+def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    # Mark the heading before build_message runs. The original reply lookup then
+    # links Fabrizio's confirmation to the older Telegram message when IDs exist.
+    confirmation_source = mark_fabrizio_confirmation_from_state(post, state)
+    reply_ids = _pre_final_find_bot_reply_target_for_post(post, state)
+    if reply_ids or not confirmation_source:
+        return reply_ids
+    # The normal reply matcher is intentionally conservative. Once the dedicated
+    # confirmation matcher has already proven the same event and trusted source,
+    # reuse that exact source's stored Telegram IDs instead of losing the reply.
+    for item in reversed(cleanup_bot_sent_reply_targets(state)):
+        if _fabrizio_confirmation_match(post, item):
+            stored = _message_ids_from_reply_item(item)
+            if stored:
+                return stored
+    return {}
+
+
+# Avoid artificial paragraph inflation. Existing Gemini paragraphs and the
+# two-sentence format_news_paragraphs grouping remain; this disables only the
+# later pass that split every sentence (and then split the first sentence again).
+def _split_dense_stat_prose_block(block: str) -> list[str]:
+    value = (block or "").strip()
+    return [value] if value else []
+
+
+def _smart_headline_paragraphs(value: str) -> str:
+    text = re.sub(r"[ \t]+", " ", str(value or "")).strip()
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
+_pre_final_source_routing_build_message = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    if is_optajoe_statistical_post(post):
+        translated = _strip_numbered_opta_counter(translated)
+    message = _pre_final_source_routing_build_message(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    if not bool(getattr(post, "fabrizio_confirmation", False)):
+        return message
+
+    # Replace either a normal Fabrizio heading or a hidden-heading layout with
+    # the exact requested confirmation label, without touching body/footer HTML.
+    lines = message.splitlines()
+    if lines and lines[0].lstrip().startswith("<b>"):
+        first_plain = html.unescape(re.sub(r"<[^>]+>", "", lines[0]))
+        if "פבריציו" in first_plain:
+            lines = lines[1:]
+            while lines and not lines[0].replace("\u2063", "").strip():
+                lines.pop(0)
+    body = "\n".join(lines).lstrip()
+    confirmation = html.escape(rtl("פבריציו רומאנו מאשר:"))
+    return f"<b>{confirmation}</b>\n\n{body}".rstrip()
+
+
+# ====== END FINAL SOURCE ROUTING / FABRIZIO CONFIRMATION FIX ======
+
 if __name__ == "__main__":
     main()
 
