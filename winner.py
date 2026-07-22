@@ -24386,5 +24386,836 @@ def post_from_control_payload(payload: Any) -> "Post | None":
 
 # ====== END FINAL RSS RESTORE + BOUNDED WORKERS + EXACT X LAYOUT PATCH ======
 
+# ====== FINAL ACCEPTANCE LAYER — 2026-07-22 ======
+# This layer intentionally leaves the existing RSS fetch/parser functions and the
+# existing Gemini request implementation untouched. It runs only after RSS has
+# selected a concrete post, and it keeps all persistent filenames/old JSON keys.
+
+BOT_BUILD_ID = "winner-final-acceptance-2026-07-22"
+SEND_VIDEO_FILES = True
+STRICT_MEDIA_ALL_OR_NOT = True
+AUTO_GEMINI_RETRY_ATTEMPTS = 3
+AUTO_GEMINI_RETRY_WAIT_SECONDS = int(os.environ.get("AUTO_GEMINI_RETRY_WAIT_SECONDS", "180"))
+GEMINI_RETRY_EXHAUSTED_STATE_KEY = "__gemini_retry_exhausted_v1__"
+EXACT_POST_DETAILS_CACHE_SECONDS = int(os.environ.get("EXACT_POST_DETAILS_CACHE_SECONDS", "900"))
+_EXACT_POST_DETAILS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_EXACT_POST_DETAILS_CACHE_LOCK = RLock()
+
+# River Plate short aliases are still tier B. No existing alias is removed.
+TEAM_REPLACEMENTS.setdefault("River", "ריבר פלייט")
+TEAM_REPLACEMENTS.setdefault("ריבר", "ריבר פלייט")
+PLAYER_REPLACEMENTS.setdefault("Morgan Rogers", "מורגן רוג'רס")
+PLAYER_REPLACEMENTS.setdefault("מורגן רוג'רס", "מורגן רוג'רס")
+if isinstance(TEAM_CATALOG.get("river plate"), dict):
+    _river_aliases = TEAM_CATALOG["river plate"].setdefault("aliases", [])
+    for _alias in ("River", "ריבר"):
+        if _alias not in _river_aliases:
+            _river_aliases.append(_alias)
+
+
+def _acceptance_tweet_id(post: Post) -> str:
+    parts = _reliable_tweet_parts(post) if "_reliable_tweet_parts" in globals() else tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+    if parts:
+        return str(parts[1])
+    for raw in (str(getattr(post, "post_id", "") or ""), *(str(x or "") for x in (getattr(post, "dedupe_ids", []) or []))):
+        match = re.search(r"(?<!\d)(\d{15,22})(?!\d)", raw)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _acceptance_exact_node(payload: Any, tweet_id: str) -> dict[str, Any] | None:
+    fallback: dict[str, Any] | None = None
+    for node in _reliable_deep_values(payload):
+        if not isinstance(node, dict):
+            continue
+        legacy = node.get("legacy") if isinstance(node.get("legacy"), dict) else {}
+        ids = [node.get("rest_id"), node.get("id_str"), node.get("tweet_id"), node.get("id"), legacy.get("id_str")]
+        if tweet_id and any(str(value or "") == tweet_id for value in ids):
+            return node
+        if fallback is None and any(isinstance(value, str) and value.strip() for value in (node.get("full_text"), node.get("tweet_text"), legacy.get("full_text"))):
+            fallback = node
+    return fallback
+
+
+def _acceptance_extract_official_media(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    images: list[str] = []
+    videos: list[str] = []
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    media_keys = set(((data.get("attachments") or {}).get("media_keys") or [])) if isinstance(data, dict) else set()
+    for media in (((payload.get("includes") or {}).get("media") or []) if isinstance(payload, dict) else []):
+        if not isinstance(media, dict):
+            continue
+        if media_keys and str(media.get("media_key") or "") not in media_keys:
+            continue
+        media_type = str(media.get("type") or "").casefold()
+        if media_type == "photo":
+            url = str(media.get("url") or "")
+            if url:
+                images.append(url)
+        else:
+            for variant in media.get("variants") or []:
+                if not isinstance(variant, dict):
+                    continue
+                url = str(variant.get("url") or "")
+                content_type = str(variant.get("content_type") or "").casefold()
+                if url and ("mp4" in content_type or is_video_url(url)):
+                    videos.append(url)
+    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
+
+
+def _acceptance_fetch_exact_details(post: Post) -> dict[str, Any]:
+    tweet_id = _acceptance_tweet_id(post)
+    if not tweet_id:
+        return {}
+    with _EXACT_POST_DETAILS_CACHE_LOCK:
+        cached = _EXACT_POST_DETAILS_CACHE.get(tweet_id)
+        if cached and time.time() - cached[0] <= EXACT_POST_DETAILS_CACHE_SECONDS:
+            return dict(cached[1])
+
+    parts = _reliable_tweet_parts(post) if "_reliable_tweet_parts" in globals() else tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+    username = (parts[0] if parts else str(getattr(post, "username", "") or "")).strip().lstrip("@")
+    token = (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    )
+    endpoints: list[tuple[str, str, dict[str, str]]] = []
+    if token:
+        query = urllib.parse.urlencode({
+            "tweet.fields": "text,attachments",
+            "expansions": "attachments.media_keys",
+            "media.fields": "url,preview_image_url,type,variants",
+        })
+        endpoints.append(("x-api-v2", f"https://api.x.com/2/tweets/{tweet_id}?{query}", {"Authorization": f"Bearer {token}", "User-Agent": "NetoSportBot/1.0", "Accept": "application/json"}))
+    if username:
+        endpoints.extend([
+            ("fxtwitter", f"https://api.fxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}),
+            ("vxtwitter", f"https://api.vxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}),
+        ])
+
+    for provider, url, headers in endpoints:
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=max(4.0, float(globals().get("RELIABLE_EXACT_POST_TIMEOUT_SECONDS", 5.0)))) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+            node = _acceptance_exact_node(payload, tweet_id)
+            text = ""
+            if provider == "x-api-v2":
+                text = _reliable_normalize_x_text(str(((payload or {}).get("data") or {}).get("text") or ""))
+                images, videos = _acceptance_extract_official_media(payload)
+            else:
+                text = _reliable_extract_single_tweet_text(payload)
+                images, videos = _reliable_extract_media_urls(node or payload)
+            details = {
+                "text": text,
+                "images": list(dict.fromkeys(images)),
+                "videos": list(dict.fromkeys(videos)),
+                "provider": provider,
+            }
+            if details["text"] or details["images"] or details["videos"]:
+                with _EXACT_POST_DETAILS_CACHE_LOCK:
+                    _EXACT_POST_DETAILS_CACHE[tweet_id] = (time.time(), dict(details))
+                return details
+        except Exception as exc:
+            logging.debug("Exact post enrichment %s failed safely for %s: %s", provider, tweet_id, short_error(exc, 260))
+    return {}
+
+
+_ACCEPTANCE_PREVIOUS_HYDRATE_EXACT_POST = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    """Enrich one selected post only; never runs inside general RSS collection."""
+    post = _ACCEPTANCE_PREVIOUS_HYDRATE_EXACT_POST(post, force=force)
+    if not isinstance(post, Post):
+        return post
+    try:
+        details = _acceptance_fetch_exact_details(post)
+    except Exception as exc:
+        logging.debug("Exact post details enrichment failed safely: %s", short_error(exc, 300))
+        return post
+    text = str(details.get("text") or "").strip()
+    images = [str(url) for url in details.get("images", []) if str(url).strip()]
+    videos = [str(url) for url in details.get("videos", []) if str(url).strip()]
+    if text:
+        post.text = text
+        post.original_text = text
+        post.source_structure_available = True
+        post.exact_source_structure = True
+    if images:
+        post.image_urls = list(dict.fromkeys(images))
+        post.exact_image_urls = list(post.image_urls)
+    if videos:
+        post.video_urls = list(dict.fromkeys(videos))
+        post.has_video = True
+        post.primary_has_video = True
+        post.exact_video_urls = list(post.video_urls)
+    if details:
+        post.exact_source_provider = str(details.get("provider") or getattr(post, "exact_source_provider", "") or "")
+        post.exact_source_fetched_at = time.time()
+        post.exact_media_checked = True
+    return post
+
+
+def _acceptance_post_requires_video(post: Post) -> bool:
+    return bool(
+        getattr(post, "has_video", False)
+        or getattr(post, "primary_has_video", False)
+        or getattr(post, "quoted_has_video", False)
+        or text_has_video_marker(str(getattr(post, "text", "") or ""))
+        or list(getattr(post, "video_urls", []) or [])
+    )
+
+
+def _acceptance_video_status(post: Post) -> tuple[str, str, int | None]:
+    """Return (usable_url, reason, size). A video post may never degrade to text/photo."""
+    _reliable_hydrate_exact_post(post, force=True)
+    if not _acceptance_post_requires_video(post):
+        return "", "not_required", None
+    candidates: list[str] = []
+    candidates.extend(str(url) for url in (getattr(post, "video_urls", []) or []) if str(url).strip())
+    try:
+        candidates.extend(fetch_external_video_urls(post))
+    except Exception as exc:
+        logging.debug("External video enrichment failed safely: %s", short_error(exc, 260))
+    candidates = list(dict.fromkeys(url for url in candidates if url and not url.lower().split("?", 1)[0].endswith(".m3u8")))
+    if not candidates:
+        return "", "video_missing", None
+    had_unknown = False
+    oversized: list[int] = []
+    for url in candidates:
+        size = remote_file_size(url, timeout=max(4, int(globals().get("REQUEST_TIMEOUT_SECONDS", 10))))
+        if size is None:
+            had_unknown = True
+            continue
+        if size <= MAX_VIDEO_BYTES:
+            return url, "ok", size
+        oversized.append(size)
+    if oversized and not had_unknown:
+        return "", "video_too_large", min(oversized)
+    if oversized and had_unknown:
+        return "", "video_size_unknown", None
+    return "", "video_size_unknown", None
+
+
+def _acceptance_media_block_reason(post: Post) -> str:
+    if not _acceptance_post_requires_video(post):
+        return ""
+    url, reason, size = _acceptance_video_status(post)
+    if url:
+        post.acceptance_video_url = url
+        post.acceptance_video_size = size
+        return ""
+    post.acceptance_video_block_reason = reason
+    return reason
+
+
+_ACCEPTANCE_PREVIOUS_SELECTED_IMAGES = selected_post_images
+
+
+def selected_post_images(post: Post) -> list[str]:
+    _reliable_hydrate_exact_post(post)
+    # A video post never falls back to a thumbnail/photo.
+    if _acceptance_post_requires_video(post):
+        return []
+    return list(dict.fromkeys(_ACCEPTANCE_PREVIOUS_SELECTED_IMAGES(post)))
+
+
+# Youth filtering: "Plan B" is not a reserve team. Only explicit youth/reserve markers count.
+_ACCEPTANCE_EXPLICIT_YOUTH_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:U[- ]?(?:17|18|19|20|21|23)|academy|youth(?:\s+team)?|"
+    r"primavera|castilla|reserve(?:\s+team)?|B\s+team|under[- ]?(?:17|18|19|20|21|23)|"
+    r"קבוצת\s+נוער|מחלקת\s+נוער|קבוצת\s+מילואים|נוער\s+[אבג])(?=$|[^A-Za-z0-9])",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def is_youth_or_academy_post(post: Post) -> bool:
+    text = "\n".join([str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or "")])
+    return bool(_ACCEPTANCE_EXPLICIT_YOUTH_RE.search(text))
+
+
+def _acceptance_historical_significance(text: str) -> bool:
+    value = html.unescape(str(text or ""))
+    historical = bool(re.search(r"\b(?:on this day|today in|years? ago|anniversary|birthday)\b|ביום\s+(?:זה|הזה)|היום\s+לפני|לפני\s+\d+\s+שנ(?:ה|ים)|יום\s+הולדת", value, re.IGNORECASE))
+    if not historical:
+        return False
+    achievements = bool(re.search(
+        r"\b\d{1,4}\b|record|title|titles|champion|champions league|premier league|world cup|"
+        r"clean sheets?|appearances?|goals?|assists?|troph(?:y|ies)|signed|joined|transfer|debut|winner|won|"
+        r"שיא|תואר|תארים|אליפות|אליפויות|ליגת\s+האלופות|פרמייר\s+ליג|מונדיאל|משחקים|הופעות|שערים|"
+        r"בישולים|שערים\s+נקיים|הצטרף|חתם|זכתה|זכה|בכורה|סכום\s+שיא",
+        value, re.IGNORECASE,
+    ))
+    return achievements
+
+
+def _acceptance_weak_nostalgia(text: str) -> bool:
+    value = html.unescape(str(text or ""))
+    if _acceptance_historical_significance(value):
+        return False
+    weak_throwback = bool(re.search(r"\bthrowback\b|נוסטלג|זוכרים\s+ש|כש.+(?:נתן|עשה).+מונדיאל", value, re.IGNORECASE))
+    sentimental = bool(re.search(r"cult\s+hero|but\s+this\s+is\s+where\s+it\s+started|man\s+of\s+principles|man\s+of\s+morals|גיבור\s+קאלט|מכאן\s+הכל\s+התחיל|איש\s+של\s+עקרונות|איש\s+של\s+מוסר", value, re.IGNORECASE))
+    return weak_throwback or sentimental
+
+
+
+
+def _acceptance_text_has_managed_club(text: str) -> bool:
+    value = str(text or "")
+    if _strict_text_contains_managed_club(value):
+        return True
+    lowered = value.casefold()
+    for item in TEAM_CATALOG.values():
+        if not isinstance(item, dict):
+            continue
+        for alias in [item.get("name", ""), *(item.get("aliases", []) or [])]:
+            alias = str(alias or "").strip()
+            if not alias:
+                continue
+            if re.search(r"[א-ת]", alias):
+                if alias.casefold() in lowered:
+                    return True
+            elif re.search(r"(?<![A-Za-z0-9])" + re.escape(alias) + r"(?![A-Za-z0-9])", value, re.IGNORECASE):
+                return True
+    return False
+
+def _acceptance_buyback_only_untracked_destination(post: Post) -> bool:
+    text = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    buyback_re = re.compile(
+        r"buy[- ]?back|re[- ]purchase|סעיף\s+(?:רכישה|קנייה)\s+בחזרה|אופציית\s+רכישה\s+חזרה",
+        re.IGNORECASE,
+    )
+    if not buyback_re.search(text):
+        return False
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", text) if part.strip()]
+    buyback_index = next((index for index, sentence in enumerate(sentences) if buyback_re.search(sentence)), -1)
+    if buyback_index >= 0:
+        transfer_text = " ".join(sentences[:buyback_index]).strip()
+        buyback_sentence = sentences[buyback_index]
+        transfer_before = bool(re.search(
+            r"loan|signs?|joins?|transfer|option\s+to\s+buy|השאלה|חותם|מצטרף|עובר|אופציית\s+רכישה",
+            transfer_text,
+            re.IGNORECASE,
+        ))
+        if transfer_before and not _acceptance_text_has_managed_club(transfer_text) and _acceptance_text_has_managed_club(buyback_sentence):
+            return True
+    try:
+        destination = explicit_untracked_transfer_destination(post)
+    except Exception:
+        destination = ""
+    if not destination:
+        return False
+    before_clause = buyback_re.split(text, maxsplit=1)[0]
+    return not _acceptance_text_has_managed_club(before_clause)
+
+
+_ACCEPTANCE_PREVIOUS_PRE_SEND_GATE = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    _reliable_hydrate_exact_post(post)
+    original = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    if _acceptance_weak_nostalgia(original):
+        return "weak_nostalgia_or_sentimental_story"
+    if _acceptance_buyback_only_untracked_destination(post):
+        return "untracked_destination_buyback_only_big_club"
+    reason = _ACCEPTANCE_PREVIOUS_PRE_SEND_GATE(post)
+    # A clearly factual historical milestone is not merely an interview/opinion/nostalgia.
+    if reason and _acceptance_historical_significance(original):
+        weak_editorial_markers = (
+            "interview", "quote", "opinion", "non_news", "social_statement",
+            "footballtweet_interview", "footballtweet_opinion", "footballtweet_quote",
+        )
+        if any(marker in str(reason) for marker in weak_editorial_markers):
+            return ""
+    return reason
+
+
+_ACCEPTANCE_PREVIOUS_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    mapping = {
+        "video_missing": "בפוסט המקורי יש וידאו, אך לא נמצא קובץ וידאו אמיתי — הטקסט לא נשלח לבדו",
+        "video_size_unknown": "לא ניתן לוודא את גודל קובץ הווידאו — הפוסט כולו נחסם",
+        "video_too_large": "הווידאו גדול מ־50MB — הפוסט כולו נחסם",
+        "weak_nostalgia_or_sentimental_story": "סיפור אישיותי או נוסטלגיה חלשה ללא אירוע, הישג או נתון משמעותי",
+        "untracked_destination_buyback_only_big_club": "יעד המעבר אינו ברשימות; הקבוצה הגדולה מוזכרת רק בסעיף רכישה בחזרה",
+        "caption_too_long_for_single_media_message": "הטקסט חורג ממגבלת הכיתוב של טלגרם ולכן אי אפשר לשלוח אותו עם המדיה כהודעה אחת",
+    }
+    return mapping.get(str(reason or ""), _ACCEPTANCE_PREVIOUS_HEBREW_REASON(reason))
+
+
+_ACCEPTANCE_PROMO_TAIL_RE = re.compile(
+    r"^\s*(?:[🎥🎙🎤🎬📺▶️]+\s*)?(?:watch|listen|view|read|full\s+(?:video|interview|podcast|episode)|"
+    r"צפו|לצפייה|האזינו|להאזנה|הראיון\s+המלא|הסרטון\s+המלא|הפודקאסט\s+המלא|הפרק\s+המלא)",
+    re.IGNORECASE | re.UNICODE,
+)
+_ACCEPTANCE_SKY_CREDIT_RE = re.compile(
+    r"^\s*(?:לפי\s+)?(?:Sky\s*Sport(?:s)?\s*(?:Germany|DE)|Sky\s*Germany|SkySportDE|"
+    r"סקיי\s*ספורט(?:ס)?\s*גרמניה|סקיי\s*גרמניה)\s*(?:🇩🇪|[#@][\w.]+)?\s*$",
+    re.IGNORECASE | re.UNICODE,
+)
+_ACCEPTANCE_SELF_PROMO_PATTERNS = (
+    r"(?:אין\s+כאן\s+הפתעה[^.!?\n]*|כפי\s+שדיווחנו\s+כבר\s+כאן[^.!?\n]*|כבר\s+אושר\s+אצלנו[^.!?\n]*|נחשף\s+בלעדית\s+אצלנו[^.!?\n]*)\s*[.!]?",
+    r"(?:no\s+surprise\s+here[^.!?\n]*|as\s+we\s+(?:already\s+)?reported[^.!?\n]*|already\s+confirmed\s+here[^.!?\n]*|exclusively\s+revealed\s+by\s+us[^.!?\n]*)\s*[.!]?",
+)
+
+
+def _acceptance_remove_promotional_tail(text: str) -> str:
+    raw = str(text or "")
+    blocks = [block.strip() for block in re.split(r"\n{2,}", raw) if block.strip()]
+    kept: list[str] = []
+    for block in blocks:
+        first = block.splitlines()[0].strip()
+        has_promo_emoji = bool(re.match(r"^[🎥🎙🎤🎬📺▶️]", first))
+        has_promo_words = bool(_ACCEPTANCE_PROMO_TAIL_RE.search(first))
+        has_link = bool(re.search(r"https?://|www\.", block, re.IGNORECASE))
+        if kept and (has_promo_emoji or has_promo_words) and (has_link or re.search(r"פודקאסט|ראיון|סרטון|video|podcast|interview", block, re.IGNORECASE)):
+            break
+        kept.append(block)
+    value = "\n\n".join(kept).strip()
+    # Earlier legacy layout code may flatten the blank line. Remove an inline
+    # promotional tail only when it starts with a dedicated media/podcast emoji.
+    value = re.sub(
+        r"\s+[🎥🎙🎤🎬📺▶️]+\s*(?:צפו|לצפייה|האזינו|להאזנה|watch|listen|view|full\s+(?:video|interview|podcast|episode))[\s\S]*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return value.strip()
+
+
+def _acceptance_remove_source_credits(text: str) -> str:
+    lines = str(text or "").splitlines()
+    cleaned: list[str] = []
+    for line in lines:
+        if _ACCEPTANCE_SKY_CREDIT_RE.match(line):
+            continue
+        cleaned.append(line)
+    value = "\n".join(cleaned)
+    value = re.sub(
+        r"\s+(?:לפי\s+)?(?:Sky\s*Sport(?:s)?\s*(?:Germany|DE)|Sky\s*Germany|SkySportDE|סקיי\s*ספורט(?:ס)?\s*גרמניה|סקיי\s*גרמניה)\s*(?:🇩🇪|[#@][\w.]+)?\s*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"(?:\s+לפי)\s*([.!?,])", r"\1", value)
+    value = re.sub(r"(?:\s+לפי)\s*$", "", value)
+    return value.strip()
+
+
+def _acceptance_remove_trailing_team_tag(text: str) -> str:
+    value = str(text or "").strip()
+    lines = value.splitlines()
+    last = re.sub(r"^[#@]", "", lines[-1].strip())
+    last_norm = re.sub(r"[^A-Za-zא-ת0-9]+", " ", last).strip().casefold()
+    if not last_norm:
+        return value
+    aliases: set[str] = set()
+    for item in TEAM_CATALOG.values():
+        if not isinstance(item, dict):
+            continue
+        aliases.add(str(item.get("name") or ""))
+        aliases.update(str(x or "") for x in (item.get("aliases") or []))
+    for alias in aliases:
+        alias_norm = re.sub(r"[^A-Za-zא-ת0-9]+", " ", alias).strip().casefold()
+        if alias_norm and last_norm == alias_norm:
+            earlier = "\n".join(lines[:-1]).casefold()
+            if alias.casefold() in earlier or str(TEAM_REPLACEMENTS.get(alias, "")).casefold() in earlier:
+                return "\n".join(lines[:-1]).rstrip()
+    # Legacy layout may flatten the final standalone team tag into the last line.
+    for alias in sorted(aliases, key=len, reverse=True):
+        alias = str(alias or "").strip()
+        if not alias:
+            continue
+        match = re.search(r"(?:\s|^)(?:[#@])?" + re.escape(alias) + r"\s*$", value, re.IGNORECASE)
+        if not match:
+            continue
+        earlier = value[:match.start()].casefold()
+        target = str(TEAM_REPLACEMENTS.get(alias, alias) or alias).casefold()
+        if alias.casefold() in earlier or target in earlier:
+            return value[:match.start()].rstrip()
+    return value
+
+
+def _acceptance_restore_flat_statistics(post: Post, text: str) -> str:
+    if bool(getattr(post, "exact_source_structure", False)):
+        return text
+    value = str(text or "").strip()
+    if "\n•" in value or "\n-" in value:
+        return value
+    matches = list(re.finditer(r"([^()\n:;]{3,90}?)\s*\((\d[\d.,%]*)\)", value))
+    if len(matches) < 3:
+        return value
+    first_start = matches[0].start()
+    prefix = value[:first_start].strip(" ,;:-")
+    # Keep a real lead sentence ending in a colon when possible.
+    colon_index = value.rfind(":", 0, first_start + 1)
+    if colon_index >= 0:
+        prefix = value[:colon_index].strip() + ":"
+    bullets: list[str] = []
+    for match in matches[:15]:
+        label = re.sub(r"\s+", " ", match.group(1)).strip(" ,;:-")
+        label = re.sub(r"^(?:ו|and)\s+", "", label, flags=re.IGNORECASE)
+        number = match.group(2).strip()
+        if len(label.split()) > 12 or len(label) < 3:
+            return value
+        bullets.append(f"• {label} — {number}")
+    if len(bullets) < 3:
+        return value
+    return (prefix + "\n\n" + "\n".join(bullets)).strip()
+
+
+def _acceptance_hashtag_rules(post: Post, text: str) -> str:
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    value = str(text or "")
+    source_has_here = bool(re.search(r"\bhere\s+we\s+go\b\s*!?", source, re.IGNORECASE))
+    if source_has_here:
+        value = re.sub(r"\bHERE\s+WE\s+GO\b|#HERE_WE_GO", "#HERE_WE_GO", value, flags=re.IGNORECASE)
+    else:
+        value = re.sub(r"#?HERE[_\s]+WE[_\s]+GO\b", "", value, flags=re.IGNORECASE)
+    source_has_today_before = "היום לפני" in source
+    if source_has_today_before:
+        value = value.replace("היום לפני", "#היום_לפני")
+    else:
+        value = value.replace("#היום_לפני", "היום לפני")
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+_ACCEPTANCE_PREVIOUS_OUTGOING_BODY_TEXT = _outgoing_body_text
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _ACCEPTANCE_PREVIOUS_OUTGOING_BODY_TEXT(post, translated, quoted=quoted)
+    if quoted:
+        return value
+    for pattern in _ACCEPTANCE_SELF_PROMO_PATTERNS:
+        value = re.sub(pattern, "", value, flags=re.IGNORECASE | re.UNICODE)
+    value = _acceptance_remove_promotional_tail(value)
+    value = _acceptance_remove_source_credits(value)
+    value = _acceptance_remove_trailing_team_tag(value)
+    value = _acceptance_restore_flat_statistics(post, value)
+    value = _acceptance_hashtag_rules(post, value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _acceptance_caption_fits(message_html: str) -> bool:
+    plain = html_message_to_plain_text(message_html)
+    return len(message_html) <= TELEGRAM_CAPTION_LIMIT and len(plain) <= TELEGRAM_CAPTION_LIMIT
+
+
+def _acceptance_video_url_for_post(post: Post) -> str:
+    cached = str(getattr(post, "acceptance_video_url", "") or "")
+    if cached:
+        return cached
+    url, reason, size = _acceptance_video_status(post)
+    if not url:
+        raise RuntimeError(hebrew_block_reason(reason))
+    post.acceptance_video_url = url
+    post.acceptance_video_size = size
+    return url
+
+
+# Same-message control preview: media + final spacing + full caption + button.
+# Telegram itself caps media captions at 1024 characters. When the full caption
+# exceeds that hard limit, do not create a misleading two-message preview.
+def _control_candidate_media_payload(post: Post, message_html: str, reply_markup: dict[str, Any]) -> tuple[list[int], bool]:
+    if not CONTROL_CHAT_ID:
+        return [], False
+    _reliable_hydrate_exact_post(post, force=True)
+    markup = ensure_delete_button_reply_markup(reply_markup)
+    if _acceptance_post_requires_video(post):
+        if not _acceptance_caption_fits(message_html):
+            raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+        video_url = _acceptance_video_url_for_post(post)
+        response = telegram_api("sendVideo", {
+            "chat_id": CONTROL_CHAT_ID,
+            "video": video_url,
+            "caption": message_html,
+            "parse_mode": "HTML",
+            "supports_streaming": True,
+            "reply_markup": markup,
+        }, max_attempts=1)
+        return _telegram_result_message_ids(response), True
+    images = selected_post_images(post)
+    if images:
+        if not _acceptance_caption_fits(message_html):
+            raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+        response = telegram_api("sendPhoto", {
+            "chat_id": CONTROL_CHAT_ID,
+            "photo": images[0],
+            "caption": message_html,
+            "parse_mode": "HTML",
+            "reply_markup": markup,
+        }, max_attempts=1)
+        return _telegram_result_message_ids(response), True
+    return [], False
+
+
+_ACCEPTANCE_PREVIOUS_SEND_FULL_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    markup = control_send_to_main_reply_markup(token)
+    _reliable_hydrate_exact_post(post, force=True)
+    has_media = _acceptance_post_requires_video(post) or bool(selected_post_images(post))
+    if has_media:
+        try:
+            ids, combined = _control_candidate_media_payload(post, message_html, markup)
+            if combined:
+                CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+                _save_prepared_media_ids(token, ids)
+                return ids
+        except Exception as exc:
+            # Never split a requested media preview into two Telegram messages.
+            send_control_text(
+                "⛔ לא ניתן להכין את הפוסט כהודעה אחת עם המדיה.\n\n" + short_error(exc, 900),
+                None,
+                control_delete_message_reply_markup(),
+            )
+            return []
+    send_control_html(message_html, markup)
+    return []
+
+
+# Strict main sender: a video post is all-or-nothing. No text/photo fallback.
+_ACCEPTANCE_PREVIOUS_RAW_MAIN_SENDER = _raw_main_sender_consolidated
+
+
+def _acceptance_strict_main_sender(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    _reliable_hydrate_exact_post(post, force=True)
+    if _acceptance_post_requires_video(post):
+        if not _acceptance_caption_fits(message):
+            raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+        required_video = _acceptance_video_url_for_post(post)
+        message_ids = telegram_broadcast(
+            "sendVideo",
+            {
+                "video": required_video,
+                "caption": message,
+                "parse_mode": "HTML",
+                "supports_streaming": True,
+            },
+            reply_message_ids=reply_message_ids,
+        )
+        return message_ids, "video_all_or_nothing"
+    if images:
+        if not _acceptance_caption_fits(message):
+            raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+        if len(images) == 1:
+            message_ids = telegram_broadcast(
+                "sendPhoto",
+                {"photo": images[0], "caption": message, "parse_mode": "HTML"},
+                reply_message_ids=reply_message_ids,
+            )
+            return message_ids, "photo_with_caption"
+        media: list[dict[str, Any]] = []
+        for index, image_url in enumerate(images):
+            item: dict[str, Any] = {"type": "photo", "media": image_url}
+            if index == 0:
+                item["caption"] = message
+                item["parse_mode"] = "HTML"
+            media.append(item)
+        message_ids = telegram_broadcast("sendMediaGroup", {"media": media}, reply_message_ids=reply_message_ids)
+        return message_ids, f"{len(images)} images_with_caption"
+    return _ACCEPTANCE_PREVIOUS_RAW_MAIN_SENDER(post, message, [], video_url="", reply_message_ids=reply_message_ids)
+
+
+# Replace the raw implementation used by the existing final wrappers.
+_raw_main_sender_consolidated = _acceptance_strict_main_sender
+
+
+_ACCEPTANCE_PREVIOUS_SEND_PREPARED_MESSAGE = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    clean_message = _finalize_outgoing_message_only(message)
+    result = _acceptance_strict_main_sender(post, clean_message, selected_post_images(post), video_url=video_url, reply_message_ids=reply_message_ids)
+    remember_persistent_sent(post, clean_message, "button_or_auto_strict_media")
+    return result
+
+
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    clean_message = _finalize_outgoing_message_only(message)
+    result = _acceptance_strict_main_sender(post, clean_message, selected_post_images(post), video_url=video_url, reply_message_ids=reply_message_ids)
+    remember_persistent_sent(post, clean_message, "manual_force_strict_media")
+    return result
+
+
+def _acceptance_retry_identity(post: Post) -> str:
+    return str(_acceptance_tweet_id(post) or getattr(post, "post_id", "") or getattr(post, "link", "") or post_content_signature(post.username, post.text, post.quoted_text))
+
+
+def _acceptance_exhausted_map(state: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    raw = state.get(GEMINI_RETRY_EXHAUSTED_STATE_KEY, {})
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _acceptance_translation_failure_mode(result: dict[str, Any]) -> bool:
+    mode = str(result.get("mode", "") or "")
+    return mode in {
+        "translation_unavailable",
+        "translation_unavailable_retry",
+        "translation_quality_blocked",
+        "main_blocked_untranslated",
+    } or mode.startswith("translation_unavailable")
+
+
+_ACCEPTANCE_PREVIOUS_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Automatic path: exact X enrichment -> local filters -> old Gemini -> strict media -> send.
+
+    Only translation-only failures are retried. Attempts 2 and 3 wait exactly the
+    configured three minutes by default. No fourth Gemini request is made for an
+    exhausted post; it is remembered separately, without adding it to seen/sent.
+    """
+    _reliable_hydrate_exact_post(post, force=True)
+    identity = _acceptance_retry_identity(post)
+    exhausted = _acceptance_exhausted_map(state)
+    if identity and identity in exhausted:
+        return {
+            "sent": False,
+            "mode": "translation_retries_exhausted_no_fourth_attempt",
+            "source_name": getattr(post, "source_name", ""),
+            "total_seconds": 0.0,
+        }
+
+    # Media preflight happens only for this selected post and before any message can
+    # be emitted. Failure blocks the text as well.
+    media_reason = _acceptance_media_block_reason(post)
+    if media_reason:
+        return {
+            "sent": False,
+            "mode": f"pre_send_blocked:{media_reason}",
+            "source_name": getattr(post, "source_name", ""),
+            "total_seconds": 0.0,
+        }
+
+    last_result: dict[str, Any] = {}
+    for attempt in range(1, AUTO_GEMINI_RETRY_ATTEMPTS + 1):
+        if attempt > 1:
+            time.sleep(max(0, AUTO_GEMINI_RETRY_WAIT_SECONDS))
+        last_result = _ACCEPTANCE_PREVIOUS_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+        if last_result.get("sent"):
+            if isinstance(state, dict) and identity:
+                exhausted = _acceptance_exhausted_map(state)
+                if identity in exhausted:
+                    exhausted.pop(identity, None)
+                    state[GEMINI_RETRY_EXHAUSTED_STATE_KEY] = exhausted
+            last_result["translation_attempt"] = attempt
+            return last_result
+        if not _acceptance_translation_failure_mode(last_result):
+            return last_result
+        logging.warning(
+            "Gemini automatic translation attempt %s/%s failed for @%s; retry remains internal. %s",
+            attempt,
+            AUTO_GEMINI_RETRY_ATTEMPTS,
+            getattr(post, "username", ""),
+            getattr(post, "link", ""),
+        )
+    if isinstance(state, dict) and identity:
+        exhausted = _acceptance_exhausted_map(state)
+        exhausted[identity] = {"ts": time.time(), "username": post.username, "link": post.link, "attempts": AUTO_GEMINI_RETRY_ATTEMPTS}
+        # Bound this backward-compatible state key without changing seen/sent.
+        ordered = sorted(exhausted.items(), key=lambda kv: float((kv[1] or {}).get("ts", 0.0) if isinstance(kv[1], dict) else 0.0), reverse=True)[:1000]
+        state[GEMINI_RETRY_EXHAUSTED_STATE_KEY] = dict(ordered)
+    result = dict(last_result or {})
+    result.update({
+        "sent": False,
+        "mode": "translation_retries_exhausted_no_fourth_attempt",
+        "translation_attempts": AUTO_GEMINI_RETRY_ATTEMPTS,
+    })
+    return result
+
+
+# The existing duplicate engine is retained. This final guard only makes the
+# same-event/meaningful-update distinction explicit for the edge cases supplied.
+_ACCEPTANCE_PREVIOUS_STRICT_DUPLICATE_MATCH = strict_duplicate_match
+
+
+def _acceptance_new_facts(current: dict[str, Any], previous: dict[str, Any]) -> bool:
+    current_stage = int(current.get("stage_rank", 0) or 0)
+    previous_stage = int(previous.get("stage_rank", 0) or 0)
+    if current_stage > previous_stage:
+        return True
+    current_text = str(current.get("text", "") or "")
+    previous_text = str(previous.get("text", "") or "")
+    facts_re = re.compile(r"medical|בדיקות\s+רפואיות|contract|חוזה|until\s+20\d{2}|עד\s+20\d{2}|€?£?\$?\d+(?:[.,]\d+)?\s*(?:m|million|מיליון)|official|רשמי|signed|חתם", re.IGNORECASE)
+    current_facts = set(facts_re.findall(current_text))
+    previous_facts = set(facts_re.findall(previous_text))
+    return bool(current_facts - previous_facts)
+
+
+def strict_duplicate_match(current: dict[str, Any], previous: dict[str, Any], score: float, local: str = "BORDERLINE") -> bool:
+    current_players, current_teams = _canonical_sets_from_signature(current)
+    previous_players, previous_teams = _canonical_sets_from_signature(previous)
+    same_subject = bool(current_players & previous_players) or (
+        len(current_teams & previous_teams) >= 2 and len(set(current.get("entities", [])) & set(previous.get("entities", []))) >= 2
+    )
+    same_family = _duplicate_family_overlap(set(current.get("actions", [])), set(previous.get("actions", [])))
+    if same_subject and same_family and _acceptance_new_facts(current, previous):
+        return False
+    return _ACCEPTANCE_PREVIOUS_STRICT_DUPLICATE_MATCH(current, previous, score, local)
+
+
+_ACCEPTANCE_PREVIOUS_FIND_REPLY_TARGET = find_bot_reply_target_for_post
+
+def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    existing = _ACCEPTANCE_PREVIOUS_FIND_REPLY_TARGET(post, state)
+    if existing:
+        return existing
+    current = news_event_signature(post)
+    current_players, current_teams = _canonical_sets_from_signature(current)
+    for key in (BOT_SENT_REPLY_STATE_KEY, CHANNEL_RECENT_NEWS_STATE_KEY):
+        rows = state.get(key, []) if isinstance(state, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for item in reversed(rows):
+            if not isinstance(item, dict):
+                continue
+            ids = _message_ids_from_reply_item(item)
+            previous = item.get("signature", {})
+            if not ids or not isinstance(previous, dict):
+                continue
+            previous_players, previous_teams = _canonical_sets_from_signature(previous)
+            same_player = bool(current_players & previous_players)
+            same_teams = len(current_teams & previous_teams) >= 1
+            same_family = _duplicate_family_overlap(set(current.get("actions", [])), set(previous.get("actions", [])))
+            if same_player and same_teams and same_family and _acceptance_new_facts(current, previous):
+                return ids
+    return {}
+
+# ====== END FINAL ACCEPTANCE LAYER ======
+
+
 if __name__ == "__main__":
     main()
