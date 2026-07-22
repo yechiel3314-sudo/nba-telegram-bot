@@ -25391,7 +25391,7 @@ def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> d
 # Clickable Telegram history tags. Telegram renders plain hashtags as blue,
 # tappable links and opens all matching messages in the channel/chat.
 # These tags are deterministic post-processing and do not add extra API calls.
-BOT_BUILD_ID = "winner-editorial-media-smart-duplicates-clickable-tags-2026-07-22"
+BOT_BUILD_ID = "winner-clickable-history-tags-verified-2026-07-22"
 _FINAL_HISTORY_HASHTAG = "#היום_לפני"
 _FINAL_HERE_WE_GO_HASHTAG = "#HERE_WE_GO"
 _FINAL_HISTORY_RENDER_RE = re.compile(
@@ -25403,17 +25403,28 @@ _FINAL_CLICKABLE_HWG_RE = re.compile(
     r"(?iu)(?:\#\s*)?(?:HERE[\s_\-]*WE[\s_\-]*GO|"
     r"הנה\s+זה\s+קורה|כאן\s+אנחנו\s+הולכים|היר\s+ו(?:ו|י)?\s+גו|הרה\s+וה\s+גו)"
 )
+_FINAL_CLICKABLE_HWG_SOURCE_RE = re.compile(
+    r"(?iu)(?<![A-Za-z])(?:\#\s*)?HERE[\s_\-–—,:.!]*WE[\s_\-–—,:.!]*GO(?![A-Za-z])|"
+    r"(?<![A-Za-z])(?:\#\s*)?HEREWEGO(?![A-Za-z])"
+)
+
+
+def _final_original_caption(post: Post) -> str:
+    return html.unescape(str(
+        getattr(post, "original_text", "")
+        or getattr(post, "raw_text", "")
+        or getattr(post, "text", "")
+        or ""
+    ))
 
 
 def _final_normalize_historical_prefix(post: Post, value: str) -> str:
-    """Render strong Footballtweet anniversary items under one clickable tag.
+    """Turn a real On-this-day opening into one clickable Telegram hashtag.
 
-    Birthdays remain birthday posts. The hashtag replaces only an actual
-    On-this-day/Throwback opening found in the untouched source caption.
+    The decision is made only from the untouched source caption. It works for
+    every source, not only Footballtweet. Birthday posts remain birthday posts.
     """
-    if not _is_footballtweet_post(post):
-        return value
-    source = _footballtweet_original_text(post)
+    source = _final_original_caption(post)
     if _FINAL_BIRTHDAY_RE.search(source):
         return value
     if not _FINAL_HISTORICAL_START_RE.search(source):
@@ -25429,7 +25440,7 @@ def _final_normalize_historical_prefix(post: Post, value: str) -> str:
 def _enforce_here_we_go_from_source(post: Post, translated: str) -> str:
     """Use one clickable English HERE WE GO tag only when source text has it."""
     source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
-    source_has = bool(_HERE_WE_GO_SOURCE_RE.search(source))
+    source_has = bool(_FINAL_CLICKABLE_HWG_SOURCE_RE.search(source))
     value = str(translated or "")
     found = False
 
@@ -25458,6 +25469,599 @@ def _enforce_here_we_go_from_source(post: Post, translated: str) -> str:
     return value.strip(" \t,;:-")
 
 # ====== END FINAL EDITORIAL / MEDIA / DUPLICATE / EXACT-X PATCH ======
+
+
+# ====== FINAL PRODUCTION RSS + TRANSLATION RETRY SAFETY PATCH (2026-07-22) ======
+# This is the final runtime layer.  It deliberately leaves all persistent file
+# names and existing JSON keys intact.  RSS is isolated per mirror without
+# creating worker threads, and Gemini retries are spaced across normal scan
+# cycles rather than sleeping/blocking the bot for six minutes.
+BOT_BUILD_ID = "winner-production-rss-translation-retry-2026-07-22"
+
+# Public X/RSS mirrors change frequently.  Existing configured templates remain
+# supported; these are additional fallbacks.  A host circuit-breaker prevents a
+# broken mirror from being retried for every reporter and every scan cycle.
+_FINAL_RSS_EXTRA_TEMPLATES = (
+    "https://xcancel.com/{username}/rss",
+    "https://nitter.poast.org/{username}/rss",
+    "https://nitter.privacydev.net/{username}/rss",
+    "https://nitter.pek.li/{username}/rss",
+    "https://nitter.aishiteiru.moe/{username}/rss",
+    "https://nitter.aosus.link/{username}/rss",
+    "https://nitter.tiekoetter.com/{username}/rss",
+    "https://nitter.ahwx.org/{username}/rss",
+    "https://twitt.re/{username}/rss",
+)
+_FINAL_RSS_PREFERRED_HOSTS = (
+    "xcancel.com",
+    "nitter.poast.org",
+    "nitter.privacydev.net",
+    "nitter.pek.li",
+    "nitter.aishiteiru.moe",
+    "nitter.aosus.link",
+    "nitter.tiekoetter.com",
+    "nitter.ahwx.org",
+    "twitt.re",
+    "twiiit.com",
+    "lightbrd.com",
+    "rsshub.rssforever.com",
+    "nitter.net",
+    "rsshub.app",
+)
+_FINAL_RSS_HEALTH: dict[str, dict[str, float | int | str]] = {}
+_FINAL_RSS_HEALTH_LOCK = RLock()
+_FINAL_RSS_REQUEST_TIMEOUT = float(os.environ.get("FINAL_RSS_REQUEST_TIMEOUT_SECONDS", "6"))
+_FINAL_RSS_AUTO_DEADLINE = float(os.environ.get("FINAL_RSS_AUTO_DEADLINE_SECONDS", "24"))
+_FINAL_RSS_CONTROL_DEADLINE = float(os.environ.get("FINAL_RSS_CONTROL_DEADLINE_SECONDS", "38"))
+_FINAL_RSS_MAX_AUTO_SOURCES = int(os.environ.get("FINAL_RSS_MAX_AUTO_SOURCES", "7"))
+_FINAL_RSS_MAX_CONTROL_SOURCES = int(os.environ.get("FINAL_RSS_MAX_CONTROL_SOURCES", "12"))
+
+
+def _final_rss_host(value: str) -> str:
+    try:
+        return urllib.parse.urlparse(str(value or "")).netloc.casefold()
+    except Exception:
+        return str(value or "").casefold()
+
+
+def _final_all_feed_templates() -> list[str]:
+    values: list[str] = []
+    for template in [*list(FEED_TEMPLATES or []), *list(EXTRA_FEED_TEMPLATES or []), *_FINAL_RSS_EXTRA_TEMPLATES]:
+        template = str(template or "").strip()
+        if template and "{username}" in template and template not in values:
+            values.append(template)
+
+    now = time.time()
+    with _FINAL_RSS_HEALTH_LOCK:
+        health = {key: dict(value) for key, value in _FINAL_RSS_HEALTH.items()}
+
+    def rank(template: str) -> tuple[int, int, float, str]:
+        host = _final_rss_host(template)
+        preferred = next((index for index, item in enumerate(_FINAL_RSS_PREFERRED_HOSTS) if item in host), len(_FINAL_RSS_PREFERRED_HOSTS))
+        state = health.get(host, {})
+        cooling = 1 if float(state.get("cooldown_until", 0.0) or 0.0) > now else 0
+        last_success = float(state.get("last_success", 0.0) or 0.0)
+        # Healthy recent sources first; cooling sources stay at the end and are
+        # used only when every other option failed.
+        return cooling, preferred, -last_success, host
+
+    return sorted(values, key=rank)
+
+
+def active_feed_templates() -> list[str]:
+    # Do not truncate to the historical five-source limit.  The final reader has
+    # its own deadline and circuit-breaker, so extra fallbacks do not create spam.
+    return _final_all_feed_templates()
+
+
+def _final_rss_state(host: str) -> dict[str, float | int | str]:
+    with _FINAL_RSS_HEALTH_LOCK:
+        return dict(_FINAL_RSS_HEALTH.get(host, {}))
+
+
+def _final_rss_available(host: str, allow_cooling: bool = False) -> bool:
+    if allow_cooling:
+        return True
+    return float(_final_rss_state(host).get("cooldown_until", 0.0) or 0.0) <= time.time()
+
+
+def _final_rss_mark_success(host: str) -> None:
+    with _FINAL_RSS_HEALTH_LOCK:
+        _FINAL_RSS_HEALTH[host] = {
+            "last_success": time.time(),
+            "cooldown_until": 0.0,
+            "failures": 0,
+            "last_error": "",
+        }
+
+
+def _final_rss_mark_failure(host: str, exc: BaseException) -> None:
+    message = short_error(exc, 350)
+    lowered = message.casefold()
+    now = time.time()
+    with _FINAL_RSS_HEALTH_LOCK:
+        current = dict(_FINAL_RSS_HEALTH.get(host, {}))
+        failures = int(current.get("failures", 0) or 0) + 1
+        # 404 can be username/case-specific, therefore it is not enough on its
+        # own to disable the host globally.  403/429/5xx and network failures are.
+        if "403" in lowered:
+            cooldown = 30 * 60
+        elif "429" in lowered:
+            cooldown = 20 * 60
+        elif any(code in lowered for code in ("500", "502", "503", "504")):
+            cooldown = 10 * 60
+        elif any(token in lowered for token in ("timed out", "timeout", "name resolution", "connection", "ssl")):
+            cooldown = 5 * 60
+        elif "404" in lowered:
+            cooldown = 0 if failures < 3 else 5 * 60
+        elif "non-xml" in lowered or "empty" in lowered:
+            cooldown = 8 * 60
+        else:
+            cooldown = min(10 * 60, 60 * failures)
+        current.update({
+            "failures": failures,
+            "last_error": message,
+            "last_failure": now,
+            "cooldown_until": max(float(current.get("cooldown_until", 0.0) or 0.0), now + cooldown) if cooldown else float(current.get("cooldown_until", 0.0) or 0.0),
+        })
+        _FINAL_RSS_HEALTH[host] = current
+
+
+def http_get_feed(url: str, timeout: int = 6) -> bytes:
+    """Small, deterministic RSS request with no nested retry wrappers."""
+    effective_timeout = max(4.0, min(12.0, float(timeout or _FINAL_RSS_REQUEST_TIMEOUT)))
+    last_error: BaseException | None = None
+    for attempt in range(2):
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.2",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "identity",
+        }
+        if attempt:
+            headers.update({"Cache-Control": "no-cache", "Pragma": "no-cache"})
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=effective_timeout) as response:
+                payload = response.read()
+            probe = payload[:8192].lstrip().casefold()
+            if not payload or not any(token in probe for token in (b"<?xml", b"<rss", b"<feed")):
+                raise RuntimeError("RSS endpoint returned an empty or non-XML response")
+            return payload
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.25)
+    raise RuntimeError(f"RSS GET failed: {url}. Last error: {short_error(last_error, 450)}")
+
+
+def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
+    """Sequential per-mirror isolation: no worker creation and no thread leaks."""
+    templates = list(dict.fromkeys(str(item) for item in (feed_templates or []) if item))
+    merged: dict[str, Post] = {}
+    errors: list[str] = []
+    timeouts: list[str] = []
+    # First pass skips cooling hosts; second pass uses them only if nothing worked.
+    for allow_cooling in (False, True):
+        for template in templates:
+            host = _final_rss_host(template)
+            if not _final_rss_available(host, allow_cooling=allow_cooling):
+                continue
+            source = feed_source_name(template)
+            try:
+                posts = fetch_feed(username, template) or []
+                _final_rss_mark_success(host)
+                _reliable_merge_posts(merged, posts, username)
+            except Exception as exc:
+                _final_rss_mark_failure(host, exc)
+                summary = short_error(exc, 350)
+                errors.append(f"{source}: {type(exc).__name__}: {summary}")
+                if "timeout" in summary.casefold() or "timed out" in summary.casefold():
+                    timeouts.append(source)
+        if merged or allow_cooling:
+            break
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    return ordered, errors, list(dict.fromkeys(timeouts))
+
+
+def _final_rss_variants(username: str) -> list[str]:
+    canonical = str(username or "").strip().lstrip("@")
+    values = [canonical]
+    try:
+        values.extend(_stable_rss_username_variants(canonical))
+    except Exception:
+        pass
+    values.extend([canonical.casefold()])
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        value = str(item or "").strip().lstrip("@")
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            result.append(value)
+    return result[:4]
+
+
+def _final_direct_profile_fallback(username: str, limit: int) -> list[Post]:
+    # Official X API is preferred when the server owner configured a token.  The
+    # public syndication reader is a last fallback and never replaces RSS.
+    token = (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    )
+    try:
+        if token and "_reliable_official_x_profile_posts" in globals():
+            values = _reliable_official_x_profile_posts(username, limit=max(10, limit))
+            if values:
+                return values[:limit]
+    except Exception as exc:
+        logging.debug("Official X profile fallback failed safely for @%s: %s", username, short_error(exc, 260))
+    try:
+        if "_reliable_syndication_profile_posts" in globals():
+            return (_reliable_syndication_profile_posts(username, limit=max(10, limit)) or [])[:limit]
+    except Exception as exc:
+        logging.debug("Syndication fallback failed safely for @%s: %s", username, short_error(exc, 260))
+    return []
+
+
+def _stable_rss_network_fetch(username: str, limit: int = 30, exhaustive: bool = False) -> tuple[list[Post], dict[str, Any]]:
+    """Final network reader used by every source, including Footballtweet."""
+    canonical = str(username or "").strip().lstrip("@")
+    requested = max(1, int(limit))
+    deadline = time.monotonic() + (_FINAL_RSS_CONTROL_DEADLINE if exhaustive else _FINAL_RSS_AUTO_DEADLINE)
+    max_sources = _FINAL_RSS_MAX_CONTROL_SOURCES if exhaustive else _FINAL_RSS_MAX_AUTO_SOURCES
+    templates = _final_all_feed_templates()
+    diagnostics: dict[str, Any] = {"errors": [], "timeouts": [], "sources": {}, "variants": []}
+    merged: dict[str, Post] = {}
+    attempted = 0
+
+    for variant in _final_rss_variants(canonical):
+        diagnostics["variants"].append(variant)
+        # Healthy/non-cooling hosts first. Cooling hosts are used only after the
+        # normal pass produced nothing.
+        for allow_cooling in (False, True):
+            for template in templates:
+                if attempted >= max_sources or time.monotonic() >= deadline:
+                    break
+                host = _final_rss_host(template)
+                if not _final_rss_available(host, allow_cooling=allow_cooling):
+                    continue
+                attempted += 1
+                source = feed_source_name(template)
+                try:
+                    posts = fetch_feed(variant, template) or []
+                    _final_rss_mark_success(host)
+                    before = len(merged)
+                    _reliable_merge_posts(merged, posts, canonical)
+                    diagnostics["sources"][f"{variant}:{source}"] = len(merged) - before
+                except Exception as exc:
+                    _final_rss_mark_failure(host, exc)
+                    summary = short_error(exc, 350)
+                    diagnostics["errors"].append(f"{source}: {type(exc).__name__}: {summary}")
+                    if "timeout" in summary.casefold() or "timed out" in summary.casefold():
+                        diagnostics["timeouts"].append(source)
+                if merged and not exhaustive:
+                    break
+                if exhaustive and len(merged) >= requested:
+                    break
+            if merged or allow_cooling or attempted >= max_sources or time.monotonic() >= deadline:
+                break
+        if merged and (not exhaustive or len(merged) >= requested):
+            break
+        if attempted >= max_sources or time.monotonic() >= deadline:
+            break
+
+    if len(merged) < (requested if exhaustive else 1) and time.monotonic() < deadline:
+        try:
+            direct = _final_direct_profile_fallback(canonical, max(20, requested))
+            before = len(merged)
+            _reliable_merge_posts(merged, direct, canonical)
+            diagnostics["sources"]["direct_x_fallback"] = len(merged) - before
+        except Exception as exc:
+            diagnostics["errors"].append(f"direct_x_fallback: {short_error(exc, 300)}")
+
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    diagnostics["attempted_sources"] = attempted
+    diagnostics["returned_network"] = len(ordered)
+    diagnostics["timeouts"] = list(dict.fromkeys(diagnostics["timeouts"]))
+    return ordered[:requested], diagnostics
+
+
+def _fetch_footballtweet_posts_isolated(limit: int = 25) -> list[Post]:
+    # Same stable reader as every other source; the editorial/rate/duplicate rules
+    # remain source-specific elsewhere.
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+    try:
+        posts, diagnostics = _stable_rss_network_fetch(canonical, limit=max(25, int(limit)), exhaustive=False)
+    except Exception as exc:
+        posts, diagnostics = [], {"errors": [short_error(exc, 350)]}
+    if posts:
+        _stable_rss_remember(canonical, posts)
+        return posts[:max(1, int(limit))]
+    cached = _stable_rss_cached_posts(canonical, limit=max(25, int(limit)))
+    if diagnostics.get("errors"):
+        logging.warning("Footballtweet RSS unavailable; using %s cached rows. %s", len(cached), "; ".join(diagnostics["errors"][:3]))
+    return cached
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    try:
+        posts, diagnostics = _stable_rss_network_fetch(canonical, limit=max(30, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK), exhaustive=False)
+    except Exception as exc:
+        posts, diagnostics = [], {"errors": [f"network: {short_error(exc, 350)}"], "timeouts": []}
+    if posts:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+        _stable_rss_remember(canonical, posts)
+        return posts
+    failures = FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) + 1
+    FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
+    cached = _stable_rss_cached_posts(canonical, limit=max(30, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    if failures == 1 or failures % 20 == 0:
+        logging.warning(
+            "RSS @%s returned no fresh rows; using %s cache/history rows. sources=%s errors=%s",
+            canonical,
+            len(cached),
+            diagnostics.get("attempted_sources", 0),
+            "; ".join((diagnostics.get("errors") or [])[:3]),
+        )
+    return cached
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    started = time.perf_counter()
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    try:
+        values = fetch_posts(canonical)
+        return canonical, values
+    except Exception as exc:
+        logging.exception("Final RSS fetch failed safely for @%s: %s", canonical, exc)
+        return canonical, _stable_rss_cached_posts(canonical, limit=30)
+    finally:
+        try:
+            daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        except Exception:
+            pass
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    requested = max(1, int(limit))
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, _stable_rss_cached_posts(canonical, limit=max(100, requested * 8)), canonical)
+    try:
+        _collect_history_nonnetwork(canonical, merged, {})
+    except Exception:
+        pass
+    try:
+        network, _diagnostics = _stable_rss_network_fetch(canonical, limit=max(60, requested * 5), exhaustive=True)
+        _reliable_merge_posts(merged, network, canonical)
+    except Exception as exc:
+        logging.debug("Control RSS lookup failed safely for @%s: %s", canonical, short_error(exc, 350))
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    ordered = [post for post in ordered if str(_stable_rss_post_text(post) or "").strip()]
+    if ordered:
+        _stable_rss_remember(canonical, ordered)
+    return ordered[:requested]
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    requested = max(1, int(limit))
+    merged: dict[str, Post] = {}
+    diagnostics: dict[str, Any] = {"sources": {}, "errors": [], "requested": requested}
+
+    def add(stage: str, values: Any) -> None:
+        before = len(merged)
+        _reliable_merge_posts(merged, values, canonical)
+        diagnostics["sources"][stage] = len(merged) - before
+
+    try:
+        add("cache_history", _stable_rss_cached_posts(canonical, limit=150))
+    except Exception as exc:
+        diagnostics["errors"].append(f"cache_history: {short_error(exc, 250)}")
+    try:
+        before = len(merged)
+        _collect_history_nonnetwork(canonical, merged, diagnostics)
+        diagnostics["sources"]["durable_state"] = len(merged) - before
+    except Exception as exc:
+        diagnostics["errors"].append(f"durable_state: {short_error(exc, 250)}")
+    if len(merged) < requested:
+        try:
+            network, network_diag = _stable_rss_network_fetch(canonical, limit=max(80, requested * 8), exhaustive=True)
+            add("network", network)
+            diagnostics["errors"].extend((network_diag.get("errors") or [])[:8])
+            diagnostics["timeouts"] = (network_diag.get("timeouts") or [])[:8]
+        except Exception as exc:
+            diagnostics["errors"].append(f"network: {short_error(exc, 300)}")
+    # A second durable pass catches rows saved while the button was running.
+    for stage, reader in (
+        ("history_second_pass", lambda: _ten_history_load(canonical)),
+        ("state_second_pass", lambda: _ten_history_collect_existing_state_posts(canonical)),
+    ):
+        try:
+            add(stage, reader())
+        except Exception as exc:
+            diagnostics["errors"].append(f"{stage}: {short_error(exc, 220)}")
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    ordered = [post for post in ordered if str(_stable_rss_post_text(post) or "").strip()]
+    diagnostics["after_dedupe"] = len(ordered)
+    diagnostics["returned"] = min(requested, len(ordered))
+    LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diagnostics
+    if ordered:
+        _stable_rss_remember(canonical, ordered)
+    return ordered[:requested]
+
+
+# Ten-history translation is deliberately sequential.  It is a control preview
+# using Google Translate and must never fail because the server cannot create a
+# new thread.  Each row fails independently and falls back to the source text.
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    result: list[str] = []
+    for post in list(posts or []):
+        value = ""
+        try:
+            value = str(_translate_history_post(post) or "").strip()
+        except Exception as exc:
+            logging.debug("History row translation failed safely: %s", short_error(exc, 220))
+        if not value or value == "אין טקסט זמין":
+            try:
+                value = str(_stable_rss_post_text(post) or "").strip()
+            except Exception:
+                value = str(getattr(post, "text", "") or "").strip()
+        result.append(value or "הפוסט התקבל ללא טקסט קריא")
+    return result
+
+
+# ---- Gemini retry schedule: 3 attempts, at least 3 minutes apart ----
+_TRANSLATION_RETRY_STATE_KEY = "gemini_translation_retry_queue_v1"
+_TRANSLATION_RETRY_MAX_ATTEMPTS = max(1, int(os.environ.get("GEMINI_POST_RETRY_ATTEMPTS", "3")))
+_TRANSLATION_RETRY_INTERVAL_SECONDS = max(30, int(os.environ.get("GEMINI_POST_RETRY_INTERVAL_SECONDS", "180")))
+_TRANSLATION_RETRY_EXPIRY_SECONDS = 48 * 60 * 60
+_TRANSLATION_RETRY_LOCK = RLock()
+_PRE_FINAL_SCHEDULED_TRANSLATE_POST = translate_post_for_send
+
+
+def _translation_retry_identity(post: Post) -> str:
+    return str(
+        getattr(post, "post_id", "")
+        or getattr(post, "link", "")
+        or post_content_signature(getattr(post, "username", ""), getattr(post, "text", ""), getattr(post, "quoted_text", ""))
+    ).strip()
+
+
+def _translation_retry_read() -> dict[str, dict[str, Any]]:
+    state = load_control_state()
+    raw = state.get(_TRANSLATION_RETRY_STATE_KEY, {})
+    if not isinstance(raw, dict):
+        return {}
+    now = time.time()
+    result: dict[str, dict[str, Any]] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        updated = float(value.get("updated_at", 0.0) or 0.0)
+        if updated and now - updated > _TRANSLATION_RETRY_EXPIRY_SECONDS:
+            continue
+        result[str(key)] = dict(value)
+    return result
+
+
+def _translation_retry_write(values: dict[str, dict[str, Any]]) -> None:
+    # Bounded state avoids uncontrolled growth in the existing control JSON.
+    ordered = sorted(values.items(), key=lambda item: float(item[1].get("updated_at", 0.0) or 0.0), reverse=True)[:500]
+    save_control_state(**{_TRANSLATION_RETRY_STATE_KEY: dict(ordered)})
+
+
+def _translation_retry_clear(identity: str) -> None:
+    if not identity:
+        return
+    with _TRANSLATION_RETRY_LOCK:
+        values = _translation_retry_read()
+        if identity in values:
+            values.pop(identity, None)
+            _translation_retry_write(values)
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    identity = _translation_retry_identity(post)
+    now = time.time()
+    with _TRANSLATION_RETRY_LOCK:
+        values = _translation_retry_read()
+        entry = dict(values.get(identity, {})) if identity else {}
+        attempts = int(entry.get("attempts", 0) or 0)
+        next_retry = float(entry.get("next_retry_at", 0.0) or 0.0)
+        exhausted = bool(entry.get("exhausted", False))
+    if exhausted or attempts >= _TRANSLATION_RETRY_MAX_ATTEMPTS:
+        raise TranslationUnavailable("Gemini translation failed after 3 spaced attempts; post will not be sent")
+    if attempts > 0 and now < next_retry:
+        remaining = max(1, int(next_retry - now))
+        raise TranslationUnavailable(f"Gemini retry is scheduled in {remaining} seconds")
+
+    try:
+        translated = _PRE_FINAL_SCHEDULED_TRANSLATE_POST(post)
+        _translation_retry_clear(identity)
+        return translated
+    except Exception as exc:
+        now = time.time()
+        with _TRANSLATION_RETRY_LOCK:
+            values = _translation_retry_read()
+            current = dict(values.get(identity, {})) if identity else {}
+            attempts = max(int(current.get("attempts", 0) or 0), attempts) + 1
+            current.update({
+                "attempts": attempts,
+                "next_retry_at": now + _TRANSLATION_RETRY_INTERVAL_SECONDS,
+                "updated_at": now,
+                "username": str(getattr(post, "username", "") or ""),
+                "link": str(getattr(post, "link", "") or ""),
+                "last_error": short_error(exc, 500),
+                "exhausted": attempts >= _TRANSLATION_RETRY_MAX_ATTEMPTS,
+            })
+            if identity:
+                values[identity] = current
+                _translation_retry_write(values)
+        if attempts >= _TRANSLATION_RETRY_MAX_ATTEMPTS:
+            raise TranslationUnavailable("Gemini translation failed on all 3 attempts; post was not sent") from exc
+        raise TranslationUnavailable(
+            f"Gemini attempt {attempts}/3 failed; next attempt is scheduled in 3 minutes"
+        ) from exc
+
+
+# ---- Clickable tags only for the two literal phrases requested ----
+_FINAL_LITERAL_TODAY_BEFORE_RE = re.compile(r"(?<![#\w])היום\s+לפני(?![\w])", re.UNICODE)
+_FINAL_LITERAL_HWG_OUTPUT_RE = re.compile(
+    r"(?iu)(?<![#A-Za-z])(?:HERE[\s_\-–—,:.!]*WE[\s_\-–—,:.!]*GO|HEREWEGO)(?![A-Za-z])"
+)
+_FINAL_LITERAL_HWG_SOURCE_RE = re.compile(
+    r"(?iu)(?<![A-Za-z])(?:#\s*)?(?:HERE[\s_\-–—,:.!]*WE[\s_\-–—,:.!]*GO|HEREWEGO)(?![A-Za-z])"
+)
+
+
+def _final_normalize_historical_prefix(post: Post, value: str) -> str:
+    # Do not rewrite "ביום הזה", THROWBACK or any other wording.  Only the exact
+    # visible words "היום לפני" become the clickable Telegram hashtag.
+    return _FINAL_LITERAL_TODAY_BEFORE_RE.sub("#היום_לפני", str(value or ""))
+
+
+def _enforce_here_we_go_from_source(post: Post, translated: str) -> str:
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    source_has = bool(_FINAL_LITERAL_HWG_SOURCE_RE.search(source))
+    value = str(translated or "")
+    # Remove all generated/translated variants first.  Only a literal English
+    # source occurrence is allowed to create the clickable tag.
+    value = _HERE_WE_GO_OUTPUT_RE.sub("", value)
+    value = _FINAL_CLICKABLE_HWG_RE.sub("", value)
+    value = _FINAL_LITERAL_HWG_OUTPUT_RE.sub("", value)
+    if source_has:
+        source_match = _FINAL_LITERAL_HWG_SOURCE_RE.search(source)
+        # Put the tag where a literal output occurrence existed when possible;
+        # otherwise append it to the first logical line without changing layout.
+        raw_output = str(translated or "")
+        if _FINAL_LITERAL_HWG_OUTPUT_RE.search(raw_output):
+            value = _FINAL_LITERAL_HWG_OUTPUT_RE.sub("#HERE_WE_GO", raw_output, count=1)
+            value = _FINAL_LITERAL_HWG_OUTPUT_RE.sub("", value)
+        else:
+            lines = value.split("\n")
+            if lines:
+                lines[0] = lines[0].rstrip(" ,;:.!-") + " #HERE_WE_GO"
+                value = "\n".join(lines)
+            else:
+                value = "#HERE_WE_GO"
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"[ \t]+([,.;!?])", r"\1", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+
+# Manual/forced preparation follows the same Gemini-only retry policy.  It must
+# never publish Google Translate or raw source text after a translation failure.
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    return translate_post_for_send(post)
+
+# ====== END FINAL PRODUCTION RSS + TRANSLATION RETRY SAFETY PATCH ======
 
 if __name__ == "__main__":
     main()
