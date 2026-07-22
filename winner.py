@@ -25217,5 +25217,795 @@ def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[st
 # ====== END FINAL ACCEPTANCE LAYER ======
 
 
+
+# ====== FINAL PRODUCTION RELIABILITY PATCH — FOOTBALLTWEET / MEDIA / GEMINI (2026-07-22) ======
+# This final layer does not replace FEED_TEMPLATES, http_get_feed, fetch_feed,
+# fetch_posts for ordinary writers, or the old Gemini network request function.
+# It fixes only the selected-post fallbacks, precise tweet-media extraction and
+# the automatic translation retry scheduler.
+
+BOT_BUILD_ID = "winner-footballtweet-media-gemini-production-fix-2026-07-22"
+
+GEMINI_RETRY_SCHEDULE_STATE_KEY = "__gemini_retry_schedule_v2__"
+_GEMINI_RETRY_SCHEDULE_LOCK = RLock()
+
+_PROFILE_MEDIA_PATH_RE = re.compile(
+    r"(?:/profile_images/|/profile_banners/|/sticky/default_profile_images/|"
+    r"pbs\.twimg\.com/profile_|abs\.twimg\.com/)",
+    re.IGNORECASE,
+)
+_TWEET_PHOTO_PATH_RE = re.compile(
+    r"(?:pbs\.twimg\.com/media/|/pic/(?:orig/)?media(?:%2[fF]|/)|/media/[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif))",
+    re.IGNORECASE,
+)
+_VIDEO_THUMB_PATH_RE = re.compile(
+    r"(?:ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb|video_thumb)",
+    re.IGNORECASE,
+)
+
+
+def _real_tweet_photo_url(url: Any) -> bool:
+    value = html.unescape(str(url or "")).strip()
+    if not value.startswith(("http://", "https://")):
+        return False
+    lowered = value.casefold()
+    if _PROFILE_MEDIA_PATH_RE.search(lowered):
+        return False
+    if any(token in lowered for token in ("emoji", "favicon", "logo", "avatar", "default_profile")):
+        return False
+    if _VIDEO_THUMB_PATH_RE.search(lowered):
+        return False
+    if _TWEET_PHOTO_PATH_RE.search(value):
+        return True
+    # Non-X RSS proxies are accepted only when the URL itself explicitly points
+    # to a media asset, never merely because it ends in .jpg.
+    parsed = urllib.parse.urlparse(value)
+    path = urllib.parse.unquote(parsed.path or "")
+    return bool(re.search(r"/(?:pic/)?media/[^/]+\.(?:jpe?g|png|webp|gif)$", path, re.IGNORECASE))
+
+
+def _real_tweet_video_url(url: Any) -> bool:
+    value = html.unescape(str(url or "")).strip()
+    if not value.startswith(("http://", "https://")):
+        return False
+    lowered = value.casefold().split("?", 1)[0]
+    return bool("video.twimg.com" in lowered or lowered.endswith((".mp4", ".mov", ".webm", ".m3u8")))
+
+
+def _append_precise_media(images: list[str], videos: list[str], raw: Any, kind: str = "") -> None:
+    value = html.unescape(str(raw or "")).strip()
+    if not value.startswith(("http://", "https://")):
+        return
+    kind_l = str(kind or "").casefold()
+    if kind_l in {"video", "animated_gif", "gif"} or _real_tweet_video_url(value):
+        if _real_tweet_video_url(value):
+            videos.append(value)
+        return
+    if kind_l in {"photo", "image"} or _real_tweet_photo_url(value):
+        if _real_tweet_photo_url(value):
+            images.append(value)
+
+
+def _precise_tweet_media(node: Any) -> tuple[list[str], list[str]]:
+    """Extract only media attached to the tweet, never user/profile artwork."""
+    images: list[str] = []
+    videos: list[str] = []
+    if not isinstance(node, dict):
+        return images, videos
+
+    # Known tweet media containers used by X syndication, GraphQL, API v2,
+    # FxTwitter and VxTwitter. User/profile objects are deliberately excluded.
+    containers: list[Any] = []
+    for key in ("mediaDetails", "media_details", "photos", "media", "attachments"):
+        if key in node:
+            containers.append(node.get(key))
+    entities = node.get("entities")
+    if isinstance(entities, dict):
+        containers.append(entities.get("media"))
+    extended = node.get("extended_entities")
+    if isinstance(extended, dict):
+        containers.append(extended.get("media"))
+    legacy = node.get("legacy")
+    if isinstance(legacy, dict):
+        containers.append(legacy.get("extended_entities", {}).get("media") if isinstance(legacy.get("extended_entities"), dict) else None)
+        containers.append(legacy.get("entities", {}).get("media") if isinstance(legacy.get("entities"), dict) else None)
+    for key in ("video", "card"):
+        if key in node:
+            containers.append(node.get(key))
+
+    def walk(value: Any, inherited_kind: str = "") -> None:
+        if isinstance(value, list):
+            for item in value:
+                walk(item, inherited_kind)
+            return
+        if not isinstance(value, dict):
+            _append_precise_media(images, videos, value, inherited_kind)
+            return
+        kind = str(value.get("type") or value.get("media_type") or inherited_kind or "")
+        for key in ("media_url_https", "media_url", "url", "src"):
+            _append_precise_media(images, videos, value.get(key), kind)
+        # Syndication photos use url; video variants use src/url.
+        variants = value.get("variants")
+        if isinstance(variants, list):
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                content_type = str(variant.get("content_type") or variant.get("type") or kind)
+                _append_precise_media(images, videos, variant.get("url") or variant.get("src"), content_type)
+        video_info = value.get("video_info")
+        if isinstance(video_info, dict):
+            walk(video_info, "video")
+        for key in ("mediaDetails", "photos", "media"):
+            child = value.get(key)
+            if child is not None and child is not value:
+                walk(child, kind)
+
+    for container_value in containers:
+        walk(container_value)
+
+    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
+
+
+def _reliable_extract_media_urls(node: Any) -> tuple[list[str], list[str]]:
+    """Final precise extractor; profile images and channel logos are impossible."""
+    if isinstance(node, dict):
+        return _precise_tweet_media(node)
+    return [], []
+
+
+def _syndication_timeline_tweet_nodes(payload: Any):
+    page_props = payload
+    if isinstance(payload, dict):
+        page_props = ((payload.get("props") or {}).get("pageProps") if isinstance(payload.get("props"), dict) else None) or payload.get("pageProps") or payload
+    timeline = page_props.get("timeline") if isinstance(page_props, dict) else None
+    entries = timeline.get("entries") if isinstance(timeline, dict) else None
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        content = entry.get("content")
+        tweet = content.get("tweet") if isinstance(content, dict) else None
+        if isinstance(tweet, dict):
+            yield tweet
+
+
+def _syndication_timeline_posts(username: str, payload: Any, limit: int) -> list[Post]:
+    wanted = str(username or "").strip().lstrip("@").casefold()
+    merged: dict[str, Post] = {}
+    for tweet in _syndication_timeline_tweet_nodes(payload):
+        author = str(((tweet.get("user") or {}).get("screen_name") if isinstance(tweet.get("user"), dict) else "") or "").strip().lstrip("@")
+        if author and wanted and author.casefold() != wanted:
+            continue
+        tweet_id = str(tweet.get("id_str") or tweet.get("id") or "")
+        if not re.fullmatch(r"\d{15,22}", tweet_id):
+            continue
+        text_value = _reliable_normalize_x_text(str(tweet.get("full_text") or tweet.get("text") or ""))
+        if not text_value:
+            continue
+        images, videos = _precise_tweet_media(tweet)
+        link = str(tweet.get("permalink") or f"https://x.com/{username}/status/{tweet_id}")
+        if link.startswith("/"):
+            link = "https://x.com" + link
+        published_ts = 0.0
+        created_at = tweet.get("created_at")
+        if created_at:
+            try:
+                published_ts = parsedate_to_datetime(str(created_at)).timestamp()
+            except Exception:
+                published_ts = 0.0
+        if not published_ts:
+            published_ts = _reliable_snowflake_timestamp(tweet_id)
+        post = Post(
+            post_id=tweet_id,
+            username=username,
+            text=text_value,
+            link=link,
+            image_urls=images,
+            video_urls=videos,
+            has_video=bool(videos),
+            primary_has_video=bool(videos),
+            quoted_has_video=False,
+            quoted_author="",
+            quoted_text="",
+            published_ts=published_ts,
+            dedupe_ids=[tweet_id, f"{username}:{tweet_id}", f"{username}:{link}", post_content_signature(username, text_value, "")],
+            source_name="x-syndication-profile",
+        )
+        post.original_text = text_value
+        post.source_structure_available = True
+        post.exact_source_structure = True
+        post.exact_source_provider = "x-syndication-profile"
+        post.exact_media_checked = True
+        merged[tweet_id] = post
+    return sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)[:max(1, int(limit))]
+
+
+def _extract_next_data_payload(raw: str) -> dict[str, Any] | None:
+    match = re.search(
+        r"<script[^>]+id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
+        raw or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    try:
+        return json.loads(html.unescape(match.group(1)).strip())
+    except Exception:
+        return None
+
+
+_PRE_FINAL_SYNDICATION_PROFILE_POSTS = _reliable_syndication_profile_posts
+
+
+def _reliable_syndication_profile_posts(username: str, limit: int) -> list[Post]:
+    encoded = urllib.parse.quote(str(username or "").strip().lstrip("@"))
+    urls = [
+        f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{encoded}",
+        f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{encoded}?dnt=true&lang=en",
+    ]
+    last_error: Exception | None = None
+    for url in urls:
+        try:
+            request = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/json,*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+            })
+            with urllib.request.urlopen(request, timeout=max(5.0, RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            payload = _extract_next_data_payload(raw)
+            if payload:
+                posts = _syndication_timeline_posts(username, payload, limit)
+                if posts:
+                    return posts
+                # Keep the generic text parser as a schema-tolerant backup, but
+                # sanitize every media URL before exposing a post.
+                posts = _reliable_posts_from_profile_payload(username, payload)
+                for post in posts:
+                    post.image_urls = [u for u in post.image_urls if _real_tweet_photo_url(u)]
+                    post.video_urls = [u for u in post.video_urls if _real_tweet_video_url(u)]
+                    post.has_video = bool(post.video_urls)
+                    post.primary_has_video = bool(post.video_urls)
+                    post.exact_media_checked = True
+                if posts:
+                    return posts[:max(1, int(limit))]
+        except Exception as exc:
+            last_error = exc
+    # Preserve the previous parser as a final compatibility fallback.
+    try:
+        posts = _PRE_FINAL_SYNDICATION_PROFILE_POSTS(username, limit)
+        for post in posts:
+            post.image_urls = [u for u in post.image_urls if _real_tweet_photo_url(u)]
+            post.video_urls = [u for u in post.video_urls if _real_tweet_video_url(u)]
+            post.has_video = bool(post.video_urls)
+            post.primary_has_video = bool(post.video_urls)
+        return posts
+    except Exception as exc:
+        last_error = exc
+    if last_error:
+        logging.debug("Precise syndication profile reader failed safely for @%s: %s", username, short_error(last_error, 350))
+    return []
+
+
+def _base36_float(value: float, fractional_digits: int = 18) -> str:
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if not math.isfinite(value) or value < 0:
+        return ""
+    integer = int(value)
+    fraction = value - integer
+    if integer == 0:
+        int_text = "0"
+    else:
+        chars: list[str] = []
+        while integer:
+            integer, rem = divmod(integer, 36)
+            chars.append(alphabet[rem])
+        int_text = "".join(reversed(chars))
+    if fraction <= 0:
+        return int_text
+    chars = []
+    for _ in range(max(1, fractional_digits)):
+        fraction *= 36
+        digit = int(fraction)
+        chars.append(alphabet[digit])
+        fraction -= digit
+        if fraction <= 1e-15:
+            break
+    return int_text + "." + "".join(chars)
+
+
+def _syndication_tweet_token(tweet_id: str) -> str:
+    try:
+        raw = _base36_float((float(int(tweet_id)) / 1e15) * math.pi)
+        return re.sub(r"(?:0+|\.)", "", raw)
+    except Exception:
+        return ""
+
+
+def _fetch_syndication_tweet_result(tweet_id: str) -> dict[str, Any]:
+    token = _syndication_tweet_token(tweet_id)
+    if not token:
+        return {}
+    query = urllib.parse.urlencode({"id": tweet_id, "token": token, "lang": "en"})
+    url = f"https://cdn.syndication.twimg.com/tweet-result?{query}"
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://platform.twitter.com/",
+    })
+    with urllib.request.urlopen(request, timeout=max(4.0, float(RELIABLE_EXACT_POST_TIMEOUT_SECONDS))) as response:
+        payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    return payload if isinstance(payload, dict) else {}
+
+
+_PRE_FINAL_ACCEPTANCE_EXACT_DETAILS = _acceptance_fetch_exact_details
+
+
+def _acceptance_fetch_exact_details(post: Post) -> dict[str, Any]:
+    tweet_id = _acceptance_tweet_id(post)
+    if not tweet_id:
+        return {}
+    with _EXACT_POST_DETAILS_CACHE_LOCK:
+        cached = _EXACT_POST_DETAILS_CACHE.get(tweet_id)
+        if cached and time.time() - cached[0] <= EXACT_POST_DETAILS_CACHE_SECONDS:
+            return dict(cached[1])
+
+    parts = _reliable_tweet_parts(post) if "_reliable_tweet_parts" in globals() else tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+    username = (parts[0] if parts else str(getattr(post, "username", "") or "")).strip().lstrip("@")
+    token = (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    )
+    endpoints: list[tuple[str, Any]] = []
+    if token:
+        query = urllib.parse.urlencode({
+            "tweet.fields": "text,attachments",
+            "expansions": "attachments.media_keys",
+            "media.fields": "url,preview_image_url,type,variants",
+        })
+        endpoints.append(("x-api-v2", (f"https://api.x.com/2/tweets/{tweet_id}?{query}", {"Authorization": f"Bearer {token}", "User-Agent": "NetoSportBot/1.0", "Accept": "application/json"})))
+    endpoints.append(("x-syndication-result", None))
+    if username:
+        endpoints.extend([
+            ("fxtwitter", (f"https://api.fxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"})),
+            ("vxtwitter", (f"https://api.vxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"})),
+        ])
+
+    for provider, endpoint in endpoints:
+        try:
+            if provider == "x-syndication-result":
+                payload = _fetch_syndication_tweet_result(tweet_id)
+            else:
+                url, headers = endpoint
+                request = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(request, timeout=max(4.0, float(RELIABLE_EXACT_POST_TIMEOUT_SECONDS))) as response:
+                    payload = json.loads(response.read().decode("utf-8", errors="replace"))
+            node = _acceptance_exact_node(payload, tweet_id) or payload
+            if provider == "x-api-v2":
+                data = (payload or {}).get("data") or {}
+                text_value = _reliable_normalize_x_text(str(data.get("text") or ""))
+                images, videos = _acceptance_extract_official_media(payload)
+            else:
+                text_value = _reliable_normalize_x_text(str(
+                    (node.get("full_text") if isinstance(node, dict) else "")
+                    or (node.get("text") if isinstance(node, dict) else "")
+                    or _reliable_extract_single_tweet_text(payload)
+                    or ""
+                ))
+                images, videos = _precise_tweet_media(node if isinstance(node, dict) else payload)
+            images = [u for u in images if _real_tweet_photo_url(u)]
+            videos = [u for u in videos if _real_tweet_video_url(u)]
+            details = {
+                "text": text_value,
+                "images": list(dict.fromkeys(images)),
+                "videos": list(dict.fromkeys(videos)),
+                "provider": provider,
+                "media_verified": True,
+            }
+            if text_value or images or videos:
+                with _EXACT_POST_DETAILS_CACHE_LOCK:
+                    _EXACT_POST_DETAILS_CACHE[tweet_id] = (time.time(), dict(details))
+                return details
+        except Exception as exc:
+            logging.debug("Precise exact post enrichment %s failed safely for %s: %s", provider, tweet_id, short_error(exc, 260))
+
+    # Compatibility fallback, but never trust or expose profile artwork.
+    try:
+        details = dict(_PRE_FINAL_ACCEPTANCE_EXACT_DETAILS(post) or {})
+        details["images"] = [u for u in details.get("images", []) if _real_tweet_photo_url(u)]
+        details["videos"] = [u for u in details.get("videos", []) if _real_tweet_video_url(u)]
+        if details:
+            details["media_verified"] = True
+            return details
+    except Exception:
+        pass
+    return {}
+
+
+_PRE_FINAL_HYDRATE_EXACT = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    post = _PRE_FINAL_HYDRATE_EXACT(post, force=force)
+    if not isinstance(post, Post):
+        return post
+    try:
+        details = _acceptance_fetch_exact_details(post)
+    except Exception:
+        details = {}
+    if details:
+        text_value = str(details.get("text") or "").strip()
+        images = [u for u in details.get("images", []) if _real_tweet_photo_url(u)]
+        videos = [u for u in details.get("videos", []) if _real_tweet_video_url(u)]
+        if text_value:
+            post.text = text_value
+            post.original_text = text_value
+            post.source_structure_available = True
+            post.exact_source_structure = True
+        if details.get("media_verified"):
+            # This is the critical fix: verified absence means absence. Do not keep
+            # a stale RSS/profile image as a fake tweet attachment.
+            post.image_urls = list(dict.fromkeys(images))
+            post.exact_image_urls = list(post.image_urls)
+            post.video_urls = list(dict.fromkeys(videos))
+            post.exact_video_urls = list(post.video_urls)
+            post.has_video = bool(post.video_urls)
+            post.primary_has_video = bool(post.video_urls)
+            post.exact_media_checked = True
+        post.exact_source_provider = str(details.get("provider") or getattr(post, "exact_source_provider", "") or "")
+        post.exact_source_fetched_at = time.time()
+    else:
+        post.image_urls = [u for u in (getattr(post, "image_urls", []) or []) if _real_tweet_photo_url(u)]
+        post.video_urls = [u for u in (getattr(post, "video_urls", []) or []) if _real_tweet_video_url(u)]
+    return post
+
+
+_PRE_FINAL_SELECTED_POST_IMAGES = selected_post_images
+
+
+def selected_post_images(post: Post) -> list[str]:
+    _reliable_hydrate_exact_post(post)
+    if _acceptance_post_requires_video(post):
+        return []
+    images = [u for u in (getattr(post, "image_urls", []) or []) if _real_tweet_photo_url(u)]
+    images = list(dict.fromkeys(images))[:MAX_IMAGES_PER_POST]
+    if len(images) <= 1:
+        return images
+    text_value = clean_for_ai_translation(html.unescape("\n".join([post.text or "", post.quoted_text or ""])))
+    if _matches_any(FINAL_ONLY_STRICT_PATTERNS, text_value) or _matches_any(FINAL_OR_NEAR_FINAL_PATTERNS, text_value):
+        return images[:1]
+    return images
+
+
+def _special_fact_has_media(post: Post) -> bool:
+    _reliable_hydrate_exact_post(post)
+    return bool(selected_post_images(post) or post.video_urls or post.has_video or post.primary_has_video or post.quoted_has_video)
+
+
+_PRE_FINAL_FOOTBALL_FACTLY_FILTER = football_factly_filter_issue
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    post = next((value for value in list(parts) + list(kwargs.values()) if isinstance(value, Post)), None)
+    if post is not None:
+        _reliable_hydrate_exact_post(post)
+    return _PRE_FINAL_FOOTBALL_FACTLY_FILTER(*parts, **kwargs)
+
+
+def football_factly_has_image_or_video(*parts: Any, **kwargs: Any) -> bool:
+    post = next((value for value in list(parts) + list(kwargs.values()) if isinstance(value, Post)), None)
+    if post is not None:
+        return _special_fact_has_media(post)
+    return False
+
+
+_PRE_FINAL_DIRECT_PROFILE_POSTS = _reliable_direct_profile_posts
+
+
+def _reliable_direct_profile_posts(username: str, limit: int = 30, force: bool = False) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+        cached = _RELIABLE_DIRECT_PROFILE_CACHE.get(key)
+        if not force and cached and time.time() - cached[0] <= RELIABLE_DIRECT_PROFILE_CACHE_SECONDS:
+            return list(cached[1][:max(1, int(limit))])
+    result: list[Post] = []
+    try:
+        result = _reliable_official_x_profile_posts(canonical, limit=max(20, int(limit)))
+    except Exception as exc:
+        logging.debug("Official X profile reader failed safely for @%s: %s", canonical, short_error(exc, 300))
+    if not result:
+        try:
+            result = _reliable_syndication_profile_posts(canonical, limit=max(20, int(limit)))
+        except Exception as exc:
+            logging.debug("Precise syndication reader failed safely for @%s: %s", canonical, short_error(exc, 300))
+    for post in result:
+        post.image_urls = [u for u in (post.image_urls or []) if _real_tweet_photo_url(u)]
+        post.video_urls = [u for u in (post.video_urls or []) if _real_tweet_video_url(u)]
+        post.has_video = bool(post.video_urls)
+        post.primary_has_video = bool(post.video_urls)
+        post.exact_media_checked = True
+    if result:
+        with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+            _RELIABLE_DIRECT_PROFILE_CACHE[key] = (time.time(), list(result))
+        try:
+            _stable_rss_remember(canonical, result)
+        except Exception:
+            pass
+    return result[:max(1, int(limit))]
+
+
+_PRE_FINAL_FOOTBALLTWEET_RSS_ONLY = _PRE_RELIABLE_FOOTBALLTWEET_ISOLATED
+
+
+def _fetch_footballtweet_posts_isolated(limit: int = 25) -> list[Post]:
+    """Footballtweet: unchanged RSS first, precise X syndication fallback second."""
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+    merged: dict[str, Post] = {}
+    rss_errors: list[str] = []
+    try:
+        _reliable_merge_posts(merged, _PRE_FINAL_FOOTBALLTWEET_RSS_ONLY(limit=limit), canonical)
+    except Exception as exc:
+        rss_errors.append(short_error(exc, 300))
+    # The account's public RSS mirrors can all fail while the X profile remains
+    # healthy. Direct profile reading is therefore always allowed to fill missing
+    # rows for this one account, without changing any shared RSS source.
+    if len(merged) < max(1, min(10, int(limit))):
+        try:
+            direct = _reliable_direct_profile_posts(canonical, limit=max(30, int(limit)), force=not bool(merged))
+            _reliable_merge_posts(merged, direct, canonical)
+        except Exception as exc:
+            rss_errors.append("direct_x: " + short_error(exc, 300))
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+        _FOOTBALLTWEET_RSS_LAST_STATUS.update({
+            "ok": True,
+            "checked_at": time.time(),
+            "posts": len(ordered),
+            "errors": rss_errors[-8:],
+            "timeouts": [],
+            "used_cache": False,
+            "direct_x_used": any(str(getattr(p, "source_name", "")).startswith("x-") for p in ordered),
+        })
+        return ordered[:max(1, int(limit))]
+    cached = _footballtweet_cached_posts_any_age(limit=limit)
+    _FOOTBALLTWEET_RSS_LAST_STATUS.update({
+        "ok": False,
+        "checked_at": time.time(),
+        "posts": len(cached),
+        "errors": rss_errors[-8:],
+        "timeouts": [],
+        "used_cache": bool(cached),
+        "direct_x_used": False,
+    })
+    return cached
+
+
+def _gemini_combined_cache_key(post: Post) -> str:
+    include_quote = bool(not is_self_quote(post) and post.quoted_text and TRANSLATE_QUOTED_POSTS)
+    main_source = clean_for_ai_translation(post.text) or clean_before_translation(post.text)
+    quote_source = clean_for_ai_translation(post.quoted_text) if include_quote and post.quoted_text else ""
+    author_source = clean_before_translation(post.quoted_author) if include_quote and post.quoted_author else ""
+    material = json.dumps({"m": main_source, "q": quote_source, "a": author_source}, ensure_ascii=False, sort_keys=True)
+    return "combined-gemini-only-v4-full:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _clear_bad_gemini_cache_for_retry(post: Post) -> None:
+    global TRANSLATION_CACHE_DIRTY
+    try:
+        key = _gemini_combined_cache_key(post)
+        if key in TRANSLATION_CACHE:
+            TRANSLATION_CACHE.pop(key, None)
+            TRANSLATION_CACHE_DIRTY = True
+    except Exception:
+        pass
+
+
+def _gemini_retry_schedule(state: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    value = state.get(GEMINI_RETRY_SCHEDULE_STATE_KEY, {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _store_gemini_retry_schedule(state: dict[str, Any] | None, schedule: dict[str, Any]) -> None:
+    if not isinstance(state, dict):
+        return
+    ordered = sorted(
+        schedule.items(),
+        key=lambda pair: float((pair[1] or {}).get("updated_at", 0.0) if isinstance(pair[1], dict) else 0.0),
+        reverse=True,
+    )[:1000]
+    state[GEMINI_RETRY_SCHEDULE_STATE_KEY] = dict(ordered)
+
+
+# Prefer current Flash translation models before Pro/legacy fallbacks. The old
+# Gemini request implementation, key rotation, cooldowns and cache stay intact;
+# this only prevents an automatic retry from needlessly jumping to a Pro model
+# when a current Flash fallback is available.
+_PRE_PRODUCTION_GEMINI_MODELS_FOR_OPERATION = gemini_models_for_operation
+_GEMINI_TRANSLATION_MODEL_PRIORITY = (
+    str(GEMINI_FAST_MODEL or "").strip(),
+    str(GEMINI_MODEL or "").strip(),
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-2.5-pro",
+)
+
+
+def gemini_models_for_operation() -> list[str]:
+    now = time.time()
+    configured = list(gemini_translation_model_candidates() or [])
+    by_key = {str(model).strip(): str(model).strip() for model in configured if str(model).strip()}
+    ordered: list[str] = []
+    for model in _GEMINI_TRANSLATION_MODEL_PRIORITY:
+        if model and model in by_key and model not in ordered:
+            ordered.append(model)
+    for model in configured:
+        value = str(model or "").strip()
+        if value and value not in GEMINI_SHUTDOWN_MODELS and value not in ordered:
+            ordered.append(value)
+    available = [model for model in ordered if GEMINI_MODEL_COOLDOWNS.get(model, 0.0) <= now]
+    return (available or ordered[:1])[:1]
+
+
+def _single_old_send_attempt(post: Post, reply_message_ids: dict[str, int] | None, state: dict[str, Any] | None) -> dict[str, Any]:
+    # This is the original full send path with the old Gemini request function.
+    return _ACCEPTANCE_PREVIOUS_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Non-blocking persistent 1/3 Gemini retries, exactly three minutes apart."""
+    _reliable_hydrate_exact_post(post, force=True)
+    identity = _acceptance_retry_identity(post)
+
+    media_reason = _acceptance_media_block_reason(post)
+    if media_reason:
+        return {
+            "sent": False,
+            "mode": f"pre_send_blocked:{media_reason}",
+            "source_name": getattr(post, "source_name", ""),
+            "total_seconds": 0.0,
+        }
+
+    now = time.time()
+    with _GEMINI_RETRY_SCHEDULE_LOCK:
+        schedule = _gemini_retry_schedule(state)
+        entry = dict(schedule.get(identity, {}) or {}) if identity else {}
+        attempts_done = int(entry.get("attempts_done", 0) or 0)
+        next_retry_at = float(entry.get("next_retry_at", 0.0) or 0.0)
+        exhausted = bool(entry.get("exhausted", False))
+        if bool(entry.get("sent", False)):
+            return {
+                "sent": False,
+                "mode": "translation_unavailable_retry_already_succeeded_no_duplicate",
+                "translation_attempts": attempts_done,
+                "source_name": getattr(post, "source_name", ""),
+                "total_seconds": 0.0,
+            }
+        in_progress = bool(entry.get("attempt_in_progress", False))
+        in_progress_since = float(entry.get("attempt_started_at", entry.get("updated_at", 0.0)) or 0.0)
+        in_progress_stale_after = max(60.0, float(GEMINI_TRANSLATION_TIMEOUT_SECONDS) * 2.0 + 30.0)
+        if in_progress and now - in_progress_since < in_progress_stale_after:
+            return {
+                "sent": False,
+                "mode": "translation_unavailable_retry_in_progress",
+                "translation_attempts": attempts_done,
+                "retry_after_seconds": max(1, int(in_progress_stale_after - (now - in_progress_since))),
+                "source_name": getattr(post, "source_name", ""),
+                "total_seconds": 0.0,
+            }
+        if exhausted or attempts_done >= AUTO_GEMINI_RETRY_ATTEMPTS:
+            return {
+                "sent": False,
+                "mode": "translation_unavailable_retries_exhausted_no_fourth_attempt",
+                "translation_attempts": AUTO_GEMINI_RETRY_ATTEMPTS,
+                "source_name": getattr(post, "source_name", ""),
+                "total_seconds": 0.0,
+            }
+        if attempts_done > 0 and now < next_retry_at:
+            return {
+                "sent": False,
+                "mode": "translation_unavailable_retry_waiting",
+                "translation_attempts": attempts_done,
+                "retry_after_seconds": max(0, int(next_retry_at - now)),
+                "source_name": getattr(post, "source_name", ""),
+                "total_seconds": 0.0,
+            }
+        # Reserve this due attempt before releasing the lock, preventing two scan
+        # workers from spending Gemini on the same post simultaneously. A stale
+        # reservation is recoverable after the translation timeout window.
+        if identity:
+            entry["attempt_in_progress"] = True
+            entry["attempt_started_at"] = now
+            entry["updated_at"] = now
+            schedule[identity] = entry
+            _store_gemini_retry_schedule(state, schedule)
+
+    if attempts_done > 0:
+        _clear_bad_gemini_cache_for_retry(post)
+    result = _single_old_send_attempt(post, reply_message_ids, state)
+    if result.get("sent"):
+        with _GEMINI_RETRY_SCHEDULE_LOCK:
+            schedule = _gemini_retry_schedule(state)
+            entry = dict(schedule.get(identity, {}) or {})
+            entry.update({
+                "attempts_done": attempts_done + 1,
+                "sent": True,
+                "exhausted": False,
+                "attempt_in_progress": False,
+                "next_retry_at": 0.0,
+                "completed_at": time.time(),
+                "updated_at": time.time(),
+                "username": str(getattr(post, "username", "") or ""),
+                "link": str(getattr(post, "link", "") or ""),
+            })
+            if identity:
+                schedule[identity] = entry
+            _store_gemini_retry_schedule(state, schedule)
+        result["translation_attempt"] = attempts_done + 1
+        return result
+    if not _acceptance_translation_failure_mode(result):
+        with _GEMINI_RETRY_SCHEDULE_LOCK:
+            schedule = _gemini_retry_schedule(state)
+            schedule.pop(identity, None)
+            _store_gemini_retry_schedule(state, schedule)
+        return result
+
+    attempts_done += 1
+    with _GEMINI_RETRY_SCHEDULE_LOCK:
+        schedule = _gemini_retry_schedule(state)
+        entry = dict(schedule.get(identity, {}) or {})
+        entry.update({
+            "attempts_done": attempts_done,
+            "updated_at": time.time(),
+            "username": str(getattr(post, "username", "") or ""),
+            "link": str(getattr(post, "link", "") or ""),
+            "last_mode": str(result.get("mode", "") or ""),
+            "attempt_in_progress": False,
+        })
+        if attempts_done >= AUTO_GEMINI_RETRY_ATTEMPTS:
+            entry["exhausted"] = True
+            entry["next_retry_at"] = 0.0
+            mode = "translation_unavailable_retries_exhausted_no_fourth_attempt"
+        else:
+            entry["exhausted"] = False
+            entry["next_retry_at"] = time.time() + max(0, AUTO_GEMINI_RETRY_WAIT_SECONDS)
+            mode = "translation_unavailable_retry_scheduled"
+        if identity:
+            schedule[identity] = entry
+        _store_gemini_retry_schedule(state, schedule)
+    logging.warning(
+        "Gemini automatic translation attempt %s/%s failed internally for @%s; next action=%s",
+        attempts_done,
+        AUTO_GEMINI_RETRY_ATTEMPTS,
+        getattr(post, "username", ""),
+        mode,
+    )
+    output = dict(result or {})
+    output.update({
+        "sent": False,
+        "mode": mode,
+        "translation_attempts": attempts_done,
+    })
+    return output
+
+# ====== END FINAL PRODUCTION RELIABILITY PATCH ======
+
+
+
 if __name__ == "__main__":
     main()
