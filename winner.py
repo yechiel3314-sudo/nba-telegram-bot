@@ -22946,5 +22946,615 @@ def process_control_update(update: dict[str, Any]) -> None:
 
 # ====== END FINAL FOOTBALLTWEET RSS ISOLATION + ONE-MESSAGE CONTROL RESULTS ======
 
+
+# ====== FINAL STABLE SHARED RSS + RELIABLE TEN-LATEST + SOURCE-LAYOUT PATCH (2026-07-22) ======
+# This final compatibility layer repairs the shared RSS path used by all existing
+# writers while preserving Footballtweet's already-working isolated source.  It
+# never renames or resets persistent files/keys.  Network failures, parser errors
+# and editorial failures remain isolated per account and per mirror.
+
+BOT_BUILD_ID = "winner-stable-shared-rss-ten-layout-finance-2026-07-22"
+
+from concurrent.futures import FIRST_COMPLETED as _RSS_FIRST_COMPLETED
+from concurrent.futures import wait as _rss_wait
+
+_STABLE_RSS_MEMORY: dict[str, tuple[float, list[Post]]] = {}
+_STABLE_RSS_MEMORY_LOCK = RLock()
+_STABLE_RSS_CACHE_MAX_SECONDS = int(os.environ.get("STABLE_RSS_CACHE_MAX_SECONDS", str(48 * 60 * 60)))
+_STABLE_RSS_BATCH_TIMEOUT_SECONDS = float(os.environ.get("STABLE_RSS_BATCH_TIMEOUT_SECONDS", "14"))
+_STABLE_RSS_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("STABLE_RSS_REQUEST_TIMEOUT_SECONDS", "8"))
+_STABLE_RSS_MAX_RESULTS = int(os.environ.get("STABLE_RSS_MAX_RESULTS", "60"))
+_STABLE_RSS_HOST_ORDER = (
+    "twiiit.com",
+    "lightbrd.com",
+    "rsshub.rssforever.com",
+    "nitter.net",
+    "rsshub.app",
+)
+
+
+def _stable_rss_identity(post: Post) -> str:
+    return str(
+        getattr(post, "post_id", "")
+        or getattr(post, "link", "")
+        or post_content_signature(
+            getattr(post, "username", ""),
+            getattr(post, "text", ""),
+            getattr(post, "quoted_text", ""),
+        )
+    ).strip()
+
+
+def _stable_rss_post_text(post: Post) -> str:
+    candidates = [
+        str(getattr(post, "original_text", "") or ""),
+        str(getattr(post, "text", "") or ""),
+    ]
+    raw_html = str(getattr(post, "raw_source_html", "") or "")
+    if raw_html:
+        try:
+            candidates.append(_html_to_preserved_source_text(raw_html))
+        except Exception:
+            candidates.append(clean_text(raw_html))
+    for candidate in candidates:
+        value = clean_for_ai_translation(html.unescape(candidate or "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def _stable_rss_username_variants(username: str) -> list[str]:
+    canonical = str(username or "").strip().lstrip("@")
+    variants: list[str] = [canonical]
+    try:
+        variants.extend(_control_rss_username_variants(canonical) or [])
+    except Exception:
+        pass
+    if value_contains_football_factly(canonical):
+        variants.extend([FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, "footballfactly"])
+    elif value_contains_optajoe(canonical):
+        variants.extend([OPTAJOE_DEFAULT_ACTIVE_USERNAME, "optajoe"])
+    elif value_contains_footballtweet(canonical):
+        variants.extend([FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, "footballtweet", "FootballTweet"])
+    elif canonical:
+        variants.extend([canonical.casefold()])
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in variants:
+        value = str(item or "").strip().lstrip("@")
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            result.append(value)
+    return result[:4]
+
+
+def _stable_rss_templates() -> list[str]:
+    templates = list(dict.fromkeys(active_feed_templates()))
+    def rank(template: str) -> tuple[int, str]:
+        host = feed_source_name(template)
+        for index, preferred in enumerate(_STABLE_RSS_HOST_ORDER):
+            if preferred in host:
+                return index, host
+        return len(_STABLE_RSS_HOST_ORDER), host
+    return sorted(templates, key=rank)
+
+
+def http_get_feed(url: str, timeout: int = 8) -> bytes:
+    """Stable RSS GET: retry the exact URL, never append unsupported query data."""
+    effective_timeout = max(5.0, float(timeout or _STABLE_RSS_REQUEST_TIMEOUT_SECONDS))
+    last_error: Exception | None = None
+    attempts = max(2, int(FEED_HTTP_RETRIES or 1))
+    for attempt in range(1, attempts + 1):
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            "Accept-Encoding": "identity",
+        }
+        if attempt > 1:
+            headers.update({"Cache-Control": "no-cache", "Pragma": "no-cache"})
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=effective_timeout) as response:
+                payload = response.read()
+            probe = payload[:4096].lstrip().lower()
+            if not payload or not any(token in probe for token in (b"<?xml", b"<rss", b"<feed")):
+                raise RuntimeError("RSS endpoint returned an empty or non-XML response")
+            return payload
+        except Exception as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(min(1.2, 0.35 * attempt))
+    raise RuntimeError(f"RSS GET failed: {url}. Last error: {short_error(last_error, 500)}")
+
+
+def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
+    """Collect every completed mirror safely instead of losing late successes."""
+    templates = list(dict.fromkeys(feed_templates or []))
+    if not templates:
+        return [], [], []
+    merged: dict[str, Post] = {}
+    errors: list[str] = []
+    timeouts: list[str] = []
+    workers = max(1, min(len(templates), max(2, MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)))
+    executor = ThreadPoolExecutor(max_workers=workers)
+    future_to_template = {executor.submit(fetch_feed, username, template): template for template in templates}
+    pending = set(future_to_template)
+    deadline = time.monotonic() + max(5.0, _STABLE_RSS_BATCH_TIMEOUT_SECONDS, FEED_COLLECTION_TIMEOUT_SECONDS)
+    try:
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, pending = _rss_wait(pending, timeout=min(1.0, remaining), return_when=_RSS_FIRST_COMPLETED)
+            if not done:
+                continue
+            for future in done:
+                template = future_to_template[future]
+                source = feed_source_name(template)
+                try:
+                    posts = future.result() or []
+                except Exception as exc:
+                    errors.append(f"{source}: {type(exc).__name__}: {short_error(exc, 350)}")
+                    continue
+                for post in posts:
+                    if not isinstance(post, Post):
+                        continue
+                    try:
+                        _ensure_post_original_structure(post)
+                    except Exception:
+                        pass
+                    identity = _stable_rss_identity(post)
+                    if identity and identity not in merged:
+                        merged[identity] = post
+        for future in pending:
+            template = future_to_template[future]
+            timeouts.append(feed_source_name(template))
+            future.cancel()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return ordered, errors, list(dict.fromkeys(timeouts))
+
+
+def _stable_rss_merge(target: dict[str, Post], posts: Any, canonical: str) -> None:
+    for post in posts or []:
+        if not isinstance(post, Post):
+            continue
+        try:
+            _ensure_post_original_structure(post)
+        except Exception:
+            pass
+        post.username = canonical
+        if not _stable_rss_post_text(post):
+            continue
+        identity = _stable_rss_identity(post)
+        if identity and identity not in target:
+            target[identity] = post
+
+
+def _stable_rss_network_fetch(username: str, limit: int = 30, exhaustive: bool = False) -> tuple[list[Post], dict[str, Any]]:
+    canonical = str(username or "").strip().lstrip("@")
+    templates = _stable_rss_templates()
+    diagnostics: dict[str, Any] = {"errors": [], "timeouts": [], "sources": {}, "variants": []}
+    merged: dict[str, Post] = {}
+    # Preferred mirrors first; exhaustive control lookups also merge the remaining mirrors.
+    batches = [templates[:3], templates[3:]] if len(templates) > 3 else [templates]
+    for variant in _stable_rss_username_variants(canonical):
+        diagnostics["variants"].append(variant)
+        for batch_index, batch in enumerate(batches):
+            if not batch:
+                continue
+            posts, errors, timeouts = collect_posts_from_feed_templates(variant, batch)
+            diagnostics["errors"].extend(errors)
+            diagnostics["timeouts"].extend(timeouts)
+            before = len(merged)
+            _stable_rss_merge(merged, posts, canonical)
+            diagnostics["sources"][f"{variant}:batch{batch_index + 1}"] = len(merged) - before
+            if not exhaustive and merged:
+                break
+            if exhaustive and len(merged) >= max(10, limit):
+                # Continue with another username variant only when it may reveal older rows.
+                continue
+        if not exhaustive and merged:
+            break
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    diagnostics["returned_network"] = len(ordered)
+    return ordered[:max(1, min(_STABLE_RSS_MAX_RESULTS, int(limit)))], diagnostics
+
+
+def _stable_rss_cached_posts(username: str, limit: int = 60) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    merged: dict[str, Post] = {}
+    with _STABLE_RSS_MEMORY_LOCK:
+        saved = _STABLE_RSS_MEMORY.get(canonical.casefold())
+        if saved and time.time() - saved[0] <= _STABLE_RSS_CACHE_MAX_SECONDS:
+            _stable_rss_merge(merged, saved[1], canonical)
+    try:
+        _stable_rss_merge(merged, _control_cached_posts(canonical), canonical)
+    except Exception:
+        pass
+    try:
+        _stable_rss_merge(merged, _ten_history_load(canonical), canonical)
+    except Exception:
+        pass
+    try:
+        _stable_rss_merge(merged, _ten_history_collect_existing_state_posts(canonical), canonical)
+    except Exception:
+        pass
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return ordered[:max(1, int(limit))]
+
+
+def _stable_rss_remember(username: str, posts: list[Post]) -> None:
+    if not posts:
+        return
+    canonical = str(username or "").strip().lstrip("@")
+    with _STABLE_RSS_MEMORY_LOCK:
+        _STABLE_RSS_MEMORY[canonical.casefold()] = (time.time(), list(posts[:_STABLE_RSS_MAX_RESULTS]))
+    try:
+        _remember_control_rss_posts(canonical, posts)
+    except Exception:
+        pass
+    try:
+        _ten_history_save(canonical, posts)
+    except Exception as exc:
+        logging.debug("Stable RSS history save skipped for @%s: %s", canonical, short_error(exc, 260))
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    if value_contains_footballtweet(canonical):
+        # Keep the source-local path that was confirmed working in production.
+        return _fetch_footballtweet_posts_isolated(limit=max(25, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    try:
+        posts, diagnostics = _stable_rss_network_fetch(
+            canonical,
+            limit=max(30, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK),
+            exhaustive=False,
+        )
+    except Exception as exc:
+        posts, diagnostics = [], {"errors": [f"network: {short_error(exc, 400)}"], "timeouts": []}
+    if posts:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+        _stable_rss_remember(canonical, posts)
+        return posts
+    failures = FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) + 1
+    FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
+    cached = _stable_rss_cached_posts(canonical, limit=max(30, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    if failures == 1 or failures % 20 == 0:
+        logging.warning(
+            "RSS @%s returned no fresh rows; using %s cached/history rows. errors=%s timeouts=%s",
+            canonical,
+            len(cached),
+            "; ".join((diagnostics.get("errors") or [])[:4]),
+            ", ".join((diagnostics.get("timeouts") or [])[:4]),
+        )
+    return cached
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    started = time.perf_counter()
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "")
+    try:
+        posts = fetch_posts(canonical)
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        return canonical, posts
+    except Exception as exc:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        logging.exception("Stable RSS fetch failed safely for @%s: %s", canonical, exc)
+        return canonical, _stable_rss_cached_posts(canonical, limit=30)
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    merged: dict[str, Post] = {}
+    _stable_rss_merge(merged, _stable_rss_cached_posts(canonical, limit=max(60, limit * 4)), canonical)
+    try:
+        network, _diagnostics = _stable_rss_network_fetch(canonical, limit=max(60, limit * 4), exhaustive=True)
+        _stable_rss_merge(merged, network, canonical)
+    except Exception as exc:
+        logging.debug("Control RSS exhaustive lookup failed safely for @%s: %s", canonical, short_error(exc, 400))
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    if ordered:
+        _stable_rss_remember(canonical, ordered)
+    return ordered[:max(1, int(limit))]
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    """Always exhaust all safe readers and return ten real posts whenever available."""
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    requested = max(1, int(limit))
+    merged: dict[str, Post] = {}
+    diagnostics: dict[str, Any] = {"sources": {}, "errors": [], "requested": requested}
+
+    before = len(merged)
+    _stable_rss_merge(merged, _stable_rss_cached_posts(canonical, limit=100), canonical)
+    diagnostics["sources"]["cache_and_history"] = len(merged) - before
+
+    try:
+        network, network_diag = _stable_rss_network_fetch(canonical, limit=100, exhaustive=True)
+        before = len(merged)
+        _stable_rss_merge(merged, network, canonical)
+        diagnostics["sources"]["all_rss_mirrors"] = len(merged) - before
+        diagnostics["errors"].extend((network_diag.get("errors") or [])[:12])
+        diagnostics["timeouts"] = (network_diag.get("timeouts") or [])[:12]
+    except Exception as exc:
+        diagnostics["errors"].append(f"all_rss_mirrors: {short_error(exc, 350)}")
+
+    # Re-read durable state after the network sweep because another worker may have
+    # saved rows while this button was running.
+    try:
+        before = len(merged)
+        _stable_rss_merge(merged, _ten_history_load(canonical), canonical)
+        _stable_rss_merge(merged, _ten_history_collect_existing_state_posts(canonical), canonical)
+        diagnostics["sources"]["durable_state_second_pass"] = len(merged) - before
+    except Exception as exc:
+        diagnostics["errors"].append(f"durable_state: {short_error(exc, 250)}")
+
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    # Never waste a visible history slot on an empty RSS row.
+    ordered = [post for post in ordered if _stable_rss_post_text(post)]
+    diagnostics["after_dedupe"] = len(ordered)
+    diagnostics["returned"] = min(requested, len(ordered))
+    LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diagnostics
+    if ordered:
+        _stable_rss_remember(canonical, ordered)
+    return ordered[:requested]
+
+
+_PRE_STABLE_TRANSLATE_HISTORY_POSTS_PARALLEL = _translate_history_posts_parallel
+
+
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    results = _PRE_STABLE_TRANSLATE_HISTORY_POSTS_PARALLEL(posts)
+    fixed: list[str] = []
+    for index, post in enumerate(posts):
+        value = str(results[index] if index < len(results) else "").strip()
+        if not value or value == "אין טקסט זמין":
+            value = _stable_rss_post_text(post)
+        fixed.append(value or "הפוסט התקבל ללא טקסט קריא")
+    return fixed
+
+
+# ----- Hard block for finance/investment content unrelated to football reporting -----
+_NON_FOOTBALL_FINANCE_RE = re.compile(
+    r"שוק\s+ההון|בורס(?:ה|ות)|מני(?:ה|ות)|תיק\s+השקעות|ייעוץ\s+השקעות|"
+    r"קריפטו|ביטקוין|אתריום|מטבע(?:ות)?\s+דיגיטל(?:י|יים)|פורקס|אג[\"״']?ח|"
+    r"דיבידנד|תשוא(?:ה|ות)|ריבית\s+(?:בנק|משכנת|שוק)|מסחר\s+(?:יומי|במניות)|"
+    r"stock\s+market|stocks?\b|shares?\s+(?:rose|fell|trading|price)|investment\s+portfolio|"
+    r"financial\s+advice|crypto(?:currency)?|bitcoin|ethereum|forex|dividends?|bond\s+yields?|"
+    r"interest\s+rates?|day\s+trading|market\s+capitali[sz]ation",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _nonfootball_finance_issue(post: Post) -> bool:
+    text = html.unescape("\n".join([
+        _post_original_text(_ensure_post_original_structure(post), quoted=False),
+        _post_original_text(post, quoted=True),
+    ]))
+    return bool(_NON_FOOTBALL_FINANCE_RE.search(text))
+
+
+_PRE_FINAL_FINANCE_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    try:
+        if _nonfootball_finance_issue(post):
+            return "nonfootball_finance_or_investment"
+    except Exception as exc:
+        logging.debug("Finance safety check failed without touching RSS: %s", short_error(exc, 260))
+    return _PRE_FINAL_FINANCE_PRE_SEND(post)
+
+
+_PRE_FINAL_FINANCE_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    if str(reason or "") == "nonfootball_finance_or_investment":
+        return "תוכן פיננסי, השקעות, שוק ההון או קריפטו — לא דיווח כדורגל"
+    return _PRE_FINAL_FINANCE_HEBREW_REASON(reason)
+
+
+# ----- Exact source-driven layout: preserve real paragraphs, remove broken words/names -----
+_PRE_EXACT_SOURCE_RESTORE_LAYOUT = _restore_source_layout
+
+
+def _source_real_paragraph_blocks(post: Post, quoted: bool = False) -> list[str]:
+    source = _post_original_text(post, quoted=quoted).replace("\r\n", "\n").replace("\r", "\n")
+    source = _attach_orphan_emoji_lines(source)
+    # Blank rows are reliable paragraph boundaries. Single rows are retained only
+    # for lists/headings later; ordinary prose rows are visual/RSS noise.
+    return [block.strip() for block in re.split(r"\n{2,}", source) if block.strip()]
+
+
+def _join_incomplete_paragraph_boundaries(value: str) -> str:
+    blocks = [block.strip() for block in re.split(r"\n{2,}", str(value or "")) if block.strip()]
+    if not blocks:
+        return ""
+    result = [blocks[0]]
+    for block in blocks[1:]:
+        previous = result[-1].rstrip()
+        next_block = block.lstrip()
+        previous_plain = re.sub(r"<[^>]+>", "", previous).strip()
+        next_plain = re.sub(r"<[^>]+>", "", next_block).strip()
+        previous_is_list = bool(_LIST_LINE_RE.match(previous_plain.splitlines()[-1] if previous_plain else ""))
+        next_is_list = bool(_LIST_LINE_RE.match(next_plain.splitlines()[0] if next_plain else ""))
+        terminal = bool(re.search(r"[.!?…][\"'”׳״)]?$", previous_plain))
+        heading_to_list = previous_plain.endswith(":") and next_is_list
+        # A paragraph may never end in the middle of a name or grammatical clause.
+        incomplete = not terminal and not previous_is_list and not next_is_list and not heading_to_list
+        if incomplete:
+            result[-1] = previous + " " + next_block
+        else:
+            result.append(block)
+    return "\n\n".join(result)
+
+
+def _collapse_prose_single_rows(block: str) -> str:
+    lines = [line.strip() for line in str(block or "").splitlines() if line.strip()]
+    if len(lines) <= 1:
+        return lines[0] if lines else ""
+    result: list[str] = []
+    for line in lines:
+        is_list = bool(_LIST_LINE_RE.match(line))
+        if not result:
+            result.append(line)
+            continue
+        previous = result[-1]
+        previous_is_list = bool(_LIST_LINE_RE.match(previous))
+        if is_list or previous_is_list or previous.endswith(":") and is_list:
+            result.append(line)
+        else:
+            result[-1] = previous.rstrip() + " " + line.lstrip()
+    return "\n".join(result)
+
+
+def _restore_source_layout(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _PRE_EXACT_SOURCE_RESTORE_LAYOUT(post, translated, quoted=quoted)
+    source_blocks = _source_real_paragraph_blocks(post, quoted=quoted)
+    value = _join_incomplete_paragraph_boundaries(value)
+    output_blocks = [block.strip() for block in re.split(r"\n{2,}", value) if block.strip()]
+
+    if len(source_blocks) <= 1:
+        # No real blank row in X/RSS: do not let Gemini or RSS create paragraphs.
+        value = _collapse_prose_single_rows("\n".join(output_blocks))
+    else:
+        # Keep at most the genuine source paragraph count and remove single-row
+        # breaks inside names/clauses, e.g. "Alejandro\nGarnacho".
+        output_blocks = _merge_blocks_to_count(output_blocks, len(source_blocks))
+        value = "\n\n".join(_collapse_prose_single_rows(block) for block in output_blocks)
+
+    value = _compact_lists_and_spacing(value)
+    value = re.sub(r"(?<=\w)\n(?=\w)", " ", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+# ----- Compact, current special-source status button -----
+def _compact_special_source_recent(items: list[dict[str, Any]], source: str, limit: int = 3) -> list[str]:
+    selected: list[dict[str, Any]] = []
+    for item in reversed(items):
+        if _special_diagnostic_item_source(item) == source or (
+            source == FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+            and value_contains_footballtweet(item.get("source") or item.get("username"))
+        ):
+            selected.append(item)
+        if len(selected) >= limit:
+            break
+    label = _hebrew_account_label(source)
+    if not selected:
+        return [f"{label}: אין חסימות אחרונות."]
+    lines = [f"{label} — {len(selected)} אחרונות:"]
+    for item in selected:
+        reason = hebrew_block_reason(str(item.get("raw_reason") or item.get("reason") or ""))
+        preview = re.sub(r"\s+", " ", str(item.get("preview") or item.get("text") or item.get("original_text") or "")).strip()
+        lines.append(f"• {trim(reason, 95)}" + (f" — {trim(preview, 80)}" if preview else ""))
+    return lines
+
+
+def special_sources_diagnostics_text() -> str:
+    state = load_control_state()
+    items: list[dict[str, Any]] = []
+    for key in ("last_blocked_posts", "last_duplicate_posts"):
+        value = state.get(key, [])
+        if isinstance(value, list):
+            items.extend(item for item in value if isinstance(item, dict))
+    status = lambda source: "כבוי" if control_state_account_disabled(source) else "פעיל"
+    lines = [
+        "📊 מצב מקורות העובדות",
+        f"עובדות כדורגל: {status(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME)} · {FOOTBALL_FACTLY_AUTO_MIN_WORDS}+ מילים · מדיה",
+        f"אופטה: {status(OPTAJOE_DEFAULT_ACTIVE_USERNAME)} · סטטיסטי לפי המקור / אחרת דיווח רגיל",
+        f"ציוצי כדורגל: {status(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)} · {FOOTBALLTWEET_MIN_WORDS}+ מילים · עד 2 בשעה · זיכרון 24 שעות",
+        "",
+    ]
+    lines.extend(_compact_special_source_recent(items, FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME))
+    lines.extend(["", *_compact_special_source_recent(items, OPTAJOE_DEFAULT_ACTIVE_USERNAME)])
+    lines.extend(["", *_compact_special_source_recent(items, FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)])
+    return "\n".join(lines)
+
+
+_PRE_COMPACT_SPECIAL_MONITOR_MENU = monitor_menu_reply_markup
+
+
+def monitor_menu_reply_markup() -> dict[str, Any]:
+    markup = _PRE_COMPACT_SPECIAL_MONITOR_MENU()
+    rows = [[dict(button) for button in row if isinstance(button, dict)] for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])]
+    for row in rows:
+        for button in row:
+            if str(button.get("callback_data", "")) == "football_special_sources_diagnostics":
+                button["text"] = "📊 מצב מקורות העובדות"
+    return stable_reply_markup(rows)
+
+
+# Keep all ten rows visible inside Telegram's 4096-character limit.
+_PRE_FINAL_HISTORY_STATUS = _history_status_for_post
+
+
+def _history_status_for_post(post: Post) -> tuple[str, str]:
+    status, reason = _PRE_FINAL_HISTORY_STATUS(post)
+    raw = str(reason or "")
+    # Convert internal reason codes such as final:hard_untracked_destination:...
+    # into the same readable Hebrew shown in the regular block reports.
+    candidate = raw
+    if candidate.startswith("final:"):
+        candidate = candidate[len("final:"):]
+    mapped = hebrew_block_reason(candidate)
+    if mapped and mapped != candidate:
+        reason = mapped
+    return status, str(reason or "")
+
+
+def _fit_history_entries_one_message(entries: list[tuple[Post, str, str, str]], label: str) -> str:
+    """Render every supplied history row, never truncate away rows 6-10."""
+    header = f"<b>📚 10 אחרונים — {html.escape(label)}</b>\nGoogle בלבד · בלי מדיה\n\n"
+    if not entries:
+        return header + "לא נמצאו פוסטים."
+    total = len(entries)
+    # Start with a useful compact budget; reduce deterministically until all rows fit.
+    translation_budget = 165 if total >= 10 else 230
+    reason_budget = 58
+    while translation_budget >= 45:
+        parts: list[str] = []
+        for index, (post, translated, status, reason) in enumerate(entries, 1):
+            clean_translation = re.sub(r"\s+", " ", str(translated or "")).strip()
+            clean_reason = re.sub(r"\s+", " ", str(reason or "")).strip()
+            stamp = datetime.fromtimestamp(
+                float(getattr(post, "published_ts", 0.0) or 0.0),
+                tz=ZoneInfo(SHABBAT_TIMEZONE),
+            ).strftime("%d/%m %H:%M") if getattr(post, "published_ts", 0.0) else "זמן לא ידוע"
+            parts.append(
+                f"<b>{index}/{total}</b> — {html.escape(rtl(trim(clean_translation, translation_budget)))}\n"
+                f"{html.escape(str(status or 'נמצא'))} | {html.escape(trim(clean_reason, reason_budget))} | {html.escape(stamp)}"
+            )
+        result = header + "\n\n".join(parts)
+        if len(result) <= TELEGRAM_HTML_TEXT_LIMIT:
+            return result
+        translation_budget -= 10
+        reason_budget = max(28, reason_budget - 4)
+    # Guaranteed ultra-compact fallback still includes all rows.
+    parts = []
+    for index, (_post, translated, status, _reason) in enumerate(entries, 1):
+        clean_translation = re.sub(r"\s+", " ", str(translated or "")).strip()
+        parts.append(f"<b>{index}/{total}</b> — {html.escape(rtl(trim(clean_translation, 42)))} | {html.escape(str(status or 'נמצא'))}")
+    return trim(header + "\n".join(parts), TELEGRAM_HTML_TEXT_LIMIT)
+
+
+# ====== END FINAL STABLE SHARED RSS + RELIABLE TEN-LATEST + SOURCE-LAYOUT PATCH ======
+
 if __name__ == "__main__":
     main()
