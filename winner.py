@@ -44,7 +44,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from threading import BoundedSemaphore, Lock, RLock, Thread
+from threading import BoundedSemaphore, Event, Lock, RLock, Thread
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -26007,5 +26007,826 @@ def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state
 
 
 
+# ====== STABLE GEMINI TRANSLATION CORE — OFFICIAL REST CONTRACT (2026-07-22) ======
+# This final layer replaces only translation/network orchestration and final
+# hashtag placement. RSS collection/parsing functions and persistent filenames
+# are intentionally untouched. The request uses the documented generateContent
+# REST shape, structured JSON output, x-goog-api-key, and no deprecated sampling
+# parameters. One HTTP request equals one persistent post retry attempt.
+
+BOT_BUILD_ID = "winner-stable-gemini-translation-2026-07-22"
+STABLE_TRANSLATION_SCHEMA_VERSION = 7
+# One scheduled attempt performs one real HTTP request; send_post persists and
+# caps the post at three scheduled attempts. Old v2 exhaustion records remain in
+# JSON for compatibility but cannot suppress the repaired v3 translation path.
+GEMINI_TRANSLATION_ATTEMPTS = 1
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = 1
+GEMINI_RETRY_SCHEDULE_STATE_KEY = "__gemini_retry_schedule_v3_stable_translation__"
+STABLE_GEMINI_TIMEOUT_SECONDS = max(30, int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "45")))
+STABLE_GEMINI_FAILURE_SHARE_SECONDS = 30.0
+STABLE_GEMINI_DEFAULT_MODELS = (
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+)
+_STABLE_TRANSLATION_LOCK = RLock()
+_STABLE_TRANSLATION_INFLIGHT: dict[str, Event] = {}
+_STABLE_TRANSLATION_RECENT_FAILURES: dict[str, tuple[float, str]] = {}
+_STABLE_ROUTE_LOCK = Lock()
+_STABLE_ROUTE_COUNTER = 0
+_STABLE_RSS_FUNCTION_IDS = {
+    name: id(globals().get(name))
+    for name in ("http_get_feed", "fetch_feed", "fetch_posts", "collect_posts_from_feed_templates")
+}
+
+_STABLE_HERE_SOURCE_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:#\s*)?HERE(?:[_\s]+)WE(?:[_\s]+)GO(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_STABLE_TODAY_SOURCE_RE = re.compile(
+    r"(?:#?היום(?:_|\s)+לפני|#?OnThisDay\b|(?<![A-Za-z0-9])On\s+this\s+day(?![A-Za-z0-9]))",
+    re.IGNORECASE | re.UNICODE,
+)
+_STABLE_FIXED_RE = re.compile(r"(#HERE_WE_GO|#היום_לפני|\n+)", re.UNICODE)
+
+
+class StableGeminiError(TranslationUnavailable):
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "unknown",
+        status: int = 0,
+        retryable: bool = False,
+        retry_after: float = 0.0,
+        response_debug: str = "",
+        model: str = "",
+        key_index: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.status = int(status or 0)
+        self.retryable = bool(retryable)
+        self.retry_after = float(retry_after or 0.0)
+        self.response_debug = compact_debug_text(response_debug, 1200)
+        self.model = str(model or "")
+        self.key_index = key_index
+
+
+def _stable_clean_source_preserving_anchors(text: Any) -> str:
+    value = html.unescape(str(text or "")).replace("\r\n", "\n").replace("\r", "\n")
+    protected: list[tuple[str, str]] = []
+
+    def protect(kind: str):
+        def replace(_match: re.Match[str]) -> str:
+            token = f"ZXQSTABLE{kind}{len(protected):04d}QXZ"
+            protected.append((token, "#HERE_WE_GO" if kind == "HWG" else "#היום_לפני"))
+            return token
+        return replace
+
+    value = _STABLE_HERE_SOURCE_RE.sub(protect("HWG"), value)
+    value = _STABLE_TODAY_SOURCE_RE.sub(protect("OTD"), value)
+
+    def protect_break(match: re.Match[str]) -> str:
+        token = f"ZXQSTABLELB{len(protected):04d}QXZ"
+        protected.append((token, "\n\n" if len(match.group(0)) >= 2 else "\n"))
+        return f" {token} "
+
+    value = re.sub(r"\n+", protect_break, value)
+    value = clean_for_ai_translation(value)
+    for token, replacement in protected:
+        value = value.replace(token, replacement)
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n[ \t]+", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _stable_prepare_layout(text: Any) -> dict[str, Any]:
+    source = _stable_clean_source_preserving_anchors(text)
+    segments: list[str] = []
+    layout: list[tuple[str, Any, str, str]] = []
+    for part in _STABLE_FIXED_RE.split(source):
+        if not part:
+            continue
+        if part in {"#HERE_WE_GO", "#היום_לפני"} or part.startswith("\n"):
+            layout.append(("fixed", part, "", ""))
+            continue
+        leading = re.match(r"^[ \t]*", part).group(0)
+        trailing = re.search(r"[ \t]*$", part).group(0)
+        end = len(part) - len(trailing) if trailing else len(part)
+        core = part[len(leading):end]
+        if not core:
+            layout.append(("fixed", part, "", ""))
+            continue
+        index = len(segments)
+        segments.append(core)
+        layout.append(("segment", index, leading, trailing))
+    return {"source": source, "segments": segments, "layout": layout}
+
+
+def _stable_rebuild_layout(plan: dict[str, Any], translated_segments: Any) -> str:
+    expected = list(plan.get("segments", []) or [])
+    if not isinstance(translated_segments, list) or len(translated_segments) != len(expected):
+        raise StableGeminiError(
+            f"Structured output segment count mismatch: expected {len(expected)}, got "
+            f"{len(translated_segments) if isinstance(translated_segments, list) else 'non-list'}",
+            category="invalid_output",
+            retryable=True,
+        )
+    cleaned: list[str] = []
+    for value in translated_segments:
+        if not isinstance(value, str):
+            raise StableGeminiError("Structured output contains a non-string segment", category="invalid_output", retryable=True)
+        polished = final_visual_cleanup(final_hebrew_polish(value)).strip()
+        cleaned.append(polished)
+    output: list[str] = []
+    for kind, value, leading, trailing in plan.get("layout", []):
+        if kind == "fixed":
+            output.append(str(value))
+        else:
+            output.append(str(leading) + cleaned[int(value)] + str(trailing))
+    result = "".join(output)
+    result = re.sub(r"[ \t]+\n", "\n", result)
+    result = re.sub(r"\n[ \t]+", "\n", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def _stable_canonicalize_special_tags(text: Any) -> str:
+    value = str(text or "")
+    value = re.sub(r"#?HERE(?:[_\s]+)WE(?:[_\s]+)GO\b", "#HERE_WE_GO", value, flags=re.IGNORECASE)
+    value = re.sub(r"#?היום(?:_|\s)+לפני\b", "#היום_לפני", value, flags=re.UNICODE)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _stable_numeric_facts(text: Any) -> set[str]:
+    value = remove_urls(str(text or ""))
+    value = re.sub(r"@[A-Za-z0-9_]+", "", value)
+    facts: set[str] = set()
+    for raw in re.findall(r"\d+(?:[.,]\d+)*", value):
+        item = raw
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+", item):
+            item = item.replace(",", "")
+        elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", item):
+            item = item.replace(".", "")
+        else:
+            item = item.replace(",", ".")
+        item = item.lstrip("0") or "0"
+        facts.add(item)
+    return facts
+
+
+def _stable_validate_translation(post: Post, main_source: str, quote_source: str, main: str, quote: str) -> None:
+    combined_source = "\n".join(x for x in (main_source, quote_source) if x)
+    combined_output = "\n".join(x for x in (main, quote) if x)
+    if main_source and re.search(r"[A-Za-zא-ת]", main_source) and not has_meaningful_text(main):
+        raise StableGeminiError("Gemini returned no meaningful main translation", category="invalid_output", retryable=True)
+    if quote_source and not has_meaningful_text(quote):
+        raise StableGeminiError("Gemini returned no meaningful quote translation", category="invalid_output", retryable=True)
+    if re.search(r"(?is)(?:```|\"?(?:main_segments|quote_segments|quote_author)\"?\s*:)", combined_output):
+        raise StableGeminiError("Structured JSON leaked into visible translation", category="invalid_output", retryable=True)
+    if _stable_numeric_facts(combined_source) != _stable_numeric_facts(combined_output):
+        raise StableGeminiError("Gemini changed, added, or omitted locked numbers", category="invalid_output", retryable=True)
+    for tag in ("#HERE_WE_GO", "#היום_לפני"):
+        if combined_source.count(tag) != combined_output.count(tag):
+            raise StableGeminiError(f"Gemini special-tag count mismatch for {tag}", category="invalid_output", retryable=True)
+    if translation_contradicts_source(combined_source, combined_output):
+        raise StableGeminiError("Gemini translation contradicted a source entity", category="invalid_output", retryable=True)
+    if translation_changes_locked_numbers(combined_source, combined_output):
+        raise StableGeminiError("Gemini translation changed a locked year or score", category="invalid_output", retryable=True)
+    source_letters = len(re.findall(r"[A-Za-zא-ת]", combined_source))
+    output_letters = len(re.findall(r"[A-Za-zא-ת]", combined_output))
+    if source_letters >= 80 and output_letters < max(28, int(source_letters * 0.30)):
+        raise StableGeminiError("Gemini translation is materially incomplete", category="invalid_output", retryable=True)
+    if source_letters >= 12 and not re.search(r"[א-ת]", combined_output):
+        raise StableGeminiError("Gemini output contains no Hebrew", category="invalid_output", retryable=True)
+
+
+def _stable_cache_material(main_plan: dict[str, Any], quote_plan: dict[str, Any], author_source: str) -> tuple[str, str]:
+    material = json.dumps(
+        {"v": STABLE_TRANSLATION_SCHEMA_VERSION, "m": main_plan.get("source", ""), "q": quote_plan.get("source", ""), "a": author_source},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return f"stable-gemini-v{STABLE_TRANSLATION_SCHEMA_VERSION}:{digest}", digest
+
+
+def _stable_cache_get(cache_key: str, source_hash: str, post: Post, main_source: str, quote_source: str) -> tuple[str, str, str] | None:
+    global TRANSLATION_CACHE_DIRTY
+    with _STABLE_TRANSLATION_LOCK:
+        raw = TRANSLATION_CACHE.get(cache_key)
+    if not raw:
+        return None
+    try:
+        record = json.loads(raw)
+        if not isinstance(record, dict) or int(record.get("schema_version", 0)) != STABLE_TRANSLATION_SCHEMA_VERSION:
+            raise ValueError("wrong cache schema")
+        if str(record.get("source_hash", "")) != source_hash:
+            raise ValueError("wrong source hash")
+        main = str(record.get("main", "") or "")
+        quote = str(record.get("quote", "") or "")
+        author = str(record.get("quote_author", "") or "")
+        _stable_validate_translation(post, main_source, quote_source, main, quote)
+        return main, quote, author
+    except Exception:
+        with _STABLE_TRANSLATION_LOCK:
+            TRANSLATION_CACHE.pop(cache_key, None)
+            TRANSLATION_CACHE_DIRTY = True
+        return None
+
+
+def _stable_cache_put(cache_key: str, source_hash: str, main: str, quote: str, author: str, model: str) -> None:
+    global TRANSLATION_CACHE_DIRTY
+    record = {
+        "schema_version": STABLE_TRANSLATION_SCHEMA_VERSION,
+        "source_hash": source_hash,
+        "main": main,
+        "quote": quote,
+        "quote_author": author,
+        "model": model,
+        "created_at": time.time(),
+    }
+    with _STABLE_TRANSLATION_LOCK:
+        TRANSLATION_CACHE[cache_key] = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        TRANSLATION_CACHE_DIRTY = True
+        save_translation_cache(TRANSLATION_CACHE)
+
+def _stable_gemini_models() -> list[str]:
+    configured: list[str] = []
+    for env_name in ("GEMINI_MODEL", "GEMINI_FAST_MODEL", "GEMINI_FALLBACK_MODELS"):
+        for raw in re.split(r"[,;\r\n]+", os.environ.get(env_name, "")):
+            model = raw.strip()
+            if model and model not in configured:
+                configured.append(model)
+    ordered = configured + [model for model in STABLE_GEMINI_DEFAULT_MODELS if model not in configured]
+    retired = set(GEMINI_SHUTDOWN_MODELS) | {"gemini-3-pro-preview", "gemini-3.1-flash-lite-preview"}
+    ordered = [model for model in ordered if model not in retired]
+    now = time.time()
+    available = [model for model in ordered if GEMINI_MODEL_COOLDOWNS.get(model, 0.0) <= now]
+    return available or ordered[:1]
+
+
+def _stable_select_route() -> tuple[int, str, str]:
+    global _STABLE_ROUTE_COUNTER
+    refresh_gemini_api_keys_from_env()
+    if gemini_requests_paused_until_refill():
+        raise StableGeminiError("Gemini requests are paused by the quota guard", category="paused", retryable=False)
+    now = time.time()
+    keys = [(index, key) for index, key in enumerate(GEMINI_API_KEYS) if GEMINI_KEY_COOLDOWNS.get(key, 0.0) <= now]
+    if not keys:
+        raise StableGeminiError("No Gemini API key is locally available", category="no_key", retryable=True)
+    models = _stable_gemini_models()
+    if not models:
+        raise StableGeminiError("No supported Gemini model is configured", category="no_model", retryable=False)
+    with _STABLE_ROUTE_LOCK:
+        route = _STABLE_ROUTE_COUNTER
+        _STABLE_ROUTE_COUNTER += 1
+    key_index, key = keys[route % len(keys)]
+    model = models[(route // max(1, len(keys))) % len(models)]
+    return key_index, key, model
+
+
+def _stable_retry_after(headers: Any) -> float:
+    try:
+        raw = str(headers.get("Retry-After", "") or "").strip()
+    except Exception:
+        raw = ""
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except Exception:
+        try:
+            parsed = parsedate_to_datetime(raw)
+            now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
+            return max(0.0, (parsed - now).total_seconds())
+        except Exception:
+            return 0.0
+
+
+def _stable_http_category(status: int) -> tuple[str, bool]:
+    if status in {408, 409, 425, 429, 500, 502, 503, 504}:
+        return ("quota" if status == 429 else "transient"), True
+    if status in {401, 403}:
+        return "auth", False
+    if status == 404:
+        return "model_not_found", False
+    if status == 400:
+        return "bad_request", False
+    return "http_error", status >= 500
+
+
+def _stable_record_route_failure(error: StableGeminiError, key: str, key_index: int, model: str) -> None:
+    now = time.time()
+    if error.category == "quota":
+        GEMINI_KEY_COOLDOWNS[key] = max(GEMINI_KEY_COOLDOWNS.get(key, 0.0), now + max(180.0, error.retry_after))
+    elif error.category == "auth":
+        GEMINI_KEY_COOLDOWNS[key] = max(GEMINI_KEY_COOLDOWNS.get(key, 0.0), now + GEMINI_AUTH_KEY_COOLDOWN_SECONDS)
+    elif error.category in {"transient", "network"}:
+        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + max(60.0, error.retry_after))
+    elif error.category == "model_not_found":
+        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + 24 * 60 * 60)
+    elif error.category in {"bad_request", "invalid_output", "blocked"}:
+        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + 5 * 60)
+    GEMINI_KEY_LAST_ERRORS[key] = {
+        "at": now,
+        "label": gemini_key_label(key_index),
+        "summary": error.category,
+        "full_error": compact_debug_text(str(error), 900),
+        "cooled": GEMINI_KEY_COOLDOWNS.get(key, 0.0) > now,
+        "cooldown_seconds": int(max(0.0, GEMINI_KEY_COOLDOWNS.get(key, 0.0) - now)),
+        "response_debug": error.response_debug,
+        "model": model,
+        "status": error.status,
+    }
+    try:
+        daily_stat_increment("gemini_failures", error.category, 1)
+    except Exception:
+        pass
+
+
+def _stable_gemini_http_once(payload: dict[str, Any], key: str, key_index: int, model: str) -> dict[str, Any]:
+    url = "https://generativelanguage.googleapis.com/v1beta/models/" + urllib.parse.quote(model, safe="-._") + ":generateContent"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json",
+            "x-goog-api-key": key,
+            "User-Agent": "NetoSportBot/translation-v7",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=STABLE_GEMINI_TIMEOUT_SECONDS) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("Gemini response root is not an object")
+            return parsed
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        category, retryable = _stable_http_category(int(exc.code or 0))
+        raise StableGeminiError(
+            f"Gemini HTTP {exc.code}: {compact_debug_text(raw, 900)}",
+            category=category,
+            status=int(exc.code or 0),
+            retryable=retryable,
+            retry_after=_stable_retry_after(exc.headers),
+            response_debug=raw,
+            model=model,
+            key_index=key_index,
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise StableGeminiError(
+            f"Gemini network failure: {compact_debug_text(str(exc), 600)}",
+            category="network",
+            retryable=True,
+            model=model,
+            key_index=key_index,
+        ) from exc
+    except StableGeminiError:
+        raise
+    except Exception as exc:
+        raise StableGeminiError(
+            f"Gemini response decoding failed: {compact_debug_text(str(exc), 600)}",
+            category="invalid_response",
+            retryable=True,
+            model=model,
+            key_index=key_index,
+        ) from exc
+
+
+def _stable_translation_payload(main_plan: dict[str, Any], quote_plan: dict[str, Any], author_source: str) -> dict[str, Any]:
+    glossary_text = "\n".join(
+        item for item in (
+            relevant_name_glossary(str(main_plan.get("source", ""))),
+            relevant_name_glossary(str(quote_plan.get("source", ""))),
+            relevant_name_glossary(author_source),
+        ) if item
+    )
+    system_instruction = (
+        "You are a senior Hebrew men's-football news translator. The post already passed local editorial filters; translate only. "
+        "Return exactly the structured fields required by the schema. Translate every input segment fully and in the same array order. "
+        "The application will reinsert line breaks, #HERE_WE_GO and #היום_לפני between segments, so never add, remove, repeat, translate, or move those anchors. "
+        "Use natural concise Hebrew suitable for Telegram, but do not summarize or omit facts. Never add facts. Preserve every name, club, date, year, number, score, fee, currency, status, condition, denial and emoji in its corresponding segment. "
+        "Remove URLs, tracking text and pure source/promotion credits only. If a name is uncertain, keep the clean Latin spelling rather than inventing a Hebrew identity. "
+        "Do not output Markdown fences or explanatory text. quote_author must be a short natural Hebrew name, or an empty string when absent."
+    )
+    input_data = {
+        "main_full_context": main_plan.get("source", ""),
+        "main_segments": list(main_plan.get("segments", []) or []),
+        "quote_full_context": quote_plan.get("source", ""),
+        "quote_segments": list(quote_plan.get("segments", []) or []),
+        "quote_author": author_source,
+        "known_name_glossary": glossary_text,
+        "required_main_segment_count": len(main_plan.get("segments", []) or []),
+        "required_quote_segment_count": len(quote_plan.get("segments", []) or []),
+    }
+    schema = {
+        "type": "OBJECT",
+        "properties": {
+            "main_segments": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "quote_segments": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "quote_author": {"type": "STRING"},
+        },
+        "required": ["main_segments", "quote_segments", "quote_author"],
+        "propertyOrdering": ["main_segments", "quote_segments", "quote_author"],
+    }
+    return {
+        "systemInstruction": {"parts": [{"text": system_instruction}]},
+        "contents": [{"role": "user", "parts": [{"text": json.dumps(input_data, ensure_ascii=False, separators=(",", ":"))}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": schema,
+            "maxOutputTokens": GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS,
+        },
+    }
+
+
+def _stable_parse_gemini_response(data: dict[str, Any], model: str, key_index: int) -> dict[str, Any]:
+    candidates = data.get("candidates") or []
+    if not isinstance(candidates, list) or not candidates:
+        feedback = compact_debug_text(data.get("promptFeedback", {}), 700)
+        raise StableGeminiError(
+            f"Gemini returned no candidates; promptFeedback={feedback}",
+            category="blocked" if feedback else "invalid_response",
+            retryable=not bool(feedback),
+            response_debug=gemini_response_debug(data, ""),
+            model=model,
+            key_index=key_index,
+        )
+    candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+    finish_reason = str(candidate.get("finishReason", "") or "").upper()
+    parts = ((candidate.get("content") or {}).get("parts") or []) if isinstance(candidate, dict) else []
+    raw = "".join(str(part.get("text", "") or "") for part in parts if isinstance(part, dict)).strip()
+    if finish_reason != "STOP":
+        raise StableGeminiError(
+            f"Gemini stopped with finishReason={finish_reason or 'missing'}",
+            category="blocked" if finish_reason in {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"} else "invalid_output",
+            retryable=finish_reason in {"MAX_TOKENS", "OTHER", "FINISH_REASON_UNSPECIFIED", ""},
+            response_debug=gemini_response_debug(data, raw),
+            model=model,
+            key_index=key_index,
+        )
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise StableGeminiError(
+            "Gemini structured output was not valid JSON",
+            category="invalid_output",
+            retryable=True,
+            response_debug=gemini_response_debug(data, raw),
+            model=model,
+            key_index=key_index,
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise StableGeminiError("Gemini structured output root is not an object", category="invalid_output", retryable=True, model=model, key_index=key_index)
+    return parsed
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    """Exactly one real Gemini request, with cache and same-input coalescing."""
+    _reliable_hydrate_exact_post(post)
+    main_plan = _stable_prepare_layout(str(getattr(post, "text", "") or ""))
+    quote_text = str(getattr(post, "quoted_text", "") or "") if include_quote else ""
+    quote_plan = _stable_prepare_layout(quote_text)
+    author_source = clean_before_translation(str(getattr(post, "quoted_author", "") or "")) if include_quote else ""
+    if not main_plan.get("source") and not quote_plan.get("source"):
+        return "", "", ""
+    cache_key, source_hash = _stable_cache_material(main_plan, quote_plan, author_source)
+    cached = _stable_cache_get(cache_key, source_hash, post, str(main_plan.get("source", "")), str(quote_plan.get("source", "")))
+    if cached is not None:
+        post.translation_origin = "gemini_cache"
+        return cached
+
+    with _STABLE_TRANSLATION_LOCK:
+        existing = _STABLE_TRANSLATION_INFLIGHT.get(cache_key)
+        if existing is None:
+            event = Event()
+            _STABLE_TRANSLATION_INFLIGHT[cache_key] = event
+            owner = True
+        else:
+            event = existing
+            owner = False
+    if not owner:
+        event.wait(STABLE_GEMINI_TIMEOUT_SECONDS + 15)
+        cached = _stable_cache_get(cache_key, source_hash, post, str(main_plan.get("source", "")), str(quote_plan.get("source", "")))
+        if cached is not None:
+            post.translation_origin = "gemini_cache_coalesced"
+            return cached
+        with _STABLE_TRANSLATION_LOCK:
+            recent = _STABLE_TRANSLATION_RECENT_FAILURES.get(cache_key)
+        if recent and time.time() - recent[0] <= STABLE_GEMINI_FAILURE_SHARE_SECONDS:
+            raise StableGeminiError(recent[1], category="coalesced_failure", retryable=True)
+        raise StableGeminiError("Timed out waiting for identical Gemini translation", category="inflight_timeout", retryable=True)
+
+    key_index = -1
+    key = ""
+    model = ""
+    try:
+        key_index, key, model = _stable_select_route()
+        globals()["GEMINI_LAST_MODEL_USED"] = model
+        payload = _stable_translation_payload(main_plan, quote_plan, author_source)
+        data = _stable_gemini_http_once(payload, key, key_index, model)
+        parsed = _stable_parse_gemini_response(data, model, key_index)
+        main = _stable_canonicalize_special_tags(_stable_rebuild_layout(main_plan, parsed.get("main_segments")))
+        quote = _stable_canonicalize_special_tags(_stable_rebuild_layout(quote_plan, parsed.get("quote_segments"))) if quote_plan.get("source") else ""
+        author = final_hebrew_polish(str(parsed.get("quote_author", "") or "")).strip() if author_source else ""
+        _stable_validate_translation(post, str(main_plan.get("source", "")), str(quote_plan.get("source", "")), main, quote)
+        _stable_cache_put(cache_key, source_hash, main, quote, author, model)
+        GEMINI_KEY_COOLDOWNS.pop(key, None)
+        GEMINI_MODEL_COOLDOWNS.pop(model, None)
+        mark_gemini_available()
+        post.translation_origin = "gemini"
+        return main, quote, author
+    except StableGeminiError as exc:
+        if key and key_index >= 0 and model:
+            _stable_record_route_failure(exc, key, key_index, model)
+        with _STABLE_TRANSLATION_LOCK:
+            _STABLE_TRANSLATION_RECENT_FAILURES[cache_key] = (time.time(), compact_debug_text(str(exc), 1000))
+        log_gemini_unavailable(exc)
+        raise
+    except Exception as exc:
+        wrapped = StableGeminiError(f"Unexpected Gemini translation failure: {compact_debug_text(str(exc), 900)}", category="unexpected", retryable=True, model=model, key_index=key_index if key_index >= 0 else None)
+        if key and key_index >= 0 and model:
+            _stable_record_route_failure(wrapped, key, key_index, model)
+        with _STABLE_TRANSLATION_LOCK:
+            _STABLE_TRANSLATION_RECENT_FAILURES[cache_key] = (time.time(), compact_debug_text(str(wrapped), 1000))
+        raise wrapped from exc
+    finally:
+        with _STABLE_TRANSLATION_LOCK:
+            finished = _STABLE_TRANSLATION_INFLIGHT.pop(cache_key, None)
+            if finished is not None:
+                finished.set()
+            cutoff = time.time() - STABLE_GEMINI_FAILURE_SHARE_SECONDS
+            for old_key, (saved_at, _message) in list(_STABLE_TRANSLATION_RECENT_FAILURES.items()):
+                if saved_at < cutoff:
+                    _STABLE_TRANSLATION_RECENT_FAILURES.pop(old_key, None)
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    include_quote = bool(not is_self_quote(post) and post.quoted_text and TRANSLATE_QUOTED_POSTS)
+    try:
+        main, quote, author = gemini_translate_post_once(post, include_quote)
+        if not (has_meaningful_text(main) or has_meaningful_text(quote)):
+            raise StableGeminiError("Gemini returned no publishable Hebrew", category="invalid_output", retryable=True)
+        return main, quote, author
+    except Exception as exc:
+        GEMINI_LAST_TRANSLATION_FAILURE.clear()
+        GEMINI_LAST_TRANSLATION_FAILURE.update({
+            "at": time.time(),
+            "username": str(getattr(post, "username", "") or ""),
+            "link": str(getattr(post, "link", "") or ""),
+            "summary": getattr(exc, "category", gemini_error_summary(exc)),
+            "error": compact_debug_text(str(exc), 1200),
+            "real_requests_used": 1 if getattr(exc, "category", "") not in {"no_key", "paused", "inflight_timeout", "coalesced_failure"} else 0,
+            "response_debug": compact_debug_text(getattr(exc, "response_debug", ""), 1200),
+            "model": str(getattr(exc, "model", "") or GEMINI_LAST_MODEL_USED),
+        })
+        raise
+
+
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    _reliable_hydrate_exact_post(post, force=True)
+    translated = translate_post_for_send(post)
+    post.translation_origin = "gemini" if not str(getattr(post, "translation_origin", "")).startswith("gemini_cache") else post.translation_origin
+    return translated
+
+_PRE_STABLE_OUTGOING_BODY_TEXT = _outgoing_body_text
+
+
+def _stable_source_tag_counts(post: Post, quoted: bool = False) -> dict[str, int]:
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=quoted)
+    cleaned = _stable_clean_source_preserving_anchors(source)
+    return {"#HERE_WE_GO": cleaned.count("#HERE_WE_GO"), "#היום_לפני": cleaned.count("#היום_לפני")}
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    """Final location-safe tag renderer; it never prepends or appends a missing tag."""
+    value = _PRE_STABLE_OUTGOING_BODY_TEXT(post, translated, quoted=quoted)
+    value = _stable_canonicalize_special_tags(value)
+    expected = _stable_source_tag_counts(post, quoted=quoted)
+    for tag in ("#HERE_WE_GO", "#היום_לפני"):
+        wanted = int(expected.get(tag, 0))
+        present = value.count(tag)
+        if wanted == 0 and present:
+            value = value.replace(tag, "")
+        elif present != wanted:
+            # The translation layer reconstructs anchors deterministically. If an
+            # old prepared/cached payload violates that contract, do not guess a
+            # new position here; log it and leave the post for a clean retranslation.
+            logging.error("Special tag position contract failed for %s: source=%s output=%s", tag, wanted, present)
+    value = re.sub(r"[ \t]+([,.;:!?])", r"\1", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip(" ,")
+
+
+def _stable_translation_acceptance_tests() -> list[str]:
+    """Offline acceptance suite. Set WINNER_RUN_ACCEPTANCE_TESTS=1 to run it."""
+    passed: list[str] = []
+
+    def check(name: str, condition: bool) -> None:
+        if not condition:
+            raise AssertionError(name)
+        passed.append(name)
+
+    plan = _stable_prepare_layout("Opening HERE WE GO! Middle On this day ending")
+    rebuilt = _stable_rebuild_layout(plan, [f"קטע{i}" for i in range(len(plan["segments"]))])
+    check("here_we_go_keeps_inline_position", rebuilt.find("קטע0") < rebuilt.find("#HERE_WE_GO") < rebuilt.find("קטע1"))
+    check("today_before_keeps_inline_position", rebuilt.find("קטע1") < rebuilt.find("#היום_לפני") < rebuilt.find("קטע2"))
+    check("special_tags_are_canonical", rebuilt.count("#HERE_WE_GO") == 1 and rebuilt.count("#היום_לפני") == 1)
+
+    layout_plan = _stable_prepare_layout("First line\nSecond line\n\nThird paragraph")
+    layout_output = _stable_rebuild_layout(layout_plan, [f"שורה{i}" for i in range(len(layout_plan["segments"]))])
+    check("single_line_break_preserved", layout_output.count("\n") == 3)
+    check("blank_line_preserved", "\n\n" in layout_output)
+
+    plain_plan = _stable_prepare_layout("Ordinary transfer update")
+    plain_output = _stable_rebuild_layout(plain_plan, ["עדכון העברה רגיל"])
+    check("tags_are_never_invented", "#HERE_WE_GO" not in plain_output and "#היום_לפני" not in plain_output)
+
+    quote_plan = _stable_prepare_layout("")
+    payload = _stable_translation_payload(plain_plan, quote_plan, "")
+    config = payload.get("generationConfig", {})
+    check("structured_json_requested", config.get("responseMimeType") == "application/json" and isinstance(config.get("responseSchema"), dict))
+    check("deprecated_sampling_removed", not any(key in config for key in ("temperature", "topP", "topK")))
+    check("production_timeout_is_bounded", STABLE_GEMINI_TIMEOUT_SECONDS >= 30)
+
+    fake = {
+        "candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [{"text": json.dumps({"main_segments": ["טקסט"], "quote_segments": [], "quote_author": ""}, ensure_ascii=False)}]},
+        }]
+    }
+    parsed = _stable_parse_gemini_response(fake, "test-model", 0)
+    check("stop_response_parses", parsed.get("main_segments") == ["טקסט"])
+    try:
+        _stable_parse_gemini_response({"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "{}"}]}}]}, "test-model", 0)
+        max_tokens_rejected = False
+    except StableGeminiError:
+        max_tokens_rejected = True
+    check("truncated_response_rejected", max_tokens_rejected)
+
+    check("numbers_normalize_without_change", _stable_numeric_facts("€50m, 2026, 1,000") == _stable_numeric_facts("50 מיליון, 2026, 1000"))
+    try:
+        _stable_validate_translation(None, "Player signs for €50m until 2026", "", "השחקן חתם תמורת 50 מיליון עד 2027", "")
+        changed_number_rejected = False
+    except StableGeminiError:
+        changed_number_rejected = True
+    check("changed_number_is_rejected", changed_number_rejected)
+
+    key1, digest1 = _stable_cache_material(plain_plan, quote_plan, "")
+    key2, digest2 = _stable_cache_material(plain_plan, quote_plan, "")
+    changed_plan = _stable_prepare_layout("Different transfer update")
+    key3, _digest3 = _stable_cache_material(changed_plan, quote_plan, "")
+    check("cache_key_is_deterministic", key1 == key2 and digest1 == digest2)
+    check("cache_key_changes_with_source", key1 != key3)
+    check("cache_is_versioned", key1.startswith(f"stable-gemini-v{STABLE_TRANSLATION_SCHEMA_VERSION}:"))
+
+    models = _stable_gemini_models()
+    check("retired_models_excluded", not any(model in GEMINI_SHUTDOWN_MODELS for model in models))
+    check("exactly_three_persistent_attempts", AUTO_GEMINI_RETRY_ATTEMPTS == 3 and GEMINI_MAX_REAL_TRANSLATION_REQUESTS == 1)
+    check("retry_state_is_versioned_for_repaired_engine", GEMINI_RETRY_SCHEDULE_STATE_KEY == "__gemini_retry_schedule_v3_stable_translation__")
+    check("translation_cache_filename_preserved", TRANSLATION_CACHE_FILE == "football_translation_cache.json")
+    check(
+        "rss_functions_untouched",
+        all(id(globals().get(name)) == function_id for name, function_id in _STABLE_RSS_FUNCTION_IDS.items()),
+    )
+
+    # Integration: a successful identical translation is requested once, then
+    # served from cache; simultaneous callers also share one in-flight request.
+    saved_hydrate = globals()["_reliable_hydrate_exact_post"]
+    saved_select = globals()["_stable_select_route"]
+    saved_http = globals()["_stable_gemini_http_once"]
+    saved_save_cache = globals()["save_translation_cache"]
+    cache_snapshot = dict(TRANSLATION_CACHE)
+    request_counter = {"count": 0}
+
+    def fake_http(payload_value: dict[str, Any], _key: str, _key_index: int, _model: str) -> dict[str, Any]:
+        request_counter["count"] += 1
+        if "Another" in str(payload_value):
+            time.sleep(0.15)
+        request_input = json.loads(payload_value["contents"][0]["parts"][0]["text"])
+
+        def fake_segments(values: list[str]) -> list[str]:
+            output: list[str] = []
+            for segment in values:
+                translated = str(segment).replace("Another", "עוד").replace("Deal", "עסקה").replace("deal", "עסקה")
+                translated = translated.replace(" for ", " תמורת ").replace(" in ", " בשנת ").replace("50m", "50 מיליון")
+                output.append(translated)
+            return output
+
+        body = {
+            "main_segments": fake_segments(request_input.get("main_segments", [])),
+            "quote_segments": fake_segments(request_input.get("quote_segments", [])),
+            "quote_author": "",
+        }
+        return {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps(body, ensure_ascii=False)}]}}]}
+
+    class FakePost:
+        def __init__(self, text_value: str, post_id: str) -> None:
+            self.text = text_value
+            self.original_text = text_value
+            self.quoted_text = ""
+            self.quoted_author = ""
+            self.username = "test_writer"
+            self.link = ""
+            self.post_id = post_id
+            self.dedupe_ids = [post_id]
+            self.source_name = "acceptance"
+            self.translation_origin = ""
+
+    try:
+        globals()["_reliable_hydrate_exact_post"] = lambda post_value, force=False: post_value
+        globals()["_stable_select_route"] = lambda: (0, "test-key", "gemini-3.5-flash")
+        globals()["_stable_gemini_http_once"] = fake_http
+        globals()["save_translation_cache"] = lambda _cache: None
+        with _STABLE_TRANSLATION_LOCK:
+            TRANSLATION_CACHE.clear()
+            _STABLE_TRANSLATION_RECENT_FAILURES.clear()
+            _STABLE_TRANSLATION_INFLIGHT.clear()
+
+        first_post = FakePost("Deal HERE WE GO for 50m in 2026", "acceptance-cache-1")
+        first_result = gemini_translate_post_once(first_post, False)
+        second_result = gemini_translate_post_once(first_post, False)
+        check("successful_translation_uses_one_request", request_counter["count"] == 1)
+        check("validated_translation_cache_is_reused", first_result == second_result and first_post.translation_origin.startswith("gemini_cache"))
+
+        concurrent_post = FakePost("Another deal On this day for 50m in 2026", "acceptance-inflight-2")
+        concurrent_results: list[tuple[str, str, str]] = []
+        concurrent_errors: list[str] = []
+
+        def concurrent_translate() -> None:
+            try:
+                concurrent_results.append(gemini_translate_post_once(concurrent_post, False))
+            except Exception as exc:
+                concurrent_errors.append(str(exc))
+
+        before_concurrent = request_counter["count"]
+        worker_one = Thread(target=concurrent_translate)
+        worker_two = Thread(target=concurrent_translate)
+        worker_one.start()
+        worker_two.start()
+        worker_one.join(5)
+        worker_two.join(5)
+        check("identical_inflight_requests_are_coalesced", not concurrent_errors and len(concurrent_results) == 2 and request_counter["count"] == before_concurrent + 1)
+    finally:
+        globals()["_reliable_hydrate_exact_post"] = saved_hydrate
+        globals()["_stable_select_route"] = saved_select
+        globals()["_stable_gemini_http_once"] = saved_http
+        globals()["save_translation_cache"] = saved_save_cache
+        with _STABLE_TRANSLATION_LOCK:
+            TRANSLATION_CACHE.clear()
+            TRANSLATION_CACHE.update(cache_snapshot)
+            _STABLE_TRANSLATION_RECENT_FAILURES.clear()
+            _STABLE_TRANSLATION_INFLIGHT.clear()
+
+    # Integration: the persistent scheduler performs attempts 1/2/3 only. A
+    # fourth call for the same identity returns the exhausted state immediately.
+    saved_retry_hydrate = globals()["_reliable_hydrate_exact_post"]
+    saved_media_gate = globals()["_acceptance_media_block_reason"]
+    saved_single_attempt = globals()["_single_old_send_attempt"]
+    saved_retry_wait = globals()["AUTO_GEMINI_RETRY_WAIT_SECONDS"]
+    retry_counter = {"count": 0}
+
+    def fake_failed_send(_post: Any, _reply_ids: Any, _state: Any) -> dict[str, Any]:
+        retry_counter["count"] += 1
+        return {"sent": False, "mode": "translation_unavailable", "source_name": "acceptance", "total_seconds": 0.0}
+
+    try:
+        globals()["_reliable_hydrate_exact_post"] = lambda post_value, force=False: post_value
+        globals()["_acceptance_media_block_reason"] = lambda _post: ""
+        globals()["_single_old_send_attempt"] = fake_failed_send
+        globals()["AUTO_GEMINI_RETRY_WAIT_SECONDS"] = 0
+        retry_post = FakePost("Retry translation", "acceptance-retry-3")
+        retry_state: dict[str, Any] = {}
+        retry_results = [send_post(retry_post, state=retry_state) for _ in range(4)]
+        check("three_failed_attempts_make_three_requests", retry_counter["count"] == 3)
+        check("fourth_attempt_is_blocked_without_request", retry_results[-1].get("mode") == "translation_unavailable_retries_exhausted_no_fourth_attempt" and retry_counter["count"] == 3)
+    finally:
+        globals()["_reliable_hydrate_exact_post"] = saved_retry_hydrate
+        globals()["_acceptance_media_block_reason"] = saved_media_gate
+        globals()["_single_old_send_attempt"] = saved_single_attempt
+        globals()["AUTO_GEMINI_RETRY_WAIT_SECONDS"] = saved_retry_wait
+
+    return passed
+
+# ====== END STABLE GEMINI TRANSLATION CORE ======
+
 if __name__ == "__main__":
-    main()
+    if os.environ.get("WINNER_RUN_ACCEPTANCE_TESTS", "0") == "1":
+        acceptance_results = _stable_translation_acceptance_tests()
+        print(json.dumps({"passed": len(acceptance_results), "tests": acceptance_results}, ensure_ascii=False, indent=2))
+    else:
+        main()
