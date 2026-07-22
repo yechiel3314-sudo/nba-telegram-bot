@@ -23557,608 +23557,626 @@ def _fit_history_entries_one_message(entries: list[tuple[Post, str, str, str]], 
 # ====== END FINAL STABLE SHARED RSS + RELIABLE TEN-LATEST + SOURCE-LAYOUT PATCH ======
 
 
-# ====== FINAL RSS RESTORE + BOUNDED WORKERS + EXACT X LAYOUT PATCH (2026-07-22) ======
-# This layer intentionally starts from the last stable shared-RSS build.
-# It does not rename/reset any persistent file or key.  It keeps the proven RSS
-# parser/request path, bounds all background workers, adds direct-X fallbacks,
-# and hydrates exact tweet line breaks only when a post is previewed/published.
+# ====== FINAL EXACT X STRUCTURE + THREAD-SAFE RSS/CONTROL PATCH (2026-07-22) ======
+# This compatibility layer deliberately keeps every existing persistent filename
+# and JSON key.  It adds only runtime fallbacks and optional post attributes.
 
-BOT_BUILD_ID = "winner-rss-restored-bounded-exact-layout-2026-07-22"
+BOT_BUILD_ID = "winner-exact-x-threadsafe-rss-manual-gemini-2026-07-22"
 
-from concurrent.futures import ThreadPoolExecutor as _ReliableExecutor
-from concurrent.futures import FIRST_COMPLETED as _RELIABLE_FIRST_COMPLETED
-from concurrent.futures import TimeoutError as _ReliableFutureTimeout
-from concurrent.futures import wait as _reliable_wait
+EXACT_X_SOURCE_TIMEOUT_SECONDS = float(os.environ.get("EXACT_X_SOURCE_TIMEOUT_SECONDS", "6"))
+EXACT_X_SOURCE_CACHE_SECONDS = int(os.environ.get("EXACT_X_SOURCE_CACHE_SECONDS", str(7 * 24 * 60 * 60)))
+SYNDICATION_PROFILE_TIMEOUT_SECONDS = float(os.environ.get("SYNDICATION_PROFILE_TIMEOUT_SECONDS", "8"))
+RSS_HOST_COOLDOWN_SECONDS = int(os.environ.get("RSS_HOST_COOLDOWN_SECONDS", "180"))
+RSS_MAX_SEQUENTIAL_SOURCES = int(os.environ.get("RSS_MAX_SEQUENTIAL_SOURCES", "8"))
 
-RELIABLE_RSS_POOL_WORKERS = max(4, int(os.environ.get("RELIABLE_RSS_POOL_WORKERS", "8")))
-RELIABLE_CONTROL_POOL_WORKERS = max(1, int(os.environ.get("RELIABLE_CONTROL_POOL_WORKERS", "2")))
-RELIABLE_HISTORY_TRANSLATION_WORKERS = max(1, int(os.environ.get("RELIABLE_HISTORY_TRANSLATION_WORKERS", "4")))
-RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS = float(os.environ.get("RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS", "8"))
-RELIABLE_EXACT_POST_TIMEOUT_SECONDS = float(os.environ.get("RELIABLE_EXACT_POST_TIMEOUT_SECONDS", "6"))
-RELIABLE_DIRECT_PROFILE_CACHE_SECONDS = int(os.environ.get("RELIABLE_DIRECT_PROFILE_CACHE_SECONDS", "180"))
-RELIABLE_EXACT_POST_CACHE_SECONDS = int(os.environ.get("RELIABLE_EXACT_POST_CACHE_SECONDS", str(7 * 24 * 60 * 60)))
-
-_RELIABLE_RSS_EXECUTOR = _ReliableExecutor(max_workers=RELIABLE_RSS_POOL_WORKERS, thread_name_prefix="rss-shared")
-_RELIABLE_CONTROL_EXECUTOR = _ReliableExecutor(max_workers=RELIABLE_CONTROL_POOL_WORKERS, thread_name_prefix="control-shared")
-_RELIABLE_HISTORY_EXECUTOR = _ReliableExecutor(max_workers=RELIABLE_HISTORY_TRANSLATION_WORKERS, thread_name_prefix="history-shared")
-_RELIABLE_DIRECT_PROFILE_CACHE: dict[str, tuple[float, list[Post]]] = {}
-_RELIABLE_DIRECT_PROFILE_CACHE_LOCK = RLock()
-_RELIABLE_EXACT_POST_CACHE: dict[str, tuple[float, str, str]] = {}
-_RELIABLE_EXACT_POST_CACHE_LOCK = RLock()
+_EXACT_X_TEXT_CACHE: dict[str, tuple[float, str, str]] = {}
+_EXACT_X_TEXT_CACHE_LOCK = RLock()
+_RSS_HOST_FAILURE_UNTIL: dict[str, float] = {}
+_RSS_HOST_FAILURE_LOCK = Lock()
 
 
-def _reliable_post_identity(post: Post) -> str:
+def _snowflake_timestamp(tweet_id: str) -> float:
     try:
-        return _stable_rss_identity(post)
-    except Exception:
-        return str(
-            getattr(post, "post_id", "")
-            or getattr(post, "link", "")
-            or post_content_signature(
-                getattr(post, "username", ""),
-                getattr(post, "text", ""),
-                getattr(post, "quoted_text", ""),
-            )
-        ).strip()
-
-
-def _reliable_merge_posts(target: dict[str, Post], values: Any, username: str) -> None:
-    for post in values or []:
-        if not isinstance(post, Post):
-            continue
-        try:
-            _ensure_post_original_structure(post)
-        except Exception:
-            pass
-        post.username = str(username or getattr(post, "username", "") or "").strip().lstrip("@")
-        try:
-            readable = _stable_rss_post_text(post)
-        except Exception:
-            readable = str(getattr(post, "text", "") or "").strip()
-        if not readable:
-            continue
-        identity = _reliable_post_identity(post)
-        if identity and identity not in target:
-            target[identity] = post
-
-
-# Keep the stable http_get_feed/fetch_feed implementation.  Only the fan-out is
-# replaced: one process-wide bounded pool instead of a new pool for every writer.
-def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
-    templates = list(dict.fromkeys(feed_templates or []))
-    if not templates:
-        return [], [], []
-
-    merged: dict[str, Post] = {}
-    errors: list[str] = []
-    timeouts: list[str] = []
-    future_to_template: dict[Any, str] = {}
-
-    try:
-        for template in templates:
-            future_to_template[_RELIABLE_RSS_EXECUTOR.submit(fetch_feed, username, template)] = template
-    except RuntimeError as exc:
-        # Extremely defensive fallback if the OS refuses even the bounded pool.
-        logging.warning("Shared RSS pool unavailable; using sequential fallback: %s", short_error(exc, 350))
-        for template in templates:
-            source = feed_source_name(template)
-            try:
-                _reliable_merge_posts(merged, fetch_feed(username, template), username)
-            except Exception as item_exc:
-                summary = short_error(item_exc, 350)
-                errors.append(f"{source}: {type(item_exc).__name__}: {summary}")
-                if "timeout" in summary.casefold() or "timed out" in summary.casefold():
-                    timeouts.append(source)
-        ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-        return ordered, errors, list(dict.fromkeys(timeouts))
-
-    pending = set(future_to_template)
-    deadline = time.monotonic() + max(6.0, float(_STABLE_RSS_BATCH_TIMEOUT_SECONDS), float(FEED_COLLECTION_TIMEOUT_SECONDS))
-    while pending:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        done, pending = _reliable_wait(pending, timeout=min(0.8, remaining), return_when=_RELIABLE_FIRST_COMPLETED)
-        if not done:
-            continue
-        for future in done:
-            template = future_to_template[future]
-            source = feed_source_name(template)
-            try:
-                posts = future.result() or []
-                _reliable_merge_posts(merged, posts, username)
-            except Exception as exc:
-                summary = short_error(exc, 350)
-                errors.append(f"{source}: {type(exc).__name__}: {summary}")
-                if "timeout" in summary.casefold() or "timed out" in summary.casefold():
-                    timeouts.append(source)
-
-    for future in pending:
-        source = feed_source_name(future_to_template[future])
-        timeouts.append(source)
-        future.cancel()
-
-    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-    return ordered, errors, list(dict.fromkeys(timeouts))
-
-
-def _reliable_snowflake_timestamp(tweet_id: str) -> float:
-    try:
-        return ((int(str(tweet_id)) >> 22) + 1288834974657) / 1000.0
+        value = int(str(tweet_id))
+        return ((value >> 22) + 1288834974657) / 1000.0
     except Exception:
         return time.time()
 
 
-def _reliable_normalize_x_text(value: str) -> str:
+def _tweet_parts_for_post(post: Post) -> tuple[str, str] | None:
+    parts = tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+    if parts:
+        return parts
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    candidates = [str(getattr(post, "post_id", "") or "")]
+    candidates.extend(str(value or "") for value in (getattr(post, "dedupe_ids", []) or []))
+    for value in candidates:
+        matches = re.findall(r"(?<!\d)(\d{15,22})(?!\d)", value)
+        if matches and username:
+            return username, matches[-1]
+    return None
+
+
+def _normalize_direct_x_text(value: str) -> str:
     value = html.unescape(str(value or "")).replace("\r\n", "\n").replace("\r", "\n")
     value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"</p\s*>", "\n", value, flags=re.IGNORECASE)
     value = re.sub(r"<[^>]+>", "", value)
-    value = re.sub(r"https?://t\.co/\S+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"https?://(?:t\.co|x\.com|twitter\.com)/\S+", "", value, flags=re.IGNORECASE)
     value = re.sub(r"[ \t]+", " ", value)
     value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
 
 
-def _reliable_deep_values(value: Any):
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from _reliable_deep_values(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _reliable_deep_values(child)
-
-
-def _reliable_extract_screen_name(node: dict[str, Any]) -> str:
-    # Prefer the exact GraphQL author path.  Do not scan arbitrary nested quoted
-    # tweets first, because that can attribute a quote to the wrong account.
-    paths = [
-        ("core", "user_results", "result", "legacy"),
-        ("core", "user_results", "result"),
-        ("user_results", "result", "legacy"),
-        ("user_results", "result"),
-        ("author", "legacy"),
-        ("author",),
-        ("user", "legacy"),
-        ("user",),
-        ("legacy",),
-        (),
-    ]
-    for path in paths:
-        candidate: Any = node
-        for key in path:
-            if not isinstance(candidate, dict):
-                candidate = None
-                break
-            candidate = candidate.get(key)
-        if not isinstance(candidate, dict):
+def _direct_x_json_text(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    roots: list[Any] = []
+    for key in ("tweet", "status", "data", "result"):
+        if isinstance(data.get(key), dict):
+            roots.append(data.get(key))
+    roots.append(data)
+    for root in roots:
+        if not isinstance(root, dict):
             continue
-        for key in ("screen_name", "username", "user_name"):
-            raw = candidate.get(key)
-            if isinstance(raw, str) and raw.strip():
-                return raw.strip().lstrip("@")
+        for key in ("full_text", "text", "tweet_text", "raw_text"):
+            value = root.get(key)
+            if isinstance(value, str) and len(_normalize_direct_x_text(value)) >= 2:
+                return _normalize_direct_x_text(value)
+        legacy = root.get("legacy")
+        if isinstance(legacy, dict):
+            for key in ("full_text", "text"):
+                value = legacy.get(key)
+                if isinstance(value, str) and len(_normalize_direct_x_text(value)) >= 2:
+                    return _normalize_direct_x_text(value)
     return ""
 
 
-def _reliable_extract_media_urls(node: Any) -> tuple[list[str], list[str]]:
-    images: list[str] = []
-    videos: list[str] = []
-    for item in _reliable_deep_values(node):
-        for key, raw in item.items():
-            if not isinstance(raw, str) or not raw.startswith(("http://", "https://")):
-                continue
-            value = html.unescape(raw)
-            lowered = value.casefold()
-            if "pbs.twimg.com/media" in lowered or is_image_url(value):
-                images.append(value)
-            elif any(token in lowered for token in ("video.twimg.com", ".mp4", ".m3u8")):
-                videos.append(value)
-    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
+def _direct_x_oembed_text(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    raw_html = str(data.get("html", "") or "")
+    match = re.search(r"<blockquote\b[^>]*>.*?<p\b[^>]*>(.*?)</p>", raw_html, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        match = re.search(r"<p\b[^>]*>(.*?)</p>", raw_html, flags=re.IGNORECASE | re.DOTALL)
+    return _normalize_direct_x_text(match.group(1) if match else "")
 
 
-def _reliable_posts_from_profile_payload(username: str, payload: Any) -> list[Post]:
-    wanted = str(username or "").strip().lstrip("@").casefold()
-    merged: dict[str, Post] = {}
-    for node in _reliable_deep_values(payload):
-        legacy = node.get("legacy") if isinstance(node.get("legacy"), dict) else {}
-        text_value = ""
-        for raw in (
-            node.get("full_text"), node.get("tweet_text"), node.get("text"),
-            legacy.get("full_text"), legacy.get("text"),
-        ):
-            if isinstance(raw, str):
-                text_value = _reliable_normalize_x_text(raw)
-                if text_value:
-                    break
-        if not text_value:
-            continue
+def _fetch_exact_x_text(post: Post) -> tuple[str, str]:
+    parts = _tweet_parts_for_post(post)
+    if not parts:
+        return "", ""
+    username, tweet_id = parts
+    with _EXACT_X_TEXT_CACHE_LOCK:
+        cached = _EXACT_X_TEXT_CACHE.get(tweet_id)
+        if cached and time.time() - cached[0] <= EXACT_X_SOURCE_CACHE_SECONDS:
+            return cached[1], cached[2]
 
-        tweet_id = ""
-        for raw in (node.get("rest_id"), node.get("id_str"), node.get("tweet_id"), node.get("id"), legacy.get("id_str")):
-            candidate = str(raw or "")
-            if re.fullmatch(r"\d{15,22}", candidate):
-                tweet_id = candidate
-                break
-        if not tweet_id:
-            continue
-
-        author = _reliable_extract_screen_name(node)
-        if author and wanted and author.casefold() != wanted:
-            # Ignore quoted/embedded posts by other accounts.
-            continue
-
-        images, videos = _reliable_extract_media_urls(node)
-        link = f"https://x.com/{username}/status/{tweet_id}"
-        post = Post(
-            post_id=tweet_id,
-            username=username,
-            text=text_value,
-            link=link,
-            image_urls=images,
-            video_urls=videos,
-            has_video=bool(videos),
-            primary_has_video=bool(videos),
-            quoted_has_video=False,
-            quoted_author="",
-            quoted_text="",
-            published_ts=_reliable_snowflake_timestamp(tweet_id),
-            dedupe_ids=[tweet_id, f"{username}:{tweet_id}", f"{username}:{link}", post_content_signature(username, text_value, "")],
-            source_name="x-direct-profile",
-        )
-        post.original_text = text_value
-        post.source_structure_available = True
-        post.exact_source_structure = True
-        post.exact_source_provider = "x-direct-profile"
-        merged.setdefault(tweet_id, post)
-    return sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-
-
-def _reliable_official_x_profile_posts(username: str, limit: int) -> list[Post]:
-    token = (
+    bearer_token = (
         os.environ.get("X_BEARER_TOKEN", "").strip()
         or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
         or os.environ.get("X_API_BEARER_TOKEN", "").strip()
     )
-    if not token:
-        return []
-    headers = {"Authorization": f"Bearer {token}", "User-Agent": "NetoSportBot/1.0"}
-    lookup_url = f"https://api.x.com/2/users/by/username/{urllib.parse.quote(username)}"
-    request = urllib.request.Request(lookup_url, headers=headers)
-    with urllib.request.urlopen(request, timeout=max(3.0, RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)) as response:
-        lookup = json.loads(response.read().decode("utf-8", errors="replace"))
-    user_id = str(((lookup or {}).get("data") or {}).get("id") or "")
-    if not user_id:
-        return []
-    params = urllib.parse.urlencode({
-        "max_results": max(5, min(100, int(limit))),
-        "exclude": "replies,retweets",
-        "tweet.fields": "created_at,attachments",
-        "expansions": "attachments.media_keys",
-        "media.fields": "url,preview_image_url,type,variants",
-    })
-    timeline_url = f"https://api.x.com/2/users/{user_id}/tweets?{params}"
-    request = urllib.request.Request(timeline_url, headers=headers)
-    with urllib.request.urlopen(request, timeout=max(3.0, RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)) as response:
-        data = json.loads(response.read().decode("utf-8", errors="replace"))
-    media_map: dict[str, dict[str, Any]] = {}
-    for media in (((data or {}).get("includes") or {}).get("media") or []):
-        if isinstance(media, dict) and media.get("media_key"):
-            media_map[str(media["media_key"])] = media
-    result: list[Post] = []
-    for item in (data or {}).get("data") or []:
-        if not isinstance(item, dict):
-            continue
-        tweet_id = str(item.get("id") or "")
-        text_value = _reliable_normalize_x_text(str(item.get("text") or ""))
-        if not tweet_id or not text_value:
-            continue
-        images: list[str] = []
-        videos: list[str] = []
-        for key in ((item.get("attachments") or {}).get("media_keys") or []):
-            media = media_map.get(str(key), {})
-            for candidate in (media.get("url"), media.get("preview_image_url")):
-                if isinstance(candidate, str) and candidate:
-                    images.append(candidate)
-            for variant in media.get("variants") or []:
-                url = variant.get("url") if isinstance(variant, dict) else ""
-                if isinstance(url, str) and url:
-                    videos.append(url)
-        link = f"https://x.com/{username}/status/{tweet_id}"
-        post = Post(tweet_id, username, text_value, link, list(dict.fromkeys(images)), list(dict.fromkeys(videos)), bool(videos), bool(videos), False, "", "", _reliable_snowflake_timestamp(tweet_id), [tweet_id, f"{username}:{tweet_id}", f"{username}:{link}", post_content_signature(username, text_value, "")], "x-api-v2")
-        post.original_text = text_value
+    if bearer_token:
+        try:
+            official_url = f"https://api.x.com/2/tweets/{tweet_id}?tweet.fields=text,created_at"
+            official_request = urllib.request.Request(
+                official_url,
+                headers={"Authorization": f"Bearer {bearer_token}", "User-Agent": "NetoSportBot/1.0"},
+            )
+            with urllib.request.urlopen(official_request, timeout=max(2, int(EXACT_X_SOURCE_TIMEOUT_SECONDS))) as response:
+                official_data = json.loads(response.read().decode("utf-8", errors="replace"))
+            official_text = _direct_x_json_text(official_data)
+            if official_text:
+                with _EXACT_X_TEXT_CACHE_LOCK:
+                    _EXACT_X_TEXT_CACHE[tweet_id] = (time.time(), official_text, "x-api-v2")
+                return official_text, "x-api-v2"
+        except Exception as exc:
+            logging.debug("Official X API exact source failed safely for %s: %s", tweet_id, short_error(exc, 220))
+
+    endpoints = [
+        ("fxtwitter", f"https://api.fxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", "json"),
+        ("vxtwitter", f"https://api.vxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", "json"),
+        (
+            "x-oembed",
+            "https://publish.twitter.com/oembed?" + urllib.parse.urlencode({
+                "url": f"https://x.com/{username}/status/{tweet_id}",
+                "omit_script": "true",
+                "dnt": "true",
+            }),
+            "oembed",
+        ),
+    ]
+    for provider, url, mode in endpoints:
+        try:
+            raw = http_get_once(url, timeout=max(2, int(EXACT_X_SOURCE_TIMEOUT_SECONDS)))
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+            value = _direct_x_json_text(data) if mode == "json" else _direct_x_oembed_text(data)
+            if value:
+                with _EXACT_X_TEXT_CACHE_LOCK:
+                    _EXACT_X_TEXT_CACHE[tweet_id] = (time.time(), value, provider)
+                return value, provider
+        except Exception as exc:
+            logging.debug("Exact X source %s failed safely for %s: %s", provider, tweet_id, short_error(exc, 220))
+    return "", ""
+
+
+def _hydrate_exact_x_structure(post: Any, force: bool = False) -> Any:
+    post = _ensure_post_original_structure(post)
+    if not isinstance(post, Post):
+        return post
+    if not force and bool(getattr(post, "exact_source_structure", False)) and str(getattr(post, "original_text", "") or ""):
+        return post
+    value, provider = _fetch_exact_x_text(post)
+    if value:
+        post.text = value
+        post.original_text = value
         post.source_structure_available = True
         post.exact_source_structure = True
-        post.exact_source_provider = "x-api-v2"
-        result.append(post)
-    return result[:max(1, int(limit))]
+        post.exact_source_provider = provider
+        post.exact_source_fetched_at = time.time()
+    return post
 
 
-def _reliable_syndication_profile_posts(username: str, limit: int) -> list[Post]:
-    encoded = urllib.parse.quote(str(username or "").strip().lstrip("@"))
-    urls = [
-        f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{encoded}?dnt=true&lang=en",
-        f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{encoded}",
-    ]
+def _encode_exact_break_markers(value: str) -> tuple[str, list[tuple[str, str]]]:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    markers: list[tuple[str, str]] = []
+    output: list[str] = []
+    index = 0
+    pos = 0
+    for match in re.finditer(r"\n+", text):
+        output.append(text[pos:match.start()])
+        index += 1
+        marker = f"⟪98{index:04d}⟫"
+        replacement = "\n\n" if len(match.group(0)) >= 2 else "\n"
+        markers.append((marker, replacement))
+        output.append(f" {marker} ")
+        pos = match.end()
+    output.append(text[pos:])
+    return "".join(output), markers
+
+
+def _decode_exact_break_markers(value: str, markers: list[tuple[str, str]]) -> tuple[str, bool]:
+    result = str(value or "")
+    found = 0
+    for marker, replacement in markers:
+        if marker in result:
+            found += 1
+            result = result.replace(marker, replacement)
+    result = re.sub(r"⟪98\d{4}⟫", "", result)
+    result = re.sub(r"[ \t]*\n[ \t]*", "\n", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip(), bool(markers) and found == len(markers)
+
+
+def _source_break_template(source: str) -> list[bool]:
+    source = str(source or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = source.split("\n")
+    template: list[bool] = []
+    last_blank = False
+    for line in lines:
+        blank = not line.strip()
+        if blank and last_blank:
+            continue
+        template.append(blank)
+        last_blank = blank
+    while template and template[0]:
+        template.pop(0)
+    while template and template[-1]:
+        template.pop()
+    return template
+
+
+def _apply_exact_break_template(source: str, translated: str) -> str:
+    template = _source_break_template(source)
+    value = str(translated or "").replace("\r\n", "\n").replace("\r", "\n")
+    value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
+    source_rows = sum(1 for blank in template if not blank)
+    translated_rows = [line.strip() for line in value.split("\n") if line.strip()]
+    if source_rows <= 1:
+        return re.sub(r"\s*\n+\s*", " ", value).strip()
+    if len(translated_rows) != source_rows:
+        prose = re.sub(r"\s+", " ", value).strip()
+        source_nonempty = [line.strip() for line in str(source or "").splitlines() if line.strip()]
+        weights = [max(1, len(re.findall(r"\S+", line))) for line in source_nonempty]
+        words = prose.split()
+        rebuilt: list[str] = []
+        used = 0
+        total_weight = max(1, sum(weights))
+        for idx, weight in enumerate(weights):
+            if idx == len(weights) - 1:
+                take = len(words) - used
+            else:
+                target = round(len(words) * weight / total_weight)
+                take = max(1, min(len(words) - used - (len(weights) - idx - 1), target))
+            rebuilt.append(" ".join(words[used:used + take]).strip())
+            used += take
+        translated_rows = rebuilt
+    row_iter = iter(translated_rows)
+    output: list[str] = []
+    for blank in template:
+        output.append("" if blank else next(row_iter, ""))
+    result = "\n".join(output)
+    result = re.sub(r"[ \t]+", " ", result)
+    result = re.sub(r"[ \t]*\n[ \t]*", "\n", result)
+    return re.sub(r"\n{3,}", "\n\n", result).strip()
+
+
+_PRE_EXACT_GEMINI_TRANSLATE_POST_ONCE = gemini_translate_post_once
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    post = _hydrate_exact_x_structure(post)
+    original_main = str(getattr(post, "text", "") or "")
+    original_quote = str(getattr(post, "quoted_text", "") or "")
+    main_marked, main_markers = _encode_exact_break_markers(original_main) if bool(getattr(post, "exact_source_structure", False)) else (original_main, [])
+    quote_marked, quote_markers = _encode_exact_break_markers(original_quote) if bool(getattr(post, "exact_source_structure", False)) else (original_quote, [])
+    post.text = main_marked
+    post.quoted_text = quote_marked
+    try:
+        main, quote, author = _PRE_EXACT_GEMINI_TRANSLATE_POST_ONCE(post, include_quote)
+    finally:
+        post.text = original_main
+        post.quoted_text = original_quote
+    if main_markers:
+        main, complete = _decode_exact_break_markers(main, main_markers)
+        if not complete:
+            main = _apply_exact_break_template(original_main, main)
+    if quote_markers and quote:
+        quote, complete = _decode_exact_break_markers(quote, quote_markers)
+        if not complete:
+            quote = _apply_exact_break_template(original_quote, quote)
+    return main, quote, author
+
+
+_PRE_EXACT_RESTORE_SOURCE_LAYOUT = _restore_source_layout
+
+
+def _restore_source_layout(post: Post, translated: str, quoted: bool = False) -> str:
+    post = _ensure_post_original_structure(post)
+    if bool(getattr(post, "exact_source_structure", False)):
+        source = _post_original_text(post, quoted=quoted)
+        value = _apply_exact_break_template(source, translated)
+        value = _compact_lists_and_spacing(value)
+        value = re.sub(r"[ \t]{2,}", " ", value)
+        return re.sub(r"\n{3,}", "\n\n", value).strip()
+    return _PRE_EXACT_RESTORE_SOURCE_LAYOUT(post, translated, quoted=quoted)
+
+
+# ---- Thread-safe, leak-free RSS ----
+def _rss_host(url: str) -> str:
+    try:
+        return urllib.parse.urlparse(url).netloc.casefold()
+    except Exception:
+        return ""
+
+
+def _rss_host_in_cooldown(host: str) -> bool:
+    if not host:
+        return False
+    with _RSS_HOST_FAILURE_LOCK:
+        return time.time() < _RSS_HOST_FAILURE_UNTIL.get(host, 0.0)
+
+
+def _rss_mark_host_failure(host: str, exc: Exception) -> None:
+    if not host:
+        return
+    text = str(exc)
+    seconds = RSS_HOST_COOLDOWN_SECONDS
+    if "403" in text or "404" in text:
+        seconds = max(seconds, 15 * 60)
+    elif "503" in text or "502" in text or "504" in text:
+        seconds = max(seconds, 5 * 60)
+    with _RSS_HOST_FAILURE_LOCK:
+        _RSS_HOST_FAILURE_UNTIL[host] = time.time() + seconds
+
+
+def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    host = _rss_host(url)
+    if _rss_host_in_cooldown(host):
+        raise RuntimeError(f"RSS host temporarily cooling down: {host}")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+        },
+    )
+    attempts = max(1, min(2, int(FEED_HTTP_RETRIES)))
     last_error: Exception | None = None
-    for url in urls:
+    for attempt in range(attempts):
         try:
-            request = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36",
-                "Accept": "text/html,application/json,*/*",
-                "Accept-Language": "en-US,en;q=0.9",
-            })
-            with urllib.request.urlopen(request, timeout=max(3.0, RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)) as response:
-                raw = response.read().decode("utf-8", errors="replace")
-            candidates: list[Any] = []
-            try:
-                candidates.append(json.loads(raw))
-            except Exception:
-                pass
-            for match in re.finditer(r"<script\b[^>]*>(.*?)</script>", raw, flags=re.IGNORECASE | re.DOTALL):
-                script = html.unescape(match.group(1)).strip()
-                if not script:
+            with urllib.request.urlopen(request, timeout=max(2.0, float(timeout))) as response:
+                data = response.read()
+            if not data or not re.search(br"<(?:\?xml|rss|feed)\b", data[:4096], flags=re.IGNORECASE):
+                raise RuntimeError("RSS endpoint returned an empty or non-XML response")
+            with _RSS_HOST_FAILURE_LOCK:
+                _RSS_HOST_FAILURE_UNTIL.pop(host, None)
+            return data
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code in {401, 403, 404, 410}:
+                break
+        except Exception as exc:
+            last_error = exc
+        if attempt + 1 < attempts:
+            time.sleep(0.35)
+    _rss_mark_host_failure(host, last_error or RuntimeError("unknown RSS failure"))
+    raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
+
+
+def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
+    """Sequential per-account mirror sweep: no nested thread creation or leaks."""
+    merged: dict[str, Post] = {}
+    errors: list[str] = []
+    timeouts: list[str] = []
+    for template in list(dict.fromkeys(feed_templates or []))[:max(1, RSS_MAX_SEQUENTIAL_SOURCES)]:
+        source = feed_source_name(template)
+        url = template.format(username=urllib.parse.quote(username))
+        host = _rss_host(url)
+        if _rss_host_in_cooldown(host):
+            errors.append(f"{source}: cooldown")
+            continue
+        try:
+            posts = fetch_feed(username, template)
+            for post in posts:
+                if not isinstance(post, Post):
                     continue
-                if script.startswith(("{", "[")):
-                    try:
-                        candidates.append(json.loads(script))
-                    except Exception:
-                        pass
-                assignment = re.search(r"(?:window\.__INITIAL_STATE__|__NEXT_DATA__)\s*=\s*({.*})\s*;?\s*$", script, flags=re.DOTALL)
-                if assignment:
-                    try:
-                        candidates.append(json.loads(assignment.group(1)))
-                    except Exception:
-                        pass
-            merged: dict[str, Post] = {}
-            for candidate in candidates:
-                _reliable_merge_posts(merged, _reliable_posts_from_profile_payload(username, candidate), username)
-            # Older embedded timeline HTML fallback.
-            for match in re.finditer(
-                r"data-tweet-id=[\"'](\d{15,22})[\"'][\s\S]{0,16000}?<p\b[^>]*>(.*?)</p>",
-                raw,
-                flags=re.IGNORECASE,
-            ):
-                tweet_id, body = match.groups()
-                text_value = _reliable_normalize_x_text(body)
-                if not text_value:
-                    continue
-                link = f"https://x.com/{username}/status/{tweet_id}"
-                post = Post(tweet_id, username, text_value, link, [], [], False, False, False, "", "", _reliable_snowflake_timestamp(tweet_id), [tweet_id, f"{username}:{tweet_id}", f"{username}:{link}", post_content_signature(username, text_value, "")], "x-syndication")
+                _ensure_post_original_structure(post)
+                identity = _stable_rss_identity(post) if "_stable_rss_identity" in globals() else (post.post_id or post.link)
+                if identity:
+                    merged.setdefault(str(identity), post)
+        except Exception as exc:
+            summary = short_error(exc, 300)
+            errors.append(f"{source}: {type(exc).__name__}: {summary}")
+            if "timed out" in summary.casefold() or "timeout" in summary.casefold():
+                timeouts.append(source)
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    return ordered, errors, list(dict.fromkeys(timeouts))
+
+
+# Additional mirrors are optional; failed hosts are circuit-broken and never block the others.
+_PRE_EXACT_STABLE_RSS_TEMPLATES = _stable_rss_templates
+
+
+def _stable_rss_templates() -> list[str]:
+    base = list(_PRE_EXACT_STABLE_RSS_TEMPLATES())
+    extras = [
+        "https://xcancel.com/{username}/rss",
+        "https://nitter.poast.org/{username}/rss",
+        "https://nitter.privacydev.net/{username}/rss",
+        "https://nitter.woodland.cafe/{username}/rss",
+    ]
+    return list(dict.fromkeys(base + extras))
+
+
+def _syndication_images(value: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, str) and ("pbs.twimg.com/media" in item or is_image_url(item)):
+                found.append(html.unescape(item))
+            else:
+                found.extend(_syndication_images(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_syndication_images(item))
+    return list(dict.fromkeys(found))
+
+
+def _syndication_dict_posts(username: str, root: Any) -> list[Post]:
+    posts: dict[str, Post] = {}
+    seen_objects: set[int] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            object_id = id(value)
+            if object_id in seen_objects:
+                return
+            seen_objects.add(object_id)
+            text_value = ""
+            for key in ("full_text", "tweet_text", "text"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and len(_normalize_direct_x_text(candidate)) >= 4:
+                    text_value = _normalize_direct_x_text(candidate)
+                    break
+            legacy = value.get("legacy")
+            if not text_value and isinstance(legacy, dict):
+                text_value = _normalize_direct_x_text(str(legacy.get("full_text") or legacy.get("text") or ""))
+            id_value = ""
+            for key in ("id_str", "rest_id", "tweet_id", "id"):
+                candidate = str(value.get(key, "") or "")
+                match = re.fullmatch(r"\d{15,22}", candidate)
+                if match:
+                    id_value = candidate
+                    break
+            if text_value and id_value:
+                link = f"https://x.com/{username}/status/{id_value}"
+                images = _syndication_images(value)
+                post = Post(
+                    post_id=id_value,
+                    username=username,
+                    text=text_value,
+                    link=link,
+                    image_urls=images,
+                    video_urls=[],
+                    has_video=False,
+                    primary_has_video=False,
+                    quoted_has_video=False,
+                    quoted_author="",
+                    quoted_text="",
+                    published_ts=_snowflake_timestamp(id_value),
+                    dedupe_ids=[id_value, f"{username}:{id_value}", f"{username}:{link}", post_content_signature(username, text_value, "")],
+                    source_name="syndication.twitter.com",
+                )
                 post.original_text = text_value
                 post.source_structure_available = True
                 post.exact_source_structure = True
-                post.exact_source_provider = "x-syndication"
-                merged.setdefault(tweet_id, post)
-            ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-            if ordered:
-                return ordered[:max(1, int(limit))]
-        except Exception as exc:
-            last_error = exc
-    if last_error:
-        logging.debug("Direct X profile fallback failed safely for @%s: %s", username, short_error(last_error, 350))
-    return []
+                post.exact_source_provider = "x-profile-syndication"
+                posts.setdefault(id_value, post)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+    walk(root)
+    return sorted(posts.values(), key=lambda item: item.published_ts, reverse=True)
 
 
-def _reliable_direct_profile_posts(username: str, limit: int = 30, force: bool = False) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    key = canonical.casefold()
-    with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
-        cached = _RELIABLE_DIRECT_PROFILE_CACHE.get(key)
-        if not force and cached and time.time() - cached[0] <= RELIABLE_DIRECT_PROFILE_CACHE_SECONDS:
-            return list(cached[1][:max(1, int(limit))])
-    result: list[Post] = []
+def _fetch_syndication_profile_posts(username: str, limit: int = 30) -> list[Post]:
+    url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{urllib.parse.quote(username)}"
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/json,*/*"})
+    with urllib.request.urlopen(request, timeout=max(3.0, SYNDICATION_PROFILE_TIMEOUT_SECONDS)) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    candidates: list[Any] = []
     try:
-        result = _reliable_official_x_profile_posts(canonical, limit=max(20, int(limit)))
-    except Exception as exc:
-        logging.debug("Official X profile reader failed safely for @%s: %s", canonical, short_error(exc, 300))
-    if not result:
+        candidates.append(json.loads(raw))
+    except Exception:
+        pass
+    for match in re.finditer(r"<script\b[^>]*>(.*?)</script>", raw, flags=re.IGNORECASE | re.DOTALL):
+        script = html.unescape(match.group(1)).strip()
+        if not script or script[:1] not in "[{":
+            continue
         try:
-            result = _reliable_syndication_profile_posts(canonical, limit=max(20, int(limit)))
-        except Exception as exc:
-            logging.debug("Syndication profile reader failed safely for @%s: %s", canonical, short_error(exc, 300))
-    if result:
-        with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
-            _RELIABLE_DIRECT_PROFILE_CACHE[key] = (time.time(), list(result))
-        try:
-            _stable_rss_remember(canonical, result)
+            candidates.append(json.loads(script))
         except Exception:
-            pass
-    return result[:max(1, int(limit))]
+            continue
+    merged: dict[str, Post] = {}
+    for candidate in candidates:
+        for post in _syndication_dict_posts(username, candidate):
+            merged.setdefault(post.post_id, post)
+    # Legacy embedded-timeline markup fallback.
+    for match in re.finditer(
+        r"data-tweet-id=[\"'](\d{15,22})[\"'][\s\S]{0,12000}?<p\b[^>]*class=[\"'][^\"']*Tweet-text[^\"']*[\"'][^>]*>(.*?)</p>",
+        raw,
+        flags=re.IGNORECASE,
+    ):
+        tweet_id, body = match.groups()
+        text_value = _normalize_direct_x_text(body)
+        if not text_value:
+            continue
+        link = f"https://x.com/{username}/status/{tweet_id}"
+        post = Post(tweet_id, username, text_value, link, [], [], False, False, False, "", "", _snowflake_timestamp(tweet_id), [tweet_id, f"{username}:{tweet_id}", f"{username}:{link}", post_content_signature(username, text_value, "")], "syndication.twitter.com")
+        post.original_text = text_value
+        post.source_structure_available = True
+        post.exact_source_structure = True
+        post.exact_source_provider = "x-profile-syndication"
+        merged.setdefault(tweet_id, post)
+    return sorted(merged.values(), key=lambda item: item.published_ts, reverse=True)[:max(1, int(limit))]
 
 
-# Preserve the stable RSS collector.  Add direct X only as a fallback/augmenter.
-_PRE_RELIABLE_STABLE_NETWORK_FETCH = _stable_rss_network_fetch
+_PRE_EXACT_STABLE_NETWORK_FETCH = _stable_rss_network_fetch
 
 
 def _stable_rss_network_fetch(username: str, limit: int = 30, exhaustive: bool = False) -> tuple[list[Post], dict[str, Any]]:
-    canonical = str(username or "").strip().lstrip("@")
+    posts, diagnostics = _PRE_EXACT_STABLE_NETWORK_FETCH(username, limit=limit, exhaustive=exhaustive)
+    if len(posts) >= min(10, max(1, int(limit))) or (posts and not exhaustive):
+        return posts, diagnostics
     try:
-        rss_posts, diagnostics = _PRE_RELIABLE_STABLE_NETWORK_FETCH(canonical, limit=limit, exhaustive=exhaustive)
+        direct = _fetch_syndication_profile_posts(username, limit=max(20, int(limit)))
+        merged: dict[str, Post] = {}
+        _stable_rss_merge(merged, posts, username)
+        _stable_rss_merge(merged, direct, username)
+        posts = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)[:max(1, int(limit))]
+        diagnostics.setdefault("sources", {})["x_profile_syndication"] = len(direct)
     except Exception as exc:
-        rss_posts, diagnostics = [], {"errors": [f"stable_rss: {short_error(exc, 350)}"], "timeouts": [], "sources": {}}
-    merged: dict[str, Post] = {}
-    _reliable_merge_posts(merged, rss_posts, canonical)
-    target = min(max(1, int(limit)), 10 if exhaustive else 1)
-    if len(merged) < target:
-        try:
-            direct = _reliable_direct_profile_posts(canonical, limit=max(20, int(limit)))
-            before = len(merged)
-            _reliable_merge_posts(merged, direct, canonical)
-            diagnostics.setdefault("sources", {})["direct_x_profile"] = len(merged) - before
-        except Exception as exc:
-            diagnostics.setdefault("errors", []).append(f"direct_x_profile: {short_error(exc, 300)}")
-    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-    diagnostics["returned_network"] = len(ordered)
-    return ordered[:max(1, int(limit))], diagnostics
+        diagnostics.setdefault("errors", []).append(f"x_profile_syndication: {short_error(exc, 260)}")
+    return posts, diagnostics
 
 
-# Keep Footballtweet's isolated path that worked, but give it the same direct-X
-# fallback when every RSS mirror is temporarily unavailable.
-_PRE_RELIABLE_FOOTBALLTWEET_ISOLATED = _fetch_footballtweet_posts_isolated
-
-
-def _fetch_footballtweet_posts_isolated(limit: int = 25) -> list[Post]:
-    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
-    merged: dict[str, Post] = {}
+# No helper below creates a new thread. This removes the source of the production
+# "can't start new thread" failure in 10-latest and repeated RSS checks.
+def _daemon_call_with_timeout(label: str, producer: Any, timeout_seconds: float) -> tuple[Any, str]:
+    started = time.monotonic()
     try:
-        _reliable_merge_posts(merged, _PRE_RELIABLE_FOOTBALLTWEET_ISOLATED(limit=limit), canonical)
+        result = producer()
+        elapsed = time.monotonic() - started
+        if elapsed > float(timeout_seconds):
+            logging.info("Control reader %s completed after %.1fs (soft limit %.1fs)", label, elapsed, timeout_seconds)
+        return result, ""
     except Exception as exc:
-        logging.debug("Footballtweet stable reader failed safely: %s", short_error(exc, 300))
-    if not merged:
-        try:
-            _reliable_merge_posts(merged, _reliable_direct_profile_posts(canonical, limit=max(20, int(limit))), canonical)
-        except Exception as exc:
-            logging.debug("Footballtweet direct fallback failed safely: %s", short_error(exc, 300))
-    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-    if ordered:
-        try:
-            _stable_rss_remember(canonical, ordered)
-        except Exception:
-            pass
-    return ordered[:max(1, int(limit))]
+        return None, f"{label}: {type(exc).__name__}: {short_error(exc, 350)}"
 
 
-def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
-    """Never crash and merge every durable/network reader before returning."""
-    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
-    requested = max(1, int(limit))
-    merged: dict[str, Post] = {}
-    diagnostics: dict[str, Any] = {"sources": {}, "errors": [], "requested": requested}
-
-    def add(stage: str, values: Any) -> None:
-        before = len(merged)
-        try:
-            _reliable_merge_posts(merged, values, canonical)
-            diagnostics["sources"][stage] = len(merged) - before
-        except Exception as exc:
-            diagnostics["sources"][stage] = 0
-            diagnostics["errors"].append(f"{stage}: {short_error(exc, 260)}")
-
-    try:
-        add("stable_cache_history", _stable_rss_cached_posts(canonical, limit=120))
-    except Exception as exc:
-        diagnostics["errors"].append(f"stable_cache_history: {short_error(exc, 260)}")
-    try:
-        _collect_history_nonnetwork(canonical, merged, diagnostics)
-    except Exception as exc:
-        diagnostics["errors"].append(f"durable_history: {short_error(exc, 260)}")
-
-    if len(merged) < requested:
-        try:
-            add("direct_x_profile", _reliable_direct_profile_posts(canonical, limit=max(30, requested * 3), force=True))
-        except Exception as exc:
-            diagnostics["errors"].append(f"direct_x_profile: {short_error(exc, 260)}")
-
-    if len(merged) < requested:
-        try:
-            network, network_diag = _stable_rss_network_fetch(canonical, limit=max(60, requested * 5), exhaustive=True)
-            add("rss_and_direct", network)
-            diagnostics["errors"].extend((network_diag.get("errors") or [])[:8])
-            diagnostics["timeouts"] = (network_diag.get("timeouts") or [])[:8]
-        except Exception as exc:
-            diagnostics["errors"].append(f"rss_and_direct: {short_error(exc, 300)}")
-
-    try:
-        add("history_second_pass", _ten_history_load(canonical))
-        add("state_second_pass", _ten_history_collect_existing_state_posts(canonical))
-    except Exception as exc:
-        diagnostics["errors"].append(f"history_second_pass: {short_error(exc, 260)}")
-
-    ordered = sorted(merged.values(), key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
-    ordered = [post for post in ordered if str(_stable_rss_post_text(post) or "").strip()]
-    diagnostics["after_dedupe"] = len(ordered)
-    diagnostics["returned"] = min(requested, len(ordered))
-    LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diagnostics
-    if ordered:
-        try:
-            _stable_rss_remember(canonical, ordered)
-        except Exception:
-            pass
-    return ordered[:requested]
-
-
-def fetch_latest_post_fast(username: str) -> Post | None:
-    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
-    try:
-        cached = _stable_rss_cached_posts(canonical, limit=1)
-        if cached:
-            return cached[0]
-    except Exception:
-        pass
-    try:
-        direct = _reliable_direct_profile_posts(canonical, limit=3)
-        if direct:
-            return direct[0]
-    except Exception:
-        pass
-    try:
-        posts = fetch_posts(canonical) or []
-        return posts[0] if posts else None
-    except Exception:
-        return None
-
-
-# History translation also uses one process-wide bounded pool.  The old code
-# created a fresh five-thread executor on every button press and was the direct
-# source of production errors such as "can't start new thread".
 def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
-    values = list(posts or [])
-    if not values:
-        return []
-    futures: dict[Any, int] = {}
-    results = [""] * len(values)
-    try:
-        for index, item in enumerate(values):
-            futures[_RELIABLE_HISTORY_EXECUTOR.submit(_translate_history_post, item)] = index
-    except RuntimeError as exc:
-        logging.warning("Bounded history pool unavailable; translating sequentially: %s", short_error(exc, 300))
-        futures.clear()
-        for index, item in enumerate(values):
-            try:
-                results[index] = str(_translate_history_post(item) or "").strip()
-            except Exception:
-                results[index] = ""
-    if futures:
-        done, pending = _reliable_wait(set(futures), timeout=max(4.0, float(CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS)))
-        for future in done:
-            index = futures[future]
-            try:
-                results[index] = str(future.result() or "").strip()
-            except Exception:
-                results[index] = ""
-        for future in pending:
-            future.cancel()
-    for index, item in enumerate(values):
-        if not results[index] or results[index] == "אין טקסט זמין":
-            try:
-                results[index] = str(_stable_rss_post_text(item) or "").strip()
-            except Exception:
-                results[index] = str(getattr(item, "text", "") or "").strip()
-        if not results[index]:
-            results[index] = "הפוסט התקבל ללא טקסט קריא"
+    results: list[str] = []
+    for post in posts or []:
+        try:
+            value = str(_translate_history_post(post) or "").strip()
+        except Exception as exc:
+            logging.debug("History translation failed safely: %s", short_error(exc, 220))
+            value = ""
+        if not value or value == "אין טקסט זמין":
+            value = _stable_rss_post_text(post) if "_stable_rss_post_text" in globals() else str(getattr(post, "text", "") or "")
+        results.append(value or "הפוסט התקבל ללא טקסט קריא")
     return results
 
 
-def _reliable_submit_control(target: Any, args: tuple[Any, ...], label: str) -> None:
+def _edit_or_send_control_html(message_id: Any, rendered: str, markup: dict[str, Any]) -> None:
+    if message_id and _edit_control_result_html(message_id, rendered, markup):
+        return
     try:
-        _RELIABLE_CONTROL_EXECUTOR.submit(target, *args)
+        send_control_html(rendered, markup)
+    except Exception:
+        send_control_text(html_message_to_plain_text(rendered), None, markup)
+
+
+def run_last_ten_account_control_test_replace(username: str, loading_message_id: Any = None) -> None:
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    label = _hebrew_account_label(canonical)
+    try:
+        posts = fetch_last_ten_control_isolated(canonical, limit=10)
+        if not posts:
+            rendered = html.escape(f"📚 10 אחרונים — {label}\n\nלא נמצאו כרגע פוסטים זמינים. הבוט ימשיך לשמור פוסטים חדשים במטמון ובהיסטוריה.")
+            _edit_or_send_control_html(loading_message_id, rendered, control_delete_message_reply_markup())
+            return
+        translations = _translate_history_posts_parallel(posts[:10])
+        entries: list[tuple[Post, str, str, str]] = []
+        prepared: list[tuple[int, Post, str]] = []
+        for index, (post, translated) in enumerate(zip(posts[:10], translations), 1):
+            try:
+                status, reason = _history_status_for_post(post)
+            except Exception:
+                status, reason = "נמצא", "התקבל מהמקור או מההיסטוריה"
+            entries.append((post, translated, status, reason))
+            try:
+                token = remember_control_prepared_send(post, "", "", "")
+                if token:
+                    prepared.append((index, post, token))
+            except Exception:
+                pass
+        rendered = _fit_history_entries_one_message(entries, label)
+        _edit_or_send_control_html(loading_message_id, rendered, _history_prepare_markup(prepared))
+    except Exception as exc:
+        logging.exception("10-latest control task failed safely for @%s", canonical)
+        rendered = html.escape(f"📚 10 אחרונים — {label}\n\nהפעולה לא הושלמה כרגע. נסה שוב בעוד רגע.\n{short_error(exc, 250)}")
+        _edit_or_send_control_html(loading_message_id, rendered, control_delete_message_reply_markup())
+
+
+def run_last_ten_account_control_test(username: str) -> None:
+    run_last_ten_account_control_test_replace(username, None)
+
+
+def _safe_start_control_task(target: Any, args: tuple[Any, ...], label: str) -> None:
+    try:
+        worker = Thread(target=target, args=args, daemon=True, name=f"control-safe-{label}")
+        worker.start()
     except RuntimeError as exc:
-        logging.warning("Bounded control pool unavailable for %s; running inline: %s", label, short_error(exc, 300))
+        logging.warning("Could not start control thread %s; running synchronously: %s", label, exc)
         target(*args)
 
 
-# Replace only the two writer-test callbacks.  The loading message is edited into
-# the final result, and no new ad-hoc Thread is created for every click.
-_PRE_RELIABLE_PROCESS_CONTROL_UPDATE = process_control_update
+_PRE_EXACT_PROCESS_CONTROL_UPDATE = process_control_update
 
 
 def process_control_update(update: dict[str, Any]) -> None:
     callback = update.get("callback_query") or {}
     data = str(callback.get("data", "") or "")
     if not (data.startswith("football_test_last_ten_account:") or data.startswith("football_test_latest_account:")):
-        return _PRE_RELIABLE_PROCESS_CONTROL_UPDATE(update)
+        return _PRE_EXACT_PROCESS_CONTROL_UPDATE(update)
     callback_id = str(callback.get("id", "") or "")
     message = callback.get("message", {}) or {}
     chat_id = str((message.get("chat", {}) or {}).get("id", ""))
@@ -24176,10 +24194,10 @@ def process_control_update(update: dict[str, Any]) -> None:
         if callback_id:
             answer_control_callback(callback_id, f"טוען 10 אחרונים של {label}")
         try:
-            loading_id = send_control_text(f"⏳ מכין את 10 הפוסטים האחרונים של {label}...", None, control_delete_message_reply_markup())
+            loading_id = send_control_text(f"⏳ טוען את 10 הפוסטים האחרונים של {label}...", None, control_delete_message_reply_markup())
         except Exception:
             loading_id = None
-        _reliable_submit_control(run_last_ten_account_control_test_replace, (username, loading_id), f"history-{username}")
+        _safe_start_control_task(run_last_ten_account_control_test_replace, (username, loading_id), f"history-{username}")
         return
     if callback_id:
         answer_control_callback(callback_id, f"בודק את {label}")
@@ -24187,204 +24205,229 @@ def process_control_update(update: dict[str, Any]) -> None:
         loading_id = send_control_text(f"⏳ בודק את הפוסט האחרון של {label}...", None, control_delete_message_reply_markup())
     except Exception:
         loading_id = None
-    _reliable_submit_control(run_latest_account_control_test_replace, (username, loading_id), f"latest-{username}")
+    _safe_start_control_task(run_latest_account_control_test_replace, (username, loading_id), f"latest-{username}")
 
 
-# Exact per-post text is intentionally independent of RSS.  It is attempted only
-# for a full preview/send, so a failure can never break account scanning.
-def _reliable_tweet_parts(post: Post) -> tuple[str, str] | None:
-    try:
-        parts = tweet_parts_from_link(str(getattr(post, "link", "") or ""))
-        if parts:
-            return parts
-    except Exception:
-        pass
-    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
-    for raw in [str(getattr(post, "post_id", "") or ""), *(str(item or "") for item in (getattr(post, "dedupe_ids", []) or []))]:
-        matches = re.findall(r"(?<!\d)(\d{15,22})(?!\d)", raw)
-        if matches and username:
-            return username, matches[-1]
-    return None
-
-
-def _reliable_extract_single_tweet_text(data: Any) -> str:
-    if not isinstance(data, dict):
-        return ""
-    for node in _reliable_deep_values(data):
-        legacy = node.get("legacy") if isinstance(node.get("legacy"), dict) else {}
-        for raw in (node.get("full_text"), node.get("tweet_text"), node.get("text"), legacy.get("full_text"), legacy.get("text")):
-            if isinstance(raw, str):
-                value = _reliable_normalize_x_text(raw)
-                if value:
-                    return value
-    return ""
-
-
-def _reliable_fetch_exact_post_text(post: Post) -> tuple[str, str]:
-    parts = _reliable_tweet_parts(post)
-    if not parts:
-        return "", ""
-    username, tweet_id = parts
-    with _RELIABLE_EXACT_POST_CACHE_LOCK:
-        cached = _RELIABLE_EXACT_POST_CACHE.get(tweet_id)
-        if cached and time.time() - cached[0] <= RELIABLE_EXACT_POST_CACHE_SECONDS:
-            return cached[1], cached[2]
-
-    token = (
-        os.environ.get("X_BEARER_TOKEN", "").strip()
-        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
-        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
-    )
-    endpoints: list[tuple[str, str, dict[str, str], str]] = []
-    if token:
-        endpoints.append(("x-api-v2", f"https://api.x.com/2/tweets/{tweet_id}?tweet.fields=text", {"Authorization": f"Bearer {token}", "User-Agent": "NetoSportBot/1.0"}, "json"))
-    endpoints.extend([
-        ("fxtwitter", f"https://api.fxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "json"),
-        ("vxtwitter", f"https://api.vxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "json"),
-        ("x-oembed", "https://publish.twitter.com/oembed?" + urllib.parse.urlencode({"url": f"https://x.com/{username}/status/{tweet_id}", "omit_script": "true", "dnt": "true"}), {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "oembed"),
-    ])
-    for provider, url, headers, mode in endpoints:
-        try:
-            request = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(request, timeout=max(3.0, RELIABLE_EXACT_POST_TIMEOUT_SECONDS)) as response:
-                data = json.loads(response.read().decode("utf-8", errors="replace"))
-            if mode == "oembed":
-                raw_html = str((data or {}).get("html") or "")
-                match = re.search(r"<blockquote\b[^>]*>[\s\S]*?<p\b[^>]*>(.*?)</p>", raw_html, flags=re.IGNORECASE)
-                value = _reliable_normalize_x_text(match.group(1) if match else "")
-            else:
-                value = _reliable_extract_single_tweet_text(data)
-            if value:
-                with _RELIABLE_EXACT_POST_CACHE_LOCK:
-                    _RELIABLE_EXACT_POST_CACHE[tweet_id] = (time.time(), value, provider)
-                return value, provider
-        except Exception as exc:
-            logging.debug("Exact post source %s failed safely for %s: %s", provider, tweet_id, short_error(exc, 240))
-    return "", ""
-
-
-def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
-    try:
-        post = _ensure_post_original_structure(post)
-    except Exception:
-        return post
-    if not isinstance(post, Post):
-        return post
-    if not force and bool(getattr(post, "exact_source_structure", False)) and str(getattr(post, "original_text", "") or "").strip():
-        return post
-    try:
-        value, provider = _reliable_fetch_exact_post_text(post)
-    except Exception as exc:
-        logging.debug("Exact post hydration failed safely: %s", short_error(exc, 260))
-        return post
-    if value:
-        post.text = value
-        post.original_text = value
-        post.source_structure_available = True
-        post.exact_source_structure = True
-        post.exact_source_provider = provider
-        post.exact_source_fetched_at = time.time()
-    return post
-
-
-def _reliable_encode_breaks(value: str) -> tuple[str, list[tuple[str, str]]]:
-    source = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    markers: list[tuple[str, str]] = []
-    output: list[str] = []
-    cursor = 0
-    for index, match in enumerate(re.finditer(r"\n+", source), 1):
-        output.append(source[cursor:match.start()])
-        marker = f"⟪LB{index:04d}⟫"
-        markers.append((marker, "\n\n" if len(match.group(0)) >= 2 else "\n"))
-        output.append(f" {marker} ")
-        cursor = match.end()
-    output.append(source[cursor:])
-    return "".join(output), markers
-
-
-def _reliable_decode_breaks(value: str, markers: list[tuple[str, str]]) -> tuple[str, bool]:
-    result = str(value or "")
-    found = 0
-    for marker, replacement in markers:
-        if marker in result:
-            found += 1
-            result = result.replace(marker, replacement)
-    result = re.sub(r"⟪LB\d{4}⟫", "", result)
-    result = re.sub(r"[ \t]*\n[ \t]*", "\n", result)
-    result = re.sub(r"\n{3,}", "\n\n", result)
-    return result.strip(), bool(markers) and found == len(markers)
-
-
-_PRE_RELIABLE_GEMINI_TRANSLATE_ONCE = gemini_translate_post_once
-
-
-def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
-    post = _reliable_hydrate_exact_post(post)
-    original_main = str(getattr(post, "text", "") or "")
-    original_quote = str(getattr(post, "quoted_text", "") or "")
-    main_encoded, main_markers = _reliable_encode_breaks(original_main) if bool(getattr(post, "exact_source_structure", False)) else (original_main, [])
-    quote_encoded, quote_markers = _reliable_encode_breaks(original_quote) if bool(getattr(post, "exact_source_structure", False)) else (original_quote, [])
-    post.text = main_encoded
-    post.quoted_text = quote_encoded
-    try:
-        translated, quoted, author = _PRE_RELIABLE_GEMINI_TRANSLATE_ONCE(post, include_quote)
-    finally:
-        post.text = original_main
-        post.quoted_text = original_quote
-    if main_markers:
-        decoded, complete = _reliable_decode_breaks(translated, main_markers)
-        translated = decoded if complete else _restore_source_layout(post, translated, quoted=False)
-    if quote_markers and quoted:
-        decoded, complete = _reliable_decode_breaks(quoted, quote_markers)
-        quoted = decoded if complete else _restore_source_layout(post, quoted, quoted=True)
-    return translated, quoted, author
-
-
-_PRE_RELIABLE_SEND_POST = send_post
+# Automatic, preview and forced/manual paths all hydrate the same exact source
+# before one Gemini request. Google/source fallback is intentionally not used for
+# a manual publishable message.
+_PRE_EXACT_SEND_POST = send_post
 
 
 def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
-    _reliable_hydrate_exact_post(post)
-    return _PRE_RELIABLE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    _hydrate_exact_x_structure(post)
+    return _PRE_EXACT_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
 
 
-_PRE_RELIABLE_MANUAL_FORCE_TRANSLATION = manual_force_translation
+_PRE_EXACT_REMEMBER_PREPARED = remember_control_prepared_send
+
+
+def remember_control_prepared_send(post: Post, translated: str, quoted_translated: str, quoted_author_translated: str) -> str:
+    # The 10-latest list creates empty preparation tokens for all ten rows. Do not
+    # perform ten direct X requests at that stage; exact source hydration happens
+    # only when a full preview/forced message is actually prepared or sent.
+    if str(translated or "").strip() or str(quoted_translated or "").strip():
+        _hydrate_exact_x_structure(post)
+    return _PRE_EXACT_REMEMBER_PREPARED(post, translated, quoted_translated, quoted_author_translated)
 
 
 def manual_force_translation(post: Post) -> tuple[str, str, str]:
-    _reliable_hydrate_exact_post(post, force=True)
-    translated, quoted, author = _PRE_RELIABLE_MANUAL_FORCE_TRANSLATION(post)
-    post.translation_origin = "gemini"
-    return translated, quoted, author
+    _hydrate_exact_x_structure(post, force=True)
+    translated, quoted, author = translate_post_for_send(post)
+    if not (str(translated or "").strip() or str(quoted or "").strip()):
+        raise TranslationUnavailable("Gemini did not return a publishable translation; the post remains pending")
+    return str(translated or ""), str(quoted or ""), str(author or "")
 
 
-_PRE_RELIABLE_POST_TO_CONTROL_PAYLOAD = post_to_control_payload
+def _manual_translation_for_preview(post: Post) -> tuple[str, str, str]:
+    return manual_force_translation(post)
+
+
+# Persist the newly resolved source structure in the existing payload format.
+_PRE_EXACT_POST_TO_CONTROL_PAYLOAD = post_to_control_payload
 
 
 def post_to_control_payload(post: "Post") -> dict[str, Any]:
-    payload = _PRE_RELIABLE_POST_TO_CONTROL_PAYLOAD(post)
+    payload = _PRE_EXACT_POST_TO_CONTROL_PAYLOAD(post)
     payload["original_text"] = str(getattr(post, "original_text", "") or getattr(post, "text", "") or "")
     payload["exact_source_structure"] = bool(getattr(post, "exact_source_structure", False))
     payload["exact_source_provider"] = str(getattr(post, "exact_source_provider", "") or "")
     payload["exact_source_fetched_at"] = float(getattr(post, "exact_source_fetched_at", 0.0) or 0.0)
+    return payload
+
+
+_PRE_EXACT_POST_FROM_CONTROL_PAYLOAD = post_from_control_payload
+
+
+def post_from_control_payload(payload: Any) -> "Post | None":
+    post = _PRE_EXACT_POST_FROM_CONTROL_PAYLOAD(payload)
+    if post is None:
+        return None
+    if isinstance(payload, dict):
+        post.exact_source_structure = bool(payload.get("exact_source_structure", False))
+        post.exact_source_provider = str(payload.get("exact_source_provider", "") or "")
+        post.exact_source_fetched_at = float(payload.get("exact_source_fetched_at", 0.0) or 0.0)
+    return _ensure_post_original_structure(post)
+
+
+# ====== END FINAL EXACT X STRUCTURE + THREAD-SAFE RSS/CONTROL PATCH ======
+
+
+
+
+# ----- Gemini-only provenance for every forced/prepared publication -----
+_PRE_GEMINI_ORIGIN_MANUAL_FORCE_TRANSLATION = manual_force_translation
+
+
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    translated, quoted, author = _PRE_GEMINI_ORIGIN_MANUAL_FORCE_TRANSLATION(post)
+    post.translation_origin = "gemini"
+    return translated, quoted, author
+
+
+_PRE_GEMINI_ORIGIN_POST_TO_PAYLOAD = post_to_control_payload
+
+
+def post_to_control_payload(post: "Post") -> dict[str, Any]:
+    payload = _PRE_GEMINI_ORIGIN_POST_TO_PAYLOAD(post)
     payload["translation_origin"] = str(getattr(post, "translation_origin", "") or "")
     return payload
 
 
-_PRE_RELIABLE_POST_FROM_CONTROL_PAYLOAD = post_from_control_payload
+_PRE_GEMINI_ORIGIN_POST_FROM_PAYLOAD = post_from_control_payload
 
 
 def post_from_control_payload(payload: Any) -> "Post | None":
-    post = _PRE_RELIABLE_POST_FROM_CONTROL_PAYLOAD(payload)
+    post = _PRE_GEMINI_ORIGIN_POST_FROM_PAYLOAD(payload)
     if post is not None and isinstance(payload, dict):
-        post.exact_source_structure = bool(payload.get("exact_source_structure", False))
-        post.exact_source_provider = str(payload.get("exact_source_provider", "") or "")
-        post.exact_source_fetched_at = float(payload.get("exact_source_fetched_at", 0.0) or 0.0)
         post.translation_origin = str(payload.get("translation_origin", "") or "")
     return post
 
 
-# ====== END FINAL RSS RESTORE + BOUNDED WORKERS + EXACT X LAYOUT PATCH ======
+_PRE_GEMINI_ORIGIN_REMEMBER_PREPARED = remember_control_prepared_send
+
+
+def remember_control_prepared_send(post: Post, translated: str, quoted_translated: str, quoted_author_translated: str) -> str:
+    if str(translated or "").strip() or str(quoted_translated or "").strip():
+        post.translation_origin = "gemini"
+    return _PRE_GEMINI_ORIGIN_REMEMBER_PREPARED(post, translated, quoted_translated, quoted_author_translated)
+
+
+_PRE_GEMINI_ORIGIN_SEND_PREPARED = send_prepared_control_post_to_main
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    item = _restore_prepared_send(token)
+    if not item:
+        return _PRE_GEMINI_ORIGIN_SEND_PREPARED(token)
+    post = item.get("post")
+    if isinstance(post, Post) and str(getattr(post, "translation_origin", "") or "") != "gemini":
+        translated, quoted, author = manual_force_translation(post)
+        item["translated"] = translated
+        item["quoted_translated"] = quoted
+        item["quoted_author_translated"] = author
+        item["post"] = post
+        CONTROL_PREPARED_SENDS[token] = item
+        try:
+            _persist_prepared_send(token, item)
+        except Exception:
+            pass
+        try:
+            _persist_prepared_send_durable(token, item)
+        except Exception:
+            pass
+    return _PRE_GEMINI_ORIGIN_SEND_PREPARED(token)
+
+# ----- Footballtweet direct-profile fallback after RSS/cache -----
+_PRE_EXACT_FOOTBALLTWEET_FETCH_ISOLATED = _fetch_footballtweet_posts_isolated
+
+
+def _fetch_footballtweet_posts_isolated(limit: int = 25) -> list[Post]:
+    cached_or_rss: list[Post] = []
+    try:
+        cached_or_rss = list(_PRE_EXACT_FOOTBALLTWEET_FETCH_ISOLATED(limit=limit) or [])
+    except Exception as exc:
+        logging.debug("Footballtweet legacy isolated reader failed safely: %s", short_error(exc, 280))
+    # When RSS was healthy, keep the proven path and avoid an unnecessary request.
+    status = dict(_FOOTBALLTWEET_RSS_LAST_STATUS)
+    if cached_or_rss and bool(status.get("ok")) and not bool(status.get("used_cache")):
+        return cached_or_rss[:max(1, int(limit))]
+    direct: list[Post] = []
+    try:
+        direct = _fetch_syndication_profile_posts(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, limit=max(20, int(limit)))
+    except Exception as exc:
+        logging.debug("Footballtweet direct profile fallback failed safely: %s", short_error(exc, 280))
+    merged: dict[str, Post] = {}
+    _stable_rss_merge(merged, direct, FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)
+    _stable_rss_merge(merged, cached_or_rss, FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    result = ordered[:max(1, int(limit))]
+    if direct:
+        _FOOTBALLTWEET_RSS_LAST_STATUS.update({
+            "ok": True,
+            "checked_at": time.time(),
+            "posts": len(result),
+            "errors": list(status.get("errors", []) or [])[-8:],
+            "timeouts": list(status.get("timeouts", []) or [])[-8:],
+            "used_cache": False,
+            "direct_profile_fallback": True,
+        })
+        try:
+            _remember_control_rss_posts(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, result)
+            _ten_history_save(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, result)
+        except Exception:
+            pass
+    return result
+
+# ----- Final safe async control launcher -----
+# Reuses the same synchronous fallback used by 10-latest when the OS refuses a
+# new thread. This prevents diagnostics/status buttons from failing silently.
+def send_control_text_async(
+    loading_text: str,
+    compute_fn,
+    message_id: Any = None,
+    reply_markup: dict[str, Any] | None = None,
+    *,
+    result_new_message: bool = False,
+    result_reply_markup: dict[str, Any] | None = None,
+    full_result: bool = False,
+    loading_new_message: bool = False,
+    loading_reply_markup: dict[str, Any] | None = None,
+) -> None:
+    def _run() -> None:
+        loading_message_id: int | None = None
+        try:
+            if loading_new_message:
+                loading_message_id = send_control_text(
+                    loading_text,
+                    None,
+                    loading_reply_markup if loading_reply_markup is not None else control_delete_message_reply_markup(),
+                )
+            else:
+                loading_message_id = send_control_text(loading_text, message_id, reply_markup)
+        except Exception as exc:
+            logging.debug("Control loading message failed safely: %s", short_error(exc, 300))
+        try:
+            final_text = compute_fn()
+        except Exception as exc:
+            final_text = f"הבדיקה נכשלה:\n{short_error(exc, 700)}"
+        final_markup = result_reply_markup if result_reply_markup is not None else reply_markup
+        final_message_id = loading_message_id if loading_new_message else (None if result_new_message else message_id)
+        try:
+            if full_result:
+                chunks = control_text_chunks(final_text)
+                if final_message_id and chunks:
+                    for index, chunk in enumerate(chunks):
+                        send_control_text(chunk, final_message_id if index == 0 else None, final_markup)
+                elif result_new_message:
+                    send_control_text_full(final_text, final_markup)
+                else:
+                    send_control_text(final_text, final_message_id, final_markup)
+            else:
+                send_control_text(final_text, final_message_id, final_markup)
+        except Exception as exc:
+            logging.warning("Control async result failed safely: %s", short_error(exc, 400))
+    _safe_start_control_task(_run, (), "async")
 
 if __name__ == "__main__":
     main()
