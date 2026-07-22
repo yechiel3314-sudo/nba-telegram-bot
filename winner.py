@@ -23556,5 +23556,1908 @@ def _fit_history_entries_one_message(entries: list[tuple[Post, str, str, str]], 
 
 # ====== END FINAL STABLE SHARED RSS + RELIABLE TEN-LATEST + SOURCE-LAYOUT PATCH ======
 
+
+# ====== FINAL RSS RESTORE + BOUNDED WORKERS + EXACT X LAYOUT PATCH (2026-07-22) ======
+# This layer intentionally starts from the last stable shared-RSS build.
+# It does not rename/reset any persistent file or key.  It keeps the proven RSS
+# parser/request path, bounds all background workers, adds direct-X fallbacks,
+# and hydrates exact tweet line breaks only when a post is previewed/published.
+
+BOT_BUILD_ID = "winner-rss-restored-bounded-exact-layout-2026-07-22"
+
+from concurrent.futures import ThreadPoolExecutor as _ReliableExecutor
+from concurrent.futures import FIRST_COMPLETED as _RELIABLE_FIRST_COMPLETED
+from concurrent.futures import TimeoutError as _ReliableFutureTimeout
+from concurrent.futures import wait as _reliable_wait
+
+RELIABLE_RSS_POOL_WORKERS = max(4, int(os.environ.get("RELIABLE_RSS_POOL_WORKERS", "8")))
+RELIABLE_CONTROL_POOL_WORKERS = max(1, int(os.environ.get("RELIABLE_CONTROL_POOL_WORKERS", "2")))
+RELIABLE_HISTORY_TRANSLATION_WORKERS = max(1, int(os.environ.get("RELIABLE_HISTORY_TRANSLATION_WORKERS", "4")))
+RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS = float(os.environ.get("RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS", "8"))
+RELIABLE_EXACT_POST_TIMEOUT_SECONDS = float(os.environ.get("RELIABLE_EXACT_POST_TIMEOUT_SECONDS", "6"))
+RELIABLE_DIRECT_PROFILE_CACHE_SECONDS = int(os.environ.get("RELIABLE_DIRECT_PROFILE_CACHE_SECONDS", "180"))
+RELIABLE_EXACT_POST_CACHE_SECONDS = int(os.environ.get("RELIABLE_EXACT_POST_CACHE_SECONDS", str(7 * 24 * 60 * 60)))
+
+_RELIABLE_RSS_EXECUTOR = _ReliableExecutor(max_workers=RELIABLE_RSS_POOL_WORKERS, thread_name_prefix="rss-shared")
+_RELIABLE_CONTROL_EXECUTOR = _ReliableExecutor(max_workers=RELIABLE_CONTROL_POOL_WORKERS, thread_name_prefix="control-shared")
+_RELIABLE_HISTORY_EXECUTOR = _ReliableExecutor(max_workers=RELIABLE_HISTORY_TRANSLATION_WORKERS, thread_name_prefix="history-shared")
+_RELIABLE_DIRECT_PROFILE_CACHE: dict[str, tuple[float, list[Post]]] = {}
+_RELIABLE_DIRECT_PROFILE_CACHE_LOCK = RLock()
+_RELIABLE_EXACT_POST_CACHE: dict[str, tuple[float, str, str]] = {}
+_RELIABLE_EXACT_POST_CACHE_LOCK = RLock()
+
+
+def _reliable_post_identity(post: Post) -> str:
+    try:
+        return _stable_rss_identity(post)
+    except Exception:
+        return str(
+            getattr(post, "post_id", "")
+            or getattr(post, "link", "")
+            or post_content_signature(
+                getattr(post, "username", ""),
+                getattr(post, "text", ""),
+                getattr(post, "quoted_text", ""),
+            )
+        ).strip()
+
+
+def _reliable_merge_posts(target: dict[str, Post], values: Any, username: str) -> None:
+    for post in values or []:
+        if not isinstance(post, Post):
+            continue
+        try:
+            _ensure_post_original_structure(post)
+        except Exception:
+            pass
+        post.username = str(username or getattr(post, "username", "") or "").strip().lstrip("@")
+        try:
+            readable = _stable_rss_post_text(post)
+        except Exception:
+            readable = str(getattr(post, "text", "") or "").strip()
+        if not readable:
+            continue
+        identity = _reliable_post_identity(post)
+        if identity and identity not in target:
+            target[identity] = post
+
+
+# Keep the stable http_get_feed/fetch_feed implementation.  Only the fan-out is
+# replaced: one process-wide bounded pool instead of a new pool for every writer.
+def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
+    templates = list(dict.fromkeys(feed_templates or []))
+    if not templates:
+        return [], [], []
+
+    merged: dict[str, Post] = {}
+    errors: list[str] = []
+    timeouts: list[str] = []
+    future_to_template: dict[Any, str] = {}
+
+    try:
+        for template in templates:
+            future_to_template[_RELIABLE_RSS_EXECUTOR.submit(fetch_feed, username, template)] = template
+    except RuntimeError as exc:
+        # Extremely defensive fallback if the OS refuses even the bounded pool.
+        logging.warning("Shared RSS pool unavailable; using sequential fallback: %s", short_error(exc, 350))
+        for template in templates:
+            source = feed_source_name(template)
+            try:
+                _reliable_merge_posts(merged, fetch_feed(username, template), username)
+            except Exception as item_exc:
+                summary = short_error(item_exc, 350)
+                errors.append(f"{source}: {type(item_exc).__name__}: {summary}")
+                if "timeout" in summary.casefold() or "timed out" in summary.casefold():
+                    timeouts.append(source)
+        ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+        return ordered, errors, list(dict.fromkeys(timeouts))
+
+    pending = set(future_to_template)
+    deadline = time.monotonic() + max(6.0, float(_STABLE_RSS_BATCH_TIMEOUT_SECONDS), float(FEED_COLLECTION_TIMEOUT_SECONDS))
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        done, pending = _reliable_wait(pending, timeout=min(0.8, remaining), return_when=_RELIABLE_FIRST_COMPLETED)
+        if not done:
+            continue
+        for future in done:
+            template = future_to_template[future]
+            source = feed_source_name(template)
+            try:
+                posts = future.result() or []
+                _reliable_merge_posts(merged, posts, username)
+            except Exception as exc:
+                summary = short_error(exc, 350)
+                errors.append(f"{source}: {type(exc).__name__}: {summary}")
+                if "timeout" in summary.casefold() or "timed out" in summary.casefold():
+                    timeouts.append(source)
+
+    for future in pending:
+        source = feed_source_name(future_to_template[future])
+        timeouts.append(source)
+        future.cancel()
+
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    return ordered, errors, list(dict.fromkeys(timeouts))
+
+
+def _reliable_snowflake_timestamp(tweet_id: str) -> float:
+    try:
+        return ((int(str(tweet_id)) >> 22) + 1288834974657) / 1000.0
+    except Exception:
+        return time.time()
+
+
+def _reliable_normalize_x_text(value: str) -> str:
+    value = html.unescape(str(value or "")).replace("\r\n", "\n").replace("\r", "\n")
+    value = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+    value = re.sub(r"</p\s*>", "\n", value, flags=re.IGNORECASE)
+    value = re.sub(r"<[^>]+>", "", value)
+    value = re.sub(r"https?://t\.co/\S+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"[ \t]+", " ", value)
+    value = re.sub(r"[ \t]*\n[ \t]*", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _reliable_deep_values(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _reliable_deep_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _reliable_deep_values(child)
+
+
+def _reliable_extract_screen_name(node: dict[str, Any]) -> str:
+    # Prefer the exact GraphQL author path.  Do not scan arbitrary nested quoted
+    # tweets first, because that can attribute a quote to the wrong account.
+    paths = [
+        ("core", "user_results", "result", "legacy"),
+        ("core", "user_results", "result"),
+        ("user_results", "result", "legacy"),
+        ("user_results", "result"),
+        ("author", "legacy"),
+        ("author",),
+        ("user", "legacy"),
+        ("user",),
+        ("legacy",),
+        (),
+    ]
+    for path in paths:
+        candidate: Any = node
+        for key in path:
+            if not isinstance(candidate, dict):
+                candidate = None
+                break
+            candidate = candidate.get(key)
+        if not isinstance(candidate, dict):
+            continue
+        for key in ("screen_name", "username", "user_name"):
+            raw = candidate.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip().lstrip("@")
+    return ""
+
+
+def _reliable_extract_media_urls(node: Any) -> tuple[list[str], list[str]]:
+    images: list[str] = []
+    videos: list[str] = []
+    for item in _reliable_deep_values(node):
+        for key, raw in item.items():
+            if not isinstance(raw, str) or not raw.startswith(("http://", "https://")):
+                continue
+            value = html.unescape(raw)
+            lowered = value.casefold()
+            if "pbs.twimg.com/media" in lowered or is_image_url(value):
+                images.append(value)
+            elif any(token in lowered for token in ("video.twimg.com", ".mp4", ".m3u8")):
+                videos.append(value)
+    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
+
+
+def _reliable_posts_from_profile_payload(username: str, payload: Any) -> list[Post]:
+    wanted = str(username or "").strip().lstrip("@").casefold()
+    merged: dict[str, Post] = {}
+    for node in _reliable_deep_values(payload):
+        legacy = node.get("legacy") if isinstance(node.get("legacy"), dict) else {}
+        text_value = ""
+        for raw in (
+            node.get("full_text"), node.get("tweet_text"), node.get("text"),
+            legacy.get("full_text"), legacy.get("text"),
+        ):
+            if isinstance(raw, str):
+                text_value = _reliable_normalize_x_text(raw)
+                if text_value:
+                    break
+        if not text_value:
+            continue
+
+        tweet_id = ""
+        for raw in (node.get("rest_id"), node.get("id_str"), node.get("tweet_id"), node.get("id"), legacy.get("id_str")):
+            candidate = str(raw or "")
+            if re.fullmatch(r"\d{15,22}", candidate):
+                tweet_id = candidate
+                break
+        if not tweet_id:
+            continue
+
+        author = _reliable_extract_screen_name(node)
+        if author and wanted and author.casefold() != wanted:
+            # Ignore quoted/embedded posts by other accounts.
+            continue
+
+        images, videos = _reliable_extract_media_urls(node)
+        link = f"https://x.com/{username}/status/{tweet_id}"
+        post = Post(
+            post_id=tweet_id,
+            username=username,
+            text=text_value,
+            link=link,
+            image_urls=images,
+            video_urls=videos,
+            has_video=bool(videos),
+            primary_has_video=bool(videos),
+            quoted_has_video=False,
+            quoted_author="",
+            quoted_text="",
+            published_ts=_reliable_snowflake_timestamp(tweet_id),
+            dedupe_ids=[tweet_id, f"{username}:{tweet_id}", f"{username}:{link}", post_content_signature(username, text_value, "")],
+            source_name="x-direct-profile",
+        )
+        post.original_text = text_value
+        post.source_structure_available = True
+        post.exact_source_structure = True
+        post.exact_source_provider = "x-direct-profile"
+        merged.setdefault(tweet_id, post)
+    return sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+
+
+def _reliable_official_x_profile_posts(username: str, limit: int) -> list[Post]:
+    token = (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    )
+    if not token:
+        return []
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": "NetoSportBot/1.0"}
+    lookup_url = f"https://api.x.com/2/users/by/username/{urllib.parse.quote(username)}"
+    request = urllib.request.Request(lookup_url, headers=headers)
+    with urllib.request.urlopen(request, timeout=max(3.0, RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)) as response:
+        lookup = json.loads(response.read().decode("utf-8", errors="replace"))
+    user_id = str(((lookup or {}).get("data") or {}).get("id") or "")
+    if not user_id:
+        return []
+    params = urllib.parse.urlencode({
+        "max_results": max(5, min(100, int(limit))),
+        "exclude": "replies,retweets",
+        "tweet.fields": "created_at,attachments",
+        "expansions": "attachments.media_keys",
+        "media.fields": "url,preview_image_url,type,variants",
+    })
+    timeline_url = f"https://api.x.com/2/users/{user_id}/tweets?{params}"
+    request = urllib.request.Request(timeline_url, headers=headers)
+    with urllib.request.urlopen(request, timeout=max(3.0, RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)) as response:
+        data = json.loads(response.read().decode("utf-8", errors="replace"))
+    media_map: dict[str, dict[str, Any]] = {}
+    for media in (((data or {}).get("includes") or {}).get("media") or []):
+        if isinstance(media, dict) and media.get("media_key"):
+            media_map[str(media["media_key"])] = media
+    result: list[Post] = []
+    for item in (data or {}).get("data") or []:
+        if not isinstance(item, dict):
+            continue
+        tweet_id = str(item.get("id") or "")
+        text_value = _reliable_normalize_x_text(str(item.get("text") or ""))
+        if not tweet_id or not text_value:
+            continue
+        images: list[str] = []
+        videos: list[str] = []
+        for key in ((item.get("attachments") or {}).get("media_keys") or []):
+            media = media_map.get(str(key), {})
+            for candidate in (media.get("url"), media.get("preview_image_url")):
+                if isinstance(candidate, str) and candidate:
+                    images.append(candidate)
+            for variant in media.get("variants") or []:
+                url = variant.get("url") if isinstance(variant, dict) else ""
+                if isinstance(url, str) and url:
+                    videos.append(url)
+        link = f"https://x.com/{username}/status/{tweet_id}"
+        post = Post(tweet_id, username, text_value, link, list(dict.fromkeys(images)), list(dict.fromkeys(videos)), bool(videos), bool(videos), False, "", "", _reliable_snowflake_timestamp(tweet_id), [tweet_id, f"{username}:{tweet_id}", f"{username}:{link}", post_content_signature(username, text_value, "")], "x-api-v2")
+        post.original_text = text_value
+        post.source_structure_available = True
+        post.exact_source_structure = True
+        post.exact_source_provider = "x-api-v2"
+        result.append(post)
+    return result[:max(1, int(limit))]
+
+
+def _reliable_syndication_profile_posts(username: str, limit: int) -> list[Post]:
+    encoded = urllib.parse.quote(str(username or "").strip().lstrip("@"))
+    urls = [
+        f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{encoded}?dnt=true&lang=en",
+        f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{encoded}",
+    ]
+    last_error: Exception | None = None
+    for url in urls:
+        try:
+            request = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36",
+                "Accept": "text/html,application/json,*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            with urllib.request.urlopen(request, timeout=max(3.0, RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            candidates: list[Any] = []
+            try:
+                candidates.append(json.loads(raw))
+            except Exception:
+                pass
+            for match in re.finditer(r"<script\b[^>]*>(.*?)</script>", raw, flags=re.IGNORECASE | re.DOTALL):
+                script = html.unescape(match.group(1)).strip()
+                if not script:
+                    continue
+                if script.startswith(("{", "[")):
+                    try:
+                        candidates.append(json.loads(script))
+                    except Exception:
+                        pass
+                assignment = re.search(r"(?:window\.__INITIAL_STATE__|__NEXT_DATA__)\s*=\s*({.*})\s*;?\s*$", script, flags=re.DOTALL)
+                if assignment:
+                    try:
+                        candidates.append(json.loads(assignment.group(1)))
+                    except Exception:
+                        pass
+            merged: dict[str, Post] = {}
+            for candidate in candidates:
+                _reliable_merge_posts(merged, _reliable_posts_from_profile_payload(username, candidate), username)
+            # Older embedded timeline HTML fallback.
+            for match in re.finditer(
+                r"data-tweet-id=[\"'](\d{15,22})[\"'][\s\S]{0,16000}?<p\b[^>]*>(.*?)</p>",
+                raw,
+                flags=re.IGNORECASE,
+            ):
+                tweet_id, body = match.groups()
+                text_value = _reliable_normalize_x_text(body)
+                if not text_value:
+                    continue
+                link = f"https://x.com/{username}/status/{tweet_id}"
+                post = Post(tweet_id, username, text_value, link, [], [], False, False, False, "", "", _reliable_snowflake_timestamp(tweet_id), [tweet_id, f"{username}:{tweet_id}", f"{username}:{link}", post_content_signature(username, text_value, "")], "x-syndication")
+                post.original_text = text_value
+                post.source_structure_available = True
+                post.exact_source_structure = True
+                post.exact_source_provider = "x-syndication"
+                merged.setdefault(tweet_id, post)
+            ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+            if ordered:
+                return ordered[:max(1, int(limit))]
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        logging.debug("Direct X profile fallback failed safely for @%s: %s", username, short_error(last_error, 350))
+    return []
+
+
+def _reliable_direct_profile_posts(username: str, limit: int = 30, force: bool = False) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+        cached = _RELIABLE_DIRECT_PROFILE_CACHE.get(key)
+        if not force and cached and time.time() - cached[0] <= RELIABLE_DIRECT_PROFILE_CACHE_SECONDS:
+            return list(cached[1][:max(1, int(limit))])
+    result: list[Post] = []
+    try:
+        result = _reliable_official_x_profile_posts(canonical, limit=max(20, int(limit)))
+    except Exception as exc:
+        logging.debug("Official X profile reader failed safely for @%s: %s", canonical, short_error(exc, 300))
+    if not result:
+        try:
+            result = _reliable_syndication_profile_posts(canonical, limit=max(20, int(limit)))
+        except Exception as exc:
+            logging.debug("Syndication profile reader failed safely for @%s: %s", canonical, short_error(exc, 300))
+    if result:
+        with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+            _RELIABLE_DIRECT_PROFILE_CACHE[key] = (time.time(), list(result))
+        try:
+            _stable_rss_remember(canonical, result)
+        except Exception:
+            pass
+    return result[:max(1, int(limit))]
+
+
+# Preserve the stable RSS collector.  Add direct X only as a fallback/augmenter.
+_PRE_RELIABLE_STABLE_NETWORK_FETCH = _stable_rss_network_fetch
+
+
+def _stable_rss_network_fetch(username: str, limit: int = 30, exhaustive: bool = False) -> tuple[list[Post], dict[str, Any]]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rss_posts, diagnostics = _PRE_RELIABLE_STABLE_NETWORK_FETCH(canonical, limit=limit, exhaustive=exhaustive)
+    except Exception as exc:
+        rss_posts, diagnostics = [], {"errors": [f"stable_rss: {short_error(exc, 350)}"], "timeouts": [], "sources": {}}
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rss_posts, canonical)
+    target = min(max(1, int(limit)), 10 if exhaustive else 1)
+    if len(merged) < target:
+        try:
+            direct = _reliable_direct_profile_posts(canonical, limit=max(20, int(limit)))
+            before = len(merged)
+            _reliable_merge_posts(merged, direct, canonical)
+            diagnostics.setdefault("sources", {})["direct_x_profile"] = len(merged) - before
+        except Exception as exc:
+            diagnostics.setdefault("errors", []).append(f"direct_x_profile: {short_error(exc, 300)}")
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    diagnostics["returned_network"] = len(ordered)
+    return ordered[:max(1, int(limit))], diagnostics
+
+
+# Keep Footballtweet's isolated path that worked, but give it the same direct-X
+# fallback when every RSS mirror is temporarily unavailable.
+_PRE_RELIABLE_FOOTBALLTWEET_ISOLATED = _fetch_footballtweet_posts_isolated
+
+
+def _fetch_footballtweet_posts_isolated(limit: int = 25) -> list[Post]:
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+    merged: dict[str, Post] = {}
+    try:
+        _reliable_merge_posts(merged, _PRE_RELIABLE_FOOTBALLTWEET_ISOLATED(limit=limit), canonical)
+    except Exception as exc:
+        logging.debug("Footballtweet stable reader failed safely: %s", short_error(exc, 300))
+    if not merged:
+        try:
+            _reliable_merge_posts(merged, _reliable_direct_profile_posts(canonical, limit=max(20, int(limit))), canonical)
+        except Exception as exc:
+            logging.debug("Footballtweet direct fallback failed safely: %s", short_error(exc, 300))
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:max(1, int(limit))]
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    """Never crash and merge every durable/network reader before returning."""
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    requested = max(1, int(limit))
+    merged: dict[str, Post] = {}
+    diagnostics: dict[str, Any] = {"sources": {}, "errors": [], "requested": requested}
+
+    def add(stage: str, values: Any) -> None:
+        before = len(merged)
+        try:
+            _reliable_merge_posts(merged, values, canonical)
+            diagnostics["sources"][stage] = len(merged) - before
+        except Exception as exc:
+            diagnostics["sources"][stage] = 0
+            diagnostics["errors"].append(f"{stage}: {short_error(exc, 260)}")
+
+    try:
+        add("stable_cache_history", _stable_rss_cached_posts(canonical, limit=120))
+    except Exception as exc:
+        diagnostics["errors"].append(f"stable_cache_history: {short_error(exc, 260)}")
+    try:
+        _collect_history_nonnetwork(canonical, merged, diagnostics)
+    except Exception as exc:
+        diagnostics["errors"].append(f"durable_history: {short_error(exc, 260)}")
+
+    if len(merged) < requested:
+        try:
+            add("direct_x_profile", _reliable_direct_profile_posts(canonical, limit=max(30, requested * 3), force=True))
+        except Exception as exc:
+            diagnostics["errors"].append(f"direct_x_profile: {short_error(exc, 260)}")
+
+    if len(merged) < requested:
+        try:
+            network, network_diag = _stable_rss_network_fetch(canonical, limit=max(60, requested * 5), exhaustive=True)
+            add("rss_and_direct", network)
+            diagnostics["errors"].extend((network_diag.get("errors") or [])[:8])
+            diagnostics["timeouts"] = (network_diag.get("timeouts") or [])[:8]
+        except Exception as exc:
+            diagnostics["errors"].append(f"rss_and_direct: {short_error(exc, 300)}")
+
+    try:
+        add("history_second_pass", _ten_history_load(canonical))
+        add("state_second_pass", _ten_history_collect_existing_state_posts(canonical))
+    except Exception as exc:
+        diagnostics["errors"].append(f"history_second_pass: {short_error(exc, 260)}")
+
+    ordered = sorted(merged.values(), key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
+    ordered = [post for post in ordered if str(_stable_rss_post_text(post) or "").strip()]
+    diagnostics["after_dedupe"] = len(ordered)
+    diagnostics["returned"] = min(requested, len(ordered))
+    LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diagnostics
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:requested]
+
+
+def fetch_latest_post_fast(username: str) -> Post | None:
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+    try:
+        cached = _stable_rss_cached_posts(canonical, limit=1)
+        if cached:
+            return cached[0]
+    except Exception:
+        pass
+    try:
+        direct = _reliable_direct_profile_posts(canonical, limit=3)
+        if direct:
+            return direct[0]
+    except Exception:
+        pass
+    try:
+        posts = fetch_posts(canonical) or []
+        return posts[0] if posts else None
+    except Exception:
+        return None
+
+
+# History translation also uses one process-wide bounded pool.  The old code
+# created a fresh five-thread executor on every button press and was the direct
+# source of production errors such as "can't start new thread".
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    values = list(posts or [])
+    if not values:
+        return []
+    futures: dict[Any, int] = {}
+    results = [""] * len(values)
+    try:
+        for index, item in enumerate(values):
+            futures[_RELIABLE_HISTORY_EXECUTOR.submit(_translate_history_post, item)] = index
+    except RuntimeError as exc:
+        logging.warning("Bounded history pool unavailable; translating sequentially: %s", short_error(exc, 300))
+        futures.clear()
+        for index, item in enumerate(values):
+            try:
+                results[index] = str(_translate_history_post(item) or "").strip()
+            except Exception:
+                results[index] = ""
+    if futures:
+        done, pending = _reliable_wait(set(futures), timeout=max(4.0, float(CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS)))
+        for future in done:
+            index = futures[future]
+            try:
+                results[index] = str(future.result() or "").strip()
+            except Exception:
+                results[index] = ""
+        for future in pending:
+            future.cancel()
+    for index, item in enumerate(values):
+        if not results[index] or results[index] == "אין טקסט זמין":
+            try:
+                results[index] = str(_stable_rss_post_text(item) or "").strip()
+            except Exception:
+                results[index] = str(getattr(item, "text", "") or "").strip()
+        if not results[index]:
+            results[index] = "הפוסט התקבל ללא טקסט קריא"
+    return results
+
+
+def _reliable_submit_control(target: Any, args: tuple[Any, ...], label: str) -> None:
+    try:
+        _RELIABLE_CONTROL_EXECUTOR.submit(target, *args)
+    except RuntimeError as exc:
+        logging.warning("Bounded control pool unavailable for %s; running inline: %s", label, short_error(exc, 300))
+        target(*args)
+
+
+# Replace only the two writer-test callbacks.  The loading message is edited into
+# the final result, and no new ad-hoc Thread is created for every click.
+_PRE_RELIABLE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if not (data.startswith("football_test_last_ten_account:") or data.startswith("football_test_latest_account:")):
+        return _PRE_RELIABLE_PROCESS_CONTROL_UPDATE(update)
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    username = data.split(":", 1)[1].strip()
+    if username not in all_control_test_accounts():
+        if callback_id:
+            answer_control_callback(callback_id, "כתב לא מוכר")
+        return
+    label = _hebrew_account_label(username)
+    if data.startswith("football_test_last_ten_account:"):
+        if callback_id:
+            answer_control_callback(callback_id, f"טוען 10 אחרונים של {label}")
+        try:
+            loading_id = send_control_text(f"⏳ מכין את 10 הפוסטים האחרונים של {label}...", None, control_delete_message_reply_markup())
+        except Exception:
+            loading_id = None
+        _reliable_submit_control(run_last_ten_account_control_test_replace, (username, loading_id), f"history-{username}")
+        return
+    if callback_id:
+        answer_control_callback(callback_id, f"בודק את {label}")
+    try:
+        loading_id = send_control_text(f"⏳ בודק את הפוסט האחרון של {label}...", None, control_delete_message_reply_markup())
+    except Exception:
+        loading_id = None
+    _reliable_submit_control(run_latest_account_control_test_replace, (username, loading_id), f"latest-{username}")
+
+
+# Exact per-post text is intentionally independent of RSS.  It is attempted only
+# for a full preview/send, so a failure can never break account scanning.
+def _reliable_tweet_parts(post: Post) -> tuple[str, str] | None:
+    try:
+        parts = tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+        if parts:
+            return parts
+    except Exception:
+        pass
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    for raw in [str(getattr(post, "post_id", "") or ""), *(str(item or "") for item in (getattr(post, "dedupe_ids", []) or []))]:
+        matches = re.findall(r"(?<!\d)(\d{15,22})(?!\d)", raw)
+        if matches and username:
+            return username, matches[-1]
+    return None
+
+
+def _reliable_extract_single_tweet_text(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for node in _reliable_deep_values(data):
+        legacy = node.get("legacy") if isinstance(node.get("legacy"), dict) else {}
+        for raw in (node.get("full_text"), node.get("tweet_text"), node.get("text"), legacy.get("full_text"), legacy.get("text")):
+            if isinstance(raw, str):
+                value = _reliable_normalize_x_text(raw)
+                if value:
+                    return value
+    return ""
+
+
+def _reliable_fetch_exact_post_text(post: Post) -> tuple[str, str]:
+    parts = _reliable_tweet_parts(post)
+    if not parts:
+        return "", ""
+    username, tweet_id = parts
+    with _RELIABLE_EXACT_POST_CACHE_LOCK:
+        cached = _RELIABLE_EXACT_POST_CACHE.get(tweet_id)
+        if cached and time.time() - cached[0] <= RELIABLE_EXACT_POST_CACHE_SECONDS:
+            return cached[1], cached[2]
+
+    token = (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    )
+    endpoints: list[tuple[str, str, dict[str, str], str]] = []
+    if token:
+        endpoints.append(("x-api-v2", f"https://api.x.com/2/tweets/{tweet_id}?tweet.fields=text", {"Authorization": f"Bearer {token}", "User-Agent": "NetoSportBot/1.0"}, "json"))
+    endpoints.extend([
+        ("fxtwitter", f"https://api.fxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "json"),
+        ("vxtwitter", f"https://api.vxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "json"),
+        ("x-oembed", "https://publish.twitter.com/oembed?" + urllib.parse.urlencode({"url": f"https://x.com/{username}/status/{tweet_id}", "omit_script": "true", "dnt": "true"}), {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "oembed"),
+    ])
+    for provider, url, headers, mode in endpoints:
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=max(3.0, RELIABLE_EXACT_POST_TIMEOUT_SECONDS)) as response:
+                data = json.loads(response.read().decode("utf-8", errors="replace"))
+            if mode == "oembed":
+                raw_html = str((data or {}).get("html") or "")
+                match = re.search(r"<blockquote\b[^>]*>[\s\S]*?<p\b[^>]*>(.*?)</p>", raw_html, flags=re.IGNORECASE)
+                value = _reliable_normalize_x_text(match.group(1) if match else "")
+            else:
+                value = _reliable_extract_single_tweet_text(data)
+            if value:
+                with _RELIABLE_EXACT_POST_CACHE_LOCK:
+                    _RELIABLE_EXACT_POST_CACHE[tweet_id] = (time.time(), value, provider)
+                return value, provider
+        except Exception as exc:
+            logging.debug("Exact post source %s failed safely for %s: %s", provider, tweet_id, short_error(exc, 240))
+    return "", ""
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    try:
+        post = _ensure_post_original_structure(post)
+    except Exception:
+        return post
+    if not isinstance(post, Post):
+        return post
+    if not force and bool(getattr(post, "exact_source_structure", False)) and str(getattr(post, "original_text", "") or "").strip():
+        return post
+    try:
+        value, provider = _reliable_fetch_exact_post_text(post)
+    except Exception as exc:
+        logging.debug("Exact post hydration failed safely: %s", short_error(exc, 260))
+        return post
+    if value:
+        post.text = value
+        post.original_text = value
+        post.source_structure_available = True
+        post.exact_source_structure = True
+        post.exact_source_provider = provider
+        post.exact_source_fetched_at = time.time()
+    return post
+
+
+def _reliable_encode_breaks(value: str) -> tuple[str, list[tuple[str, str]]]:
+    source = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    markers: list[tuple[str, str]] = []
+    output: list[str] = []
+    cursor = 0
+    for index, match in enumerate(re.finditer(r"\n+", source), 1):
+        output.append(source[cursor:match.start()])
+        marker = f"⟪LB{index:04d}⟫"
+        markers.append((marker, "\n\n" if len(match.group(0)) >= 2 else "\n"))
+        output.append(f" {marker} ")
+        cursor = match.end()
+    output.append(source[cursor:])
+    return "".join(output), markers
+
+
+def _reliable_decode_breaks(value: str, markers: list[tuple[str, str]]) -> tuple[str, bool]:
+    result = str(value or "")
+    found = 0
+    for marker, replacement in markers:
+        if marker in result:
+            found += 1
+            result = result.replace(marker, replacement)
+    result = re.sub(r"⟪LB\d{4}⟫", "", result)
+    result = re.sub(r"[ \t]*\n[ \t]*", "\n", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip(), bool(markers) and found == len(markers)
+
+
+_PRE_RELIABLE_GEMINI_TRANSLATE_ONCE = gemini_translate_post_once
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    post = _reliable_hydrate_exact_post(post)
+    original_main = str(getattr(post, "text", "") or "")
+    original_quote = str(getattr(post, "quoted_text", "") or "")
+    main_encoded, main_markers = _reliable_encode_breaks(original_main) if bool(getattr(post, "exact_source_structure", False)) else (original_main, [])
+    quote_encoded, quote_markers = _reliable_encode_breaks(original_quote) if bool(getattr(post, "exact_source_structure", False)) else (original_quote, [])
+    post.text = main_encoded
+    post.quoted_text = quote_encoded
+    try:
+        translated, quoted, author = _PRE_RELIABLE_GEMINI_TRANSLATE_ONCE(post, include_quote)
+    finally:
+        post.text = original_main
+        post.quoted_text = original_quote
+    if main_markers:
+        decoded, complete = _reliable_decode_breaks(translated, main_markers)
+        translated = decoded if complete else _restore_source_layout(post, translated, quoted=False)
+    if quote_markers and quoted:
+        decoded, complete = _reliable_decode_breaks(quoted, quote_markers)
+        quoted = decoded if complete else _restore_source_layout(post, quoted, quoted=True)
+    return translated, quoted, author
+
+
+_PRE_RELIABLE_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    _reliable_hydrate_exact_post(post)
+    return _PRE_RELIABLE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+
+
+_PRE_RELIABLE_MANUAL_FORCE_TRANSLATION = manual_force_translation
+
+
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    _reliable_hydrate_exact_post(post, force=True)
+    translated, quoted, author = _PRE_RELIABLE_MANUAL_FORCE_TRANSLATION(post)
+    post.translation_origin = "gemini"
+    return translated, quoted, author
+
+
+_PRE_RELIABLE_POST_TO_CONTROL_PAYLOAD = post_to_control_payload
+
+
+def post_to_control_payload(post: "Post") -> dict[str, Any]:
+    payload = _PRE_RELIABLE_POST_TO_CONTROL_PAYLOAD(post)
+    payload["original_text"] = str(getattr(post, "original_text", "") or getattr(post, "text", "") or "")
+    payload["exact_source_structure"] = bool(getattr(post, "exact_source_structure", False))
+    payload["exact_source_provider"] = str(getattr(post, "exact_source_provider", "") or "")
+    payload["exact_source_fetched_at"] = float(getattr(post, "exact_source_fetched_at", 0.0) or 0.0)
+    payload["translation_origin"] = str(getattr(post, "translation_origin", "") or "")
+    return payload
+
+
+_PRE_RELIABLE_POST_FROM_CONTROL_PAYLOAD = post_from_control_payload
+
+
+def post_from_control_payload(payload: Any) -> "Post | None":
+    post = _PRE_RELIABLE_POST_FROM_CONTROL_PAYLOAD(payload)
+    if post is not None and isinstance(payload, dict):
+        post.exact_source_structure = bool(payload.get("exact_source_structure", False))
+        post.exact_source_provider = str(payload.get("exact_source_provider", "") or "")
+        post.exact_source_fetched_at = float(payload.get("exact_source_fetched_at", 0.0) or 0.0)
+        post.translation_origin = str(payload.get("translation_origin", "") or "")
+    return post
+
+
+# ====== END FINAL RSS RESTORE + BOUNDED WORKERS + EXACT X LAYOUT PATCH ======
+
+
+# ====== FINAL EDITORIAL / MEDIA / DUPLICATE / EXACT-X PATCH (2026-07-22) ======
+# This patch is intentionally appended after all earlier compatibility layers.
+# It does not rename or reset any persistent file or existing JSON key.
+BOT_BUILD_ID = "winner-editorial-media-smart-duplicates-2026-07-22"
+
+# Videos are part of the report. A post that declares a video may be published
+# only when a concrete video file is available and its verified size is <= 50MB.
+# This applies to automatic and manual/forced publication alike.
+SEND_VIDEO_FILES = True
+_VIDEO_POLICY_CACHE: dict[str, tuple[float, str, str, int | None]] = {}
+_VIDEO_POLICY_CACHE_LOCK = RLock()
+_VIDEO_POLICY_CACHE_SECONDS = 15 * 60
+
+
+def _final_post_identity(post: Post) -> str:
+    return str(
+        getattr(post, "post_id", "")
+        or getattr(post, "link", "")
+        or post_content_signature(
+            str(getattr(post, "username", "") or ""),
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+        )
+    )
+
+
+def _post_declares_video(post: Post) -> bool:
+    return bool(
+        getattr(post, "has_video", False)
+        or getattr(post, "primary_has_video", False)
+        or getattr(post, "quoted_has_video", False)
+        or list(getattr(post, "video_urls", []) or [])
+    )
+
+
+def _candidate_video_urls(post: Post) -> list[str]:
+    urls = [str(url or "").strip() for url in (getattr(post, "video_urls", []) or [])]
+    try:
+        urls.extend(str(url or "").strip() for url in (fetch_external_video_urls(post) or []))
+    except Exception as exc:
+        logging.debug("External video lookup failed safely: %s", short_error(exc, 240))
+    return [url for url in dict.fromkeys(urls) if url.startswith(("http://", "https://"))]
+
+
+def _verified_video_policy(post: Post, force_refresh: bool = False) -> tuple[str, str, int | None]:
+    """Return (status, url, bytes). Status: none/ok/too_large/unknown/missing."""
+    if not _post_declares_video(post):
+        return "none", "", None
+    identity = _final_post_identity(post)
+    now = time.time()
+    with _VIDEO_POLICY_CACHE_LOCK:
+        cached = _VIDEO_POLICY_CACHE.get(identity)
+        if cached and not force_refresh and now - cached[0] <= _VIDEO_POLICY_CACHE_SECONDS:
+            return cached[1], cached[2], cached[3]
+
+    urls = _candidate_video_urls(post)
+    if not urls:
+        result = ("missing", "", None)
+    else:
+        known_sizes: list[tuple[str, int]] = []
+        unknown_urls: list[str] = []
+        for url in urls:
+            try:
+                size = remote_file_size(url, timeout=6)
+            except Exception:
+                size = None
+            if size is None:
+                unknown_urls.append(url)
+                continue
+            known_sizes.append((url, int(size)))
+            if int(size) <= MAX_VIDEO_BYTES:
+                result = ("ok", url, int(size))
+                break
+        else:
+            if known_sizes and all(size > MAX_VIDEO_BYTES for _url, size in known_sizes) and not unknown_urls:
+                smallest_url, smallest_size = min(known_sizes, key=lambda pair: pair[1])
+                result = ("too_large", smallest_url, smallest_size)
+            elif known_sizes and all(size > MAX_VIDEO_BYTES for _url, size in known_sizes):
+                result = ("unknown", unknown_urls[0], None)
+            else:
+                result = ("unknown", (unknown_urls or urls)[0], None)
+    with _VIDEO_POLICY_CACHE_LOCK:
+        _VIDEO_POLICY_CACHE[identity] = (now, result[0], result[1], result[2])
+    return result
+
+
+_PRE_FINAL_SENDABLE_VIDEO_URL = sendable_video_url
+
+
+def sendable_video_url(post: Post) -> str:
+    status, url, _size = _verified_video_policy(post)
+    return url if status == "ok" else ""
+
+
+# Fetch the exact post body and media without replacing the stable RSS path.
+# This function runs only for a selected post being previewed or published.
+_FINAL_EXACT_BUNDLE_CACHE: dict[str, tuple[float, str, list[str], list[str], str]] = {}
+_FINAL_EXACT_BUNDLE_LOCK = RLock()
+_FINAL_EXACT_BUNDLE_SECONDS = 60 * 60
+
+
+def _final_extract_exact_bundle(post: Post) -> tuple[str, list[str], list[str], str]:
+    parts = _reliable_tweet_parts(post)
+    if not parts:
+        return "", [], [], ""
+    username, tweet_id = parts
+    now = time.time()
+    with _FINAL_EXACT_BUNDLE_LOCK:
+        cached = _FINAL_EXACT_BUNDLE_CACHE.get(tweet_id)
+        if cached and now - cached[0] <= _FINAL_EXACT_BUNDLE_SECONDS:
+            return cached[1], list(cached[2]), list(cached[3]), cached[4]
+
+    token = (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    )
+    endpoints: list[tuple[str, str, dict[str, str], str]] = []
+    if token:
+        endpoints.append((
+            "x-api-v2",
+            f"https://api.x.com/2/tweets/{tweet_id}?" + urllib.parse.urlencode({
+                "tweet.fields": "text,attachments",
+                "expansions": "attachments.media_keys",
+                "media.fields": "url,preview_image_url,type,variants",
+            }),
+            {"Authorization": f"Bearer {token}", "User-Agent": "NetoSportBot/1.0", "Accept": "application/json"},
+            "json",
+        ))
+    endpoints.extend([
+        ("fxtwitter", f"https://api.fxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "json"),
+        ("vxtwitter", f"https://api.vxtwitter.com/{urllib.parse.quote(username)}/status/{tweet_id}", {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "json"),
+        ("x-oembed", "https://publish.twitter.com/oembed?" + urllib.parse.urlencode({"url": f"https://x.com/{username}/status/{tweet_id}", "omit_script": "true", "dnt": "true"}), {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, "oembed"),
+    ])
+    for provider, url, headers, mode in endpoints:
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=max(4.0, RELIABLE_EXACT_POST_TIMEOUT_SECONDS)) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+            if mode == "oembed":
+                raw_html = str((payload or {}).get("html") or "")
+                match = re.search(r"<blockquote\b[^>]*>[\s\S]*?<p\b[^>]*>(.*?)</p>", raw_html, flags=re.IGNORECASE)
+                body = _reliable_normalize_x_text(match.group(1) if match else "")
+                images: list[str] = []
+                videos: list[str] = []
+            else:
+                body = _reliable_extract_single_tweet_text(payload)
+                images, videos = _reliable_extract_media_urls(payload)
+            if body or images or videos:
+                with _FINAL_EXACT_BUNDLE_LOCK:
+                    _FINAL_EXACT_BUNDLE_CACHE[tweet_id] = (now, body, list(images), list(videos), provider)
+                return body, list(images), list(videos), provider
+        except Exception as exc:
+            logging.debug("Exact bundle source %s failed safely for %s: %s", provider, tweet_id, short_error(exc, 220))
+    return "", [], [], ""
+
+
+_PRE_FINAL_HYDRATE_EXACT_POST = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    post = _PRE_FINAL_HYDRATE_EXACT_POST(post, force=force)
+    if not isinstance(post, Post):
+        return post
+    need_media = not list(getattr(post, "image_urls", []) or []) and not list(getattr(post, "video_urls", []) or [])
+    need_text = force or not bool(getattr(post, "exact_source_structure", False))
+    if not (need_media or need_text):
+        return post
+    try:
+        body, images, videos, provider = _final_extract_exact_bundle(post)
+    except Exception as exc:
+        logging.debug("Exact bundle hydration failed safely: %s", short_error(exc, 260))
+        return post
+    if body:
+        post.text = body
+        post.original_text = body
+        post.source_structure_available = True
+        post.exact_source_structure = True
+        post.exact_source_provider = provider
+        post.exact_source_fetched_at = time.time()
+    if images:
+        post.image_urls = list(dict.fromkeys([*images, *(getattr(post, "image_urls", []) or [])]))
+    if videos:
+        post.video_urls = list(dict.fromkeys([*videos, *(getattr(post, "video_urls", []) or [])]))
+        post.has_video = True
+        post.primary_has_video = True
+    return post
+
+
+# Exact X layout wins. Existing layout heuristics are fallback-only.
+_PRE_FINAL_EXACT_LAYOUT = _restore_source_layout
+
+
+def _final_preserve_exact_newlines(value: str) -> str:
+    value = _strip_internal_translation_output(value)
+    value = _remove_channel_signature_artifacts(value)
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    lines: list[str] = []
+    for raw_line in value.split("\n"):
+        line = re.sub(r"[ \t]{2,}", " ", raw_line).strip()
+        lines.append(line)
+    # Preserve real blank lines, but Telegram never needs more than one blank row.
+    value = "\n".join(lines)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _fallback_statistical_list(value: str) -> str:
+    """Conservative list reconstruction only when exact X structure is unavailable."""
+    text = str(value or "")
+    if "\n" in text or ":" not in text:
+        return text
+    head, tail = text.split(":", 1)
+    # Find at least three metric fragments ending with a numeric parenthesis.
+    matches = list(re.finditer(r"([^()]{2,95}?\(\s*\d+(?:[.,]\d+)?\s*\))(?=\s+[^()]{2,95}?\(\s*\d|\s*$)", tail.strip()))
+    if len(matches) < 3:
+        return text
+    rows = [re.sub(r"\s+", " ", match.group(1)).strip(" ,;") for match in matches]
+    if len(rows) < 3:
+        return text
+    return head.strip() + ":\n" + "\n".join(f"• {row}" for row in rows)
+
+
+def _restore_source_layout(post: Post, translated: str, quoted: bool = False) -> str:
+    if bool(getattr(post, "exact_source_structure", False)):
+        return _final_preserve_exact_newlines(translated)
+    value = _PRE_FINAL_EXACT_LAYOUT(post, translated, quoted=quoted)
+    if not quoted:
+        value = _fallback_statistical_list(value)
+    return value
+
+
+# Editorial cleanup for attribution residue, self-promotion, dangling words and
+# duplicated trailing club labels.
+_FINAL_MEDIA_PROMO_EMOJI_RE = re.compile(r"[🎥🎬📹🎙🎙️🎤🎧📺]+", re.UNICODE)
+_FINAL_TRAILING_SOURCE_NAMES = (
+    r"Sky\s+Sport(?:s)?\s+Germany|Sky\s+Germany|SkySportDE|סקיי\s+ספורט(?:ס)?\s+גרמניה|סקיי\s+גרמניה|"
+    r"BILD|Bild|Kicker|RMC\s+Sport|L['’]?Équipe|L'Equipe|The\s+Athletic|ESPN|BBC\s+Sport|"
+    r"Marca|MARCA|Mundo\s+Deportivo|AS"
+)
+_FINAL_SOURCE_ATTR_RE = re.compile(
+    rf"(?:\s*[,;–—-]?\s*)(?:(?:לפי|על\s+פי|באדיבות|via|according\s+to|per)\s+)?(?:{_FINAL_TRAILING_SOURCE_NAMES})"
+    rf"(?:\s*[@#][A-Za-z0-9_]+)?(?:\s*[🇩🇪🎥🎬📹🎙🎙️🎤🎧📺]*)",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_SELF_PROMO_SENTENCE_RE = re.compile(
+    r"(?:^|(?<=[.!?]))\s*(?:"
+    r"אין\s+(?:כאן\s+)?(?:שום\s+)?הפתעה[^.!?]*(?:[.!?]|$)|"
+    r"כפי\s+ש(?:דיווחנו|נחשף|אושר|פורסם)\s+(?:כבר\s+)?(?:כאן|אצלנו)?[^.!?]*(?:[.!?]|$)|"
+    r"(?:דווח|אושר|נחשף|פורסם)\s+(?:כבר\s+)?(?:כאן|אצלנו)\s+(?:מאז|ב-?)[^.!?]*(?:[.!?]|$)|"
+    r"no\s+surprise[^.!?]*(?:[.!?]|$)|"
+    r"(?:already\s+)?(?:confirmed|reported|revealed|exclusively\s+revealed)\s+(?:already\s+)?(?:since|on|back\s+on)[^.!?]*(?:[.!?]|$)"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_PROMO_CONTEXT_RE = re.compile(
+    r"https?://|\bpodcast\b|פוד\s*קאסט|פודקסט|פרק\s+(?:חדש|מלא)|"
+    r"watch\s+(?:here|now|full)|listen\s+(?:here|now)|לצפייה|להאזנה|שידור|youtube",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_remove_trailing_duplicate_club(value: str) -> str:
+    text = str(value or "").rstrip()
+    try:
+        catalog = all_team_catalog_items()
+    except Exception:
+        catalog = TEAM_CATALOG
+    aliases: list[str] = []
+    for key, item in (catalog or {}).items():
+        if not isinstance(item, dict):
+            continue
+        aliases.extend([str(key or ""), str(item.get("name", "") or "")])
+        aliases.extend(str(alias or "") for alias in (item.get("aliases", []) or []))
+    for alias in sorted({alias.strip() for alias in aliases if alias.strip()}, key=len, reverse=True):
+        pattern = re.compile(rf"(?:\n+|\s{{2,}})(?:{re.escape(alias)})\s*[.!?]?\s*$", re.IGNORECASE | re.UNICODE)
+        match = pattern.search(text)
+        if not match:
+            continue
+        prefix = text[:match.start()]
+        if len(re.findall(re.escape(alias), prefix, flags=re.IGNORECASE)) >= 1:
+            return prefix.rstrip(" ,;:-\n")
+    return text
+
+
+def _final_clean_editorial_body(post: Post, value: str) -> str:
+    text = str(value or "")
+    original = html.unescape("\n".join([
+        str(getattr(post, "original_text", "") or getattr(post, "text", "") or ""),
+        str(getattr(post, "original_quoted_text", "") or getattr(post, "quoted_text", "") or ""),
+    ]))
+    text = _FINAL_SELF_PROMO_SENTENCE_RE.sub(" ", text)
+    source_removed = bool(_FINAL_SOURCE_ATTR_RE.search(text))
+    text = _FINAL_SOURCE_ATTR_RE.sub("", text)
+    # Remove a dangling attribution word after a source/hashtag was stripped.
+    text = re.sub(r"(?iu)\b(?:לפי|על\s+פי|via|according\s+to|per)\s*(?=[.!?,;:\n]|$)", "", text)
+    text = re.sub(r"(?iu)\s+(?:לפי|על\s+פי)\s*$", "", text)
+    if source_removed or _FINAL_PROMO_CONTEXT_RE.search(original):
+        text = _FINAL_MEDIA_PROMO_EMOJI_RE.sub("", text)
+    text = _final_remove_trailing_duplicate_club(text)
+    text = re.sub(r"[ \t]+([,.;!?])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"(?m)^\s+|\s+$", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip(" \t,;:-")
+
+
+# Footballtweet historical/anniversary policy.
+_FINAL_HISTORICAL_START_RE = re.compile(
+    r"^\s*(?:📅|📆)?\s*(?:𝗧𝗛𝗥𝗢𝗪𝗕𝗔𝗖𝗞|THROWBACK|ON\s+THIS\s+DAY|ביום\s+(?:הזה|זה)|היום\s+לפני)\s*[:：,-]?\s*",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_BIRTHDAY_RE = re.compile(r"יום\s+הולדת|happy\s+birthday|birthday", re.IGNORECASE | re.UNICODE)
+_FINAL_WEAK_STORY_RE = re.compile(
+    r"גיבור\s+קאלט|cult\s+hero|איש\s+של\s+(?:עקרונות|מוסר)|man\s+of\s+(?:principles|morals)|"
+    r"מכאן\s+הכל\s+התחיל|where\s+it\s+all\s+began|סיפורו\s+של|the\s+story\s+of",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_WEAK_THROWBACK_RE = re.compile(
+    r"masterclass|הופעת\s+אמן|תצוגת\s+אמן|איזה\s+שחקן|what\s+a\s+player|memories|נוסטלג",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_STRONG_HISTORY_RE = re.compile(
+    r"הצטרף|חתם|זכתה|זכה|הניף|הופעת\s+הבכורה|בכורה|שבר\s+שיא|קבע\s+שיא|"
+    r"joined|signed|won|lifted|debut|record|title|champion|"
+    r"פרמייר\s+ליג|ליגת\s+האלופות|לה\s+ליגה|גביע|סופר\s+קאפ|"
+    r"שערים|בישולים|הופעות|שערים\s+נקיים|clean\s+sheets?|goals?|assists?|appearances?",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_is_historical_post(text: str) -> bool:
+    return bool(_FINAL_HISTORICAL_START_RE.search(str(text or "")) or _FINAL_BIRTHDAY_RE.search(str(text or "")))
+
+
+def _final_is_strong_historical_post(text: str) -> bool:
+    value = str(text or "")
+    birthday = bool(_FINAL_BIRTHDAY_RE.search(value))
+    trophy_count = value.count("🏆")
+    numbers = re.findall(r"(?<!\w)\d{1,4}(?!\w)", value)
+    strong_event = bool(_FINAL_STRONG_HISTORY_RE.search(value))
+    goat_debut = bool(re.search(r"(?:גואט|GOAT|🐐).{0,80}(?:בכורה|debut)", value, re.IGNORECASE | re.UNICODE))
+    if birthday:
+        return strong_event or trophy_count >= 1 or len(numbers) >= 2
+    return strong_event or goat_debut or trophy_count >= 1
+
+
+def _final_normalize_historical_prefix(post: Post, value: str) -> str:
+    if not _is_footballtweet_post(post):
+        return value
+    source = _footballtweet_original_text(post)
+    if _FINAL_BIRTHDAY_RE.search(source):
+        return value
+    if not _FINAL_HISTORICAL_START_RE.search(source):
+        return value
+    cleaned = _FINAL_HISTORICAL_START_RE.sub("", str(value or ""), count=1).lstrip(" ,:–—-")
+    return "📅 ביום הזה, " + cleaned if cleaned else value
+
+
+_PRE_FINAL_FOOTBALLTWEET_FILTER = footballtweet_filter_issue
+
+
+def footballtweet_filter_issue(post: Post, reserve_rate_slot: bool = True) -> str:
+    if not _is_footballtweet_post(post):
+        return ""
+    original = _footballtweet_original_text(post)
+    historical = _final_is_historical_post(original)
+    strong_historical = historical and _final_is_strong_historical_post(original)
+    if _FINAL_WEAK_STORY_RE.search(original):
+        return "footballtweet_weak_story_or_tribute"
+    if historical and _FINAL_WEAK_THROWBACK_RE.search(original) and not strong_historical:
+        return "footballtweet_weak_throwback"
+    if historical and not strong_historical:
+        return "footballtweet_weak_throwback"
+    if is_women_or_wnba_post(post):
+        return "footballtweet_women"
+    if is_other_sport_post(post) and not strong_historical:
+        return "footballtweet_other_sport"
+    quote_reason = footballtweet_quote_or_opinion_reason(post)
+    if quote_reason and not strong_historical:
+        return quote_reason
+    if _FOOTBALLTWEET_LIVE_RE.search(original):
+        return "footballtweet_live"
+    if count_content_words(original) < FOOTBALLTWEET_MIN_WORDS:
+        return "footballtweet_too_short"
+    if not _special_fact_has_media(post):
+        return "footballtweet_no_media"
+    if _footballtweet_duplicate_memory_candidate(post):
+        return "footballtweet_duplicate_24h"
+    if reserve_rate_slot and not _footballtweet_reserve_rate_slot(post):
+        return "footballtweet_hourly_limit"
+    return ""
+
+
+# Replace broad youth matching with explicit youth/reserve signals. "Plan B" and
+# "plans B" are transfer alternatives, not academy reports.
+_FINAL_YOUTH_EXPLICIT_RE = re.compile(
+    r"\b(?:academy|youth\s+team|youth\s+player|under[- ]?(?:15|16|17|18|19|20|21|23)|"
+    r"u[- ]?(?:15|16|17|18|19|20|21|23)|primavera|castilla|next\s+gen|futuro|reserve\s+team)\b|"
+    r"אקדמיה|מחלקת\s+נוער|קבוצת\s+נוער|שחקן\s+נוער|קבוצת\s+מילואים|קבוצת\s+עתודה|"
+    r"עד\s+גיל\s*(?:15|16|17|18|19|20|21|23)|מילאן\s+פוטורו|יובנטוס\s+נקסט\s+ג['’]?ן|"
+    r"ריאל\s+מדריד\s+קסטיליה|ברצלונה\s+אתלטיק|בארסה\s+אתלטיק",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def is_youth_or_academy_post(post: Post) -> bool:
+    text = post_filter_text(post)
+    masked = re.sub(r"(?i)\b(?:plan|plans|option|alternative)\s+B\b|תוכנית\s+ב['’]?|חלופה\s+ב['’]?", " ", text)
+    return bool(_FINAL_YOUTH_EXPLICIT_RE.search(masked) or has_underage_birth_year_signal(masked))
+
+
+# Destination relevance: a tracked club mentioned only in a buy-back/parent-club
+# clause cannot rescue an untracked destination transfer.
+_FINAL_DESTINATION_PATTERNS = (
+    re.compile(r"\b(?:joins?|joining|signs?|signing|moves?|moving|loaned|loan)\s+(?:for|to|at)\s+([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’.-]+(?:\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’.-]+){0,3})", re.IGNORECASE),
+    re.compile(r"\b(?:to|for)\s+([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’.-]+(?:\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’.-]+){0,3})\s+(?:on\s+loan|permanent|deal|transfer)", re.IGNORECASE),
+    re.compile(r"(?:מצטרף|יחתום|חותם|עובר|מושאל|השאלה)\s+(?:ל|ב)([א-ת][א-ת'’.-]+(?:\s+[א-ת][א-ת'’.-]+){0,3})", re.UNICODE),
+)
+_FINAL_BUYBACK_CONTEXT_RE = re.compile(r"buy[- ]?back|repurchase|סעיף\s+רכישה\s+בחזרה|אופציית\s+רכישה\s+חוזרת", re.IGNORECASE | re.UNICODE)
+
+
+def _final_destination_candidate(post: Post) -> str:
+    text = _strict_transfer_source_text(post)
+    try:
+        candidates = explicit_transfer_destination_candidates(post)
+    except Exception:
+        candidates = []
+    for candidate in candidates or []:
+        clean = str(candidate or "").strip(" ,.;:-")
+        if clean:
+            return clean
+    for pattern in _FINAL_DESTINATION_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return str(match.group(1) or "").strip(" ,.;:-")
+    return ""
+
+
+def _final_incidental_tracked_club_issue(post: Post) -> bool:
+    try:
+        if not _strict_normal_transfer_report(post):
+            return False
+    except Exception:
+        return False
+    destination = _final_destination_candidate(post)
+    if not destination or _strict_text_contains_managed_club(destination):
+        return False
+    text = _strict_transfer_source_text(post)
+    # Strong signal for the reported case: destination is untracked while the only
+    # tracked-club relevance is a buy-back/return clause.
+    return bool(_FINAL_BUYBACK_CONTEXT_RE.search(text) and _strict_text_contains_managed_club(text))
+
+
+# River Plate is always tier B, including old state files that predate the entry.
+TEAM_CATALOG["river plate"] = {
+    "name": "ריבר פלייט",
+    "tier": "tier2",
+    "aliases": ["River Plate", "River", "ריבר פלייט", "ריבר"],
+}
+try:
+    _RSS_TEAM_CATALOG_CACHE = None
+except Exception:
+    pass
+
+
+_PRE_FINAL_EDITORIAL_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _PRE_FINAL_EDITORIAL_PRE_SEND(post)
+    if reason:
+        return reason
+    if _final_incidental_tracked_club_issue(post):
+        return "untracked_destination_incidental_buyback_club"
+    status, _url, _size = _verified_video_policy(post)
+    if status == "too_large":
+        return "video_over_50mb"
+    if status in {"unknown", "missing"}:
+        return "video_not_verified_under_50mb"
+    return ""
+
+
+_PRE_FINAL_EDITORIAL_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    mapping = {
+        "footballtweet_weak_story_or_tribute": "ציוצי כדורגל: סיפור, מחווה או טקסט אישיותי ללא דיווח משמעותי",
+        "footballtweet_weak_throwback": "ציוצי כדורגל: נוסטלגיה/Throwback ללא הישג, שיא או אירוע משמעותי",
+        "untracked_destination_incidental_buyback_club": "יעד המעבר אינו ברשימות; קבוצה גדולה הוזכרה רק בסעיף רכישה בחזרה",
+        "video_over_50mb": "הפוסט כולל וידאו גדול מ-50MB ולכן לא נשלחה גם הודעת הטקסט",
+        "video_not_verified_under_50mb": "לא ניתן לאמת שהווידאו קיים ובגודל של עד 50MB ולכן הפוסט כולו לא נשלח",
+    }
+    return mapping.get(str(reason or ""), _PRE_FINAL_EDITORIAL_HEBREW_REASON(reason))
+
+
+_PRE_FINAL_OUTGOING_BODY = _outgoing_body_text
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _PRE_FINAL_OUTGOING_BODY(post, translated, quoted=quoted)
+    if quoted:
+        return value
+    value = _final_clean_editorial_body(post, value)
+    value = _final_normalize_historical_prefix(post, value)
+    return value
+
+
+# Smarter duplicates: require the same named subject, compatible team context and
+# event family. A broader/newer development is allowed and linked as a reply.
+_FINAL_DUP_WINDOW_SECONDS = 24 * 60 * 60
+_FINAL_DUP_STOP = {
+    "official", "exclusive", "breaking", "report", "update", "today", "tomorrow", "deal", "club", "player",
+    "רשמי", "בלעדי", "דיווח", "עדכון", "היום", "מחר", "עסקה", "מועדון", "שחקן",
+}
+
+
+def _final_item_text(item: Any) -> str:
+    if isinstance(item, Post):
+        return html.unescape("\n".join([_post_original_text(item), _post_original_text(item, quoted=True)])).strip()
+    if not isinstance(item, dict):
+        return str(item or "")
+    for key in ("original_text", "ai_text", "text", "preview", "rendered", "message", "details"):
+        value = item.get(key)
+        if value:
+            return html.unescape(re.sub(r"<[^>]+>", " ", str(value)))
+    signature = item.get("signature")
+    if isinstance(signature, dict):
+        return " ".join(str(token) for token in (signature.get("tokens") or []))
+    return ""
+
+
+def _final_signature_from_any(value: Any) -> dict[str, Any]:
+    if isinstance(value, Post):
+        return news_event_signature(value)
+    if isinstance(value, dict) and isinstance(value.get("signature"), dict):
+        return value.get("signature") or {}
+    text = _final_item_text(value)
+    return news_event_signature(channel_duplicate_text_to_post(text)) if text else {}
+
+
+def _final_named_subjects(text: str, signature: dict[str, Any]) -> set[str]:
+    try:
+        values = set(_strict_confirmation_person_keys(text, signature))
+    except Exception:
+        values = set()
+    if values:
+        return values
+    normalized = _duplicate_phrase_norm(text)
+    tokens = [token for token in normalized.split() if len(token) >= 5 and token not in _FINAL_DUP_STOP]
+    return set(tokens[:8])
+
+
+def _final_event_status_rank(text: str) -> int:
+    value = str(text or "")
+    levels = [
+        (5, r"official|רשמי|signed|חתם|הוכרז|announced"),
+        (4, r"medical|בדיקות\s+רפואיות|documents\s+signed|מסמכים"),
+        (3, r"agreement|agreed|סיכום|הסכם|deal\s+done|עסקה\s+סגורה"),
+        (2, r"advanced\s+talks|negotiations|מגעים|משא\s+ומתן|offer|הצעה"),
+    ]
+    for rank, pattern in levels:
+        if re.search(pattern, value, re.IGNORECASE | re.UNICODE):
+            return rank
+    return 1
+
+
+def _final_event_facts(text: str) -> set[str]:
+    value = _duplicate_phrase_norm(text)
+    facts = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", value))
+    for token in ("medical", "רפואיות", "official", "רשמי", "agreement", "סיכום", "contract", "חוזה", "loan", "השאלה", "option", "אופציה", "fee", "million", "מיליון"):
+        if token in value:
+            facts.add(token)
+    return facts
+
+
+def _final_event_relation(post: Post, item: Any) -> str:
+    """Return duplicate/update/different. Conservative by design."""
+    if isinstance(item, dict):
+        if str(item.get("link", "") or "") and str(item.get("link", "") or "") == str(post.link or ""):
+            return "duplicate"
+        if str(item.get("post_id", "") or "") and str(item.get("post_id", "") or "") == str(post.post_id or ""):
+            return "duplicate"
+    current_text = _final_item_text(post)
+    previous_text = _final_item_text(item)
+    if not current_text or not previous_text:
+        return "different"
+    current_sig = _final_signature_from_any(post)
+    previous_sig = _final_signature_from_any(item)
+    current_people = _final_named_subjects(current_text, current_sig)
+    previous_people = _final_named_subjects(previous_text, previous_sig)
+    people_overlap = current_people & previous_people
+    if not people_overlap:
+        return "different"
+    try:
+        current_teams = _confirmation_team_ids(current_text)
+        previous_teams = _confirmation_team_ids(previous_text)
+    except Exception:
+        current_teams = set(current_sig.get("teams", []) or [])
+        previous_teams = set(previous_sig.get("teams", []) or [])
+    if current_teams and previous_teams and not (current_teams & previous_teams):
+        return "different"
+    current_actions = set(current_sig.get("actions", []) or [])
+    previous_actions = set(previous_sig.get("actions", []) or [])
+    transfer_family = {"sign", "signed", "transfer_move", "contract", "contract_stay", "agreement", "talks", "medical"}
+    actions_compatible = bool(current_actions & previous_actions)
+    if not actions_compatible and current_actions and previous_actions:
+        actions_compatible = bool((current_actions & transfer_family) and (previous_actions & transfer_family))
+    if current_actions and previous_actions and not actions_compatible:
+        return "different"
+    current_norm = _duplicate_phrase_norm(current_text)
+    previous_norm = _duplicate_phrase_norm(previous_text)
+    score = SequenceMatcher(None, current_norm, previous_norm).ratio()
+    current_rank = _final_event_status_rank(current_text)
+    previous_rank = _final_event_status_rank(previous_text)
+    new_facts = _final_event_facts(current_text) - _final_event_facts(previous_text)
+    if current_rank > previous_rank or len(new_facts) >= 2 or len(current_norm) > len(previous_norm) * 1.28:
+        return "update"
+    if score >= 0.84 or (score >= 0.74 and not new_facts):
+        return "duplicate"
+    return "different"
+
+
+def _final_recent_memory_candidates(state: dict[str, Any], include_persistent: bool = False) -> list[dict[str, Any]]:
+    now = time.time()
+    rows: list[dict[str, Any]] = []
+    for getter in (cleanup_recent_news_events, cleanup_channel_recent_news_events, cleanup_bot_sent_reply_targets):
+        try:
+            rows.extend(item for item in getter(state) if isinstance(item, dict) and now - float(item.get("ts", 0) or 0) <= _FINAL_DUP_WINDOW_SECONDS)
+        except Exception:
+            pass
+    if include_persistent:
+        try:
+            for item in load_json_list_file(persistent_memory_path("football_sent_memory.json")):
+                if isinstance(item, dict) and now - float(item.get("ts", item.get("sent_at", 0)) or 0) <= _FINAL_DUP_WINDOW_SECONDS:
+                    rows.append(item)
+        except Exception:
+            pass
+    return rows
+
+
+def _final_smart_duplicate(post: Post, state: dict[str, Any], include_persistent: bool = False) -> dict[str, Any] | None:
+    for item in reversed(_final_recent_memory_candidates(state, include_persistent=include_persistent)):
+        if is_pending_memory_item(item):
+            continue
+        if _final_event_relation(post, item) == "duplicate":
+            return item
+    return None
+
+
+_PRE_FINAL_FIND_RECENT_DUP = find_recent_duplicate_event
+_PRE_FINAL_FIND_CHANNEL_DUP = find_channel_duplicate_event
+_PRE_FINAL_FIND_TRANSLATION_DUP = find_post_translation_duplicate_event
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    smart = _final_smart_duplicate(post, state, include_persistent=_is_footballtweet_post(post))
+    if smart:
+        return smart
+    # When we can identify a named subject, the conservative smart matcher is the
+    # authority and prevents old fuzzy layers from blocking unrelated reports.
+    sig = _final_signature_from_any(post)
+    if _final_named_subjects(_final_item_text(post), sig):
+        return None
+    return _PRE_FINAL_FIND_RECENT_DUP(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    smart = _final_smart_duplicate(post, state, include_persistent=False)
+    if smart:
+        return smart
+    sig = _final_signature_from_any(post)
+    if _final_named_subjects(_final_item_text(post), sig):
+        return None
+    return _PRE_FINAL_FIND_CHANNEL_DUP(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    translated_post = clone_post_with_text(post, html_message_to_plain_text(translated_message))
+    smart = _final_smart_duplicate(translated_post, state, include_persistent=_is_footballtweet_post(post))
+    if smart:
+        return smart
+    return None
+
+
+_PRE_FINAL_FIND_REPLY_TARGET = find_bot_reply_target_for_post
+
+
+def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    existing = _PRE_FINAL_FIND_REPLY_TARGET(post, state)
+    if existing:
+        return existing
+    for item in reversed(cleanup_bot_sent_reply_targets(state)):
+        if _final_event_relation(post, item) != "update":
+            continue
+        ids = _message_ids_from_reply_item(item)
+        if ids:
+            setattr(post, "related_previous_report", True)
+            return ids
+    return {}
+
+
+_PRE_FINAL_REMEMBER_REPLY_TARGET = remember_bot_sent_reply_target
+
+
+def remember_bot_sent_reply_target(post: Post, state: dict[str, Any], message_ids_by_chat: dict[str, int]) -> None:
+    _PRE_FINAL_REMEMBER_REPLY_TARGET(post, state, message_ids_by_chat)
+    try:
+        rows = cleanup_bot_sent_reply_targets(state)
+        for item in reversed(rows):
+            if str(item.get("link", "") or "") == str(post.link or ""):
+                item["original_text"] = _final_item_text(post)
+                item["post_id"] = str(post.post_id or "")
+                break
+    except Exception:
+        pass
+
+
+# Control preview: always keep media visible. If the full caption is over
+# Telegram's caption limit, send media first and the complete actionable text next.
+_FINAL_CONTROL_MEDIA_COMBINED: dict[str, bool] = {}
+_PRE_FINAL_SEND_FULL_CONTROL = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    markup = control_send_to_main_reply_markup(token)
+    try:
+        ids, combined = _control_candidate_media_payload(post, message_html, markup)
+        if combined:
+            _FINAL_CONTROL_MEDIA_COMBINED[token] = True
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, ids)
+            return ids
+    except Exception as exc:
+        logging.warning("Combined media preview failed; using full two-part preview: %s", short_error(exc, 300))
+    media_ids = _send_control_media_once(post, token)
+    _FINAL_CONTROL_MEDIA_COMBINED[token] = False
+    _save_prepared_media_ids(token, media_ids)
+    send_control_html(message_html, markup)
+    return media_ids
+
+
+_PRE_FINAL_FORCE_SEND_CONTROL = send_prepared_control_post_to_main
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    item = _restore_prepared_send(token)
+    if not item:
+        return "הפוסט הישן לא ניתן לשחזור. בצע בדיקת כתב חדשה."
+    post = item.get("post")
+    if not isinstance(post, Post):
+        return "אין מספיק נתונים לשחזור הפוסט."
+    status, _video_url, size = _verified_video_policy(post, force_refresh=True)
+    if status == "too_large":
+        return f"לא נשלח: הווידאו גדול מ-50MB ({(size or 0) / 1024 / 1024:.1f}MB), ולכן גם הטקסט לא נשלח."
+    if status in {"unknown", "missing"}:
+        return "לא נשלח: לא ניתן לאמת וידאו זמין בגודל של עד 50MB, ולכן גם הטקסט לא נשלח."
+
+    translated = str(item.get("translated", "") or "")
+    quoted_translated = str(item.get("quoted_translated", "") or "")
+    quoted_author_translated = str(item.get("quoted_author_translated", "") or "")
+    if not (translated or quoted_translated):
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+    message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+
+    media_ids = CONTROL_TELEGRAM_MEDIA_CACHE.get(token, [])
+    if media_ids and CONTROL_CHAT_ID:
+        copied_any = False
+        for chat_id in TELEGRAM_CHAT_IDS:
+            for message_id in media_ids:
+                try:
+                    telegram_api("copyMessage", {"chat_id": chat_id, "from_chat_id": CONTROL_CHAT_ID, "message_id": int(message_id)})
+                    copied_any = True
+                except Exception as exc:
+                    logging.warning("Copying preview media to %s failed: %s", chat_id, short_error(exc, 240))
+        if copied_any:
+            if not _FINAL_CONTROL_MEDIA_COMBINED.get(token, False):
+                telegram_broadcast_full_text(message)
+            remember_persistent_sent(post, message, "manual_telegram_copy_full")
+            return "נשלח בכוח עם המדיה ועם ההודעה המלאה."
+
+    images = selected_post_images(post)
+    video_url = sendable_video_url(post)
+    _ids, mode = manual_force_send_prepared_message(post, message, images, video_url)
+    remember_persistent_sent(post, message, "manual_force")
+    return f"נשלח בכוח עם המדיה והטקסט המלא. מצב שליחה: {mode}"
+
+
+# New prepared payloads keep exact media/structure information.
+_PRE_FINAL_POST_TO_PAYLOAD = post_to_control_payload
+
+
+def post_to_control_payload(post: "Post") -> dict[str, Any]:
+    payload = _PRE_FINAL_POST_TO_PAYLOAD(post)
+    payload["image_urls"] = list(dict.fromkeys(getattr(post, "image_urls", []) or []))
+    payload["video_urls"] = list(dict.fromkeys(getattr(post, "video_urls", []) or []))
+    payload["has_video"] = bool(getattr(post, "has_video", False))
+    payload["primary_has_video"] = bool(getattr(post, "primary_has_video", False))
+    return payload
+
+
+_PRE_FINAL_POST_FROM_PAYLOAD = post_from_control_payload
+
+
+def post_from_control_payload(payload: Any) -> "Post | None":
+    post = _PRE_FINAL_POST_FROM_PAYLOAD(payload)
+    if post is not None and isinstance(payload, dict):
+        post.image_urls = list(dict.fromkeys(payload.get("image_urls", []) or getattr(post, "image_urls", []) or []))
+        post.video_urls = list(dict.fromkeys(payload.get("video_urls", []) or getattr(post, "video_urls", []) or []))
+        post.has_video = bool(payload.get("has_video", getattr(post, "has_video", False)) or post.video_urls)
+        post.primary_has_video = bool(payload.get("primary_has_video", getattr(post, "primary_has_video", False)) or post.video_urls)
+    return post
+
+
+
+# Preserve the RSS caption as a cache-only translation fallback before exact-X
+# hydration replaces the text. The fallback never publishes Google Translate and
+# never spends an extra Gemini request after a failed key/model sweep.
+_PRE_CACHE_AWARE_HYDRATE = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    if isinstance(post, Post) and not str(getattr(post, "rss_original_text", "") or "").strip():
+        post.rss_original_text = str(getattr(post, "text", "") or "")
+    return _PRE_CACHE_AWARE_HYDRATE(post, force=force)
+
+
+def _final_cached_combined_translation(main_source: str, quote_source: str = "", author_source: str = "") -> tuple[str, str, str] | None:
+    main_clean = clean_for_ai_translation(main_source) or clean_before_translation(main_source)
+    quote_clean = clean_for_ai_translation(quote_source) if quote_source else ""
+    author_clean = clean_before_translation(author_source) if author_source else ""
+    material = json.dumps({"m": main_clean, "q": quote_clean, "a": author_clean}, ensure_ascii=False, sort_keys=True)
+    key = "combined-gemini-only-v4-full:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+    raw = TRANSLATION_CACHE.get(key)
+    if not raw:
+        return None
+    parsed = _extract_json_object(raw)
+    if not parsed:
+        return None
+    main = final_visual_cleanup(final_hebrew_polish(preserve_original_country_flags(main_clean, preserve_original_emojis(main_clean, str(parsed.get("main", ""))))))
+    quote = final_visual_cleanup(final_hebrew_polish(preserve_original_country_flags(quote_clean, preserve_original_emojis(quote_clean, str(parsed.get("quote", "")))))) if quote_clean else ""
+    author = final_hebrew_polish(str(parsed.get("quote_author", ""))).strip()
+    if not has_meaningful_text(main):
+        return None
+    return main, quote, author
+
+
+_PRE_CACHE_AWARE_TRANSLATE_POST = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    try:
+        return _PRE_CACHE_AWARE_TRANSLATE_POST(post)
+    except Exception:
+        rss_source = str(getattr(post, "rss_original_text", "") or "").strip()
+        exact_source = str(getattr(post, "text", "") or "").strip()
+        if rss_source and rss_source != exact_source:
+            cached = _final_cached_combined_translation(rss_source)
+            if cached:
+                logging.warning("Gemini live translation failed; using a previously validated Gemini cache entry for the same RSS post.")
+                return cached
+        raise
+
+
+# Video delivery is all-or-nothing. Never fall back to a text-only message when
+# the post itself contains a video.
+_PRE_ALL_OR_NOTHING_SEND_PREPARED = send_prepared_message_to_main
+_PRE_ALL_OR_NOTHING_MANUAL_SEND = manual_force_send_prepared_message
+
+
+def _final_send_verified_video_message(
+    post: Post,
+    message: str,
+    video_url: str,
+    reply_message_ids: dict[str, int] | None,
+    sent_via: str,
+) -> tuple[dict[str, int], str]:
+    clean_message = _finalize_outgoing_message_only(message)
+    if not video_url:
+        raise RuntimeError("Video post has no verified <=50MB video URL")
+    if len(clean_message) <= TELEGRAM_CAPTION_LIMIT:
+        message_ids = telegram_broadcast(
+            "sendVideo",
+            {"video": video_url, "caption": clean_message, "parse_mode": "HTML", "supports_streaming": True},
+            reply_message_ids=reply_message_ids,
+        )
+        mode = "video"
+    else:
+        # The video must succeed first. If it fails, the text is never sent.
+        telegram_broadcast(
+            "sendVideo",
+            {"video": video_url, "supports_streaming": True},
+            reply_message_ids=reply_message_ids,
+        )
+        message_ids = telegram_broadcast_full_text(clean_message, reply_message_ids=reply_message_ids)
+        mode = "video_plus_full_text"
+    remember_persistent_sent(post, clean_message, sent_via)
+    return message_ids, mode
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    if _post_declares_video(post):
+        return _final_send_verified_video_message(post, message, video_url, reply_message_ids, "button_or_auto_video")
+    return _PRE_ALL_OR_NOTHING_SEND_PREPARED(post, message, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    if _post_declares_video(post):
+        return _final_send_verified_video_message(post, message, video_url, reply_message_ids, "manual_force_video")
+    return _PRE_ALL_OR_NOTHING_MANUAL_SEND(post, message, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+# Keep a real report even when the source appends a podcast/video/link promo.
+# Pure interviews, quotations and podcast promotions remain blocked.
+_PRE_FINAL_FOOTBALLTWEET_QUOTE_REASON = footballtweet_quote_or_opinion_reason
+_FINAL_TRAILING_PROMO_RE = re.compile(
+    r"(?:\s|^)(?:[🎥🎬📹🎙🎙️🎤🎧📺]\s*)*(?:"
+    r"(?:full\s+)?(?:podcast|episode|interview|video)\s*(?:here|now|below)?|"
+    r"watch\s+(?:the\s+)?(?:full\s+)?(?:video|interview|episode)|"
+    r"listen\s+(?:to\s+)?(?:the\s+)?(?:full\s+)?(?:podcast|episode)|"
+    r"פוד\s*קאסט|פודקסט|הפרק\s+המלא|פרק\s+מלא|לצפייה|להאזנה|צפו\s+בוידאו|צפו\s+בסרטון"
+    r")[^.!?\n]*(?:https?://\S+)?\s*$",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_CONCRETE_NEWS_RE = re.compile(
+    r"\b(?:signs?|signed|joining|joins?|transfer|loan|agreement|agreed|medical|injury|contract|"
+    r"won|title|debut|record|goals?|assists?|appearances?)\b|"
+    r"חתם|חותם|הצטרף|מצטרף|העברה|השאלה|סיכום|הסכם|בדיקות\s+רפואיות|פציעה|חוזה|"
+    r"זכה|זכתה|תואר|בכורה|שיא|שערים|בישולים|הופעות",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def footballtweet_quote_or_opinion_reason(post: Post) -> str:
+    reason = _PRE_FINAL_FOOTBALLTWEET_QUOTE_REASON(post)
+    if not reason or not _is_footballtweet_post(post):
+        return reason
+    original = _footballtweet_original_text(post)
+    strong_historical = _final_is_historical_post(original) and _final_is_strong_historical_post(original)
+    if strong_historical:
+        return ""
+    core = _FINAL_TRAILING_PROMO_RE.sub("", original).strip()
+    promo_removed = core != original.strip()
+    direct_quote = bool(re.search(r"[\"“”׳״]|(?:^|\n)\s*[^\n:]{2,50}:\s*(?:[\"“”׳״]|I\b|We\b|אני\b|אנחנו\b)", core, re.IGNORECASE | re.UNICODE))
+    if promo_removed and _FINAL_CONCRETE_NEWS_RE.search(core) and count_content_words(core) >= FOOTBALLTWEET_MIN_WORDS and not direct_quote:
+        return ""
+    return reason
+
+
+_PRE_FINAL_INTERVIEW_FILTER = is_interview_post
+
+
+def is_interview_post(post: Post) -> bool:
+    if _is_footballtweet_post(post):
+        return bool(footballtweet_quote_or_opinion_reason(post))
+    return _PRE_FINAL_INTERVIEW_FILTER(post)
+
+
+# Remove the trailing promo text itself after retaining the factual report.
+_PRE_FINAL_CLEAN_EDITORIAL_BODY = _final_clean_editorial_body
+
+
+def _final_clean_editorial_body(post: Post, value: str) -> str:
+    text = _PRE_FINAL_CLEAN_EDITORIAL_BODY(post, value)
+    original = html.unescape("\n".join([
+        str(getattr(post, "original_text", "") or getattr(post, "text", "") or ""),
+        str(getattr(post, "original_quoted_text", "") or getattr(post, "quoted_text", "") or ""),
+    ]))
+    if _FINAL_TRAILING_PROMO_RE.search(original):
+        text = _FINAL_TRAILING_PROMO_RE.sub("", text).strip()
+        text = _FINAL_MEDIA_PROMO_EMOJI_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+# The final duplicate stage also uses the conservative 24-hour all-source matcher.
+_PRE_FINAL_AI_AWARE_DUP = find_recent_duplicate_event_ai_aware
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    smart = _final_smart_duplicate(post, state, include_persistent=_is_footballtweet_post(post))
+    if smart:
+        return smart
+    sig = _final_signature_from_any(post)
+    if _final_named_subjects(_final_item_text(post), sig):
+        return None
+    return _PRE_FINAL_AI_AWARE_DUP(post, state)
+
+
+# Clickable Telegram history tags. Telegram renders plain hashtags as blue,
+# tappable links and opens all matching messages in the channel/chat.
+# These tags are deterministic post-processing and do not add extra API calls.
+BOT_BUILD_ID = "winner-editorial-media-smart-duplicates-clickable-tags-2026-07-22"
+_FINAL_HISTORY_HASHTAG = "#היום_לפני"
+_FINAL_HERE_WE_GO_HASHTAG = "#HERE_WE_GO"
+_FINAL_HISTORY_RENDER_RE = re.compile(
+    r"^\s*(?:📅|📆)?\s*(?:#היום_לפני|ביום\s+(?:הזה|זה)|היום\s+לפני|"
+    r"ON\s+THIS\s+DAY|𝗧𝗛𝗥𝗢𝗪𝗕𝗔𝗖𝗞|THROWBACK)\s*[:：,\-–—]?\s*",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_CLICKABLE_HWG_RE = re.compile(
+    r"(?iu)(?:\#\s*)?(?:HERE[\s_\-]*WE[\s_\-]*GO|"
+    r"הנה\s+זה\s+קורה|כאן\s+אנחנו\s+הולכים|היר\s+ו(?:ו|י)?\s+גו|הרה\s+וה\s+גו)"
+)
+
+
+def _final_normalize_historical_prefix(post: Post, value: str) -> str:
+    """Render strong Footballtweet anniversary items under one clickable tag.
+
+    Birthdays remain birthday posts. The hashtag replaces only an actual
+    On-this-day/Throwback opening found in the untouched source caption.
+    """
+    if not _is_footballtweet_post(post):
+        return value
+    source = _footballtweet_original_text(post)
+    if _FINAL_BIRTHDAY_RE.search(source):
+        return value
+    if not _FINAL_HISTORICAL_START_RE.search(source):
+        return value
+    cleaned = _FINAL_HISTORY_RENDER_RE.sub("", str(value or ""), count=1)
+    cleaned = re.sub(r"(?iu)^\s*(?:לפני|ago)\s+", "", cleaned)
+    cleaned = cleaned.lstrip(" ,:;–—-")
+    if not cleaned:
+        return f"📅 {_FINAL_HISTORY_HASHTAG}"
+    return f"📅 {_FINAL_HISTORY_HASHTAG} {cleaned}".strip()
+
+
+def _enforce_here_we_go_from_source(post: Post, translated: str) -> str:
+    """Use one clickable English HERE WE GO tag only when source text has it."""
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    source_has = bool(_HERE_WE_GO_SOURCE_RE.search(source))
+    value = str(translated or "")
+    found = False
+
+    def replace_once(_match: re.Match[str]) -> str:
+        nonlocal found
+        if found or not source_has:
+            return ""
+        found = True
+        return _FINAL_HERE_WE_GO_HASHTAG
+
+    value = _FINAL_CLICKABLE_HWG_RE.sub(replace_once, value)
+    # Catch any output form known by the older compatibility regex as well.
+    value = _HERE_WE_GO_OUTPUT_RE.sub(replace_once, value)
+    if source_has and not found:
+        blocks = value.split("\n\n")
+        if blocks:
+            blocks[0] = blocks[0].rstrip(" .,!;:") + f", {_FINAL_HERE_WE_GO_HASHTAG}!"
+            value = "\n\n".join(blocks)
+        else:
+            value = _FINAL_HERE_WE_GO_HASHTAG
+    value = re.sub(r"[ \t]+([,.;!?])", r"\1", value)
+    value = re.sub(r"([,;])\s*([.!?])", r"\2", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"(?m)^\s*[,;:.-]+\s*$", "", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip(" \t,;:-")
+
+# ====== END FINAL EDITORIAL / MEDIA / DUPLICATE / EXACT-X PATCH ======
+
 if __name__ == "__main__":
     main()
