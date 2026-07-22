@@ -25466,20 +25466,23 @@ def _enforce_here_we_go_from_source(post: Post, translated: str) -> str:
 # FEED_TEMPLATES, or any other RSS function/setting.  The proven RSS mechanism
 # above remains byte-for-byte unchanged.  Only translation retry scheduling and
 # the two requested clickable literal phrases are finalized here.
-BOT_BUILD_ID = "winner-stable-rss-all-improvements-translation-retry-2026-07-22"
+BOT_BUILD_ID = "winner-stable-rss-all-improvements-gemini-publish-retry-only-2026-07-22"
 
-# ---- Gemini retry schedule: at most 3 real post-level attempts, 3 minutes apart ----
-# The wrapped translator is the already-working Gemini path above, including its
-# existing key/model rotation, exact-X layout preservation and validated cache.
-_STABLE_TRANSLATION_RETRY_STATE_KEY = "gemini_translation_retry_queue_v1"
-_STABLE_TRANSLATION_RETRY_MAX_ATTEMPTS = max(1, int(os.environ.get("GEMINI_POST_RETRY_ATTEMPTS", "3")))
-_STABLE_TRANSLATION_RETRY_INTERVAL_SECONDS = max(30, int(os.environ.get("GEMINI_POST_RETRY_INTERVAL_SECONDS", "180")))
-_STABLE_TRANSLATION_RETRY_EXPIRY_SECONDS = 48 * 60 * 60
-_STABLE_TRANSLATION_RETRY_LOCK = RLock()
-_PRE_STABLE_TRANSLATION_RETRY_TRANSLATE = translate_post_for_send
+# ---- Gemini: restore the previously working translation path ----
+# translate_post_for_send() above remains the normal working Gemini translator,
+# with its existing key/model selection, exact-X layout preservation and cache.
+# Do NOT put control-panel previews, "latest post" checks or manual preparation
+# behind a 3-minute retry gate. The spaced retry is applied only after an
+# otherwise publishable automatic post was not sent because of translation.
+_GEMINI_PUBLISH_RETRY_STATE_KEY = "gemini_publish_retry_queue_v2"
+_GEMINI_PUBLISH_RETRY_MAX_ATTEMPTS = 3
+_GEMINI_PUBLISH_RETRY_INTERVAL_SECONDS = 3 * 60
+_GEMINI_PUBLISH_RETRY_EXPIRY_SECONDS = 48 * 60 * 60
+_GEMINI_PUBLISH_RETRY_LOCK = RLock()
+_GEMINI_PUBLISH_RETRY_BASE_SEND_POST = send_post
 
 
-def _stable_translation_retry_identity(post: Post) -> str:
+def _gemini_publish_retry_identity(post: Post) -> str:
     return str(
         getattr(post, "post_id", "")
         or getattr(post, "link", "")
@@ -25491,100 +25494,159 @@ def _stable_translation_retry_identity(post: Post) -> str:
     ).strip()
 
 
-def _stable_translation_retry_read() -> dict[str, dict[str, Any]]:
+def _gemini_publish_retry_load() -> dict[str, dict[str, Any]]:
     state = load_control_state()
-    raw = state.get(_STABLE_TRANSLATION_RETRY_STATE_KEY, {})
+    raw = state.get(_GEMINI_PUBLISH_RETRY_STATE_KEY, {})
     if not isinstance(raw, dict):
         return {}
     now = time.time()
-    cleaned: dict[str, dict[str, Any]] = {}
-    for key, value in raw.items():
+    clean: dict[str, dict[str, Any]] = {}
+    for identity, value in raw.items():
         if not isinstance(value, dict):
             continue
         updated_at = float(value.get("updated_at", 0.0) or 0.0)
-        if updated_at and now - updated_at > _STABLE_TRANSLATION_RETRY_EXPIRY_SECONDS:
+        if updated_at and now - updated_at > _GEMINI_PUBLISH_RETRY_EXPIRY_SECONDS:
             continue
-        cleaned[str(key)] = dict(value)
-    return cleaned
+        clean[str(identity)] = dict(value)
+    return clean
 
 
-def _stable_translation_retry_write(values: dict[str, dict[str, Any]]) -> None:
-    # Keep the existing control-state file and add only one backward-compatible key.
+def _gemini_publish_retry_save(values: dict[str, dict[str, Any]]) -> None:
+    # Backward-compatible addition to the existing control-state JSON.
     ordered = sorted(
         values.items(),
         key=lambda item: float(item[1].get("updated_at", 0.0) or 0.0),
         reverse=True,
     )[:500]
-    save_control_state(**{_STABLE_TRANSLATION_RETRY_STATE_KEY: dict(ordered)})
+    save_control_state(**{_GEMINI_PUBLISH_RETRY_STATE_KEY: dict(ordered)})
 
 
-def _stable_translation_retry_clear(identity: str) -> None:
+def _gemini_publish_retry_clear(identity: str) -> None:
     if not identity:
         return
-    with _STABLE_TRANSLATION_RETRY_LOCK:
-        values = _stable_translation_retry_read()
+    with _GEMINI_PUBLISH_RETRY_LOCK:
+        values = _gemini_publish_retry_load()
         if identity in values:
             values.pop(identity, None)
-            _stable_translation_retry_write(values)
+            _gemini_publish_retry_save(values)
 
 
-def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    """Use the working Gemini translator with three non-blocking spaced attempts.
+def _gemini_publish_retry_translation_failure(mode: str) -> bool:
+    value = str(mode or "")
+    return (
+        value.startswith("translation_unavailable")
+        or value in {"translation_quality_blocked", "main_blocked_untranslated"}
+    )
 
-    Attempt 1 is immediate. Attempts 2 and 3 become eligible after 3 minutes each.
-    The bot never sleeps for three minutes and never blocks RSS/control processing.
-    A failed post is not published as Google/raw text and is not marked as sent.
+
+def send_post(
+    post: Post,
+    reply_message_ids: dict[str, int] | None = None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Retry only automatic publication failures caused by Gemini translation.
+
+    Attempt 1 runs normally. If the post passed editorial filtering but was not
+    sent because translation failed, attempts 2 and 3 become eligible exactly
+    three minutes apart. Control checks and manual previews continue to use the
+    normal translator immediately and never show retry-scheduler messages.
     """
-    identity = _stable_translation_retry_identity(post)
+    identity = _gemini_publish_retry_identity(post)
     now = time.time()
-    with _STABLE_TRANSLATION_RETRY_LOCK:
-        values = _stable_translation_retry_read()
+    with _GEMINI_PUBLISH_RETRY_LOCK:
+        values = _gemini_publish_retry_load()
         entry = dict(values.get(identity, {})) if identity else {}
         attempts = int(entry.get("attempts", 0) or 0)
         next_retry_at = float(entry.get("next_retry_at", 0.0) or 0.0)
-        exhausted = bool(entry.get("exhausted", False))
+        exhausted = bool(entry.get("exhausted", False)) or attempts >= _GEMINI_PUBLISH_RETRY_MAX_ATTEMPTS
 
-    if exhausted or attempts >= _STABLE_TRANSLATION_RETRY_MAX_ATTEMPTS:
-        raise TranslationUnavailable("Gemini translation failed after 3 spaced attempts; post will not be sent")
+    if exhausted:
+        return {
+            "sent": False,
+            "mode": "translation_unavailable_exhausted",
+            "translation_retry_attempts": attempts,
+        }
     if attempts and now < next_retry_at:
-        remaining = max(1, int(next_retry_at - now))
-        raise TranslationUnavailable(f"Gemini retry is scheduled in {remaining} seconds")
+        return {
+            "sent": False,
+            "mode": "translation_unavailable_waiting",
+            "translation_retry_attempts": attempts,
+            "translation_retry_at": next_retry_at,
+        }
 
     try:
-        result = _PRE_STABLE_TRANSLATION_RETRY_TRANSLATE(post)
-        _stable_translation_retry_clear(identity)
+        result = _GEMINI_PUBLISH_RETRY_BASE_SEND_POST(
+            post,
+            reply_message_ids=reply_message_ids,
+            state=state,
+        )
+    except TranslationUnavailable as exc:
+        result = {
+            "sent": False,
+            "mode": "translation_unavailable",
+            "translation_error": short_error(exc, 500),
+        }
+
+    if bool(result.get("sent")):
+        _gemini_publish_retry_clear(identity)
         return result
-    except Exception as exc:
-        now = time.time()
-        with _STABLE_TRANSLATION_RETRY_LOCK:
-            values = _stable_translation_retry_read()
-            current = dict(values.get(identity, {})) if identity else {}
-            attempts = max(attempts, int(current.get("attempts", 0) or 0)) + 1
-            current.update({
-                "attempts": attempts,
-                "next_retry_at": now + _STABLE_TRANSLATION_RETRY_INTERVAL_SECONDS,
-                "updated_at": now,
-                "username": str(getattr(post, "username", "") or ""),
-                "link": str(getattr(post, "link", "") or ""),
-                "last_error": short_error(exc, 500),
-                "exhausted": attempts >= _STABLE_TRANSLATION_RETRY_MAX_ATTEMPTS,
-            })
-            if identity:
-                values[identity] = current
-                _stable_translation_retry_write(values)
-        if attempts >= _STABLE_TRANSLATION_RETRY_MAX_ATTEMPTS:
-            raise TranslationUnavailable("Gemini translation failed on all 3 attempts; post was not sent") from exc
-        raise TranslationUnavailable(
-            f"Gemini attempt {attempts}/3 failed; next attempt is scheduled in 3 minutes"
-        ) from exc
+
+    mode = str(result.get("mode", "") or "")
+    if not _gemini_publish_retry_translation_failure(mode):
+        return result
+
+    now = time.time()
+    with _GEMINI_PUBLISH_RETRY_LOCK:
+        values = _gemini_publish_retry_load()
+        current = dict(values.get(identity, {})) if identity else {}
+        previous_attempts = int(current.get("attempts", 0) or 0)
+        attempts = max(attempts, previous_attempts) + 1
+        exhausted = attempts >= _GEMINI_PUBLISH_RETRY_MAX_ATTEMPTS
+        current.update({
+            "attempts": attempts,
+            "next_retry_at": 0.0 if exhausted else now + _GEMINI_PUBLISH_RETRY_INTERVAL_SECONDS,
+            "updated_at": now,
+            "username": str(getattr(post, "username", "") or ""),
+            "link": str(getattr(post, "link", "") or ""),
+            "last_mode": mode,
+            "last_error": str(result.get("translation_error", "") or "")[:500],
+            "exhausted": exhausted,
+        })
+        if identity:
+            values[identity] = current
+            _gemini_publish_retry_save(values)
+
+    result["sent"] = False
+    result["translation_retry_attempts"] = attempts
+    if exhausted:
+        result["mode"] = "translation_unavailable_exhausted"
+        logging.warning(
+            "Gemini translation failed for automatic publication on attempt 3/3; post will not be sent: @%s %s",
+            str(getattr(post, "username", "") or ""),
+            str(getattr(post, "link", "") or ""),
+        )
+    else:
+        result["mode"] = "translation_unavailable_retry_scheduled"
+        result["translation_retry_at"] = now + _GEMINI_PUBLISH_RETRY_INTERVAL_SECONDS
+        logging.info(
+            "Gemini translation failed for automatic publication on attempt %s/3; next attempt is eligible in 3 minutes: @%s %s",
+            attempts,
+            str(getattr(post, "username", "") or ""),
+            str(getattr(post, "link", "") or ""),
+        )
+    return result
 
 
-# Forced/manual preparation must use the same Gemini-only, exact-layout path.
+# Manual preparation/forced sending uses the same normal Gemini translator and
+# exact source layout, but is not controlled by the automatic retry timetable.
 def manual_force_translation(post: Post) -> tuple[str, str, str]:
     try:
         _reliable_hydrate_exact_post(post, force=True)
     except Exception as exc:
-        logging.debug("Exact post hydration failed safely before manual translation: %s", short_error(exc, 220))
+        logging.debug(
+            "Exact post hydration failed safely before manual translation: %s",
+            short_error(exc, 220),
+        )
     translated, quoted, author = translate_post_for_send(post)
     try:
         post.translation_origin = "gemini"
