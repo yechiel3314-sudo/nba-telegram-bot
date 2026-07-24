@@ -29012,5 +29012,1062 @@ def special_sources_diagnostics_text() -> str:
 
 # ====== END FINAL RSS PRIMARY-FIRST RESTORE + LOCAL TOURNAMENT FRESHNESS ======
 
+
+# ====== FINAL LOCAL MATCH MEMORY + REPORT RECOGNITION PATCH (2026-07-24) ======
+# This layer does NOT redefine or wrap any RSS function.  It uses no sports API,
+# no API key and no extra network call.  Match freshness is inferred from the
+# original post, explicit dates/relative time and locally learned full-time/result
+# posts already seen by the bot.  Unknown cases are allowed rather than falsely
+# blocked.
+
+BOT_BUILD_ID = "winner-local-match-memory-report-recognition-2026-07-24"
+_FINAL_LOCAL_MATCH_MEMORY_KEY = "local_match_end_memory_v2"
+_FINAL_LOCAL_MATCH_MEMORY_LOCK = RLock()
+_FINAL_LOCAL_MATCH_MEMORY_MAX_ROWS = int(os.environ.get("LOCAL_MATCH_MEMORY_MAX_ROWS", "1200"))
+_FINAL_LOCAL_MATCH_MEMORY_DAYS = int(os.environ.get("LOCAL_MATCH_MEMORY_DAYS", "21"))
+
+_FINAL_MATCH_RESULT_SIGNAL_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:FT|full[- ]?time|final\s+whistle|match\s+ended|game\s+ended|"
+    r"beat|beats|beaten|defeated|won|wins|after\s+extra\s+time|after\s+penalties|"
+    r"penalty\s+shootout|finished\s+\d+[-:]\d+)\b|"
+    r"שריקת\s+הסיום|המשחק\s+הסתיים|בסיום\s+המשחק|ניצח(?:ה|ו)?|גבר(?:ה|ו)?\s+על|"
+    r"לאחר\s+הארכה|אחרי\s+הארכה|לאחר\s+דו[-־]?קרב\s+פנדלים|בתום\s+דו[-־]?קרב\s+פנדלים|"
+    r"תוצאת\s+הסיום|הסתיים\s+בתוצאה"
+    r")"
+)
+_FINAL_SCORE_SIGNAL_RE = re.compile(
+    r"(?<!\d)(?:[0-9]|1[0-9])\s*[-:–—]\s*(?:[0-9]|1[0-9])(?!\d)"
+)
+_FINAL_MATCH_CONTEXT_RE = re.compile(
+    r"(?iu)\b(?:match|game|fixture|final|semi[- ]?final|quarter[- ]?final|round\s+of\s+\d+|"
+    r"against|versus|\bvs\.?\b|goals?|assists?|saves?|shots?|passes?|duels?|tackles?)\b|"
+    r"משחק|גמר|חצי\s+גמר|רבע\s+גמר|שמינית\s+גמר|נגד|מול|שערים|בישולים|הצלות|בעיטות|מסירות|מאבקים|תיקולים"
+)
+
+_FINAL_COMPETITION_KEY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("world_cup", re.compile(r"(?iu)\b(?:FIFA\s+)?World\s+Cup\b|מונדיאל|גביע\s+העולם")),
+    ("club_world_cup", re.compile(r"(?iu)\bClub\s+World\s+Cup\b|מונדיאל\s+המועדונים")),
+    ("champions_league", re.compile(r"(?iu)Champions\s+League|ליגת\s+האלופות")),
+    ("europa_league", re.compile(r"(?iu)Europa\s+League|הליגה\s+האירופית")),
+    ("premier_league", re.compile(r"(?iu)Premier\s+League|פרמייר\s+ליג")),
+    ("la_liga", re.compile(r"(?iu)La\s+Liga|לה\s+ליגה|הליגה\s+הספרדית")),
+    ("serie_a", re.compile(r"(?iu)Serie\s+A|סרייה\s+א")),
+    ("bundesliga", re.compile(r"(?iu)Bundesliga|בונדסליגה")),
+    ("ligue_1", re.compile(r"(?iu)Ligue\s*1|ליג\s*1|ליגה\s*1")),
+    ("euro", re.compile(r"(?iu)\bEURO(?:s)?\b|יורו|אליפות\s+אירופה")),
+    ("copa_america", re.compile(r"(?iu)Copa\s+Am[eé]rica|קופה\s+אמריקה")),
+    ("afcon", re.compile(r"(?iu)AFCON|Africa\s+Cup\s+of\s+Nations|אליפות\s+אפריקה")),
+)
+
+
+def _final_local_match_competition_key(text: str) -> str:
+    value = str(text or "")
+    # Club World Cup must win over the generic World Cup pattern.
+    for key, pattern in sorted(_FINAL_COMPETITION_KEY_PATTERNS, key=lambda item: 0 if item[0] == "club_world_cup" else 1):
+        if pattern.search(value):
+            return key
+    return ""
+
+
+def _final_local_match_memory() -> list[dict[str, Any]]:
+    try:
+        state = load_control_state()
+        rows = state.get(_FINAL_LOCAL_MATCH_MEMORY_KEY, []) if isinstance(state, dict) else []
+        return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+
+def _final_local_match_team_set(post: Post) -> set[str]:
+    try:
+        return {value for value in _final_source_team_needles(post) if value}
+    except Exception:
+        return set()
+
+
+def _final_prune_local_match_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = time.time()
+    cutoff = now - max(3, _FINAL_LOCAL_MATCH_MEMORY_DAYS) * 24 * 60 * 60
+    kept = [row for row in rows if float(row.get("end_ts", 0.0) or 0.0) >= cutoff]
+    kept.sort(key=lambda row: float(row.get("end_ts", 0.0) or 0.0), reverse=True)
+    return kept[:max(100, _FINAL_LOCAL_MATCH_MEMORY_MAX_ROWS)]
+
+
+def _final_save_local_match_end(post: Post, end_ts: float, evidence: str) -> None:
+    teams = sorted(_final_local_match_team_set(post))
+    if len(teams) < 2 or not end_ts:
+        return
+    competition = _final_local_match_competition_key(_final_source_text(post))
+    fingerprint = hashlib.sha256(("|".join(teams) + "|" + competition).encode("utf-8", errors="ignore")).hexdigest()
+    with _FINAL_LOCAL_MATCH_MEMORY_LOCK:
+        rows = _final_local_match_memory()
+        updated = False
+        for row in rows:
+            if str(row.get("fingerprint", "")) == fingerprint and abs(float(row.get("end_ts", 0.0) or 0.0) - end_ts) <= 18 * 60 * 60:
+                row.update({
+                    "end_ts": min(float(row.get("end_ts", end_ts) or end_ts), float(end_ts)),
+                    "saved_at": time.time(),
+                    "evidence": trim(str(evidence or "local-result"), 220),
+                    "teams": teams,
+                    "competition": competition,
+                })
+                updated = True
+                break
+        if not updated:
+            rows.append({
+                "fingerprint": fingerprint,
+                "end_ts": float(end_ts),
+                "saved_at": time.time(),
+                "evidence": trim(str(evidence or "local-result"), 220),
+                "teams": teams,
+                "competition": competition,
+            })
+        rows = _final_prune_local_match_rows(rows)
+        try:
+            save_control_state(**{_FINAL_LOCAL_MATCH_MEMORY_KEY: rows})
+        except Exception as exc:
+            logging.debug("Local match-memory save failed safely: %s", short_error(exc, 260))
+
+
+def _final_learn_match_end_from_post(post: Post) -> None:
+    if not _final_is_special_source(post):
+        return
+    text = _final_source_text(post)
+    if not _FINAL_MATCH_CONTEXT_RE.search(text):
+        return
+    if not (_FINAL_MATCH_RESULT_SIGNAL_RE.search(text) or _FINAL_SCORE_SIGNAL_RE.search(text)):
+        return
+    published = float(getattr(post, "published_ts", 0.0) or time.time())
+    # Do not learn a new current match timestamp from an old retrospective post.
+    if abs(time.time() - published) > 72 * 60 * 60:
+        return
+    explicit_ts, provider = _final_explicit_match_time(post)
+    end_ts = explicit_ts or published
+    _final_save_local_match_end(post, end_ts, provider or clean_text(text)[:180])
+
+
+def _final_find_learned_match_end(post: Post) -> tuple[float, str]:
+    teams = _final_local_match_team_set(post)
+    if len(teams) < 2:
+        return 0.0, "local-unknown"
+    competition = _final_local_match_competition_key(_final_source_text(post))
+    published = float(getattr(post, "published_ts", 0.0) or time.time())
+    best: tuple[int, float] = (0, 0.0)
+    for row in _final_local_match_memory():
+        row_teams = {str(value) for value in (row.get("teams", []) or []) if value}
+        overlap = len(teams & row_teams)
+        if overlap < 2:
+            continue
+        row_comp = str(row.get("competition", "") or "")
+        score = overlap * 10 + (4 if competition and row_comp == competition else 0)
+        end_ts = float(row.get("end_ts", 0.0) or 0.0)
+        # A stored result after the stat post cannot be its match.
+        if not end_ts or end_ts > published + 6 * 60 * 60:
+            continue
+        # Prefer the closest credible matching result before publication.
+        score += max(0, 6 - int((published - end_ts) // (24 * 60 * 60)))
+        if score > best[0] or (score == best[0] and end_ts > best[1]):
+            best = (score, end_ts)
+    return (best[1], "local-learned-result") if best[1] else (0.0, "local-unknown")
+
+
+# Disable every external match-time resolver in this build.  Tournament end
+# dates already known statically and locally learned tournament finals remain.
+def _final_football_data_match_time(post: Post, start_date: str, end_date: str) -> tuple[float, str]:
+    return 0.0, ""
+
+
+def _final_api_football_match_time(post: Post, start_date: str, end_date: str) -> tuple[float, str]:
+    return 0.0, ""
+
+
+def _final_espn_match_time(post: Post, start_date: str, end_date: str) -> tuple[float, str]:
+    return 0.0, ""
+
+
+def _final_lookup_match_time(post: Post) -> tuple[float, str]:
+    explicit_ts, explicit_provider = _final_explicit_match_time(post)
+    if explicit_ts:
+        return explicit_ts, explicit_provider
+    return _final_find_learned_match_end(post)
+
+
+def _final_stale_match_fact_reason(post: Post) -> str:
+    if not _final_is_match_dependent_special_fact(post):
+        return ""
+    try:
+        _final_learn_match_end_from_post(post)
+    except Exception as exc:
+        logging.debug("Local match-time learning failed safely: %s", short_error(exc, 260))
+    match_end, provider = _final_lookup_match_time(post)
+    post.match_time_provider = provider
+    post.match_end_timestamp = match_end
+    if not match_end:
+        post.match_age_resolution = "unknown_allowed"
+        return ""
+    published = float(getattr(post, "published_ts", 0.0) or time.time())
+    age = max(0.0, published - match_end)
+    post.match_age_seconds = age
+    post.match_age_resolution = "resolved"
+    return "special_source_match_fact_older_than_36h" if age > FINAL_MATCH_FACT_MAX_AGE_SECONDS else ""
+
+
+
+# Match-dependent facts can contain a season comparison ("most in a match this
+# season") while still referring to one concrete opponent/game.  The older
+# aggregate guard was too broad for that construction.
+_PRE_LOCAL_MATCH_DEPENDENT = _final_is_match_dependent_special_fact
+_FINAL_CONCRETE_OPPONENT_MATCH_RE = re.compile(
+    r"(?iu)(?:\b(?:against|versus|\bvs\.?\b|in\s+the\s+match\s+against)\b|נגד|מול)"
+)
+_FINAL_SINGLE_MATCH_METRIC_RE = re.compile(
+    r"(?iu)\b(?:passes?|shots?|saves?|touches?|chances?|duels?|tackles?|goals?|assists?)\b|"
+    r"מסירות|בעיטות|הצלות|נגיעות|מצבים|מאבקים|תיקולים|שערים|בישולים"
+)
+
+
+def _final_is_match_dependent_special_fact(post: Post) -> bool:
+    if not _final_is_special_source(post):
+        return False
+    text = _final_source_text(post)
+    if _final_interesting_football_story(post) or not re.search(r"\d", text):
+        return False
+    concrete_single_match = bool(
+        _FINAL_CONCRETE_OPPONENT_MATCH_RE.search(text)
+        and _FINAL_SINGLE_MATCH_METRIC_RE.search(text)
+    )
+    if concrete_single_match:
+        return True
+    return _PRE_LOCAL_MATCH_DEPENDENT(post)
+
+# ----- Strong report recognition: official coach news and concrete bids/talks -----
+_FINAL_REPORT_V2_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:official|confirmed|exclusive|appointed|named|new\s+(?:head\s+)?coach|"
+    r"head\s+coach|manager|signed\s+(?:a\s+)?contract|contract\s+until\s+20\d{2}|"
+    r"submitted\s+(?:an?\s+)?(?:improved\s+)?(?:bid|offer)|improved\s+(?:bid|offer)|"
+    r"formal\s+(?:bid|offer)|talks?\s+(?:are\s+)?ongoing|negotiations?\s+(?:are\s+)?ongoing|"
+    r"fixed\s+fee|add[- ]?ons?|agreement\s+reached|personal\s+terms|medical(?:s)?\s+(?:booked|scheduled))\b|"
+    r"רשמי|אושר|בלעדי|המאמן\s+החדש|מאמן\s+ראשי\s+חדש|מונה\s+למאמן|חתם\s+על\s+חוזה|"
+    r"עד\s+(?:יוני|יולי|דצמבר)?\s*20\d{2}|שלח(?:ה|ו)?\s+הצעה\s+משופרת|הצעה\s+משופרת|"
+    r"הצעה\s+רשמית|השיחות\s+נמשכות|המו[\"״']?מ\s+נמשך|המשא\s+ומתן\s+נמשך|"
+    r"עמלה\s+קבועה|סכום\s+קבוע|תוספות|בונוסים|הושג\s+הסכם|תנאים\s+אישיים|בדיקות\s+רפואיות"
+    r")"
+)
+_FINAL_NATIONAL_COACH_V2_RE = re.compile(
+    r"(?iu)(?:\b(?:national\s+team|football\s+association|federation)\b|נבחרת|התאחדות)"
+    r".{0,180}(?:\b(?:coach|manager|head\s+coach|appointed|appointment|dismissed|sacked|resigned|contract)\b|"
+    r"מאמן|מינוי|פוטר|התפטר|חוזה)"
+    r"|(?:\b(?:coach|manager|head\s+coach|appointed|appointment|dismissed|sacked|resigned)\b|"
+    r"מאמן|מונה|מינוי|פוטר|התפטר)"
+    r".{0,180}(?:\b(?:national\s+team|football\s+association|federation)\b|נבחרת|התאחדות)"
+)
+_FINAL_REPORT_SOFT_REASON_RE = re.compile(
+    r"(?iu)(?:not[_ -]?report|no[_ -]?report|without[_ -]?report|vague|unclear|weak|"
+    r"too[_ -]?short|no[_ -]?action|contextless|importance|loose[_ -]?transfer|media_without_report|"
+    r"לא\s+דיווח|לא\s+זוהה\s+דיווח|דיווח\s+לא\s+ברור|חלש|לא\s+מספיק\s+חשוב)"
+)
+
+
+def _final_national_team_coach_report_v2(post: Post) -> bool:
+    text = _final_source_text(post)
+    return bool(
+        _FINAL_NATIONAL_COACH_V2_RE.search(text)
+        and _FINAL_REPORT_V2_RE.search(text)
+        and (
+            matches_managed_team_tier("national", text)
+            or _matches_any(ALLOWED_NATIONAL_TEAM_PATTERNS, text)
+        )
+        and not _final_feminine_football_signal(text)
+        and not is_other_sport_post(post)
+    )
+
+
+def _final_concrete_news_report_v2(post: Post) -> bool:
+    if not isinstance(post, Post):
+        return False
+    text = _final_source_text(post)
+    if not text or not _FINAL_REPORT_V2_RE.search(text):
+        return False
+    if _final_national_team_coach_report_v2(post):
+        return True
+    if _final_is_special_source(post):
+        return False
+    # A concrete club report must mention a managed club.  This recognition only
+    # rescues "not a report" mistakes; hard fee/destination rules still apply.
+    return bool(
+        _strict_text_contains_managed_club(text)
+        or _acceptance_text_has_managed_club(text)
+        or _tracked_club_in_text(text)
+    )
+
+
+_PRE_LOCAL_REPORT_STRICT_NORMAL_TRANSFER = _strict_normal_transfer_report
+
+
+def _strict_normal_transfer_report(post: Post) -> bool:
+    # Coach appointments/contracts are not player transfers and must not enter the
+    # hard "tracked destination club" transfer gate.
+    if _final_national_team_coach_report_v2(post):
+        return False
+    return _PRE_LOCAL_REPORT_STRICT_NORMAL_TRANSFER(post)
+
+
+_PRE_LOCAL_REPORT_CONCRETE = concrete_tracked_football_report
+
+
+def concrete_tracked_football_report(post: Post) -> bool:
+    if _final_concrete_news_report_v2(post):
+        return True
+    return _PRE_LOCAL_REPORT_CONCRETE(post)
+
+
+def _final_install_report_false_wrapper(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+    def wrapper(post: Post, *args: Any, _previous=previous, **kwargs: Any):
+        if _final_concrete_news_report_v2(post):
+            return False
+        return _previous(post, *args, **kwargs)
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _final_report_filter_name in (
+    "is_media_without_report_post",
+    "is_unclear_subject_news_post",
+    "is_vague_status_without_primary_context",
+    "is_name_without_news_action_post",
+    "is_unclear_main_club_context_post",
+    "is_weak_copy_without_primary_value_post",
+    "is_non_news_social_post",
+    "is_too_short_without_strong_news_post",
+    "is_non_elite_loose_transfer_report",
+):
+    _final_install_report_false_wrapper(_final_report_filter_name)
+
+
+_PRE_LOCAL_REPORT_IMPORTANCE = football_importance_block_reason
+
+
+def football_importance_block_reason(post: Post) -> str:
+    if _final_concrete_news_report_v2(post):
+        return ""
+    return _PRE_LOCAL_REPORT_IMPORTANCE(post)
+
+
+_PRE_LOCAL_REPORT_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _PRE_LOCAL_REPORT_PRE_SEND(post)
+    if not reason or not _final_concrete_news_report_v2(post):
+        return reason
+    low = str(reason).casefold()
+    # National-team coach reports are not transfers.  Rescue the old hard gate
+    # that incorrectly demanded a tracked club destination.
+    if _final_national_team_coach_report_v2(post):
+        hard_national_tokens = (
+            "women", "other_sport", "duplicate", "old_post", "podcast", "live_",
+            "lineup", "poll", "youth", "academy", "spam", "malware"
+        )
+        if not any(token in low for token in hard_national_tokens):
+            return ""
+    # Concrete club reports may bypass only "not a report"/vague classification.
+    # Fee, destination, women, youth, duplicate and other hard policies remain.
+    if _FINAL_REPORT_SOFT_REASON_RE.search(low):
+        return ""
+    return reason
+
+
+_PRE_LOCAL_REPORT_DIAGNOSTICS = special_sources_diagnostics_text
+
+
+def special_sources_diagnostics_text() -> str:
+    text = _PRE_LOCAL_REPORT_DIAGNOSTICS()
+    if "זיכרון משחקים מקומי" not in text:
+        text += (
+            "\n\n⏱ זיכרון משחקים מקומי — ללא API וללא רשת\n"
+            "• תאריך מפורש, אתמול/אמש ולפני N ימים מזוהים מתוך הפוסט.\n"
+            "• פוסט תוצאה/שריקת סיום מלמד את הבוט מקומית מתי המשחק הסתיים.\n"
+            "• סטטיסטיקה מאוחרת עם שתי הקבוצות המתאימות נקשרת לזמן שנלמד.\n"
+            "• אם אין תאריך ואין התאמה ודאית למשחק, הפוסט מותר ולא נחסם בטעות.\n"
+            "• עובדות על טורניר שהסתיים וסטטיסטיקות נוער ממשיכות להיחסם לפי הכללים הקיימים."
+        )
+    return text
+
+# ====== END FINAL LOCAL MATCH MEMORY + REPORT RECOGNITION PATCH ======
+
+
+# ====== FINAL QUESTION / SAFE TAIL / TRUNCATION / HISTORY-BUTTON PATCH (2026-07-24) ======
+# RSS, feed mirrors, timeouts and fetch functions are intentionally untouched.
+
+BOT_BUILD_ID = "winner-local-match-memory-report-recognition-question-tail-truncation-2026-07-24"
+
+# Optional additional fact/stat source shown by the user can be enabled without
+# another code edit. Railway variable examples:
+#   EXTRA_FACT_SOURCE_USERNAMES=Squawka
+#   EXTRA_FACT_SOURCE_LABELS=Squawka=סקוואקה
+# Multiple usernames may be separated by commas/newlines/semicolons.
+def _final_parse_extra_fact_sources() -> list[str]:
+    raw = os.environ.get("EXTRA_FACT_SOURCE_USERNAMES", os.environ.get("NETO_SPORT_EXTRA_FACT_SOURCE_USERNAMES", ""))
+    values: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[,;\n\r]+", raw or ""):
+        value = part.strip().lstrip("@").strip()
+        if value and value.casefold() not in seen:
+            seen.add(value.casefold())
+            values.append(value)
+    return values
+
+
+def _final_parse_extra_fact_labels() -> dict[str, str]:
+    raw = os.environ.get("EXTRA_FACT_SOURCE_LABELS", "")
+    labels: dict[str, str] = {}
+    for part in re.split(r"[;\n\r]+", raw or ""):
+        if "=" not in part:
+            continue
+        username, label = part.split("=", 1)
+        username = username.strip().lstrip("@")
+        label = label.strip()
+        if username and label:
+            labels[username.casefold()] = label
+    return labels
+
+
+EXTRA_FACT_SOURCE_USERNAMES = _final_parse_extra_fact_sources()
+EXTRA_FACT_SOURCE_LABELS = _final_parse_extra_fact_labels()
+for _extra_fact_username in EXTRA_FACT_SOURCE_USERNAMES:
+    if _extra_fact_username not in X_ACCOUNTS:
+        X_ACCOUNTS.append(_extra_fact_username)
+    PRIORITY_X_ACCOUNTS.add(_extra_fact_username)
+    ACCOUNT_DISPLAY_NAMES.setdefault(
+        _extra_fact_username,
+        EXTRA_FACT_SOURCE_LABELS.get(_extra_fact_username.casefold(), _extra_fact_username),
+    )
+
+
+def _final_is_extra_fact_source(value: Any) -> bool:
+    normalized = str(value or "").strip().lstrip("@").casefold()
+    return any(normalized == item.casefold() for item in EXTRA_FACT_SOURCE_USERNAMES)
+
+
+_PRE_FINAL_EXTRA_SPECIAL_NAME = special_fact_feed_name
+
+def special_fact_feed_name(*parts: Any, **kwargs: Any) -> str:
+    values = list(parts) + list(kwargs.values())
+    for value in values:
+        if isinstance(value, Post):
+            username = str(getattr(value, "username", "") or "")
+            if _final_is_extra_fact_source(username):
+                return username.strip().lstrip("@")
+        elif _final_is_extra_fact_source(value):
+            return str(value or "").strip().lstrip("@")
+    return _PRE_FINAL_EXTRA_SPECIAL_NAME(*parts, **kwargs)
+
+
+_PRE_FINAL_EXTRA_IS_SPECIAL = _final_is_special_source
+
+def _final_is_special_source(post: Post) -> bool:
+    return bool(
+        _final_is_extra_fact_source(getattr(post, "username", ""))
+        or _PRE_FINAL_EXTRA_IS_SPECIAL(post)
+    )
+
+
+_PRE_FINAL_EXTRA_HIDE_WRITER = should_hide_writer_header
+
+def should_hide_writer_header(post: Post, translated: str) -> bool:
+    if _final_is_extra_fact_source(getattr(post, "username", "")):
+        return True
+    return _PRE_FINAL_EXTRA_HIDE_WRITER(post, translated)
+
+
+# Audience questions are removed from otherwise useful fact posts. A post that
+# contains only a quiz/question is blocked after the useful body is stripped.
+_FINAL_AUDIENCE_QUESTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:can\s+you\s+(?:name|guess|list|identify)|how\s+many\s+(?:can|could)\s+you|"
+    r"who\s+can\s+you\s+name|name\s+them|guess\s+who|quiz\s+time)\b|"
+    r"כמה\s+(?:מהם\s+)?(?:תוכלו|אתם\s+יכולים|אפשר)\s+(?:לנקוב|לציין|למנות|לזהות|לנחש)|"
+    r"מי\s+(?:מהם\s+)?(?:תוכלו|אתם\s+יכולים)\s+(?:לזהות|לנקוב|למנות)|"
+    r"האם\s+(?:אתם\s+)?(?:יכולים|תצליחו)\s+(?:לזהות|לנקוב|למנות|לנחש)|"
+    r"נחשו\s+(?:מי|כמה)|חידון"
+    r")"
+)
+
+_FINAL_SHORT_PROMPT_TAIL_RE = re.compile(
+    r"(?iu)^(?:quiz|trivia|answers?|linked|link|londoners?|guess|name\s+them|"
+    r"חידון|תשובה|תשובות|נחשו|לונדונים|אופטה\s*קוויז|ופטאקויז)\s*[.!?…]*$"
+)
+
+
+def _final_strip_audience_question_and_followups(value: str) -> tuple[str, bool]:
+    text = str(value or "").strip()
+    if not text:
+        return text, False
+    removed = False
+    blocks = re.split(r"(\n\s*\n|\n)", text)
+    out: list[str] = []
+    question_seen = False
+    for block in blocks:
+        if re.fullmatch(r"\n\s*\n|\n", block):
+            if out and not question_seen:
+                out.append(block)
+            continue
+        stripped = block.strip()
+        if not stripped:
+            continue
+        # Remove a complete question sentence, including inline questions.
+        sentences = re.split(r"(?<=[.!?…])\s+", stripped)
+        kept_sentences: list[str] = []
+        for sentence in sentences:
+            if _FINAL_AUDIENCE_QUESTION_RE.search(sentence):
+                removed = True
+                question_seen = True
+                continue
+            if question_seen and (
+                _FINAL_SHORT_PROMPT_TAIL_RE.fullmatch(sentence.strip())
+                or (count_regular_words(sentence) <= 4 and not re.search(r"\d", sentence))
+            ):
+                removed = True
+                continue
+            kept_sentences.append(sentence.strip())
+        if kept_sentences:
+            out.append(" ".join(kept_sentences))
+    result = "\n\n".join(part.strip() for part in out if part.strip())
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+    return result, removed
+
+
+# Remove only a proven isolated garbage line. Never trim the final words of a
+# normal sentence or paragraph.
+_FINAL_CREDIT_OR_HANDLE_LINE_RE = re.compile(
+    r"(?iu)(?:^|\s)(?:👨(?:\ufe0f|🏻|🏼|🏽|🏾|🏿|\u200d|💻)*|🧑(?:\ufe0f|🏻|🏼|🏽|🏾|🏿|\u200d|💻)*|"
+    r"credit(?:s)?|source|via|h/t|מקור|קרדיט)\b|@\s*[A-Za-z0-9_א-ת.'׳״\-]{2,}|\[@[^\]]+\]"
+)
+_FINAL_NEWS_ACTION_LINE_RE = re.compile(
+    r"(?iu)(?:חתם|חותם|עובר|מצטרף|הצעה|הסכם|סיכום|מגעים|משא\s+ומתן|בדיקות|חוזה|"
+    r"שער|בישול|ניצח|הפסיד|appointed|signed|joins?|offer|agreement|talks?|medical|contract|goal|assist)"
+)
+
+
+def _final_repeated_word_or_team_noise(line: str, post: Post) -> bool:
+    plain = re.sub(r"[^A-Za-z0-9א-ת'׳״\-]+", " ", html.unescape(line)).strip()
+    words = [word.casefold() for word in plain.split() if len(word) >= 2]
+    if not words or len(words) > 14 or re.search(r"\d", plain) or _FINAL_NEWS_ACTION_LINE_RE.search(plain):
+        return False
+    counts: dict[str, int] = {}
+    for word in words:
+        counts[word] = counts.get(word, 0) + 1
+    if max(counts.values(), default=0) >= 3:
+        return True
+    source = _final_source_text(post)
+    team_names = []
+    for name in TEAM_REPLACEMENTS.values():
+        if name and name in source and name in plain:
+            team_names.append(name)
+    return any(plain.count(name) >= 2 for name in set(team_names))
+
+
+def _final_remove_proven_trailing_junk(post: Post, value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    while len([line for line in lines if line.strip()]) >= 2:
+        tail_index = len(lines) - 1
+        while tail_index >= 0 and not lines[tail_index].strip():
+            tail_index -= 1
+        if tail_index < 0:
+            break
+        plain_tail = html.unescape(lines[tail_index]).strip()
+        words = count_regular_words(plain_tail)
+        proven = False
+        if words <= 18 and _FINAL_CREDIT_OR_HANDLE_LINE_RE.search(plain_tail):
+            proven = True
+        elif _FINAL_SHORT_PROMPT_TAIL_RE.fullmatch(plain_tail):
+            proven = True
+        elif _final_repeated_word_or_team_noise(plain_tail, post):
+            proven = True
+        if not proven:
+            break
+        del lines[tail_index:]
+        while lines and not lines[-1].strip():
+            lines.pop()
+    return "\n".join(lines).strip()
+
+
+_PRE_FINAL_SAFE_OUTGOING_BODY = _outgoing_body_text
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _PRE_FINAL_SAFE_OUTGOING_BODY(post, translated, quoted=quoted)
+    if quoted:
+        return value
+    if _final_is_special_source(post):
+        value, _ = _final_strip_audience_question_and_followups(value)
+    value = _final_remove_proven_trailing_junk(post, value)
+    return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+_PRE_FINAL_QUESTION_PRE_SEND = pre_send_final_local_block_reason
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _final_is_special_source(post):
+        original = _final_source_text(post)
+        cleaned, removed = _final_strip_audience_question_and_followups(original)
+        if removed:
+            minimum = (
+                FOOTBALLTWEET_MIN_WORDS
+                if value_contains_footballtweet(getattr(post, "username", ""))
+                else min(FOOTBALL_FACTLY_AUTO_MIN_WORDS, OPTAJOE_AUTO_MIN_WORDS)
+            )
+            if count_regular_words(cleaned) < max(7, minimum // 2):
+                return "special_source_question_or_quiz_only"
+            # Preserve the useful factual opening and let normal quality rules
+            # evaluate it rather than blocking merely because the source added a quiz.
+    return _PRE_FINAL_QUESTION_PRE_SEND(post)
+
+
+_PRE_FINAL_QUESTION_HEBREW_REASON = hebrew_block_reason
+
+def hebrew_block_reason(reason: str) -> str:
+    if str(reason or "") == "special_source_question_or_quiz_only":
+        return "מקור העובדות/אופטה/ציוצים: שאלת קהל או חידון ללא עובדה מספקת נחסמו"
+    return _PRE_FINAL_QUESTION_HEBREW_REASON(reason)
+
+
+# Stronger end-of-translation validation. It rejects a dangling Hebrew connector
+# such as "ואת", "של" or "עם" and rejects a missing final clause when the source
+# clearly continues. This causes the existing Gemini retry path to request a new
+# complete translation instead of publishing a cut sentence.
+_PRE_FINAL_COMPLETENESS_ISSUES = _final_translation_completeness_issues
+_FINAL_DANGLING_HEBREW_END_RE = re.compile(
+    r"(?iu)(?:^|\s)(?:ו?את|ו?של|ו?עם|ו?על|ו?אל|ו?מול|ו?בין|ו?עבור|ו?כדי|ו?כאשר|"
+    r"ו?אם|ו?כי|ו?אך|ו?או|ו?גם|ו?לאחר|ו?לפני|ו?מאז|ו?למרות|ו?בגלל|ו?בעקבות|ו?כולל)\s*$"
+)
+_FINAL_DANGLING_ENGLISH_END_RE = re.compile(
+    r"(?iu)(?:^|\s)(?:and|or|with|for|to|from|of|the|a|an|after|before|because|including|while|as)\s*$"
+)
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    issues = list(_PRE_FINAL_COMPLETENESS_ISSUES(source, translated))
+    src = clean_before_translation(str(source or "")).strip()
+    out = clean_before_translation(str(translated or "")).strip()
+    if out and (_FINAL_DANGLING_HEBREW_END_RE.search(out) or _FINAL_DANGLING_ENGLISH_END_RE.search(out)):
+        issues.append("התרגום הסתיים במילת קישור ונחתך באמצע המשפט")
+    src_words = count_regular_words(src)
+    out_words = count_regular_words(out)
+    source_has_complete_end = bool(re.search(r"[.!?…][\"'״׳)\]]*\s*$", src))
+    output_has_complete_end = bool(re.search(r"[.!?…][\"'״׳)\]]*\s*$", out))
+    if source_has_complete_end and src_words >= 18 and out_words:
+        if out_words < max(8, int(src_words * 0.58)):
+            issues.append("התרגום קצר מדי ביחס למקור ונראה חתוך")
+        if not output_has_complete_end and out_words < int(src_words * 0.9):
+            issues.append("המקור הסתיים במשפט מלא אך התרגום נעצר לפני סיום")
+    return list(dict.fromkeys(issues))
+
+
+def _final_translation_cache_key_for_post(post: Post, include_quote: bool) -> str:
+    raw_main = str(getattr(post, "text", "") or "")
+    raw_quote = str(getattr(post, "quoted_text", "") or "") if include_quote else ""
+    raw_author = str(getattr(post, "quoted_author", "") or "") if include_quote else ""
+    material = json.dumps(
+        {"main": raw_main, "quote": raw_quote, "author": raw_author, "exact": bool(getattr(post, "exact_source_structure", False))},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return _FINAL_GEMINI_CACHE_PREFIX + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+_PRE_FINAL_VALIDATED_GEMINI_ONCE = gemini_translate_post_once
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    main, quote, author = _PRE_FINAL_VALIDATED_GEMINI_ONCE(post, include_quote)
+    issues = _final_translation_completeness_issues(str(getattr(post, "text", "") or ""), main)
+    if include_quote and getattr(post, "quoted_text", "") and quote:
+        issues.extend(_final_translation_completeness_issues(str(getattr(post, "quoted_text", "") or ""), quote))
+    if not issues:
+        return main, quote, author
+    # An old cached cut translation must never be reused forever. Remove only
+    # this post's cache row and let the established Gemini path try again.
+    global TRANSLATION_CACHE_DIRTY
+    cache_key = _final_translation_cache_key_for_post(post, include_quote)
+    if cache_key in TRANSLATION_CACHE:
+        TRANSLATION_CACHE.pop(cache_key, None)
+        TRANSLATION_CACHE_DIRTY = True
+        main, quote, author = _PRE_FINAL_VALIDATED_GEMINI_ONCE(post, include_quote)
+        issues = _final_translation_completeness_issues(str(getattr(post, "text", "") or ""), main)
+        if include_quote and getattr(post, "quoted_text", "") and quote:
+            issues.extend(_final_translation_completeness_issues(str(getattr(post, "quoted_text", "") or ""), quote))
+        if not issues:
+            return main, quote, author
+    raise TranslationUnavailable("Gemini returned an incomplete translation: " + "; ".join(dict.fromkeys(issues)))
+
+
+# The last button in the 10-latest account selector returns directly to the main
+# panel, not back to monitoring/testing.
+_PRE_FINAL_HISTORY_MENU_MARKUP = account_history_menu_reply_markup
+
+def account_history_menu_reply_markup() -> dict[str, Any]:
+    markup = _PRE_FINAL_HISTORY_MENU_MARKUP()
+    if not isinstance(markup, dict):
+        return markup
+    keyboard = markup.get("inline_keyboard")
+    if not isinstance(keyboard, list):
+        return markup
+    for row in keyboard:
+        if not isinstance(row, list):
+            continue
+        for button in row:
+            if not isinstance(button, dict):
+                continue
+            if str(button.get("callback_data", "")) == "football_menu_monitor" or "חזרה לבדיקה וניטור" in str(button.get("text", "")):
+                button["text"] = "⬅️ חזרה לראשי"
+                button["callback_data"] = "football_quick_main"
+    return markup
+
+# ====== END FINAL QUESTION / SAFE TAIL / TRUNCATION / HISTORY-BUTTON PATCH ======
+
+
+# ====== FINAL MATCH-END LEARNING / SOFASCORE / HEBREW REASONS / SAFE PARTIAL PATCH (2026-07-24) ======
+# This final layer does not modify RSS templates, mirror order, feed functions,
+# timeouts or Gemini request construction. It only improves post classification,
+# local match memory, final text cleanup and user-facing reason rendering.
+
+BOT_BUILD_ID = "winner-match-learning-sofascore-hebrew-reasons-safe-partial-2026-07-24"
+
+# Sofascore Football is a built-in facts/statistics source. Environment-provided
+# extra sources remain supported as before.
+_FINAL_BUILTIN_FACT_SOURCES: dict[str, str] = {
+    "Sofascore": "סופסקור פוטבול",
+}
+for _final_fact_username, _final_fact_label in _FINAL_BUILTIN_FACT_SOURCES.items():
+    if not any(str(value).casefold() == _final_fact_username.casefold() for value in EXTRA_FACT_SOURCE_USERNAMES):
+        EXTRA_FACT_SOURCE_USERNAMES.append(_final_fact_username)
+    if not any(str(value).casefold() == _final_fact_username.casefold() for value in X_ACCOUNTS):
+        X_ACCOUNTS.append(_final_fact_username)
+    PRIORITY_X_ACCOUNTS.add(_final_fact_username)
+    ACCOUNT_DISPLAY_NAMES.setdefault(_final_fact_username, _final_fact_label)
+    HANDLE_REPLACEMENTS.setdefault(_final_fact_username, _final_fact_label)
+    SELF_QUOTE_ALIASES.setdefault(_final_fact_username, ["Sofascore Football", "Sofascore", "סופסקור פוטבול", "סופסקור"])
+
+
+def _final_append_builtin_fact_sources(values: Any) -> list[str]:
+    result = list(values or [])
+    normalized = {str(value or "").strip().lstrip("@").casefold() for value in result}
+    for username in _FINAL_BUILTIN_FACT_SOURCES:
+        if username.casefold() not in normalized:
+            result.append(username)
+            normalized.add(username.casefold())
+    return result
+
+
+# Make the built-in source visible in every writer/source diagnostics menu.
+_PRE_FINAL_BUILTIN_ALL_TEST_ACCOUNTS = all_control_test_accounts
+
+def all_control_test_accounts() -> list[str]:
+    return _final_append_builtin_fact_sources(_PRE_FINAL_BUILTIN_ALL_TEST_ACCOUNTS())
+
+_PRE_FINAL_BUILTIN_ALL_X_ACCOUNTS = all_x_accounts
+
+def all_x_accounts() -> list[str]:
+    return _final_append_builtin_fact_sources(_PRE_FINAL_BUILTIN_ALL_X_ACCOUNTS())
+
+_PRE_FINAL_BUILTIN_ACTIVE_X_ACCOUNTS = active_x_accounts
+
+def active_x_accounts() -> list[str]:
+    values = _final_append_builtin_fact_sources(_PRE_FINAL_BUILTIN_ACTIVE_X_ACCOUNTS())
+    return [value for value in values if not control_state_account_disabled(value)]
+
+
+# Strong local recognition for the wording the channel uses when a match ends.
+# It supports Hebrew and English, but deliberately rejects retrospectives such as
+# "on this day" or "10 years ago" so an old match is never learned as current.
+_FINAL_STRONG_MATCH_END_WORDING_RE = re.compile(
+    r"(?iu)(?:"
+    r"נגמר\s+המשחק(?:\s+בין)?|המשחק(?:\s+בין.{1,120}?)?\s+נגמר|"
+    r"הסתיים\s+המשחק(?:\s+בין)?|המשחק(?:\s+בין.{1,120}?)?\s+הסתיים|"
+    r"תם\s+המשחק|סיום\s+המשחק|שריקת\s+הסיום|תוצאת\s+הסיום|"
+    r"full[- ]?time|final\s+whistle|the\s+match\s+(?:has\s+)?ended|"
+    r"match\s+over|game\s+over|finished\s+\d+\s*[-:–—]\s*\d+"
+    r")"
+)
+_FINAL_RETROSPECTIVE_RESULT_RE = re.compile(
+    r"(?iu)(?:"
+    r"לפני\s+\d+\s+(?:שנים|שנה|חודשים|חודש|שבועות|שבוע)|"
+    r"ביום\s+הזה|ביום\s+זה|היום\s+לפני|throwback|on\s+this\s+day|"
+    r"\bin\s+(?:19|20)\d{2}\b|ב[-־]?(?:19|20)\d{2}"
+    r")"
+)
+_FINAL_BETWEEN_TEAMS_RE = re.compile(
+    r"(?iu)(?:בין\s+.{2,80}?\s+לבין\s+.{2,80}?|between\s+.{2,80}?\s+and\s+.{2,80}?)"
+)
+
+# Preserve all old result signals and add the precise local wording.
+_FINAL_MATCH_RESULT_SIGNAL_RE = re.compile(
+    "(?:" + re.sub(r"^\(\?[A-Za-z]+\)", "", _FINAL_MATCH_RESULT_SIGNAL_RE.pattern) + ")|(?:"
+    + re.sub(r"^\(\?[A-Za-z]+\)", "", _FINAL_STRONG_MATCH_END_WORDING_RE.pattern) + ")",
+    _FINAL_MATCH_RESULT_SIGNAL_RE.flags | re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_is_current_match_end_announcement(post: Post) -> bool:
+    text = _final_source_text(post)
+    if not text or _FINAL_RETROSPECTIVE_RESULT_RE.search(text):
+        return False
+    strong_wording = bool(_FINAL_STRONG_MATCH_END_WORDING_RE.search(text))
+    score = bool(_FINAL_SCORE_SIGNAL_RE.search(text))
+    teams = _final_local_match_team_set(post)
+    # The strongest form is the exact channel wording plus two recognised teams.
+    if strong_wording and len(teams) >= 2:
+        return True
+    # A score plus explicit match-end wording/context is also reliable.
+    return bool(score and len(teams) >= 2 and (strong_wording or _FINAL_MATCH_CONTEXT_RE.search(text) or _FINAL_BETWEEN_TEAMS_RE.search(text)))
+
+
+_PRE_FINAL_MATCH_LEARNER = _final_learn_match_end_from_post
+
+def _final_learn_match_end_from_post(post: Post) -> None:
+    if not isinstance(post, Post):
+        return
+    if not _final_is_current_match_end_announcement(post):
+        # Keep the previous conservative special-source learner for formats not
+        # covered by the stronger wording above.
+        return _PRE_FINAL_MATCH_LEARNER(post)
+    published = float(getattr(post, "published_ts", 0.0) or time.time())
+    if abs(time.time() - published) > 72 * 60 * 60:
+        return
+    explicit_ts, provider = _final_explicit_match_time(post)
+    _final_save_local_match_end(
+        post,
+        explicit_ts or published,
+        provider or "local-strong-match-end-announcement",
+    )
+
+
+# Learn a result after any successful channel send, not only while evaluating a
+# later facts post. The stale-match rule itself still applies only to the facts
+# sources, so normal reporter posts are never blocked by this feature.
+_PRE_FINAL_MATCH_LEARNING_SEND_POST = send_post
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = _PRE_FINAL_MATCH_LEARNING_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    if isinstance(result, dict) and result.get("sent"):
+        try:
+            _final_learn_match_end_from_post(post)
+        except Exception as exc:
+            logging.debug("Local match-end learning after send failed safely: %s", short_error(exc, 260))
+    return result
+
+
+# Generic source/credit cleanup. It is based on structure (mentions, hashtags,
+# pipes and credit markers), not on Spurs-specific words. Thus the real source
+# line from @TheSpursWatch is removed, while an @mention inside a factual sentence
+# remains untouched.
+_FINAL_METADATA_MENTION_RE = re.compile(r"(?iu)(?:\[@[^\]]+\]|(?<!\w)@[A-Za-z0-9_א-ת.'׳״\-]{2,})")
+_FINAL_METADATA_HASHTAG_RE = re.compile(r"(?iu)(?<!\w)#[A-Za-z0-9_א-ת]{2,}")
+_FINAL_METADATA_LEAD_RE = re.compile(
+    r"(?iu)^\s*(?:👨(?:\ufe0f|🏻|🏼|🏽|🏾|🏿|\u200d|💻)*|🧑(?:\ufe0f|🏻|🏼|🏽|🏾|🏿|\u200d|💻)*|"
+    r"source|credit(?:s)?|via|h/t|מקור|קרדיט)"
+)
+
+
+def _final_is_detached_source_metadata(line: str) -> bool:
+    value = html.unescape(str(line or "")).strip()
+    if not value or len(value) > 240 or re.search(r"\d{2,}", value):
+        return False
+    mentions = _FINAL_METADATA_MENTION_RE.findall(value)
+    hashtags = _FINAL_METADATA_HASHTAG_RE.findall(value)
+    if not mentions and len(hashtags) < 2:
+        return False
+    if _FINAL_NEWS_ACTION_LINE_RE.search(value):
+        return False
+    # A normal sentence containing attribution is retained. A metadata line is
+    # short, begins with a credit/mention, or is mostly tags separated by pipes.
+    starts_metadata = bool(_FINAL_METADATA_LEAD_RE.search(value) or re.match(r"^\s*(?:\[?@|#)", value))
+    separators = value.count("|") + value.count("•") + value.count("·")
+    stripped = _FINAL_METADATA_MENTION_RE.sub(" ", value)
+    stripped = _FINAL_METADATA_HASHTAG_RE.sub(" ", stripped)
+    stripped = re.sub(r"[\[\](){}/|:;,.!?'׳״\-]+", " ", stripped)
+    stripped = EMOJI_RE.sub(" ", stripped)
+    remaining_words = [word for word in re.split(r"\s+", stripped.strip()) if word]
+    return bool(
+        starts_metadata
+        or len(hashtags) >= 2
+        or separators >= 1
+    ) and len(remaining_words) <= 7
+
+
+_PRE_FINAL_METADATA_JUNK_CLEANER = _final_remove_proven_trailing_junk
+
+def _final_remove_proven_trailing_junk(post: Post, value: str) -> str:
+    text = _PRE_FINAL_METADATA_JUNK_CLEANER(post, value)
+    if not text:
+        return text
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    while lines and _final_is_detached_source_metadata(lines[-1]):
+        lines.pop()
+        while lines and not lines[-1].strip():
+            lines.pop()
+    result = "\n".join(lines).strip()
+    # Some translations flatten the final metadata line into the same paragraph.
+    # Remove it only after a completed sentence and only if the tail is proven
+    # metadata by the same strict structural test.
+    inline = re.match(r"(?s)^(?P<body>.*?[.!?…][\"'״׳)\]]*)\s+(?P<tail>(?:👨|🧑|\[?@|#).{2,220})$", result)
+    if inline and _final_is_detached_source_metadata(inline.group("tail")):
+        result = inline.group("body").strip()
+    return result
+
+
+# Return the longest prefix ending at a real sentence boundary. Decimal points,
+# ellipses and a mention/hashtag inside the sentence are preserved.
+def _final_complete_sentence_prefix(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    boundaries: list[int] = []
+    for index, char in enumerate(text):
+        if char not in ".!?…":
+            continue
+        if char == "." and index > 0 and index + 1 < len(text) and text[index - 1].isdigit() and text[index + 1].isdigit():
+            continue
+        next_index = index + 1
+        while next_index < len(text) and text[next_index] in '\"\'״׳)]}':
+            next_index += 1
+        if next_index == len(text) or text[next_index].isspace():
+            boundaries.append(next_index)
+    if not boundaries:
+        return ""
+    prefix = text[:boundaries[-1]].strip()
+    return prefix if count_regular_words(prefix) >= 3 else ""
+
+
+def _final_salvage_complete_translation(source: str, translated: str) -> str:
+    value = str(translated or "").strip()
+    if not value:
+        return ""
+    issues = _final_translation_completeness_issues(source, value)
+    if not issues:
+        return value
+    prefix = _final_complete_sentence_prefix(value)
+    if not prefix or prefix == value:
+        return ""
+    # Never publish a tiny teaser. The retained complete part must carry a
+    # meaningful amount of the report.
+    source_words = max(1, count_regular_words(clean_before_translation(str(source or ""))))
+    prefix_words = count_regular_words(prefix)
+    if prefix_words < 10 or prefix_words < min(18, int(source_words * 0.35)):
+        return ""
+    return prefix
+
+
+# Replace the final completeness wrapper: try the established Gemini/cache path,
+# retry a stale/incomplete cache once exactly as before, and if the source/output
+# is still cut, publish only complete sentences rather than dropping the whole
+# report or ending in the middle of a sentence.
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    global TRANSLATION_CACHE_DIRTY
+    main, quote, author = _PRE_FINAL_VALIDATED_GEMINI_ONCE(post, include_quote)
+    main_source = str(getattr(post, "text", "") or "")
+    quote_source = str(getattr(post, "quoted_text", "") or "") if include_quote else ""
+    issues = _final_translation_completeness_issues(main_source, main)
+    if include_quote and quote_source and quote:
+        issues.extend(_final_translation_completeness_issues(quote_source, quote))
+    if not issues:
+        return main, quote, author
+
+    cache_key = _final_translation_cache_key_for_post(post, include_quote)
+    if cache_key in TRANSLATION_CACHE:
+        TRANSLATION_CACHE.pop(cache_key, None)
+        TRANSLATION_CACHE_DIRTY = True
+        main, quote, author = _PRE_FINAL_VALIDATED_GEMINI_ONCE(post, include_quote)
+        issues = _final_translation_completeness_issues(main_source, main)
+        if include_quote and quote_source and quote:
+            issues.extend(_final_translation_completeness_issues(quote_source, quote))
+        if not issues:
+            return main, quote, author
+
+    safe_main = _final_salvage_complete_translation(main_source, main)
+    safe_quote = quote
+    if include_quote and quote_source and quote and _final_translation_completeness_issues(quote_source, quote):
+        safe_quote = _final_salvage_complete_translation(quote_source, quote)
+    if safe_main:
+        # A cut quote is optional; omit it rather than blocking a complete main
+        # report. A complete @mention or hashtag inside safe_main stays intact.
+        if include_quote and quote_source and quote and not safe_quote:
+            safe_quote = ""
+        return safe_main, safe_quote, author
+    raise TranslationUnavailable("Gemini returned an incomplete translation: " + "; ".join(dict.fromkeys(issues)))
+
+
+# Every user-facing block reason must be Hebrew. Known codes keep their precise
+# wording; unknown technical codes receive a safe Hebrew category without
+# exposing English identifiers in the control channel.
+_PRE_FINAL_ALL_HEBREW_BLOCK_REASON = hebrew_block_reason
+_FINAL_REASON_KEYWORD_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("duplicate", "same_cycle", "already_sent", "in_progress"), "כפילות: הדיווח כבר נשלח או נמצא כעת בתהליך שליחה"),
+    (("translation", "gemini", "untranslated"), "התרגום לא הושלם בצורה תקינה"),
+    (("old_post", "stale", "older_than"), "הדיווח ישן מדי לפי כללי המקור"),
+    (("women", "female", "womens"), "הפוסט עוסק בכדורגל נשים ולכן נחסם"),
+    (("youth", "academy", "reserve", "u21", "u19", "u17"), "הפוסט עוסק בנוער, אקדמיה או קבוצת מילואים"),
+    (("other_sport", "nonfootball"), "הפוסט אינו עוסק בכדורגל גברים"),
+    (("podcast", "interview", "live", "promo", "space"), "הפוסט הוא קידום, שידור, פודקאסט או ראיון ולא דיווח חדשותי"),
+    (("untracked", "without_tracked", "destination"), "הדיווח אינו עומד בכללי הקבוצות או היעד שבמעקב"),
+    (("importance", "weak", "minor", "not_meaningful"), "הדיווח לא עבר את סף החשיבות והעניין"),
+    (("league", "competition", "division"), "הליגה או התחרות אינן מותרות לפי כללי המקור"),
+    (("media", "video", "caption"), "המדיה או הכיתוב אינם עומדים בדרישות השליחה"),
+    (("question", "quiz", "poll"), "הפוסט הוא שאלה, חידון או סקר ללא מידע מספק"),
+    (("social", "instagram", "tiktok"), "הפוסט עוסק ברשתות חברתיות או בתוכן שולי"),
+    (("fee", "amount", "transfer"), "דיווח ההעברה אינו עומד בכללי החשיבות או הסכום"),
+)
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "").strip()
+    translated = str(_PRE_FINAL_ALL_HEBREW_BLOCK_REASON(raw) or "").strip()
+    # A translated Hebrew explanation is already suitable.
+    if translated and re.search(r"[א-ת]", translated) and not re.search(r"\b[A-Za-z_]{3,}\b", translated):
+        return translated
+    low = raw.casefold()
+    for needles, message in _FINAL_REASON_KEYWORD_MAP:
+        if any(needle in low for needle in needles):
+            return message
+    if re.search(r"[א-ת]", translated):
+        # Remove any remaining internal English code while retaining the Hebrew
+        # part of a mixed explanation.
+        cleaned = re.sub(r"\b[A-Za-z][A-Za-z0-9_:\-]*\b", "", translated)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -:;|")
+        if cleaned:
+            return cleaned
+    return "הדיווח נחסם לפי אחד מכללי הסינון הפנימיים"
+
+
+_PRE_FINAL_MATCH_DIAGNOSTICS = special_sources_diagnostics_text
+
+def special_sources_diagnostics_text() -> str:
+    text = _PRE_FINAL_MATCH_DIAGNOSTICS()
+    if "נגמר המשחק בין" not in text:
+        text += (
+            "\n\n🏁 זיהוי סיום משחק מקומי\n"
+            "• הודעה בנוסח ‘נגמר המשחק בין...’ עם שתי קבוצות ותוצאה נשמרת אוטומטית.\n"
+            "• עובדה מאוחרת על אותן שתי קבוצות נקשרת לזמן הסיום שנלמד.\n"
+            "• ההתאמה דורשת שתי קבוצות, ובמידת האפשר גם אותה תחרות; קבוצה אחת בלבד אינה מספיקה.\n"
+            "• הודעות היסטוריות מסוג ‘ביום הזה’ או ‘לפני שנים’ אינן נלמדות כמשחק נוכחי.\n"
+            "• אם אין התאמה ודאית, העובדה מותרת ולא נחסמת בטעות."
+        )
+    if "סופסקור פוטבול" not in text:
+        text += "\n• סופסקור פוטבול (@Sofascore) פעיל כמקור עובדות וסטטיסטיקות."
+    return text
+
+# ====== END FINAL MATCH-END LEARNING / SOFASCORE / HEBREW REASONS / SAFE PARTIAL PATCH ======
+
 if __name__ == "__main__":
     main()
