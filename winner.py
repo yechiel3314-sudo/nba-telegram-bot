@@ -30069,5 +30069,555 @@ def special_sources_diagnostics_text() -> str:
 
 # ====== END FINAL MATCH-END LEARNING / SOFASCORE / HEBREW REASONS / SAFE PARTIAL PATCH ======
 
+
+# ====== FINAL FAST AUTO / CONSERVATIVE TEXT / LIVE MANUAL EDIT PATCH (2026-07-24) ======
+# Goals:
+# - Let the automatic scanner see the same fresh public-X rows that the manual
+#   "10 latest" reader can see, without adding any Gemini request.
+# - Never delete a complete final sentence because of a broad suffix heuristic.
+# - When the operator edits a prepared Telegram message/caption, publish that
+#   exact edited body rather than rebuilding the earlier translation.
+# The RSS templates, feed parser, feed HTTP functions and mirror collector are
+# intentionally left untouched.
+
+BOT_BUILD_ID = "winner-fast-auto-safe-tail-live-edit-2026-07-24"
+
+# ----- Faster automatic discovery, with bounded public-X checks -----
+FAST_AUTO_SCAN_SECONDS = max(12, int(os.environ.get("FAST_AUTO_SCAN_SECONDS", "20")))
+FAST_AUTO_DIRECT_PRIORITY_SECONDS = max(35, int(os.environ.get("FAST_AUTO_DIRECT_PRIORITY_SECONDS", "55")))
+FAST_AUTO_DIRECT_NORMAL_SECONDS = max(55, int(os.environ.get("FAST_AUTO_DIRECT_NORMAL_SECONDS", "90")))
+FAST_AUTO_RSS_FRESH_SECONDS = max(20, int(os.environ.get("FAST_AUTO_RSS_FRESH_SECONDS", "55")))
+FAST_AUTO_DIRECT_LIMIT = max(3, min(10, int(os.environ.get("FAST_AUTO_DIRECT_LIMIT", "5"))))
+FAST_AUTO_MAX_FETCH_WORKERS = max(4, min(10, int(os.environ.get("FAST_AUTO_MAX_FETCH_WORKERS", "8"))))
+
+# Shorten only the sleeping interval. This does not create extra Gemini calls;
+# Gemini is still invoked only after a genuinely new post passes local filters.
+CHECK_EVERY_SECONDS = min(int(CHECK_EVERY_SECONDS), FAST_AUTO_SCAN_SECONDS)
+MAX_PARALLEL_ACCOUNT_CHECKS = max(int(MAX_PARALLEL_ACCOUNT_CHECKS), FAST_AUTO_MAX_FETCH_WORKERS)
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = max(int(NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS), min(6, FAST_AUTO_MAX_FETCH_WORKERS))
+
+_FAST_AUTO_DIRECT_LAST_ATTEMPT: dict[str, float] = {}
+_FAST_AUTO_DIRECT_LOCK = RLock()
+_FAST_AUTO_DIRECT_SEMAPHORE = BoundedSemaphore(max(1, min(4, int(os.environ.get("FAST_AUTO_DIRECT_MAX_PARALLEL", "4")))))
+_FAST_AUTO_FETCH_BASE = fetch_posts
+
+
+def _fast_auto_latest_timestamp(posts: Any) -> float:
+    return max((float(getattr(post, "published_ts", 0.0) or 0.0) for post in (posts or []) if isinstance(post, Post)), default=0.0)
+
+
+def _fast_auto_direct_interval(username: str) -> int:
+    key = str(username or "").strip().lstrip("@").casefold()
+    priority = {str(value or "").strip().lstrip("@").casefold() for value in PRIORITY_X_ACCOUNTS}
+    if key in priority or _final_is_special_source_username(key):
+        return FAST_AUTO_DIRECT_PRIORITY_SECONDS
+    return FAST_AUTO_DIRECT_NORMAL_SECONDS
+
+
+def _fast_auto_cached_direct_posts(username: str, max_age: float) -> list[Post]:
+    key = str(username or "").strip().lstrip("@").casefold()
+    try:
+        with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+            cached = _RELIABLE_DIRECT_PROFILE_CACHE.get(key)
+            if cached and time.time() - float(cached[0] or 0.0) <= max_age:
+                return list(cached[1][:FAST_AUTO_DIRECT_LIMIT])
+    except Exception:
+        return []
+    return []
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """RSS first, then a bounded fresh-profile peek when RSS may be behind.
+
+    The base RSS route remains authoritative and unchanged. A direct public-X
+    peek is only an augmenter; it uses no Gemini and no paid X API credential.
+    """
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        base_posts = list(_FAST_AUTO_FETCH_BASE(canonical) or [])
+    except Exception:
+        base_posts = []
+
+    now = time.time()
+    latest_ts = _fast_auto_latest_timestamp(base_posts)
+    latest_age = (now - latest_ts) if latest_ts else float("inf")
+    interval = _fast_auto_direct_interval(canonical)
+
+    # A manual 10-latest lookup may already have refreshed the direct-X cache.
+    # Merge that fresh cache immediately without another network request.
+    direct_posts = _fast_auto_cached_direct_posts(canonical, max_age=interval)
+
+    should_network_check = latest_age > FAST_AUTO_RSS_FRESH_SECONDS
+    if should_network_check and not direct_posts:
+        key = canonical.casefold()
+        with _FAST_AUTO_DIRECT_LOCK:
+            last_attempt = float(_FAST_AUTO_DIRECT_LAST_ATTEMPT.get(key, 0.0) or 0.0)
+            if now - last_attempt >= interval:
+                _FAST_AUTO_DIRECT_LAST_ATTEMPT[key] = now
+                do_check = True
+            else:
+                do_check = False
+        if do_check:
+            acquired = False
+            try:
+                acquired = _FAST_AUTO_DIRECT_SEMAPHORE.acquire(timeout=4.0)
+                if acquired:
+                    direct_posts = list(
+                        _reliable_direct_profile_posts(
+                            canonical,
+                            limit=FAST_AUTO_DIRECT_LIMIT,
+                            force=True,
+                        )
+                        or []
+                    )
+            except Exception as exc:
+                logging.debug("Fast automatic X peek failed safely for @%s: %s", canonical, short_error(exc, 300))
+            finally:
+                if acquired:
+                    _FAST_AUTO_DIRECT_SEMAPHORE.release()
+
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, base_posts, canonical)
+    _reliable_merge_posts(merged, direct_posts, canonical)
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+# ----- Conservative translation completeness and tail handling -----
+# The earlier generic regex treated any Hebrew word ending in a common letter as
+# a cut sentence. That produced false positives and then removed a whole final
+# sentence. Only explicit, structural truncation signals are allowed below.
+_FAST_SAFE_DANGLING_HEBREW_RE = re.compile(
+    r"(?iu)(?:^|\s)(?:ו?את|ו?של|ו?עם|ו?על|ו?אל|ו?מול|ו?בין|ו?עבור|ו?כדי|ו?כאשר|"
+    r"ו?אם|ו?כי|ו?אך|ו?או|ו?לאחר|ו?לפני|ו?מאז|ו?למרות|ו?בגלל|ו?בעקבות|ו?כולל)\s*$"
+)
+_FAST_SAFE_DANGLING_ENGLISH_RE = re.compile(
+    r"(?iu)(?:^|\s)(?:and|or|with|for|to|from|of|the|a|an|after|before|because|including|while|as)\s*$"
+)
+_FAST_SAFE_PARTIAL_WORD_RE = re.compile(
+    r"(?iu)(?:\b(?:ליש|מילי|מיליו|איר|יור|דול|פאונ)\s*$|(?:€|£|\$)\s*$)"
+)
+
+
+def _fast_safe_hard_truncation_issues(source: str, translated: str) -> list[str]:
+    out = clean_before_translation(str(translated or "")).strip()
+    if not out:
+        return ["לא התקבל תרגום משמעותי"]
+    issues: list[str] = []
+    if _FAST_SAFE_DANGLING_HEBREW_RE.search(out) or _FAST_SAFE_DANGLING_ENGLISH_RE.search(out):
+        issues.append("התרגום הסתיים במילת קישור ונחתך באמצע המשפט")
+    if _FAST_SAFE_PARTIAL_WORD_RE.search(out):
+        issues.append("התרגום הסתיים באמצע מילה")
+    # A trailing comma/colon/semicolon/dash is a structural continuation marker.
+    if re.search(r"[,;:–—-]\s*$", out):
+        issues.append("התרגום הסתיים בסימן שמצביע על המשך חסר")
+    # Unbalanced brackets are considered truncation only when the source itself
+    # is balanced, preventing normal X punctuation from being over-corrected.
+    src = clean_before_translation(str(source or ""))
+    for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
+        if src.count(opening) == src.count(closing) and out.count(opening) > out.count(closing):
+            issues.append("התרגום נחתך לפני סגירת סוגריים")
+            break
+    return list(dict.fromkeys(issues))
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    src = clean_before_translation(str(source or ""))
+    out = clean_before_translation(str(translated or ""))
+    issues = _fast_safe_hard_truncation_issues(src, out)
+    if not out:
+        return issues or ["לא התקבל תרגום משמעותי"]
+
+    # Preserve factual integrity. These conditions trigger another translation,
+    # but never authorize deleting an otherwise complete sentence.
+    source_numbers = _final_normalized_numbers(src)
+    output_numbers = _final_normalized_numbers(out)
+    missing_numbers = sorted(source_numbers - output_numbers)
+    if missing_numbers:
+        issues.append("חסרים מספרים מהמקור: " + ", ".join(missing_numbers[:8]))
+    currency_rules = (
+        (r"£|pounds?\b|sterling\b", r"£|ליש[\"״']?ט|פאונד", "חסר מטבע ליש״ט"),
+        (r"€|euros?\b", r"€|אירו", "חסר מטבע אירו"),
+        (r"\$|dollars?\b|usd\b", r"\$|דולר", "חסר מטבע דולר"),
+    )
+    for source_re, output_re, label in currency_rules:
+        if re.search(source_re, src, re.IGNORECASE) and not re.search(output_re, out, re.IGNORECASE):
+            issues.append(label)
+    return list(dict.fromkeys(issues))
+
+
+def _fast_safe_complete_sentence_prefix(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    boundaries: list[int] = []
+    for index, char in enumerate(text):
+        if char not in ".!?…":
+            continue
+        if char == "." and index > 0 and index + 1 < len(text) and text[index - 1].isdigit() and text[index + 1].isdigit():
+            continue
+        next_index = index + 1
+        while next_index < len(text) and text[next_index] in '\"\'״׳)]}':
+            next_index += 1
+        if next_index == len(text) or text[next_index].isspace():
+            boundaries.append(next_index)
+    if not boundaries:
+        return ""
+    return text[:boundaries[-1]].strip()
+
+
+def _final_salvage_complete_translation(source: str, translated: str) -> str:
+    value = str(translated or "").strip()
+    hard_issues = _fast_safe_hard_truncation_issues(source, value)
+    if not hard_issues:
+        return value
+    prefix = _fast_safe_complete_sentence_prefix(value)
+    if not prefix or prefix == value:
+        return ""
+    # The only removed material is the structurally incomplete last fragment.
+    if count_regular_words(prefix) < 5:
+        return ""
+    return prefix
+
+
+# Use the rebuilt Gemini engine that existed before the two aggressive late
+# wrappers. Because it resolves this global validator at call time, it now uses
+# the conservative rules above.
+_FAST_SAFE_GEMINI_BASE = _PRE_FINAL_VALIDATED_GEMINI_ONCE if callable(globals().get("_PRE_FINAL_VALIDATED_GEMINI_ONCE")) else gemini_translate_post_once
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    global TRANSLATION_CACHE_DIRTY
+    main, quote, author = _FAST_SAFE_GEMINI_BASE(post, include_quote)
+    source = str(getattr(post, "text", "") or "")
+    quote_source = str(getattr(post, "quoted_text", "") or "") if include_quote else ""
+    issues = _final_translation_completeness_issues(source, main)
+    if quote_source and quote:
+        issues.extend(_final_translation_completeness_issues(quote_source, quote))
+    if not issues:
+        return main, quote, author
+
+    # A stale cached translation can bypass network validation. Remove only this
+    # post's entry and ask the same established Gemini engine once more.
+    cache_key = _final_translation_cache_key_for_post(post, include_quote)
+    if cache_key in TRANSLATION_CACHE:
+        TRANSLATION_CACHE.pop(cache_key, None)
+        TRANSLATION_CACHE_DIRTY = True
+        main, quote, author = _FAST_SAFE_GEMINI_BASE(post, include_quote)
+        issues = _final_translation_completeness_issues(source, main)
+        if quote_source and quote:
+            issues.extend(_final_translation_completeness_issues(quote_source, quote))
+        if not issues:
+            return main, quote, author
+
+    # Only an explicit cut final fragment may be removed. Missing numbers,
+    # currencies or ordinary wording never cause sentence deletion.
+    hard_main = _fast_safe_hard_truncation_issues(source, main)
+    safe_main = _final_salvage_complete_translation(source, main) if hard_main else ""
+    safe_quote = quote
+    if quote_source and quote and _fast_safe_hard_truncation_issues(quote_source, quote):
+        safe_quote = _final_salvage_complete_translation(quote_source, quote)
+    if safe_main:
+        return safe_main, safe_quote or "", author
+    raise TranslationUnavailable("Gemini returned an unusable translation: " + "; ".join(dict.fromkeys(issues)))
+
+
+# Rebuild final body cleanup from the early, non-destructive renderer. This skips
+# the later generic orphan/team-tail removers that could delete valid sentences.
+_FAST_SAFE_BODY_BASE = _ACCEPTANCE_PREVIOUS_OUTGOING_BODY_TEXT if callable(globals().get("_ACCEPTANCE_PREVIOUS_OUTGOING_BODY_TEXT")) else _outgoing_body_text
+_FAST_SAFE_STANDALONE_JUNK_RE = re.compile(
+    r"(?iu)^\s*(?:וילן|ופטאקויז|טון|יוצא\s+דופן|מדויק|לונדונים)\s*[.!?…]*\s*$"
+)
+
+
+def _fast_safe_remove_detached_tail_only(post: Post, value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    # Delete only a whole detached line that is proven metadata or a tiny known
+    # source catchword. Never delete an ordinary sentence or a repeated club name
+    # merely because it is at the end.
+    while len([line for line in lines if line.strip()]) >= 2:
+        tail_index = len(lines) - 1
+        while tail_index >= 0 and not lines[tail_index].strip():
+            tail_index -= 1
+        if tail_index < 0:
+            break
+        tail = html.unescape(lines[tail_index]).strip()
+        if _final_is_detached_source_metadata(tail) or _FAST_SAFE_STANDALONE_JUNK_RE.fullmatch(tail):
+            del lines[tail_index:]
+            while lines and not lines[-1].strip():
+                lines.pop()
+            continue
+        break
+    result = "\n".join(lines).strip()
+    # Same-paragraph removal is allowed only for a visibly detached @/#/credit
+    # metadata tail after a completed sentence.
+    inline = re.match(r"(?s)^(?P<body>.*?[.!?…][\"'״׳)\]]*)\s+(?P<tail>(?:👨|🧑|\[?@|#|source\b|credit\b|via\b|מקור\b|קרדיט\b).{1,220})$", result, re.IGNORECASE)
+    if inline and _final_is_detached_source_metadata(inline.group("tail")):
+        result = inline.group("body").strip()
+    return result
+
+
+def _final_remove_proven_trailing_junk(post: Post, value: str) -> str:
+    return _fast_safe_remove_detached_tail_only(post, value)
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _FAST_SAFE_BODY_BASE(post, translated, quoted=quoted)
+    if quoted:
+        return re.sub(r"\n{3,}", "\n\n", value).strip()
+    for pattern in _ACCEPTANCE_SELF_PROMO_PATTERNS:
+        value = re.sub(pattern, "", value, flags=re.IGNORECASE | re.UNICODE)
+    value = _acceptance_remove_promotional_tail(value)
+    value = _acceptance_remove_source_credits(value)
+    value = _acceptance_restore_flat_statistics(post, value)
+    value = _acceptance_hashtag_rules(post, value)
+    value = _final_strip_reported_source(value)
+    value = _final_remove_trailing_promo_emojis(value)
+    value = _final_restore_authorized_special_phrases(post, value)
+    value = _final_conservative_fallback_paragraphs(post, value)
+    if _final_is_special_source(post):
+        value, _removed = _final_strip_audience_question_and_followups(value)
+    value = _fast_safe_remove_detached_tail_only(post, value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+# ----- Direct Telegram preview-edit synchronization -----
+# Telegram exposes edited_message and edited_channel_post updates. Link the
+# edited message ID to its prepared token and store the exact new body.
+_FAST_EDIT_PREVIEW_IDS_KEY = "control_media_message_ids"
+
+
+def _fast_edit_all_prepared_items() -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    try:
+        for token, item in CONTROL_PREPARED_SENDS.items():
+            if isinstance(item, dict):
+                merged[str(token)] = item
+    except Exception:
+        pass
+    try:
+        for token, payload in _load_control_prepared_durable().items():
+            if str(token) not in merged and isinstance(payload, dict):
+                item = _restore_prepared_send(str(token))
+                if isinstance(item, dict):
+                    merged[str(token)] = item
+    except Exception:
+        pass
+    return merged
+
+
+def _fast_edit_token_for_message_id(message_id: Any) -> str:
+    try:
+        wanted = int(message_id)
+    except Exception:
+        return ""
+    for token, item in _fast_edit_all_prepared_items().items():
+        ids = item.get(_FAST_EDIT_PREVIEW_IDS_KEY, []) if isinstance(item, dict) else []
+        for raw_id in ids or []:
+            try:
+                if int(raw_id) == wanted:
+                    return str(token)
+            except Exception:
+                continue
+    return ""
+
+
+def _fast_edit_plain_to_html(text_value: str) -> str:
+    # The operator's words and line breaks are authoritative. Only remove an
+    # existing visible Neto footer so the linked official footer can be added once.
+    plain = str(text_value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    plain = re.sub(
+        r"(?is)(?:\n\s*){1,3}(?:נטו\s+ספורט\.?\s*📝)(?:\s*\([^\n]*t\.me/neto_sport[^\n]*\))?\s*$",
+        "",
+        plain,
+    ).rstrip()
+    return html.escape(plain, quote=False)
+
+
+def _fast_edit_exact_final_html(saved_html: str) -> str:
+    body = _extract_body_only_from_control_wrapper(str(saved_html or ""))
+    body = _remove_channel_signature_artifacts(body).strip()
+    signature = f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">{html.escape(rtl(SIGNATURE_TEXT), quote=False)}</a>'
+    return (body + "\n\n" + signature).strip() if body else signature
+
+
+# Capture message IDs for text-only prepared previews too. Media previews already
+# had IDs, but text previews previously returned None and could not be matched to
+# a later Telegram edit.
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    markup = control_send_to_main_reply_markup(token)
+    _reliable_hydrate_exact_post(post, force=True)
+    has_media = _acceptance_post_requires_video(post) or bool(selected_post_images(post))
+    if has_media:
+        try:
+            ids, combined = _control_candidate_media_payload(post, message_html, markup)
+            if combined:
+                CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+                _save_prepared_media_ids(token, ids)
+                return ids
+        except Exception as exc:
+            send_control_text(
+                "⛔ לא ניתן להכין את הפוסט כהודעה אחת עם המדיה.\n\n" + short_error(exc, 900),
+                None,
+                control_delete_message_reply_markup(),
+            )
+            return []
+    if not CONTROL_CHAT_ID:
+        return []
+    response = telegram_api(
+        "sendMessage",
+        {
+            "chat_id": CONTROL_CHAT_ID,
+            "text": trim(rtl(message_html), 4096),
+            "disable_web_page_preview": True,
+            "parse_mode": "HTML",
+            "reply_markup": ensure_delete_button_reply_markup(markup),
+        },
+        max_attempts=1,
+    )
+    ids = _telegram_result_message_ids(response)
+    if ids:
+        _save_prepared_media_ids(token, ids)
+    return ids
+
+
+_FAST_EDIT_PREVIOUS_TEXT_HANDLER = process_control_text_update
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    edited_message = update.get("edited_channel_post") or update.get("edited_message") or {}
+    if isinstance(edited_message, dict) and edited_message:
+        chat_id = str((edited_message.get("chat") or {}).get("id", ""))
+        if not CONTROL_CHAT_ID or chat_id == str(CONTROL_CHAT_ID):
+            token = _fast_edit_token_for_message_id(edited_message.get("message_id"))
+            edited_text = str(edited_message.get("caption") or edited_message.get("text") or "").strip()
+            if token and edited_text:
+                edited_html = _fast_edit_plain_to_html(edited_text)
+                _save_manual_edit(token, edited_html)
+                try:
+                    item = _restore_prepared_send(token)
+                    if isinstance(item, dict):
+                        item["last_manual_edit_message_id"] = int(edited_message.get("message_id") or 0)
+                        item["last_manual_edit_at"] = time.time()
+                        CONTROL_PREPARED_SENDS[token] = item
+                        _persist_prepared_send(token, item)
+                        try:
+                            _persist_prepared_send_durable(token, item)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                logging.info("Manual prepared message edit captured for token=%s message_id=%s", token, edited_message.get("message_id"))
+                return
+    return _FAST_EDIT_PREVIOUS_TEXT_HANDLER(update)
+
+
+_FAST_EDIT_PREVIOUS_SEND_CONTROL = send_prepared_control_post_to_main
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    edited = _get_manual_edit(token) if "_get_manual_edit" in globals() else ""
+    if not edited:
+        return _FAST_EDIT_PREVIOUS_SEND_CONTROL(token)
+    item = _restore_prepared_send(token)
+    if not item:
+        return "הפוסט הישן לא ניתן לשחזור. בצע בדיקת כתב חדשה."
+    post: Post = item["post"]
+    message = _fast_edit_exact_final_html(edited)
+    state = load_state()
+    reply_message_ids = find_bot_reply_target_for_post(post, state)
+    images = selected_post_images(post)
+    video_url = sendable_video_url(post) if SEND_VIDEO_FILES else ""
+    message_ids, mode = _raw_main_sender_consolidated(
+        post,
+        message,
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+    remember_persistent_sent(post, message, "manual_force_live_edited")
+    if message_ids:
+        remember_bot_sent_reply_target(post, state, message_ids)
+        remember_channel_news_text(message, state, message_id=post.link, source="manual_force_live_edited")
+        confirm_recent_news_event(post, state)
+        seen = set(state.get(post.username, []))
+        seen.update(post.dedupe_ids)
+        state[post.username] = list(seen)[-500:]
+        save_state(state)
+    return f"ההודעה הערוכה נשלחה בדיוק לפי גוף ההודעה ששמרת. מצב שליחה: {mode}"
+
+
+# Add edited_message to polling. edited_channel_post was already present, but a
+# prepared item can also live in a group/private control chat.
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    if CONTROL_SEND_PANEL_ON_STARTUP:
+        try:
+            send_quick_control_panel(force_new=True)
+        except Exception as exc:
+            logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
+    else:
+        try:
+            ensure_control_panel_once_if_requested()
+        except Exception as exc:
+            logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+    while True:
+        try:
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "10")),
+                    "allowed_updates": [
+                        "callback_query",
+                        "message",
+                        "edited_message",
+                        "channel_post",
+                        "edited_channel_post",
+                    ],
+                },
+            )
+            for update in response.get("result", []):
+                offset = max(offset, int(update.get("update_id", 0)) + 1)
+                save_control_state(control_update_offset=offset)
+                process_control_update(update)
+                process_control_text_update(update)
+                process_channel_post_update(update)
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+                    except Exception as cleanup_exc:
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+# ====== END FINAL FAST AUTO / CONSERVATIVE TEXT / LIVE MANUAL EDIT PATCH ======
+
 if __name__ == "__main__":
     main()
