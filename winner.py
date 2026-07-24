@@ -28523,5 +28523,494 @@ def special_sources_diagnostics_text() -> str:
 
 # ====== END SPECIAL-SOURCE TOURNAMENT FRESHNESS + YOUTH STATISTICS PATCH ======
 
+# ====== FINAL RSS PRIMARY-FIRST RESTORE + LOCAL TOURNAMENT FRESHNESS (NO API) ======
+# This is the last compatibility layer in the file, so these definitions are the
+# ones used at runtime. It deliberately keeps the original RSS parser/fetch_feed
+# implementation, restores primary-first mirror behavior, and never requires an
+# external sports API for fact freshness.
+
+BOT_BUILD_ID = "winner-rss-primary-first-local-freshness-2026-07-24"
+
+_FINAL_RSS_LAST_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
+_FINAL_RSS_DIAGNOSTICS_LOCK = RLock()
+_FINAL_RSS_PRIMARY_HOSTS = ("nitter.net",)
+_FINAL_RSS_FALLBACK_HOSTS = (
+    "twiiit.com",
+    "lightbrd.com",
+    "rsshub.rssforever.com",
+    "rsshub.app",
+)
+
+
+def _final_rss_ordered_templates() -> list[str]:
+    """Use the original configured URLs, but restore Nitter-first behavior."""
+    templates = list(dict.fromkeys(active_feed_templates()))
+
+    def rank(template: str) -> tuple[int, int]:
+        host = feed_source_name(template).casefold()
+        if any(value in host for value in _FINAL_RSS_PRIMARY_HOSTS):
+            return (0, templates.index(template))
+        for index, value in enumerate(_FINAL_RSS_FALLBACK_HOSTS, start=1):
+            if value in host:
+                return (index, templates.index(template))
+        return (100, templates.index(template))
+
+    return sorted(templates, key=rank)
+
+
+def _final_rss_store_diagnostics(username: str, diagnostics: dict[str, Any]) -> None:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _FINAL_RSS_DIAGNOSTICS_LOCK:
+        _FINAL_RSS_LAST_DIAGNOSTICS[key] = dict(diagnostics or {})
+        if len(_FINAL_RSS_LAST_DIAGNOSTICS) > 100:
+            for old_key in list(_FINAL_RSS_LAST_DIAGNOSTICS)[:25]:
+                _FINAL_RSS_LAST_DIAGNOSTICS.pop(old_key, None)
+
+
+def _final_rss_fetch_one(username: str, template: str) -> tuple[list[Post], str]:
+    source = feed_source_name(template)
+    try:
+        posts = fetch_feed(username, template) or []
+        return [post for post in posts if isinstance(post, Post)], ""
+    except Exception as exc:
+        return [], f"{source}: {type(exc).__name__}: {short_error(exc, 350)}"
+
+
+def _final_rss_network_fetch(username: str, limit: int = 30, exhaustive: bool = False) -> tuple[list[Post], dict[str, Any]]:
+    """Primary RSS -> direct public X -> fallback mirrors, with isolated errors.
+
+    The direct X step does not use an API key. Fallback mirrors are not contacted
+    when the primary source already returned enough rows, preventing dead mirrors
+    from creating false outage reports or slowing every writer.
+    """
+    canonical = str(username or "").strip().lstrip("@")
+    requested = max(1, int(limit))
+    target = min(requested, 10 if exhaustive else 1)
+    templates = _final_rss_ordered_templates()
+    primary = [item for item in templates if "nitter.net" in feed_source_name(item).casefold()]
+    fallback = [item for item in templates if item not in primary]
+    diagnostics: dict[str, Any] = {
+        "errors": [],
+        "timeouts": [],
+        "sources": {},
+        "variants": [],
+        "path": [],
+        "returned_network": 0,
+    }
+    merged: dict[str, Post] = {}
+
+    variants = _stable_rss_username_variants(canonical)
+    if not variants:
+        variants = [canonical]
+
+    # 1) Exact primary source first. Stop immediately when it is healthy.
+    for variant in variants:
+        diagnostics["variants"].append(variant)
+        for template in primary:
+            posts, error = _final_rss_fetch_one(variant, template)
+            if error:
+                diagnostics["errors"].append(error)
+                continue
+            before = len(merged)
+            _reliable_merge_posts(merged, posts, canonical)
+            added = len(merged) - before
+            diagnostics["sources"][f"primary:{variant}:{feed_source_name(template)}"] = added
+            if added:
+                diagnostics["path"].append("primary_rss")
+                if len(merged) >= target:
+                    ordered = sorted(
+                        merged.values(),
+                        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+                        reverse=True,
+                    )
+                    diagnostics["returned_network"] = len(ordered)
+                    _final_rss_store_diagnostics(canonical, diagnostics)
+                    return ordered[:requested], diagnostics
+
+    # 2) Public X profile/syndication fallback. No bearer token is required.
+    try:
+        direct = _reliable_direct_profile_posts(canonical, limit=max(20, requested), force=not bool(merged))
+        before = len(merged)
+        _reliable_merge_posts(merged, direct, canonical)
+        added = len(merged) - before
+        diagnostics["sources"]["direct_x_no_key"] = added
+        if added:
+            diagnostics["path"].append("direct_x_no_key")
+    except Exception as exc:
+        diagnostics["errors"].append("direct_x_no_key: " + short_error(exc, 350))
+
+    if len(merged) >= target and not exhaustive:
+        ordered = sorted(
+            merged.values(),
+            key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )
+        diagnostics["returned_network"] = len(ordered)
+        _final_rss_store_diagnostics(canonical, diagnostics)
+        return ordered[:requested], diagnostics
+
+    # 3) Existing fallback mirrors only when primary/direct did not provide enough.
+    for variant in variants:
+        if not fallback:
+            break
+        try:
+            posts, errors, timeouts = collect_posts_from_feed_templates(variant, fallback)
+        except Exception as exc:
+            posts, errors, timeouts = [], [f"fallback: {short_error(exc, 350)}"], []
+        diagnostics["errors"].extend(errors or [])
+        diagnostics["timeouts"].extend(timeouts or [])
+        before = len(merged)
+        _reliable_merge_posts(merged, posts, canonical)
+        added = len(merged) - before
+        diagnostics["sources"][f"fallback:{variant}"] = added
+        if added:
+            diagnostics["path"].append("fallback_rss")
+        if len(merged) >= target:
+            break
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    diagnostics["returned_network"] = len(ordered)
+    diagnostics["errors"] = list(dict.fromkeys(diagnostics["errors"]))[-12:]
+    diagnostics["timeouts"] = list(dict.fromkeys(diagnostics["timeouts"]))[-12:]
+    _final_rss_store_diagnostics(canonical, diagnostics)
+    return ordered[:requested], diagnostics
+
+
+def _stable_rss_network_fetch(username: str, limit: int = 30, exhaustive: bool = False) -> tuple[list[Post], dict[str, Any]]:
+    return _final_rss_network_fetch(username, limit=limit, exhaustive=exhaustive)
+
+
+def _fetch_footballtweet_posts_isolated(limit: int = 25) -> list[Post]:
+    """Footballtweet uses the same resilient route, but keeps isolated status."""
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+    posts, diagnostics = _final_rss_network_fetch(canonical, limit=max(25, int(limit)), exhaustive=True)
+    if posts:
+        try:
+            _stable_rss_remember(canonical, posts)
+            _remember_control_rss_posts(canonical, posts)
+            _ten_history_save(canonical, posts)
+        except Exception:
+            pass
+        _FOOTBALLTWEET_RSS_LAST_STATUS.update({
+            "ok": True,
+            "checked_at": time.time(),
+            "posts": len(posts),
+            "errors": (diagnostics.get("errors") or [])[-8:],
+            "timeouts": (diagnostics.get("timeouts") or [])[-8:],
+            "used_cache": False,
+            "direct_x_used": "direct_x_no_key" in (diagnostics.get("path") or []),
+        })
+        return posts[:max(1, int(limit))]
+    cached = _footballtweet_cached_posts_any_age(limit=limit)
+    _FOOTBALLTWEET_RSS_LAST_STATUS.update({
+        "ok": bool(cached),
+        "checked_at": time.time(),
+        "posts": len(cached),
+        "errors": (diagnostics.get("errors") or [])[-8:],
+        "timeouts": (diagnostics.get("timeouts") or [])[-8:],
+        "used_cache": bool(cached),
+        "direct_x_used": False,
+    })
+    return cached
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Never let a mirror outage escape the RSS layer."""
+    canonical = str(username or "").strip().lstrip("@")
+    if value_contains_footballtweet(canonical):
+        return _fetch_footballtweet_posts_isolated(
+            limit=max(25, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)
+        )
+    try:
+        posts, diagnostics = _final_rss_network_fetch(
+            canonical,
+            limit=max(30, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK),
+            exhaustive=False,
+        )
+    except Exception as exc:
+        posts, diagnostics = [], {"errors": ["network: " + short_error(exc, 350)], "timeouts": []}
+    if posts:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+        _stable_rss_remember(canonical, posts)
+        return posts
+    failures = FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) + 1
+    FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
+    cached = _stable_rss_cached_posts(
+        canonical,
+        limit=max(30, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK),
+    )
+    if failures == 1 or failures % 20 == 0:
+        logging.warning(
+            "RSS/direct-X @%s returned no fresh rows; using %s cached/history rows. errors=%s timeouts=%s",
+            canonical,
+            len(cached),
+            "; ".join((diagnostics.get("errors") or [])[:4]),
+            ", ".join((diagnostics.get("timeouts") or [])[:4]),
+        )
+    return cached
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    """For control history, check fresh sources first and durable history second."""
+    canonical = (
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+        if value_contains_footballtweet(username)
+        else str(username or "").strip().lstrip("@")
+    )
+    requested = max(1, int(limit))
+    merged: dict[str, Post] = {}
+    diagnostics: dict[str, Any] = {"sources": {}, "errors": [], "requested": requested}
+
+    try:
+        network, network_diag = _final_rss_network_fetch(
+            canonical,
+            limit=max(40, requested * 4),
+            exhaustive=True,
+        )
+        before = len(merged)
+        _reliable_merge_posts(merged, network, canonical)
+        diagnostics["sources"]["fresh_network"] = len(merged) - before
+        # Mirror errors are only operationally important if no usable row exists.
+        if not merged:
+            diagnostics["errors"].extend((network_diag.get("errors") or [])[:10])
+            diagnostics["timeouts"] = (network_diag.get("timeouts") or [])[:10]
+        diagnostics["path"] = network_diag.get("path") or []
+    except Exception as exc:
+        diagnostics["errors"].append("fresh_network: " + short_error(exc, 300))
+
+    for stage, loader in (
+        ("stable_cache", lambda: _stable_rss_cached_posts(canonical, limit=120)),
+        ("ten_history", lambda: _ten_history_load(canonical)),
+        ("state_history", lambda: _ten_history_collect_existing_state_posts(canonical)),
+    ):
+        if len(merged) >= requested:
+            break
+        try:
+            before = len(merged)
+            _reliable_merge_posts(merged, loader(), canonical)
+            diagnostics["sources"][stage] = len(merged) - before
+        except Exception as exc:
+            diagnostics["errors"].append(f"{stage}: {short_error(exc, 260)}")
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    ordered = [post for post in ordered if str(_stable_rss_post_text(post) or "").strip()]
+    diagnostics["after_dedupe"] = len(ordered)
+    diagnostics["returned"] = min(requested, len(ordered))
+    LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diagnostics
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:requested]
+
+
+def fetch_latest_post_fast(username: str) -> Post | None:
+    canonical = (
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+        if value_contains_footballtweet(username)
+        else str(username or "").strip().lstrip("@")
+    )
+    try:
+        network, _diagnostics = _final_rss_network_fetch(canonical, limit=5, exhaustive=False)
+        if network:
+            return network[0]
+    except Exception:
+        pass
+    try:
+        cached = _stable_rss_cached_posts(canonical, limit=1)
+        return cached[0] if cached else None
+    except Exception:
+        return None
+
+
+# ----- Tournament freshness without any sports API or API key -----
+_FINAL_LOCAL_TOURNAMENT_MEMORY_KEY = "local_tournament_end_memory_v1"
+_FINAL_LOCAL_TOURNAMENT_MEMORY_LOCK = RLock()
+_FINAL_LOCAL_TOURNAMENT_END_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:won|wins|have\s+won|are\s+champions|crowned\s+champions|lifted\s+the\s+trophy|"
+    r"final\s+has\s+ended|tournament\s+is\s+over)\b|"
+    r"זכ(?:ה|תה|ו)\s+(?:הערב|היום|הלילה)?|הוכתר(?:ה|ו)?\s+(?:לאלופ|כאלופ)|"
+    r"אלופ(?:ת|י)?\s+(?:העולם|אירופה|אפריקה|אסיה)|הניפ(?:ה|ו)\s+את\s+הגביע|"
+    r"הגמר\s+הסתיים|הטורניר\s+הסתיים"
+    r")"
+)
+_FINAL_LOCAL_RETROSPECTIVE_RE = re.compile(
+    r"(?iu)\b(?:on\s+this\s+day|throwback|anniversary|years?\s+ago|in\s+20\d{2})\b|"
+    r"ביום\s+זה|ביום\s+הזה|היום\s+לפני|לפני\s+\d+\s+שנ(?:ה|ים)|ב[-־]?20\d{2}"
+)
+
+
+def _final_local_tournament_memory() -> dict[str, Any]:
+    try:
+        state = load_control_state()
+        value = state.get(_FINAL_LOCAL_TOURNAMENT_MEMORY_KEY, {}) if isinstance(state, dict) else {}
+        return dict(value) if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _final_save_local_tournament_end(spec: dict[str, Any], year: int, end_ts: float, evidence: str) -> None:
+    if not end_ts:
+        return
+    key = f"{spec.get('id', '')}:{int(year)}"
+    with _FINAL_LOCAL_TOURNAMENT_MEMORY_LOCK:
+        memory = _final_local_tournament_memory()
+        current = memory.get(key, {}) if isinstance(memory.get(key), dict) else {}
+        old_ts = float(current.get("end_ts", 0.0) or 0.0)
+        # Keep the earliest credible completion timestamp; a later retrospective
+        # post must not move the tournament end forward.
+        chosen = min(old_ts, float(end_ts)) if old_ts else float(end_ts)
+        memory[key] = {
+            "end_ts": chosen,
+            "saved_at": time.time(),
+            "evidence": trim(str(evidence or "local-final-signal"), 180),
+        }
+        try:
+            save_control_state(**{_FINAL_LOCAL_TOURNAMENT_MEMORY_KEY: memory})
+        except Exception as exc:
+            logging.debug("Local tournament memory save failed safely: %s", short_error(exc, 260))
+
+
+def _final_learn_tournament_end_from_post(post: Post) -> None:
+    text = _final_source_text(post)
+    spec = _final_identify_tournament(text)
+    if not spec or _FINAL_LOCAL_RETROSPECTIVE_RE.search(text):
+        return
+    year = _final_tournament_year(text, post)
+    current_year = datetime.now(tz=ZoneInfo("UTC")).year
+    if year != current_year:
+        return
+    if not _FINAL_LOCAL_TOURNAMENT_END_RE.search(text):
+        return
+    published = float(getattr(post, "published_ts", 0.0) or time.time())
+    # Only learn from a currently arriving post, not from old cached history.
+    if abs(time.time() - published) > 72 * 60 * 60:
+        return
+    _final_save_local_tournament_end(spec, year, published, clean_text(text)[:180])
+
+
+def _final_local_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    # Explicit old editions are certainly complete by the end of their year.
+    current_year = datetime.now(tz=ZoneInfo("UTC")).year
+    if int(year) < current_year:
+        return _final_parse_end_of_day(f"{int(year)}-12-31"), "local-past-year"
+    memory = _final_local_tournament_memory()
+    row = memory.get(f"{spec.get('id', '')}:{int(year)}", {})
+    if isinstance(row, dict):
+        ts = float(row.get("end_ts", 0.0) or 0.0)
+        if ts:
+            return ts, "local-learned-final"
+    return 0.0, ""
+
+
+def _final_api_football_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    # Intentionally disabled: this build never depends on an API key.
+    return 0.0, ""
+
+
+def _final_football_data_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    # Intentionally disabled: this build never depends on an API key.
+    return 0.0, ""
+
+
+def _final_resolve_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    cache_key = f"local:{spec.get('id', '')}:{int(year)}"
+    now = time.time()
+    with _SPECIAL_TOURNAMENT_CACHE_LOCK:
+        cached = _SPECIAL_TOURNAMENT_END_CACHE.get(cache_key)
+        if cached and now - cached[0] <= SPECIAL_FACT_TOURNAMENT_CACHE_SECONDS:
+            return float(cached[1] or 0.0), str(cached[2] or "unknown")
+
+    result: tuple[float, str] = (0.0, "unknown")
+    for resolver in (
+        _final_custom_tournament_end,
+        _final_static_tournament_end,
+        _final_local_tournament_end,
+    ):
+        try:
+            end_ts, provider = resolver(spec, year)
+        except Exception as exc:
+            logging.debug(
+                "Local tournament resolver %s failed safely for %s/%s: %s",
+                getattr(resolver, "__name__", "resolver"),
+                spec.get("id", "unknown"),
+                year,
+                short_error(exc, 260),
+            )
+            continue
+        if end_ts:
+            result = (float(end_ts), str(provider or "local"))
+            break
+
+    with _SPECIAL_TOURNAMENT_CACHE_LOCK:
+        _SPECIAL_TOURNAMENT_END_CACHE[cache_key] = (now, result[0], result[1])
+    return result
+
+
+_PRE_FINAL_LOCAL_FRESHNESS_REASON = _final_completed_tournament_fact_reason
+
+
+def _final_completed_tournament_fact_reason(post: Post) -> str:
+    if not SPECIAL_FACT_TOURNAMENT_FRESHNESS_ENABLED or not _final_is_special_source(post):
+        return ""
+    try:
+        _final_learn_tournament_end_from_post(post)
+    except Exception as exc:
+        logging.debug("Tournament end learning failed safely: %s", short_error(exc, 260))
+
+    spec, year = _final_tournament_bound_fact(post)
+    if not spec:
+        return ""
+    end_ts, provider = _final_resolve_tournament_end(spec, year)
+    post.tournament_freshness_id = str(spec.get("id", ""))
+    post.tournament_freshness_label = str(spec.get("label", ""))
+    post.tournament_freshness_year = int(year)
+    post.tournament_freshness_provider = provider
+    post.tournament_end_timestamp = float(end_ts or 0.0)
+    if not end_ts:
+        post.tournament_freshness_resolution = "unknown_allowed"
+        return ""
+    age = max(0.0, time.time() - end_ts)
+    post.tournament_freshness_age_seconds = age
+    post.tournament_freshness_resolution = (
+        "completed" if age > SPECIAL_FACT_TOURNAMENT_GRACE_SECONDS else "grace_period"
+    )
+    return (
+        "special_source_completed_tournament_fact"
+        if age > SPECIAL_FACT_TOURNAMENT_GRACE_SECONDS
+        else ""
+    )
+
+
+_PRE_FINAL_LOCAL_DIAGNOSTICS = special_sources_diagnostics_text
+
+
+def special_sources_diagnostics_text() -> str:
+    text = _PRE_FINAL_LOCAL_DIAGNOSTICS()
+    # Remove the obsolete API status sentence from older layers.
+    text = re.sub(r"\n?• מקור זיהוי טורנירים זמין:.*?(?=\n|$)", "", text)
+    if "ללא API חיצוני" not in text:
+        text += (
+            "\n\n🧠 רעננות מקומית ללא API חיצוני\n"
+            "• מונדיאל 2026 וטורנירים עם תאריך מובנה מזוהים אוטומטית.\n"
+            "• טורניר שמסתיים נלמד מקומית מפוסט זכייה/גמר עדכני ונשמר ב-state הקיים.\n"
+            "• מהדורה משנה קודמת מזוהה אוטומטית כטורניר שכבר הסתיים.\n"
+            "• אם אין הוכחה מספקת שהטורניר הסתיים, הפוסט מותר ולא נחסם בטעות.\n"
+            "• אין צורך במפתח API ואין בקשת רשת נוספת בזמן סריקת RSS."
+        )
+    return text
+
+# ====== END FINAL RSS PRIMARY-FIRST RESTORE + LOCAL TOURNAMENT FRESHNESS ======
+
 if __name__ == "__main__":
     main()
