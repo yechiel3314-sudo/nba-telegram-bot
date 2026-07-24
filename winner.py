@@ -75,7 +75,7 @@ from zoneinfo import ZoneInfo
 # or JSON keys. Make only the requested change and keep backward compatibility.
 # ============================================================================
 
-BOT_BUILD_ID = "winner-twitter-layout-strict-confirmation-2026-07-21"
+BOT_BUILD_ID = "winner-safe-trailing-cleanup-2026-07-24"
 BOT_STARTED_AT = time.time()
 SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS = int(os.environ.get("SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS", str(30 * 60)))
 
@@ -8999,23 +8999,47 @@ def _known_team_display_names() -> list[str]:
 
 
 def remove_trailing_duplicate_team_tags(text: str) -> str:
-    value = text or ""
+    """Remove only a clearly isolated repeated club tag at the very end.
+
+    Safety rule: a club name is never removed merely because it is the last
+    words of a sentence.  It may be removed only when it appears after a
+    completed sentence (or on its own final line) and the same club already
+    appears in the report body.
+    """
+    value = str(text or "").strip()
     team_names = _known_team_display_names()
-    if not team_names:
-        return value.strip()
+    if not value or not team_names:
+        return value
+
     team_alt = "|".join(re.escape(name) for name in team_names if name)
+    terminal_re = re.compile(r"[.!?…][\"'״׳)\]]*\s*$")
+
     for _ in range(3):
-        match = re.search(rf"(?s)(.*?)(?:[.!?]\s+)((?:(?:{team_alt})(?:\s+(?:{team_alt}))*))\s*[.!?]?\s*$", value)
+        # Handles both a normal space and a line break, but requires a complete
+        # sentence before the suspected tag.  The punctuation remains intact.
+        match = re.match(
+            rf"(?s)^(?P<body>.*?[.!?…][\"'״׳)\]]*)\s+(?P<tail>(?:(?:{team_alt})(?:\s+(?:{team_alt}))*))[.!?…]?\s*$",
+            value,
+        )
         if not match:
             break
-        before = match.group(1).strip()
-        tail = match.group(2).strip()
-        tail_names = [name for name in team_names if re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", tail)]
-        if not tail_names or not all(re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", before) for name in tail_names):
+        body = match.group("body").rstrip()
+        tail = match.group("tail").strip()
+        if not terminal_re.search(body):
             break
-        value = before.strip()
+        tail_names = [
+            name for name in team_names
+            if re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", tail, re.IGNORECASE)
+        ]
+        if not tail_names:
+            break
+        if not all(
+            re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", body, re.IGNORECASE)
+            for name in tail_names
+        ):
+            break
+        value = body
     return value.strip()
-
 
 def remove_junk_topic_tags(text: str) -> str:
     value = text or ""
@@ -24808,38 +24832,67 @@ def _acceptance_remove_source_credits(text: str) -> str:
 
 
 def _acceptance_remove_trailing_team_tag(text: str) -> str:
+    """Remove a repeated club label only when it is visibly detached.
+
+    A club name that completes the actual sentence (for example "עבר לליל")
+    must remain.  Removal is allowed only after terminal punctuation or on a
+    separate final line, and only when the same club is already present earlier.
+    """
     value = str(text or "").strip()
-    lines = value.splitlines()
-    last = re.sub(r"^[#@]", "", lines[-1].strip())
-    last_norm = re.sub(r"[^A-Za-zא-ת0-9]+", " ", last).strip().casefold()
-    if not last_norm:
+    if not value:
         return value
+
     aliases: set[str] = set()
     for item in TEAM_CATALOG.values():
         if not isinstance(item, dict):
             continue
-        aliases.add(str(item.get("name") or ""))
-        aliases.update(str(x or "") for x in (item.get("aliases") or []))
-    for alias in aliases:
-        alias_norm = re.sub(r"[^A-Za-zא-ת0-9]+", " ", alias).strip().casefold()
-        if alias_norm and last_norm == alias_norm:
-            earlier = "\n".join(lines[:-1]).casefold()
-            if alias.casefold() in earlier or str(TEAM_REPLACEMENTS.get(alias, "")).casefold() in earlier:
-                return "\n".join(lines[:-1]).rstrip()
-    # Legacy layout may flatten the final standalone team tag into the last line.
+        aliases.add(str(item.get("name") or "").strip())
+        aliases.update(str(x or "").strip() for x in (item.get("aliases") or []))
+    for key, translated in TEAM_REPLACEMENTS.items():
+        aliases.add(str(key or "").strip())
+        aliases.add(str(translated or "").strip())
+    aliases = {alias for alias in aliases if alias}
+    if not aliases:
+        return value
+
+    def norm(candidate: str) -> str:
+        return re.sub(r"[^A-Za-zא-ת0-9]+", " ", str(candidate or "")).strip().casefold()
+
+    norm_to_alias = {norm(alias): alias for alias in aliases if norm(alias)}
+    terminal_re = re.compile(r"[.!?…][\"'״׳)\]]*\s*$")
+
+    # Final isolated line (single newline is enough), only after a completed
+    # sentence.  Do not remove an ordinary last line that is part of a sentence.
+    lines = value.splitlines()
+    nonempty_indexes = [i for i, line in enumerate(lines) if line.strip()]
+    if len(nonempty_indexes) >= 2:
+        last_i = nonempty_indexes[-1]
+        previous_text = "\n".join(lines[:last_i]).rstrip()
+        last_norm = norm(lines[last_i].strip().strip(".!?…"))
+        alias = norm_to_alias.get(last_norm)
+        if alias and terminal_re.search(previous_text):
+            earlier_norm = norm(previous_text)
+            translated_alias = str(TEAM_REPLACEMENTS.get(alias, "") or "")
+            if norm(alias) in earlier_norm or (translated_alias and norm(translated_alias) in earlier_norm):
+                return "\n".join(lines[:last_i]).rstrip()
+
+    # Flattened RSS may leave the tag on the same line.  Require punctuation
+    # immediately before the detached tag; never strip a club that is simply the
+    # grammatical end of the sentence.
     for alias in sorted(aliases, key=len, reverse=True):
-        alias = str(alias or "").strip()
-        if not alias:
-            continue
-        match = re.search(r"(?:\s|^)(?:[#@])?" + re.escape(alias) + r"\s*$", value, re.IGNORECASE)
+        pattern = re.compile(
+            rf"(?s)^(?P<body>.*?[.!?…][\"'״׳)\]]*)\s+(?:[#@])?{re.escape(alias)}[.!?…]?\s*$",
+            re.IGNORECASE,
+        )
+        match = pattern.match(value)
         if not match:
             continue
-        earlier = value[:match.start()].casefold()
-        target = str(TEAM_REPLACEMENTS.get(alias, alias) or alias).casefold()
-        if alias.casefold() in earlier or target in earlier:
-            return value[:match.start()].rstrip()
+        body = match.group("body").rstrip()
+        earlier_norm = norm(body)
+        translated_alias = str(TEAM_REPLACEMENTS.get(alias, alias) or alias)
+        if norm(alias) in earlier_norm or norm(translated_alias) in earlier_norm:
+            return body
     return value
-
 
 def _acceptance_restore_flat_statistics(post: Post, text: str) -> str:
     if bool(getattr(post, "exact_source_structure", False)):
@@ -26849,47 +26902,80 @@ def _final_known_team_aliases() -> set[str]:
             normalized = re.sub(r"\s+", " ", str(value or "").strip(" .,!?:;–—-\n")).casefold()
             if normalized:
                 aliases.add(normalized)
+    # TEAM_REPLACEMENTS contains additional clubs that are intentionally not in
+    # the tracked-team catalog (for example Lille).  They are safe here because
+    # the orphan remover still requires the label to be detached after a complete
+    # sentence and repeated earlier in the same report.
+    for key, translated in TEAM_REPLACEMENTS.items():
+        for value in (key, translated):
+            normalized = re.sub(r"\s+", " ", str(value or "").strip(" .,!?:;–—-\n")).casefold()
+            if normalized:
+                aliases.add(normalized)
     return aliases
 
 
 def _final_remove_orphan_tail(text: str) -> str:
+    """Remove only an unmistakably detached junk tail.
+
+    This is intentionally conservative.  It does not delete arbitrary short
+    phrases, repeated player names, or English words.  A tail is removable only
+    when it is isolated after a completed sentence and is either a known
+    editorial filler or an exact repeated club label.
+    """
     value = str(text or "").strip()
     if not value:
         return ""
     team_aliases = _final_known_team_aliases()
+    terminal_re = re.compile(r"[.!?…][\"'״׳)\]]*\s*$")
 
-    def is_orphan(tail: str, earlier: str) -> bool:
-        normalized = re.sub(r"\s+", " ", tail.strip(" .,!?:;–—-\n")).casefold()
-        if not normalized or len(normalized.split()) > 3:
+    def normalize(candidate: str) -> str:
+        return re.sub(r"\s+", " ", str(candidate or "").strip(" .,!?:;–—-\n")).casefold()
+
+    def appears_as_phrase(phrase: str, earlier: str) -> bool:
+        if not phrase:
+            return False
+        return bool(re.search(
+            rf"(?<![A-Za-zא-ת0-9])(?:[בוכלמשה])?{re.escape(phrase)}(?![A-Za-zא-ת0-9])",
+            normalize(earlier),
+            flags=re.IGNORECASE,
+        ))
+
+    def is_proven_orphan(tail: str, earlier: str) -> bool:
+        normalized = normalize(tail)
+        words = normalized.split()
+        if not normalized or not (1 <= len(words) <= 3):
+            return False
+        if not terminal_re.search(str(earlier or "")):
             return False
         if normalized in _FINAL_EDITORIAL_TAILS:
             return True
-        earlier_normalized = re.sub(r"\s+", " ", str(earlier or "")).casefold()
-        if normalized in team_aliases and normalized in earlier_normalized:
-            return True
-        # RSS/translation occasionally leaves a repeated player or club label
-        # after the last full stop.  A short content phrase already present in
-        # the completed sentence is an orphan even when it is not in our catalog.
-        tail_words = normalized.split()
-        generic_stopwords = {"של", "עם", "על", "אל", "את", "גם", "כדי", "לפי", "the", "of", "and", "with", "for"}
-        if (1 <= len(tail_words) <= 3 and len(normalized) >= 3
-                and not all(word in generic_stopwords for word in tail_words)
-                and re.search(rf"(?<![A-Za-zא-ת])(?:[בוכלמשה])?{re.escape(normalized)}(?![A-Za-zא-ת])", earlier_normalized)):
-            return True
-        if re.fullmatch(r"[A-Za-z]{3,18}", normalized) and normalized not in earlier_normalized:
+        if normalized in team_aliases and appears_as_phrase(normalized, earlier):
             return True
         return False
 
-    blocks = [block for block in re.split(r"\n{2,}", value) if block.strip()]
-    while len(blocks) >= 2 and is_orphan(blocks[-1], "\n\n".join(blocks[:-1])):
-        blocks.pop()
-    value = "\n\n".join(blocks).strip()
+    # First handle a final line or paragraph by itself.  A single newline is
+    # sufficient, but the preceding text must already be a complete sentence.
+    lines = value.splitlines()
+    while True:
+        nonempty_indexes = [i for i, line in enumerate(lines) if line.strip()]
+        if len(nonempty_indexes) < 2:
+            break
+        last_i = nonempty_indexes[-1]
+        earlier = "\n".join(lines[:last_i]).rstrip()
+        tail = lines[last_i].strip()
+        if not is_proven_orphan(tail, earlier):
+            break
+        lines = lines[:last_i]
+        while lines and not lines[-1].strip():
+            lines.pop()
+    value = "\n".join(lines).strip()
 
-    inline = re.match(r"(?s)^(.*?[.!?])\s+([^.!?\n]{1,45}[.]?)$", value)
-    if inline and is_orphan(inline.group(2), inline.group(1)):
-        value = inline.group(1).rstrip()
+    # A flattened one-word tail after punctuation may still be removed, but only
+    # for the same two proven categories.  No generic repeated-word heuristic.
+    inline = re.match(r"(?s)^(?P<body>.*?[.!?…][\"'״׳)\]]*)\s+(?P<tail>[^.!?…\n]{1,45}[.!?…]?)$", value)
+    if inline and is_proven_orphan(inline.group("tail"), inline.group("body")):
+        value = inline.group("body").rstrip()
     return value.strip()
-
 
 def _acceptance_hashtag_rules(post: Post, text: str) -> str:
     source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
@@ -26994,6 +27080,1448 @@ def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[st
 
 
 # ====== END FINAL USER REQUEST PATCH ======
+
+
+# ====== FINAL LAYOUT / ATOMIC DEDUPE / MATCH-AGE / NATIONAL-COACH PATCH (2026-07-24) ======
+# This last layer is deliberately outside the RSS engine.  It does not modify
+# FEED_TEMPLATES, http_get_feed, fetch_feed, fetch_posts, mirror order, timeouts,
+# source cooldowns or fallback RSS behavior.
+
+BOT_BUILD_ID = "winner-final-layout-dedupe-match-age-2026-07-24"
+FINAL_ATOMIC_SEND_STATE_KEY = "__atomic_send_guard_v1__"
+FINAL_MATCH_FACT_MAX_AGE_SECONDS = int(os.environ.get("SPECIAL_FACT_MATCH_MAX_AGE_SECONDS", str(36 * 60 * 60)))
+FINAL_MATCH_LOOKUP_TIMEOUT_SECONDS = float(os.environ.get("MATCH_TIME_LOOKUP_TIMEOUT_SECONDS", "5"))
+FINAL_MATCH_LOOKUP_ENABLED = os.environ.get("MATCH_TIME_LOOKUP_ENABLED", "1") != "0"
+FINAL_MATCH_LOOKUP_CACHE_SECONDS = int(os.environ.get("MATCH_TIME_LOOKUP_CACHE_SECONDS", str(6 * 60 * 60)))
+_FINAL_ATOMIC_SEND_LOCK = RLock()
+_FINAL_ATOMIC_INFLIGHT: dict[str, float] = {}
+_FINAL_MATCH_LOOKUP_LOCK = Lock()
+_FINAL_MATCH_LOOKUP_CACHE: dict[str, tuple[float, float, str]] = {}
+
+
+# ----- Source cleanup before the one Gemini translation request -----
+_FINAL_POSITION_EXPANSIONS = {
+    "CB": "centre-back",
+    "LB": "left-back",
+    "RB": "right-back",
+    "LWB": "left wing-back",
+    "RWB": "right wing-back",
+    "CM": "central midfielder",
+    "DM": "defensive midfielder",
+    "CDM": "defensive midfielder",
+    "AM": "attacking midfielder",
+    "CAM": "attacking midfielder",
+    "LW": "left winger",
+    "RW": "right winger",
+    "ST": "striker",
+    "CF": "centre-forward",
+    "GK": "goalkeeper",
+}
+_FINAL_POSITION_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:CB|LB|RB|LWB|RWB|CM|DM|CDM|AM|CAM|LW|RW|ST|CF|GK)(?![A-Za-z0-9])"
+)
+_FINAL_POSITION_CLUB_EXCEPTIONS = (
+    "RB Leipzig", "RB Salzburg", "RB Bragantino", "New York RB",
+    "Villarreal CF", "Valencia CF", "Inter Miami CF", "CF Montréal", "CF Montreal",
+)
+
+
+def _final_expand_position_abbreviations(value: str) -> str:
+    text = str(value or "")
+    protected: dict[str, str] = {}
+    for phrase in _FINAL_POSITION_CLUB_EXCEPTIONS:
+        pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+        def protect(match: re.Match[str], phrase_value: str = phrase) -> str:
+            token = f"⟪CLUBPOS{len(protected) + 1:04d}⟫"
+            protected[token] = match.group(0)
+            return token
+        text = pattern.sub(protect, text)
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group(0).upper()
+        start, end = match.span()
+        before = text[max(0, start - 18):start]
+        after = text[end:end + 22]
+        # AM can be a clock suffix; ST can be Saint/Street.  Keep those rare
+        # non-position uses while expanding football-position tokens.
+        if token == "AM" and re.search(r"\d\s*$", before):
+            return match.group(0)
+        if token == "ST" and re.match(r"\.?\s+[A-Z][a-z]", after):
+            return match.group(0)
+        return _FINAL_POSITION_EXPANSIONS[token]
+
+    text = _FINAL_POSITION_TOKEN_RE.sub(replace, text)
+    for token, phrase in protected.items():
+        text = text.replace(token, phrase)
+    return text
+
+
+_FINAL_REPORTED_SOURCE_PATTERNS = (
+    # @handles: never consume the following sentence.
+    r"(?iu)\s*(?:—|–|-|,|;)?\s*(?:כך\s+דווח|כך\s+לפי|לפי\s+דיווח\s+של|על\s+פי\s+דיווח\s+של)\s*(?:ב-|מ-|של\s+)?@[A-Za-z0-9_]+",
+    # Named sources without @.  Capitalised following words are allowed only
+    # inside the source name and sentence punctuation is deliberately excluded.
+    r"(?iu)\s*(?:—|–|-|,|;)?\s*(?:כך\s+דווח|כך\s+לפי|לפי\s+דיווח\s+של|על\s+פי\s+דיווח\s+של)\s*(?:ב-|מ-|של\s+)?[A-Za-z0-9_-]+(?:\s+[A-Z][A-Za-z0-9_-]+){0,3}",
+    r"(?iu)\s*(?:—|–|-|,|;)?\s*(?:as\s+(?:first\s+)?reported\s+by|according\s+to\s+a\s+report\s+by)\s+@[A-Za-z0-9_]+",
+    r"(?iu)\s*(?:—|–|-|,|;)?\s*(?:as\s+(?:first\s+)?reported\s+by|according\s+to\s+a\s+report\s+by)\s+[A-Za-z0-9_-]+(?:\s+[A-Z][A-Za-z0-9_-]+){0,3}",
+)
+
+
+def _final_strip_reported_source(value: str) -> str:
+    text = str(value or "")
+    for pattern in _FINAL_REPORTED_SOURCE_PATTERNS:
+        text = re.sub(pattern, "", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"\s*(?:—|–|-)\s*([.!?])", r"\1", text)
+    text = re.sub(r"([.!?])\s*([.!?])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip(" \t,;:—–-")
+
+
+def _final_remove_trailing_promo_emojis(value: str) -> str:
+    lines: list[str] = []
+    for line in str(value or "").splitlines():
+        line = re.sub(r"\s*(?:🎥|🎙️?|🎤|🎬)\s*([.!?]?)\s*$", lambda m: m.group(1) or "", line)
+        line = re.sub(r"\s+([,.!?;:])", r"\1", line).rstrip()
+        lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+_PRE_LAYOUT_CLEAN_BEFORE_TRANSLATION = clean_before_translation
+_PRE_LAYOUT_CLEAN_FOR_AI_TRANSLATION = clean_for_ai_translation
+
+
+def clean_before_translation(text: str) -> str:
+    value = _final_expand_position_abbreviations(str(text or ""))
+    value = _final_strip_reported_source(value)
+    value = _final_remove_trailing_promo_emojis(value)
+    return _PRE_LAYOUT_CLEAN_BEFORE_TRANSLATION(value)
+
+
+def clean_for_ai_translation(text: str) -> str:
+    value = _final_expand_position_abbreviations(str(text or ""))
+    value = _final_strip_reported_source(value)
+    value = _final_remove_trailing_promo_emojis(value)
+    return _PRE_LAYOUT_CLEAN_FOR_AI_TRANSLATION(value)
+
+
+# The final Gemini function performs exactly one combined translation transaction.
+# Pre-expand positions in the source supplied to Gemini; restore the Post object
+# afterwards so IDs, duplicate memory and exact-X source remain untouched.
+_PRE_LAYOUT_GEMINI_TRANSLATE_POST_ONCE = gemini_translate_post_once
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    original_main = str(getattr(post, "text", "") or "")
+    original_quote = str(getattr(post, "quoted_text", "") or "")
+    post.text = _final_expand_position_abbreviations(_final_strip_reported_source(_final_remove_trailing_promo_emojis(original_main)))
+    post.quoted_text = _final_expand_position_abbreviations(_final_strip_reported_source(_final_remove_trailing_promo_emojis(original_quote)))
+    try:
+        return _PRE_LAYOUT_GEMINI_TRANSLATE_POST_ONCE(post, include_quote)
+    finally:
+        post.text = original_main
+        post.quoted_text = original_quote
+
+
+# ----- Exact source-authorized hashtags and conservative fallback paragraphing -----
+def _final_remove_all_hwg_output(value: str, allow_kadima: bool = False) -> str:
+    text = str(value or "")
+    # Remove every translated/invented occurrence together with punctuation that
+    # belongs only to that occurrence.  The authorized occurrences are inserted
+    # afterwards from the original source positions.
+    text = re.sub(
+        r"[ \t]*[,;:!?]*[ \t]*(?:#?HERE(?:[_\s]+WE)?[_\s]+GO)[ \t]*[,;:!?]*",
+        " ", text, flags=re.IGNORECASE,
+    )
+    if allow_kadima:
+        text = re.sub(r"[ \t]*[,;:!?]*[ \t]*קדימה[ \t]*[,;:!?]*", " ", text)
+    text = re.sub(r"\s+([,.;!?])", r"\1", text)
+    text = re.sub(r"([,;:.!?])(?:\s*[,;:.!?])+", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
+
+def _final_normalize_hwg_punctuation(value: str) -> str:
+    text = str(value or "")
+    marker = "#HERE_WE_GO"
+    while marker in text:
+        idx = text.find(marker)
+        left = text[:idx]
+        right = text[idx + len(marker):]
+        left = re.sub(r"[ \t,;:!?.]*$", "", left)
+        right = re.sub(r"^[ \t,;:!?.]*", "", right)
+        if left and not left.endswith(("\n", "(", "[", "{", "—", "–", "-")):
+            left = left.rstrip() + ", "
+        text = left + marker + "!" + ((" " + right.lstrip()) if right and not right.startswith("\n") else right)
+        # Protect the normalized occurrence while processing any later one.
+        text = text.replace(marker, "⟪FINALHWG⟫", 1)
+    return text.replace("⟪FINALHWG⟫", marker)
+
+
+def _final_restore_authorized_special_phrases(post: Post, value: str) -> str:
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    text = str(value or "")
+    hwg_matches = list(_FINAL_HWG_SOURCE_RE.finditer(source))
+    today_matches = list(_FINAL_TODAY_BEFORE_RE.finditer(source))
+
+    if hwg_matches:
+        text = _final_remove_all_hwg_output(text, allow_kadima=True)
+        for match in hwg_matches:
+            text = _final_insert_anchor_at_source_position(
+                source, text, {"replacement": "#HERE_WE_GO", "start": match.start(), "kind": "hwg"}
+            )
+        text = _final_normalize_hwg_punctuation(text)
+    else:
+        text = _final_remove_all_hwg_output(text, allow_kadima=False)
+
+    # Only a literal source phrase is clickable.  An invented output hashtag is
+    # removed, not converted into ordinary words.
+    if today_matches:
+        text = text.replace("#היום_לפני", "")
+        text = re.sub(r"(?<![א-ת])היום\s+לפני(?![א-ת])", "", text)
+        for match in today_matches:
+            text = _final_insert_anchor_at_source_position(
+                source, text, {"replacement": "#היום_לפני", "start": match.start(), "kind": "hayom"}
+            )
+    else:
+        text = text.replace("#היום_לפני", "")
+        text = re.sub(r"(?<=[.!?])\s+היום\s+לפני\s*$", "", text)
+
+    text = re.sub(r"\s+([,.;!?])", r"\1", text)
+    text = re.sub(r"([,;])\s*([.!?])", r"\2", text)
+    text = re.sub(r"([.!?])(?:\s*[.!?])+", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip(" \t,;:-")
+
+
+def _final_conservative_fallback_paragraphs(post: Post, value: str) -> str:
+    text = str(value or "").strip()
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=False).replace("\r\n", "\n").replace("\r", "\n")
+    if not text:
+        return text
+    # Exact X structure wins completely.  Genuine blank rows retained by RSS also
+    # win.  Only a flattened/uncertain source uses the old conservative formatter.
+    if bool(getattr(post, "exact_source_structure", False)) or "\n\n" in source:
+        return text
+    text = format_stat_list_lines(text)
+    if _is_compact_stat_list_block(text):
+        return text
+    repaired = format_news_paragraphs(text)
+    repaired = _join_incomplete_paragraph_boundaries(repaired)
+    repaired = re.sub(r"(?<=[א-תA-Za-z])\n(?=[א-תA-Za-z])", " ", repaired)
+    return re.sub(r"\n{3,}", "\n\n", repaired).strip()
+
+
+_PRE_LAYOUT_OUTGOING_BODY_TEXT = _outgoing_body_text
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _PRE_LAYOUT_OUTGOING_BODY_TEXT(post, translated, quoted=quoted)
+    value = _final_strip_reported_source(value)
+    value = _final_remove_trailing_promo_emojis(value)
+    if not quoted:
+        value = _final_restore_authorized_special_phrases(post, value)
+        value = _final_conservative_fallback_paragraphs(post, value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+# ----- Important national-team coach news -----
+_FINAL_NATIONAL_COACH_CONTEXT_RE = re.compile(
+    r"\b(?:head\s+coach|national\s+team\s+coach|manager|coach|federation|football\s+association)\b|"
+    r"מאמן\s+(?:הנבחרת|נבחרת)|מאמנה\s+של\s+נבחרת|התאחדות\s+הכדורגל|ההתאחדות|צוות\s+מקצועי",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_NATIONAL_COACH_NEWS_RE = re.compile(
+    r"\b(?:offered\s+(?:the\s+)?(?:job|role)|declined|rejected|says?\s+no\s+to|said\s+no\s+to|interest(?:ed)?\s+in|talks?\s+(?:with|ongoing)|"
+    r"negotiations?\s+with|appointed|named\s+(?:as\s+)?(?:head\s+)?coach|sacked|dismissed|fired|left|leaves|resigned|"
+    r"contract\s+extension|extended\s+(?:his\s+)?contract|federation\s+decision)\b|"
+    r"הוצע\s+לו\s+תפקיד|הוצע\s+התפקיד|סירב|אמר\s+לא\s+לתפקיד|הביעה\s+עניין|הביעו\s+עניין|"
+    r"שיחות\s+מתקיימות|משא\s+ומתן|מונה|מינוי|מאמן\s+חדש|פוטר|פיטורי|עזב|עוזב|התפטר|"
+    r"הארכת\s+חוזה|האריך\s+חוזה|החלטה\s+רשמית|שינוי\s+בצוות\s+המקצועי",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_allowed_national_team_coach_news(post: Post) -> bool:
+    text = _final_source_text(post)
+    return bool(
+        contains_allowed_national_team(post)
+        and _FINAL_NATIONAL_COACH_CONTEXT_RE.search(text)
+        and _FINAL_NATIONAL_COACH_NEWS_RE.search(text)
+        and not _FINAL_OPINION_HYPOTHETICAL_RE.search(text)
+        and not _FINAL_SOCIAL_TRIVIA_RE.search(text)
+    )
+
+
+# ----- Interesting, current football stories from the three special sources -----
+_FINAL_INTERESTING_STORY_ACTION_RE = re.compile(
+    r"\b(?:rewarded|honou?red|celebrated|presented\s+with|awarded|unveiled|plans?\s+to\s+build|"
+    r"monument|statue|ceremony|hometown|local\s+authorit(?:y|ies)|named\s+a\s+street|tribute)\b|"
+    r"תוגמל(?:ו|ה)?|זכו\s+למחווה|הוענק(?:ו|ה)?|כובד(?:ו|ה)?|עיר\s+הולדת|הרשויות|"
+    r"מתכננת\s+להקים|מתכננים\s+להקים|אנדרטה|פסל|טקס|רחוב\s+על\s+שמו|מחווה\s+מיוחדת",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_MATCH_DEPENDENT_RE = re.compile(
+    r"\b(?:against|versus|vs\.?|in\s+(?:the|that|this)\s+match|during\s+the\s+match|"
+    r"match\s+against|final\s+against|semi[- ]?final\s+against|quarter[- ]?final\s+against|"
+    r"shots?|touches?|saves?|chances?\s+in\s+the\s+match|player\s+of\s+the\s+match|"
+    r"man\s+of\s+the\s+match|scoreline|won\s+\d+[-:]\d+|lost\s+\d+[-:]\d+)\b|"
+    r"נגד|מול|במשחק\s+מול|באותו\s+משחק|במהלך\s+המשחק|בגמר\s+מול|בחצי\s+הגמר\s+מול|"
+    r"ברבע\s+הגמר\s+מול|בעיטות|נגיעות|הצלות|איש\s+המשחק|שחקן\s+המשחק|תוצאת\s+המשחק|"
+    r"ניצחה\s+\d+[-:]\d+|ניצח\s+\d+[-:]\d+|הפסידה\s+\d+[-:]\d+",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_AGGREGATE_OR_HISTORIC_RE = re.compile(
+    r"\b(?:this\s+season|season\s+20\d{2}|career|all[- ]?time|histor(?:y|ic)|on\s+this\s+day|"
+    r"years?\s+ago|birthday|milestone|record|first\s+ever|only\s+player|across\s+the\s+tournament)\b|"
+    r"העונה|בעונת\s+20\d{2}|בקריירה|בכל\s+הזמנים|היסטורי|ביום\s+זה|ביום\s+הזה|היום\s+לפני|"
+    r"לפני\s+\d+\s+שנים|יום\s+הולדת|ציון\s+דרך|שיא|לראשונה\s+אי\s+פעם|השחקן\s+היחיד|"
+    r"לאורך\s+הטורניר|בכל\s+הטורניר|20\d{2}[/-]\d{2}",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_interesting_football_story(post: Post) -> bool:
+    if not _final_is_special_source(post):
+        return False
+    text = _final_source_text(post)
+    if _FINAL_OPINION_HYPOTHETICAL_RE.search(text) or _FINAL_SOCIAL_TRIVIA_RE.search(text):
+        return False
+    if _final_feminine_football_signal(text) or is_other_sport_post(post) or _final_explicit_youth_text(text):
+        return False
+    concrete_football = bool(
+        re.search(r"football|player|club|world\s+cup|trophy|won|כדורגל|שחקן|מועדון|מונדיאל|גביע|זכייה", text, re.IGNORECASE)
+        or matches_managed_team_tier("tier1", text)
+        or matches_managed_team_tier("national", text)
+    )
+    return bool(concrete_football and _FINAL_INTERESTING_STORY_ACTION_RE.search(text) and len(text) >= 90)
+
+
+def _final_is_match_dependent_special_fact(post: Post) -> bool:
+    if not _final_is_special_source(post):
+        return False
+    text = _final_source_text(post)
+    if _final_interesting_football_story(post):
+        return False
+    if _FINAL_AGGREGATE_OR_HISTORIC_RE.search(text):
+        return False
+    return bool(_FINAL_MATCH_DEPENDENT_RE.search(text) and re.search(r"\d", text))
+
+
+def _final_parse_iso_datetime(value: str) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+        return parsed.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _final_explicit_match_time(post: Post) -> tuple[float, str]:
+    text = _final_source_text(post)
+    reference = float(getattr(post, "published_ts", 0.0) or time.time())
+    lowered = text.casefold()
+    word_days = {
+        "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+        "שני": 2, "שלושה": 3, "ארבעה": 4, "חמישה": 5, "שישה": 6, "שבעה": 7,
+    }
+    word_ago = re.search(r"\b(two|three|four|five|six|seven)\s+days?\s+ago\b|לפני\s+(שני|שלושה|ארבעה|חמישה|שישה|שבעה)\s+ימים", lowered, re.IGNORECASE)
+    if word_ago:
+        token = next((part for part in word_ago.groups() if part), "")
+        days = word_days.get(token.casefold(), 0)
+        if days:
+            return reference - days * 24 * 60 * 60, "explicit_word_days_ago"
+    if re.search(r"\b(?:a|one)\s+week\s+ago\b|\blast\s+week\b|לפני\s+שבוע|בשבוע\s+שעבר", lowered):
+        return reference - 7 * 24 * 60 * 60, "explicit_week_ago"
+    if re.search(r"\byesterday\b|אתמול", lowered):
+        return reference - 24 * 60 * 60, "explicit_relative_yesterday"
+    if re.search(r"\blast\s+night\b|אמש", lowered):
+        return reference - 18 * 60 * 60, "explicit_relative_last_night"
+    ago = re.search(r"\b(\d{1,2})\s+days?\s+ago\b|לפני\s+(\d{1,2})\s+ימים", text, re.IGNORECASE)
+    if ago:
+        days = int(ago.group(1) or ago.group(2) or 0)
+        return reference - days * 24 * 60 * 60, "explicit_days_ago"
+    for match in re.finditer(r"(?<!\d)(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)", text):
+        try:
+            dt = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)), 22, 0, tzinfo=ZoneInfo("UTC"))
+            return dt.timestamp(), "explicit_date"
+        except Exception:
+            pass
+    for match in re.finditer(r"(?<!\d)(\d{1,2})[/.](\d{1,2})[/.](20\d{2})(?!\d)", text):
+        try:
+            dt = datetime(int(match.group(3)), int(match.group(2)), int(match.group(1)), 22, 0, tzinfo=ZoneInfo("UTC"))
+            return dt.timestamp(), "explicit_date"
+        except Exception:
+            pass
+    return 0.0, ""
+
+
+def _final_norm_team(value: str) -> str:
+    raw = unicodedata.normalize("NFKD", str(value or ""))
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = re.sub(r"\b(?:fc|cf|afc|sc|club|football|calcio)\b", " ", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"[^0-9A-Za-zא-ת]+", " ", raw).casefold()
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _final_source_team_needles(post: Post) -> set[str]:
+    text = _final_source_text(post)
+    found: set[str] = set()
+    try:
+        catalog = all_team_catalog_items()
+    except Exception:
+        catalog = TEAM_CATALOG
+    if isinstance(catalog, dict):
+        for item in catalog.values():
+            if not isinstance(item, dict):
+                continue
+            values = [str(item.get("name", "") or ""), *(str(v or "") for v in (item.get("aliases", []) or []))]
+            for alias in sorted(set(values), key=len, reverse=True):
+                if len(alias.strip()) < 3:
+                    continue
+                if re.search(rf"(?<![A-Za-zא-ת]){re.escape(alias)}(?![A-Za-zא-ת])", text, re.IGNORECASE):
+                    normalized = _final_norm_team(alias)
+                    if normalized:
+                        found.add(normalized)
+                    break
+    return found
+
+
+def _final_fixture_matches_source(post: Post, home: str, away: str) -> bool:
+    needles = _final_source_team_needles(post)
+    if not needles:
+        return False
+    provider_names = {_final_norm_team(home), _final_norm_team(away)}
+    provider_names.discard("")
+    matches = 0
+    for needle in needles:
+        if any(needle == name or needle in name or name in needle for name in provider_names):
+            matches += 1
+    return matches >= min(2, len(needles))
+
+
+def _final_football_data_match_time(post: Post, start_date: str, end_date: str) -> tuple[float, str]:
+    key = os.environ.get("FOOTBALL_DATA_API_KEY", "").strip()
+    if not key:
+        return 0.0, ""
+    url = "https://api.football-data.org/v4/matches?" + urllib.parse.urlencode({"dateFrom": start_date, "dateTo": end_date})
+    request = urllib.request.Request(url, headers={"X-Auth-Token": key, "Accept": "application/json", "User-Agent": "NetoSportBot/match-age"})
+    with urllib.request.urlopen(request, timeout=FINAL_MATCH_LOOKUP_TIMEOUT_SECONDS) as response:
+        data = json.loads(response.read().decode("utf-8", errors="replace"))
+    candidates: list[float] = []
+    for item in data.get("matches", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        home = str((item.get("homeTeam") or {}).get("name") or "")
+        away = str((item.get("awayTeam") or {}).get("name") or "")
+        if not _final_fixture_matches_source(post, home, away):
+            continue
+        ts = _final_parse_iso_datetime(str(item.get("utcDate") or ""))
+        if ts:
+            candidates.append(ts + 2 * 60 * 60)
+    return (max(candidates), "football-data.org") if candidates else (0.0, "")
+
+
+def _final_api_football_match_time(post: Post, start_date: str, end_date: str) -> tuple[float, str]:
+    key = (os.environ.get("API_FOOTBALL_KEY", "").strip() or os.environ.get("API_SPORTS_KEY", "").strip())
+    if not key:
+        return 0.0, ""
+    url = "https://v3.football.api-sports.io/fixtures?" + urllib.parse.urlencode({"from": start_date, "to": end_date, "timezone": "UTC"})
+    request = urllib.request.Request(url, headers={"x-apisports-key": key, "Accept": "application/json", "User-Agent": "NetoSportBot/match-age"})
+    with urllib.request.urlopen(request, timeout=FINAL_MATCH_LOOKUP_TIMEOUT_SECONDS) as response:
+        data = json.loads(response.read().decode("utf-8", errors="replace"))
+    candidates: list[float] = []
+    for item in data.get("response", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        teams = item.get("teams") if isinstance(item.get("teams"), dict) else {}
+        home = str((teams.get("home") or {}).get("name") or "")
+        away = str((teams.get("away") or {}).get("name") or "")
+        if not _final_fixture_matches_source(post, home, away):
+            continue
+        fixture = item.get("fixture") if isinstance(item.get("fixture"), dict) else {}
+        ts = _final_parse_iso_datetime(str(fixture.get("date") or ""))
+        if ts:
+            candidates.append(ts + 2 * 60 * 60)
+    return (max(candidates), "api-football") if candidates else (0.0, "")
+
+
+_FINAL_ESPN_LEAGUE_MAP = (
+    (re.compile(r"world\s+cup|מונדיאל|גביע\s+העולם", re.IGNORECASE), "fifa.world"),
+    (re.compile(r"premier\s+league|פרמייר\s+ליג", re.IGNORECASE), "eng.1"),
+    (re.compile(r"la\s+liga|לה\s+ליגה|הליגה\s+הספרדית", re.IGNORECASE), "esp.1"),
+    (re.compile(r"serie\s+a|סרייה\s+א", re.IGNORECASE), "ita.1"),
+    (re.compile(r"bundesliga|בונדסליגה", re.IGNORECASE), "ger.1"),
+    (re.compile(r"ligue\s*1|ליג\s*1|ליגה\s*1", re.IGNORECASE), "fra.1"),
+    (re.compile(r"champions\s+league|ליגת\s+האלופות", re.IGNORECASE), "uefa.champions"),
+    (re.compile(r"europa\s+league|הליגה\s+האירופית", re.IGNORECASE), "uefa.europa"),
+)
+
+
+def _final_espn_match_time(post: Post, start_date: str, end_date: str) -> tuple[float, str]:
+    text = _final_source_text(post)
+    slugs = [slug for pattern, slug in _FINAL_ESPN_LEAGUE_MAP if pattern.search(text)]
+    if not slugs:
+        return 0.0, ""
+    date_arg = start_date.replace("-", "") + "-" + end_date.replace("-", "")
+    candidates: list[float] = []
+    for slug in slugs[:2]:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{urllib.parse.quote(slug)}/scoreboard?" + urllib.parse.urlencode({"dates": date_arg, "limit": 1000})
+        request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0 NetoSportBot/match-age"})
+        try:
+            with urllib.request.urlopen(request, timeout=FINAL_MATCH_LOOKUP_TIMEOUT_SECONDS) as response:
+                data = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception:
+            continue
+        for event in data.get("events", []) if isinstance(data, dict) else []:
+            if not isinstance(event, dict):
+                continue
+            competition = next(iter(event.get("competitions", []) or []), {})
+            competitors = competition.get("competitors", []) if isinstance(competition, dict) else []
+            names: list[str] = []
+            for competitor in competitors:
+                team = competitor.get("team", {}) if isinstance(competitor, dict) else {}
+                names.append(str(team.get("displayName") or team.get("shortDisplayName") or team.get("name") or ""))
+            if len(names) < 2 or not _final_fixture_matches_source(post, names[0], names[1]):
+                continue
+            ts = _final_parse_iso_datetime(str(event.get("date") or competition.get("date") or ""))
+            if ts:
+                candidates.append(ts + 2 * 60 * 60)
+    return (max(candidates), "espn-scoreboard") if candidates else (0.0, "")
+
+
+def _final_lookup_match_time(post: Post) -> tuple[float, str]:
+    explicit_ts, explicit_provider = _final_explicit_match_time(post)
+    if explicit_ts:
+        return explicit_ts, explicit_provider
+    if not FINAL_MATCH_LOOKUP_ENABLED or not _final_source_team_needles(post):
+        return 0.0, "unknown"
+    published = float(getattr(post, "published_ts", 0.0) or time.time())
+    start = datetime.fromtimestamp(published - 10 * 24 * 60 * 60, tz=ZoneInfo("UTC")).date().isoformat()
+    end = datetime.fromtimestamp(published + 6 * 60 * 60, tz=ZoneInfo("UTC")).date().isoformat()
+    cache_key = hashlib.sha256((_final_source_text(post) + "|" + start + "|" + end).encode("utf-8", errors="ignore")).hexdigest()
+    with _FINAL_MATCH_LOOKUP_LOCK:
+        cached = _FINAL_MATCH_LOOKUP_CACHE.get(cache_key)
+        if cached and time.time() - cached[0] <= FINAL_MATCH_LOOKUP_CACHE_SECONDS:
+            return cached[1], cached[2]
+    result = (0.0, "unknown")
+    for resolver in (_final_football_data_match_time, _final_api_football_match_time, _final_espn_match_time):
+        try:
+            result = resolver(post, start, end)
+        except Exception as exc:
+            logging.debug("Match-time resolver %s failed safely: %s", getattr(resolver, "__name__", "resolver"), short_error(exc, 280))
+            result = (0.0, "")
+        if result[0]:
+            break
+    with _FINAL_MATCH_LOOKUP_LOCK:
+        _FINAL_MATCH_LOOKUP_CACHE[cache_key] = (time.time(), float(result[0] or 0.0), str(result[1] or "unknown"))
+        if len(_FINAL_MATCH_LOOKUP_CACHE) > 800:
+            oldest = sorted(_FINAL_MATCH_LOOKUP_CACHE.items(), key=lambda item: item[1][0])[:200]
+            for key, _row in oldest:
+                _FINAL_MATCH_LOOKUP_CACHE.pop(key, None)
+    return float(result[0] or 0.0), str(result[1] or "unknown")
+
+
+def _final_stale_match_fact_reason(post: Post) -> str:
+    if not _final_is_match_dependent_special_fact(post):
+        return ""
+    match_end, provider = _final_lookup_match_time(post)
+    post.match_time_provider = provider
+    post.match_end_timestamp = match_end
+    if not match_end:
+        # Uncertain identification must never falsely block a fresh story or a
+        # historical record.  The diagnostic fields explain why it was allowed.
+        post.match_age_resolution = "unknown_allowed"
+        return ""
+    published = float(getattr(post, "published_ts", 0.0) or time.time())
+    age = max(0.0, published - match_end)
+    post.match_age_seconds = age
+    post.match_age_resolution = "resolved"
+    return "special_source_match_fact_older_than_36h" if age > FINAL_MATCH_FACT_MAX_AGE_SECONDS else ""
+
+
+_PRE_LAYOUT_PRE_SEND_FINAL = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _PRE_LAYOUT_PRE_SEND_FINAL(post)
+
+    # A concrete appointment/offer/refusal/dismissal concerning an allowed men's
+    # national team does not require a tracked club.
+    if reason and _final_allowed_national_team_coach_news(post):
+        hard = ("women", "other_sport", "duplicate", "old_post", "podcast", "live_goal", "lineup", "poll")
+        if not any(token in str(reason).casefold() for token in hard):
+            reason = ""
+
+    if _final_is_special_source(post):
+        stale = _final_stale_match_fact_reason(post)
+        if stale:
+            return stale
+        if reason in {"special_source_not_meaningful_fact", "special_source_competition_not_allowed"} and _final_interesting_football_story(post):
+            return ""
+    return reason
+
+
+_PRE_LAYOUT_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    if str(reason or "") == "special_source_match_fact_older_than_36h":
+        return "עובדה או סטטיסטיקה ממשחק שחלפו יותר מ-36 שעות מסיומו"
+    if str(reason or "") == "atomic_duplicate_already_sent":
+        return "אותו פוסט או אותו דיווח כבר נשלחו"
+    if str(reason or "") == "atomic_duplicate_in_progress":
+        return "אותו פוסט כבר נמצא בתהליך שליחה מקביל"
+    return _PRE_LAYOUT_HEBREW_BLOCK_REASON(reason)
+
+
+# ----- Atomic duplicate reservation around the complete send transaction -----
+def _final_atomic_normalize(value: str) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[^0-9A-Za-zא-ת]+", " ", text).casefold()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _final_post_atomic_ids(post: Post) -> set[str]:
+    values: set[str] = set()
+    tweet_id = _acceptance_tweet_id(post) if "_acceptance_tweet_id" in globals() else ""
+    if tweet_id:
+        values.add("tweet:" + tweet_id)
+    link = str(getattr(post, "link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+    if link:
+        values.add("link:" + hashlib.sha256(link.encode()).hexdigest())
+    for raw in [str(getattr(post, "post_id", "") or ""), *(str(v or "") for v in (getattr(post, "dedupe_ids", []) or []))]:
+        if raw:
+            values.add("id:" + hashlib.sha256(raw.strip().casefold().encode()).hexdigest())
+    original = _final_atomic_normalize(_final_source_text(post))
+    if original:
+        values.add("source:" + hashlib.sha256((str(getattr(post, "username", "")).casefold() + "|" + original).encode()).hexdigest())
+    media = sorted(set(str(v or "").split("?", 1)[0] for v in [*(getattr(post, "image_urls", []) or []), *(getattr(post, "video_urls", []) or [])] if v))
+    if media and original:
+        values.add("media-source:" + hashlib.sha256((original + "|" + "|".join(media)).encode()).hexdigest())
+    return values
+
+
+def _final_prune_atomic_records(state: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    rows = state.get(FINAL_ATOMIC_SEND_STATE_KEY, {})
+    rows = dict(rows) if isinstance(rows, dict) else {}
+    now = time.time()
+    kept: dict[str, Any] = {}
+    for key, row in rows.items():
+        if not isinstance(row, dict):
+            continue
+        ts = float(row.get("ts", 0.0) or 0.0)
+        status = str(row.get("status", "") or "")
+        max_age = 48 * 60 * 60 if status == "sent" else max(120.0, GEMINI_TRANSLATION_TIMEOUT_SECONDS * 3.0)
+        if ts and now - ts <= max_age:
+            kept[str(key)] = row
+    state[FINAL_ATOMIC_SEND_STATE_KEY] = kept
+    return kept
+
+
+def _final_existing_strict_duplicate(post: Post, state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    current_sig = news_event_signature(post)
+    seen_items: list[dict[str, Any]] = []
+    for getter in (cleanup_recent_news_events, cleanup_channel_recent_news_events, cleanup_bot_sent_reply_targets):
+        try:
+            values = getter(state)
+        except Exception:
+            values = []
+        for item in values or []:
+            if isinstance(item, dict) and item not in seen_items:
+                seen_items.append(item)
+    for item in reversed(seen_items[-800:]):
+        if is_pending_memory_item(item):
+            continue
+        item_link = str(item.get("link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+        post_link = str(getattr(post, "link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+        if item_link and post_link and item_link == post_link:
+            return item
+        previous_sig = item.get("signature") if isinstance(item.get("signature"), dict) else None
+        if not previous_sig:
+            continue
+        score = _event_similarity(current_sig, previous_sig)
+        local = local_duplicate_verdict(post, item, score)
+        if local == "SAME_DUPLICATE":
+            return item
+        if local in {"ADVANCED_NEW", "DIFFERENT"}:
+            continue
+        if score >= 0.91 and strict_duplicate_match(current_sig, previous_sig, score, local):
+            return item
+    return None
+
+
+def _final_sent_memory_exact_duplicate(post: Post) -> bool:
+    ids = _final_post_atomic_ids(post)
+    if not ids:
+        return False
+    tweet_id = _acceptance_tweet_id(post) if "_acceptance_tweet_id" in globals() else ""
+    link = str(getattr(post, "link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+    try:
+        rows = load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-700:]
+    except Exception:
+        rows = []
+    now = time.time()
+    for item in reversed(rows):
+        if not isinstance(item, dict):
+            continue
+        ts = float(item.get("ts", 0.0) or 0.0)
+        if ts and now - ts > 48 * 60 * 60:
+            continue
+        previous_link = str(item.get("link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+        previous_id = str(item.get("post_id", "") or "")
+        if link and previous_link and link == previous_link:
+            return True
+        if tweet_id and previous_id and tweet_id == previous_id:
+            return True
+    return False
+
+
+_PRE_LAYOUT_SEND_POST_FINAL = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    identities = _final_post_atomic_ids(post)
+    now = time.time()
+    with _FINAL_ATOMIC_SEND_LOCK:
+        rows = _final_prune_atomic_records(state)
+        for identity in identities:
+            if identity in _FINAL_ATOMIC_INFLIGHT and now - _FINAL_ATOMIC_INFLIGHT[identity] < max(120.0, GEMINI_TRANSLATION_TIMEOUT_SECONDS * 3.0):
+                return {"sent": False, "mode": "pre_send_blocked:atomic_duplicate_in_progress", "total_seconds": 0.0}
+            row = rows.get(identity) if isinstance(rows, dict) else None
+            if isinstance(row, dict) and str(row.get("status", "")) in {"sent", "inflight"}:
+                mode = "atomic_duplicate_already_sent" if row.get("status") == "sent" else "atomic_duplicate_in_progress"
+                return {"sent": False, "mode": f"pre_send_blocked:{mode}", "total_seconds": 0.0}
+        if _final_sent_memory_exact_duplicate(post) or _final_existing_strict_duplicate(post, state):
+            return {"sent": False, "mode": "pre_send_blocked:atomic_duplicate_already_sent", "total_seconds": 0.0}
+        for identity in identities:
+            _FINAL_ATOMIC_INFLIGHT[identity] = now
+            if isinstance(rows, dict):
+                rows[identity] = {
+                    "status": "inflight", "ts": now,
+                    "username": str(getattr(post, "username", "") or ""),
+                    "link": str(getattr(post, "link", "") or ""),
+                }
+        if isinstance(state, dict):
+            state[FINAL_ATOMIC_SEND_STATE_KEY] = rows
+            try:
+                save_state(state)
+            except Exception as exc:
+                logging.debug("Atomic send reservation save failed safely: %s", exc)
+
+    result: dict[str, Any] | None = None
+    try:
+        result = _PRE_LAYOUT_SEND_POST_FINAL(post, reply_message_ids=reply_message_ids, state=state)
+    except Exception:
+        raise
+    finally:
+        with _FINAL_ATOMIC_SEND_LOCK:
+            rows = _final_prune_atomic_records(state)
+            sent = bool(isinstance(result, dict) and result.get("sent"))
+            for identity in identities:
+                _FINAL_ATOMIC_INFLIGHT.pop(identity, None)
+                if isinstance(rows, dict):
+                    if sent:
+                        rows[identity] = {
+                            "status": "sent", "ts": time.time(),
+                            "username": str(getattr(post, "username", "") or ""),
+                            "link": str(getattr(post, "link", "") or ""),
+                        }
+                    else:
+                        rows.pop(identity, None)
+            if isinstance(state, dict):
+                state[FINAL_ATOMIC_SEND_STATE_KEY] = rows
+                try:
+                    save_state(state)
+                except Exception as exc:
+                    logging.debug("Atomic send completion save failed safely: %s", exc)
+    return result if isinstance(result, dict) else {"sent": False, "mode": "send_failed"}
+
+# ====== END FINAL LAYOUT / ATOMIC DEDUPE / MATCH-AGE / NATIONAL-COACH PATCH ======
+
+
+# ====== FINAL SPECIAL-SOURCE TEXT-FIRST / PROMO-FILTER PATCH (2026-07-24) ======
+# Policy requested by the user:
+# - Footballtweet / FootballFactly / OptaJoe may publish a valid text-only post.
+# - A photo or video is NOT required when the post contains enough useful text.
+# - A media-only/empty post is still blocked by the existing minimum-word gate.
+# - Live-show, podcast, Spaces, interview and "we are going to talk about..."
+#   promotion posts are blocked before translation/sending.
+# - Lower-division and other editorial reasons are evaluated normally and must
+#   never be hidden behind a misleading "no image/video" reason.
+# This layer does not modify RSS fetch functions, mirrors, Gemini or state files.
+
+BOT_BUILD_ID = "winner-text-first-special-sources-promo-filter-2026-07-24"
+
+_FINAL_SPECIAL_PROGRAM_PROMO_RE = re.compile(
+    r"\b(?:going\s+live|go\s+live|will\s+be\s+live|we(?:'|’)ll\s+be\s+live|"
+    r"join\s+(?:me|us)\s+(?:live|on\s+(?:the\s+)?(?:show|stream|podcast|space))|"
+    r"live\s+with|live\s+on|tune\s+in|watch\s+along|watchalong|livestream|live\s+stream|"
+    r"twitter\s+spaces?|x\s+spaces?|spaces?\s+with|podcast|full\s+episode|new\s+episode|"
+    r"on\s+(?:my|our|the)\s+(?:show|podcast|stream)|chat(?:ting)?\s+with|conversation\s+with|"
+    r"we(?:'|’)ll\s+(?:talk|discuss|chat)|we\s+are\s+going\s+to\s+(?:talk|discuss)|"
+    r"going\s+to\s+(?:talk|discuss)\s+about|come\s+and\s+talk\s+about)\b|"
+    r"(?:יש|יהיה|תהיה|עושים|נעשה|עולה|עולים|נעלה|נהיה)\s+(?:לייב|שידור\s+חי)|"
+    r"לייב\s+(?:עם|ביחד\s+עם|בנושא)|שידור\s+חי\s+(?:עם|ביחד\s+עם|בנושא)|"
+    r"הצטרפו\s+(?:אלינו|אליי|לנו)?\s*(?:ללייב|לשידור|לשיחה)|"
+    r"(?:אנחנו\s+)?הולכים\s+לדבר\s+על|(?:אנחנו\s+)?נדבר\s+על|"
+    r"נשוחח\s+(?:עם|על)|שיחה\s+עם|אירוח\s+של|מתארח\s+(?:אצל|ב)|"
+    r"פרק\s+(?:חדש|מלא)|תוכנית\s+(?:חדשה|מיוחדת)|תכנית\s+(?:חדשה|מיוחדת)|"
+    r"חלל\s+בטוויטר|ספייס\s+(?:עם|בנושא)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_special_program_or_conversation_promo(text: Any) -> bool:
+    value = html.unescape(str(text or ""))
+    if not value.strip():
+        return False
+    # Explicit live/podcast/show language is sufficient.  Generic transfer
+    # phrases such as "talks ongoing" are intentionally not included.
+    return bool(_FINAL_SPECIAL_PROGRAM_PROMO_RE.search(value) or _SPECIAL_LIVE_RE.search(value))
+
+
+def _final_special_filter_text(*parts: Any, **kwargs: Any) -> str:
+    post = next((value for value in list(parts) + list(kwargs.values()) if isinstance(value, Post)), None)
+    if post is not None:
+        return html.unescape("\n".join(filter(None, [
+            _post_original_text(post),
+            _post_original_text(post, quoted=True),
+        ]))).strip()
+    return extract_original_post_caption_for_rules(*parts, **kwargs)
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    """Final preliminary gate for FootballFactly and OptaJoe.
+
+    Media is optional.  The post must contain enough real text; therefore a
+    media-only post still fails the word-count rule.  Deeper league/transfer/
+    relevance rules remain in pre_send_final_local_block_reason so the user gets
+    the real editorial reason instead of a misleading no-media reason.
+    """
+    post = next((value for value in list(parts) + list(kwargs.values()) if isinstance(value, Post)), None)
+    source_name = special_fact_feed_name(*parts, **kwargs)
+    if not source_name:
+        return ""
+    label = "עובדות כדורגל" if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else "אופטה"
+    original = _final_special_filter_text(*parts, **kwargs)
+
+    if post is not None:
+        if _SPECIAL_WOMEN_RE.search(original) or is_women_or_wnba_post(post):
+            return f"{label}: כדורגל נשים נחסם"
+        if _SPECIAL_OTHER_SPORT_RE.search(original) or is_other_sport_post(post):
+            return f"{label}: ענף ספורט שאינו כדורגל גברים נחסם"
+    else:
+        if _SPECIAL_WOMEN_RE.search(original):
+            return f"{label}: כדורגל נשים נחסם"
+        if _SPECIAL_OTHER_SPORT_RE.search(original):
+            return f"{label}: ענף ספורט שאינו כדורגל גברים נחסם"
+
+    if _final_special_program_or_conversation_promo(original):
+        return f"{label}: שידור, לייב, פודקאסט או הזמנה לשיחה נחסמו"
+
+    if post is not None:
+        if _special_fact_quote_or_opinion(post):
+            return f"{label}: ראיון, דעה או ציטוט ללא עובדה נחסם"
+    elif _SPECIAL_QUOTE_ONLY_RE.search(original) or _FINAL_OPINION_HYPOTHETICAL_RE.search(original):
+        return f"{label}: ראיון, דעה או ציטוט ללא עובדה נחסם"
+
+    minimum_words = FOOTBALL_FACTLY_AUTO_MIN_WORDS if source_name == FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME else OPTAJOE_AUTO_MIN_WORDS
+    word_count = count_regular_words(original)
+    if word_count < minimum_words:
+        return f"{label}: נספרו {word_count} מילים רגילות, נדרשות לפחות {minimum_words}"
+
+    # Intentionally no media check here. A valid text-only fact is publishable.
+    return ""
+
+
+def footballtweet_filter_issue(post: Post, reserve_rate_slot: bool = True) -> str:
+    """Final Footballtweet gate with text-first media policy."""
+    if not _is_footballtweet_post(post):
+        return ""
+    original = _footballtweet_original_text(post)
+    if is_women_or_wnba_post(post):
+        return "footballtweet_women"
+    if is_other_sport_post(post):
+        return "footballtweet_other_sport"
+    if _final_special_program_or_conversation_promo(original):
+        return "footballtweet_live_or_talk_promo"
+    quote_reason = footballtweet_quote_or_opinion_reason(post)
+    if quote_reason:
+        return quote_reason
+    if _FOOTBALLTWEET_LIVE_RE.search(original):
+        return "footballtweet_live"
+    if count_content_words(original) < FOOTBALLTWEET_MIN_WORDS:
+        return "footballtweet_too_short"
+    # Intentionally no media requirement. Media-only posts fail the text length.
+    if _footballtweet_duplicate_memory_candidate(post):
+        return "footballtweet_duplicate_24h"
+    if reserve_rate_slot and not _footballtweet_reserve_rate_slot(post):
+        return "footballtweet_hourly_limit"
+    return ""
+
+
+_PRE_TEXT_FIRST_SPECIAL_PRE_SEND = pre_send_final_local_block_reason
+
+
+def _final_is_legacy_no_media_reason(reason: Any) -> bool:
+    value = str(reason or "").casefold()
+    return bool(
+        value == "footballtweet_no_media"
+        or "בלי תמונה או סרטון" in value
+        or "without image or video" in value
+        or "no_media" in value
+    )
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _PRE_TEXT_FIRST_SPECIAL_PRE_SEND(post)
+    # Backward-compatible safety: a captured older wrapper must not reintroduce
+    # the obsolete media-required rule.  Every other reason stays untouched.
+    if _final_is_special_source(post) and _final_is_legacy_no_media_reason(reason):
+        text = _final_source_text(post)
+        source_name = str(getattr(post, "username", "") or "")
+        minimum = FOOTBALLTWEET_MIN_WORDS if value_contains_footballtweet(source_name) else (
+            FOOTBALL_FACTLY_AUTO_MIN_WORDS if value_contains_football_factly(source_name) else OPTAJOE_AUTO_MIN_WORDS
+        )
+        if count_regular_words(text) >= minimum:
+            return ""
+    return reason
+
+
+_PRE_TEXT_FIRST_SPECIAL_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    if str(reason or "") == "footballtweet_live_or_talk_promo":
+        return "ציוצי כדורגל: שידור, לייב, פודקאסט או הזמנה לשיחה נחסמו"
+    return _PRE_TEXT_FIRST_SPECIAL_HEBREW_REASON(reason)
+
+
+_PRE_TEXT_FIRST_SPECIAL_DIAGNOSTICS = special_sources_diagnostics_text
+
+
+def special_sources_diagnostics_text() -> str:
+    text = _PRE_TEXT_FIRST_SPECIAL_DIAGNOSTICS()
+    replacements = {
+        "ולפחות 15 מילים ומדיה": "ולפחות 15 מילים; מדיה אינה חובה",
+        "לפחות 15 מילים רגילות ומדיה": "לפחות 15 מילים רגילות; מדיה אינה חובה",
+        "לפחות 15 מילים ומדיה": "לפחות 15 מילים; מדיה אינה חובה",
+        "ומדיה.": "; מדיה אינה חובה.",
+        "פוסט בלי תמונה או סרטון נחסם": "כלל מדיה ישן (לא חל עוד על פוסט עם טקסט תקין)",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    if "טקסט ללא מדיה מותר" not in text:
+        text += (
+            "\n\n📝 מדיניות מדיה מעודכנת\n"
+            "• טקסט תקין ומעניין יכול להישלח גם בלי תמונה או סרטון.\n"
+            "• תמונה או סרטון בלי גוף טקסט מספיק נחסמים לפי מספר המילים.\n"
+            "• שידור, לייב, פודקאסט או הזמנה לדבר על שחקנים נחסמים."
+        )
+    return text
+
+# ====== END FINAL SPECIAL-SOURCE TEXT-FIRST / PROMO-FILTER PATCH ======
+
+# ====== SPECIAL-SOURCE TOURNAMENT FRESHNESS + YOUTH STATISTICS PATCH (2026-07-24) ======
+# Applies only to FootballTweet, FootballFactly and OptaJoe.  It is deliberately
+# outside the RSS engine and never changes feed URLs, mirror handling or Gemini.
+#
+# Policy:
+# 1) Match-specific facts remain publishable for up to 36 hours after the match.
+# 2) Tournament-bound retrospective facts are blocked after the tournament has
+#    been over for the configured grace period.
+# 3) General player/career facts, current human-interest stories, anniversaries
+#    and genuinely future-facing tournament information are not blocked here.
+# 4) Youth/academy/reserve statistics are always blocked in the three sources.
+
+BOT_BUILD_ID = "winner-special-facts-tournament-freshness-youth-2026-07-24"
+SPECIAL_FACT_TOURNAMENT_FRESHNESS_ENABLED = os.environ.get(
+    "SPECIAL_FACT_TOURNAMENT_FRESHNESS_ENABLED", "1"
+) != "0"
+SPECIAL_FACT_TOURNAMENT_GRACE_SECONDS = int(os.environ.get(
+    "SPECIAL_FACT_TOURNAMENT_GRACE_SECONDS", str(36 * 60 * 60)
+))
+SPECIAL_FACT_TOURNAMENT_LOOKUP_TIMEOUT_SECONDS = float(os.environ.get(
+    "SPECIAL_FACT_TOURNAMENT_LOOKUP_TIMEOUT_SECONDS", "5"
+))
+SPECIAL_FACT_TOURNAMENT_CACHE_SECONDS = int(os.environ.get(
+    "SPECIAL_FACT_TOURNAMENT_CACHE_SECONDS", str(12 * 60 * 60)
+))
+SPECIAL_FACT_TOURNAMENT_WINDOWS_JSON = os.environ.get(
+    "SPECIAL_FACT_TOURNAMENT_WINDOWS_JSON", ""
+).strip()
+_SPECIAL_TOURNAMENT_CACHE_LOCK = Lock()
+_SPECIAL_TOURNAMENT_END_CACHE: dict[str, tuple[float, float, str]] = {}
+
+# Explicit youth competition/team markers.  Plain age references such as
+# "18-year-old" and the phrase "Plan B" are intentionally not included.
+_FINAL_SPECIAL_YOUTH_STATS_RE = re.compile(
+    r"(?ixu)(?<![A-Za-z0-9])(?:"
+    r"U[- ]?(?:15|16|17|18|19|20|21|23)|"
+    r"under[- ]?(?:15|16|17|18|19|20|21|23)|"
+    r"(?:national|international)\s+under[- ]?(?:15|16|17|18|19|20|21|23)|"
+    r"UEFA\s+Youth\s+League|Youth\s+League|Premier\s+League\s*2|PL2|"
+    r"Professional\s+Development\s+League|Elite\s+Development\s+League|"
+    r"FIFA\s+U[- ]?(?:17|20)\s+World\s+Cup|U[- ]?(?:17|19|20|21)\s+(?:World\s+Cup|Euros?|Championship)|"
+    r"academy|youth\s+(?:team|side|squad|football|international)|junior\s+(?:team|side|squad)|"
+    r"reserve\s+(?:team|side|squad|league)|B\s+team|development\s+squad|"
+    r"primavera|castilla|next\s+gen|"
+    r"נבחרת\s+(?:ה)?צעירה|נבחרת\s+הנוער|נבחרת\s+עד\s+גיל\s+(?:15|16|17|18|19|20|21|23)|"
+    r"עד\s+גיל\s+(?:15|16|17|18|19|20|21|23)|ליגת\s+האלופות\s+לנוער|"
+    r"ליגת\s+נוער|כדורגל\s+נוער|מחלקת\s+נוער|קבוצת\s+נוער|סגל\s+נוער|"
+    r"אקדמיה|קבוצת\s+מילואים|סגל\s+מילואים|ליגת\s+מילואים|הקבוצה\s+הצעירה"
+    r")(?![A-Za-z0-9])"
+)
+
+
+def _final_special_source_youth_statistics(post: Post) -> bool:
+    if not _final_is_special_source(post):
+        return False
+    text = _final_source_text(post)
+    return bool(_FINAL_SPECIAL_YOUTH_STATS_RE.search(text) or _final_explicit_youth_text(text))
+
+
+# The order matters: Club World Cup must be tested before the generic World Cup.
+_FINAL_TOURNAMENT_SPECS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "fifa_club_world_cup",
+        "label": "מונדיאל המועדונים",
+        "pattern": re.compile(r"\b(?:FIFA\s+)?Club\s+World\s+Cup\b|מונדיאל\s+המועדונים|גביע\s+העולם\s+למועדונים", re.I),
+        "api_search": "Club World Cup",
+        "api_names": ("FIFA Club World Cup", "Club World Cup"),
+        "football_data_code": "CWC",
+        "reject": ("women", "u17", "u-17", "u20", "u-20", "qualification", "qualifiers"),
+        "static": {},
+    },
+    {
+        "id": "fifa_world_cup",
+        "label": "המונדיאל",
+        "pattern": re.compile(r"\b(?:FIFA\s+)?World\s+Cup\b|מונדיאל|גביע\s+העולם", re.I),
+        "api_search": "World Cup",
+        "api_names": ("World Cup", "FIFA World Cup"),
+        "football_data_code": "WC",
+        "reject": ("women", "club", "u17", "u-17", "u20", "u-20", "qualification", "qualifiers"),
+        # Official FIFA schedule: the 2026 final was on 19 July 2026.  End of
+        # UTC day is intentionally conservative before the 36-hour grace starts.
+        "static": {2026: "2026-07-19T23:59:59+00:00"},
+    },
+    {
+        "id": "uefa_euro",
+        "label": "היורו",
+        "pattern": re.compile(r"\b(?:UEFA\s+)?EURO(?:PEAN\s+CHAMPIONSHIP)?\s*(?:20\d{2})?\b|אליפות\s+אירופה|יורו\s*(?:20\d{2})?", re.I),
+        "api_search": "Euro Championship",
+        "api_names": ("Euro Championship", "UEFA European Championship", "European Championship"),
+        "football_data_code": "EC",
+        "reject": ("women", "u17", "u-17", "u19", "u-19", "u21", "u-21", "qualification", "qualifiers"),
+        "static": {},
+    },
+    {
+        "id": "copa_america",
+        "label": "קופה אמריקה",
+        "pattern": re.compile(r"\bCopa\s+Am[eé]rica\b|קופה\s+אמריקה", re.I),
+        "api_search": "Copa America",
+        "api_names": ("Copa America",),
+        "football_data_code": "CA",
+        "reject": ("women", "u17", "u-17", "u20", "u-20", "qualification", "qualifiers"),
+        "static": {},
+    },
+    {
+        "id": "afcon",
+        "label": "אליפות אפריקה",
+        "pattern": re.compile(r"\bAFCON\b|Africa\s+Cup\s+of\s+Nations|אליפות\s+אפריקה|גביע\s+אפריקה\s+לאומות", re.I),
+        "api_search": "Africa Cup of Nations",
+        "api_names": ("Africa Cup of Nations",),
+        "football_data_code": "ACN",
+        "reject": ("women", "u17", "u-17", "u20", "u-20", "qualification", "qualifiers"),
+        "static": {},
+    },
+    {
+        "id": "afc_asian_cup",
+        "label": "גביע אסיה",
+        "pattern": re.compile(r"\bAFC\s+Asian\s+Cup\b|\bAsian\s+Cup\b|גביע\s+אסיה|אליפות\s+אסיה", re.I),
+        "api_search": "Asian Cup",
+        "api_names": ("Asian Cup", "AFC Asian Cup"),
+        "football_data_code": "ASC",
+        "reject": ("women", "u17", "u-17", "u20", "u-20", "u23", "u-23", "qualification", "qualifiers"),
+        "static": {},
+    },
+    {
+        "id": "concacaf_gold_cup",
+        "label": "גביע הזהב",
+        "pattern": re.compile(r"\bCONCACAF\s+Gold\s+Cup\b|\bGold\s+Cup\b|גביע\s+הזהב", re.I),
+        "api_search": "Gold Cup",
+        "api_names": ("CONCACAF Gold Cup", "Gold Cup"),
+        "football_data_code": "",
+        "reject": ("women", "u17", "u-17", "u20", "u-20", "qualification", "qualifiers"),
+        "static": {},
+    },
+    {
+        "id": "uefa_nations_league",
+        "label": "ליגת האומות",
+        "pattern": re.compile(r"\bUEFA\s+Nations\s+League\b|ליגת\s+האומות", re.I),
+        "api_search": "UEFA Nations League",
+        "api_names": ("UEFA Nations League",),
+        "football_data_code": "UNL",
+        "reject": ("women", "u17", "u-17", "u19", "u-19", "u21", "u-21"),
+        "static": {},
+    },
+)
+
+_FINAL_TOURNAMENT_FACT_SIGNAL_RE = re.compile(
+    r"(?iu)\b(?:record|most|fewest|highest|lowest|first|only|top\s+scorer|golden\s+boot|"
+    r"goals?|assists?|clean\s+sheets?|saves?|shots?|chances?|passes?|tackles?|duels?|"
+    r"appearances?|minutes?|ranked|statistics?|stat|average|per\s+90|percent(?:age)?)\b|"
+    r"שיא|הכי\s+הרבה|הכי\s+מעט|הגבוה\s+ביותר|הנמוך\s+ביותר|ראשון|היחיד|מלך\s+השערים|"
+    r"שערים|בישולים|שערים\s+נקיים|הצלות|בעיטות|מצבים|מסירות|תיקולים|מאבקים|הופעות|דקות|"
+    r"דורג|סטטיסטיקה|נתון|ממוצע|ל[-־]?90|אחוז"
+)
+_FINAL_TOURNAMENT_BINDING_WORDS_RE = re.compile(
+    r"(?iu)\b(?:at|in|during|across|throughout|from|of|this|the)\b|"
+    r"במונדיאל|בגביע\s+העולם|ביורו|בקופה\s+אמריקה|באליפות\s+אפריקה|בגביע\s+אסיה|"
+    r"בליגת\s+האומות|בטורניר|במהלך\s+הטורניר|לאורך\s+הטורניר|בכל\s+הטורניר"
+)
+_FINAL_TOURNAMENT_DESCRIPTOR_RE = re.compile(
+    r"(?iu)\b(?:world\s+cup|euro|copa\s+am[eé]rica|afcon|asian\s+cup)\s+(?:winner|champion)\b|"
+    r"\b(?:winner|champion)\s+of\s+the\s+(?:world\s+cup|euros?|copa\s+am[eé]rica|afcon|asian\s+cup)\b|"
+    r"זוכ(?:ה|ת)\s+(?:ה)?מונדיאל|אלו(?:ף|פת)\s+העולם|זוכ(?:ה|ת)\s+היורו|זוכ(?:ה|ת)\s+קופה\s+אמריקה"
+)
+_FINAL_TOURNAMENT_FUTURE_RE = re.compile(
+    r"(?iu)\b(?:upcoming|next\s+(?:world\s+cup|euro|tournament)|qualifiers?|qualification|"
+    r"will\s+be\s+held|is\s+scheduled|scheduled\s+for|draw\s+for|host(?:ing)?\s+(?:the\s+)?tournament|"
+    r"road\s+to\s+20(?:30|34|38))\b|"
+    r"המונדיאל\s+הבא|היורו\s+הבא|הטורניר\s+הבא|מוקדמות|העפלה|ייערך|יתקיים|מתוכנן|"
+    r"הגרלת\s+(?:הבתים|הטורניר)|אירוח\s+הטורניר|לקראת\s+(?:מונדיאל|יורו|הטורניר)"
+)
+_FINAL_TIMELY_EDITORIAL_HOOK_RE = re.compile(
+    r"(?iu)\b(?:on\s+this\s+day|today\s+marks|anniversary|birthday|has\s+been\s+honou?red|"
+    r"was\s+rewarded|unveiled|announced\s+today|plans?\s+to\s+build|ceremony)\b|"
+    r"ביום\s+זה|ביום\s+הזה|היום\s+לפני|יום\s+הולדת|יום\s+השנה|תוגמל|הוענק|נחשף\s+היום|"
+    r"הוכרז\s+היום|מתכננ(?:ת|ים)\s+להקים|טקס|אנדרטה|פסל"
+)
+
+
+def _final_tournament_year(text: str, post: Post) -> int:
+    years = [int(value) for value in re.findall(r"(?<!\d)(20\d{2})(?!\d)", str(text or ""))]
+    if years:
+        # The last explicit year is usually attached to the competition/season.
+        return years[-1]
+    reference = float(getattr(post, "published_ts", 0.0) or time.time())
+    return datetime.fromtimestamp(reference, tz=ZoneInfo("UTC")).year
+
+
+def _final_identify_tournament(text: str) -> dict[str, Any] | None:
+    value = str(text or "")
+    for spec in _FINAL_TOURNAMENT_SPECS:
+        if spec["pattern"].search(value):
+            return spec
+    return None
+
+
+def _final_tournament_is_future_context(text: str, tournament_year: int) -> bool:
+    value = str(text or "")
+    current_year = datetime.now(tz=ZoneInfo("UTC")).year
+    if tournament_year > current_year:
+        return True
+    if _FINAL_TOURNAMENT_FUTURE_RE.search(value):
+        return True
+    # Years commonly used for future World Cups should be treated as future even
+    # when the post is short and lacks the word "upcoming".
+    return bool(re.search(r"(?<!\d)20(?:30|34|38)(?!\d)", value))
+
+
+def _final_tournament_bound_fact(post: Post) -> tuple[dict[str, Any] | None, int]:
+    if not _final_is_special_source(post):
+        return None, 0
+    text = _final_source_text(post)
+    spec = _final_identify_tournament(text)
+    if not spec:
+        return None, 0
+    year = _final_tournament_year(text, post)
+    if _final_tournament_is_future_context(text, year):
+        return None, 0
+    if _final_interesting_football_story(post) or _FINAL_TIMELY_EDITORIAL_HOOK_RE.search(text):
+        return None, 0
+
+    # "World Cup winner X has 500 career goals" is a general player fact.  Remove
+    # title descriptors before checking whether the competition is truly the
+    # statistical frame of the post.
+    without_descriptor = _FINAL_TOURNAMENT_DESCRIPTOR_RE.sub(" ", text)
+    if not spec["pattern"].search(without_descriptor):
+        return None, 0
+    if not _FINAL_TOURNAMENT_FACT_SIGNAL_RE.search(without_descriptor) and not re.search(r"\d", without_descriptor):
+        return None, 0
+
+    match = spec["pattern"].search(without_descriptor)
+    if not match:
+        return None, 0
+    start = max(0, match.start() - 90)
+    end = min(len(without_descriptor), match.end() + 120)
+    local = without_descriptor[start:end]
+    # Require a grammatical/statistical connection to the competition, not a
+    # remote passing mention in an unrelated player fact.
+    if not (
+        _FINAL_TOURNAMENT_BINDING_WORDS_RE.search(local)
+        or re.search(r"20\d{2}", local)
+        or _FINAL_TOURNAMENT_FACT_SIGNAL_RE.search(local)
+    ):
+        return None, 0
+    return spec, year
+
+
+def _final_parse_end_of_day(value: str) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        raw += "T23:59:59+00:00"
+    return _final_parse_iso_datetime(raw)
+
+
+def _final_custom_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    if not SPECIAL_FACT_TOURNAMENT_WINDOWS_JSON:
+        return 0.0, ""
+    try:
+        data = json.loads(SPECIAL_FACT_TOURNAMENT_WINDOWS_JSON)
+    except Exception:
+        return 0.0, ""
+    if not isinstance(data, dict):
+        return 0.0, ""
+    node = data.get(str(spec.get("id", "")), {})
+    if isinstance(node, dict):
+        value = node.get(str(year), node.get(year))
+    else:
+        value = None
+    if isinstance(value, dict):
+        value = value.get("end") or value.get("endDate")
+    ts = _final_parse_end_of_day(str(value or ""))
+    return (ts, "custom-window") if ts else (0.0, "")
+
+
+def _final_static_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    value = (spec.get("static") or {}).get(year) if isinstance(spec.get("static"), dict) else None
+    ts = _final_parse_end_of_day(str(value or ""))
+    return (ts, "official-static-window") if ts else (0.0, "")
+
+
+def _final_norm_competition_name(value: str) -> str:
+    raw = unicodedata.normalize("NFKD", str(value or ""))
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = re.sub(r"[^a-z0-9]+", " ", raw.casefold())
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _final_competition_name_score(spec: dict[str, Any], candidate: str) -> int:
+    normalized = _final_norm_competition_name(candidate)
+    if not normalized:
+        return -1000
+    for term in spec.get("reject", ()):
+        if _final_norm_competition_name(str(term)) in normalized:
+            return -1000
+    desired = [_final_norm_competition_name(v) for v in spec.get("api_names", ())]
+    if normalized in desired:
+        return 100
+    score = 0
+    for target in desired:
+        words = [word for word in target.split() if len(word) > 2]
+        if words and all(word in normalized for word in words):
+            score = max(score, 60 + len(words))
+        elif target and (target in normalized or normalized in target):
+            score = max(score, 35)
+    return score
+
+
+def _final_api_football_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    key = os.environ.get("API_FOOTBALL_KEY", "").strip() or os.environ.get("API_SPORTS_KEY", "").strip()
+    if not key:
+        return 0.0, ""
+    query = str(spec.get("api_search", "") or "").strip()
+    if not query:
+        return 0.0, ""
+    url = "https://v3.football.api-sports.io/leagues?" + urllib.parse.urlencode({"search": query, "season": year})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "x-apisports-key": key,
+            "Accept": "application/json",
+            "User-Agent": "NetoSportBot/tournament-freshness",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=SPECIAL_FACT_TOURNAMENT_LOOKUP_TIMEOUT_SECONDS) as response:
+        data = json.loads(response.read().decode("utf-8", errors="replace"))
+    best: tuple[int, float, str] = (-1000, 0.0, "")
+    for item in data.get("response", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        league = item.get("league") if isinstance(item.get("league"), dict) else {}
+        name = str(league.get("name") or "")
+        score = _final_competition_name_score(spec, name)
+        if score < 0:
+            continue
+        for season in item.get("seasons", []) if isinstance(item.get("seasons"), list) else []:
+            if not isinstance(season, dict) or int(season.get("year", 0) or 0) != int(year):
+                continue
+            end_ts = _final_parse_end_of_day(str(season.get("end") or ""))
+            if end_ts and score > best[0]:
+                best = (score, end_ts, name)
+    return (best[1], "api-football:" + best[2]) if best[1] else (0.0, "")
+
+
+def _final_football_data_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    key = os.environ.get("FOOTBALL_DATA_API_KEY", "").strip()
+    code = str(spec.get("football_data_code", "") or "").strip()
+    if not key or not code:
+        return 0.0, ""
+    url = f"https://api.football-data.org/v4/competitions/{urllib.parse.quote(code)}/matches?" + urllib.parse.urlencode({"season": year})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "X-Auth-Token": key,
+            "Accept": "application/json",
+            "User-Agent": "NetoSportBot/tournament-freshness",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=SPECIAL_FACT_TOURNAMENT_LOOKUP_TIMEOUT_SECONDS) as response:
+        data = json.loads(response.read().decode("utf-8", errors="replace"))
+    latest = 0.0
+    for item in data.get("matches", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        ts = _final_parse_iso_datetime(str(item.get("utcDate") or ""))
+        if ts:
+            latest = max(latest, ts + 3 * 60 * 60)
+    return (latest, "football-data.org:" + code) if latest else (0.0, "")
+
+
+def _final_resolve_tournament_end(spec: dict[str, Any], year: int) -> tuple[float, str]:
+    cache_key = f"{spec.get('id', '')}:{year}"
+    now = time.time()
+    with _SPECIAL_TOURNAMENT_CACHE_LOCK:
+        cached = _SPECIAL_TOURNAMENT_END_CACHE.get(cache_key)
+        if cached and now - cached[0] <= SPECIAL_FACT_TOURNAMENT_CACHE_SECONDS:
+            return float(cached[1] or 0.0), str(cached[2] or "unknown")
+
+    result: tuple[float, str] = (0.0, "unknown")
+    # Custom/static dates are free and deterministic.  API lookup is only used
+    # for competitions whose end date is not already known.
+    for resolver in (
+        _final_custom_tournament_end,
+        _final_static_tournament_end,
+        _final_api_football_tournament_end,
+        _final_football_data_tournament_end,
+    ):
+        try:
+            end_ts, provider = resolver(spec, year)
+        except Exception as exc:
+            logging.debug(
+                "Tournament freshness resolver %s failed safely for %s/%s: %s",
+                getattr(resolver, "__name__", "resolver"),
+                spec.get("id", "unknown"),
+                year,
+                short_error(exc, 300),
+            )
+            end_ts, provider = 0.0, ""
+        if end_ts:
+            result = (float(end_ts), str(provider or "unknown"))
+            break
+
+    with _SPECIAL_TOURNAMENT_CACHE_LOCK:
+        _SPECIAL_TOURNAMENT_END_CACHE[cache_key] = (now, result[0], result[1])
+        if len(_SPECIAL_TOURNAMENT_END_CACHE) > 200:
+            oldest = sorted(_SPECIAL_TOURNAMENT_END_CACHE.items(), key=lambda item: item[1][0])[:50]
+            for key, _row in oldest:
+                _SPECIAL_TOURNAMENT_END_CACHE.pop(key, None)
+    return result
+
+
+def _final_completed_tournament_fact_reason(post: Post) -> str:
+    if not SPECIAL_FACT_TOURNAMENT_FRESHNESS_ENABLED or not _final_is_special_source(post):
+        return ""
+    spec, year = _final_tournament_bound_fact(post)
+    if not spec:
+        return ""
+    end_ts, provider = _final_resolve_tournament_end(spec, year)
+    post.tournament_freshness_id = str(spec.get("id", ""))
+    post.tournament_freshness_label = str(spec.get("label", ""))
+    post.tournament_freshness_year = int(year)
+    post.tournament_freshness_provider = provider
+    post.tournament_end_timestamp = float(end_ts or 0.0)
+    if not end_ts:
+        # Unknown means allow.  A lookup failure must never turn into a false block.
+        post.tournament_freshness_resolution = "unknown_allowed"
+        return ""
+    age = max(0.0, time.time() - end_ts)
+    post.tournament_freshness_age_seconds = age
+    post.tournament_freshness_resolution = "completed" if age > SPECIAL_FACT_TOURNAMENT_GRACE_SECONDS else "grace_period"
+    return "special_source_completed_tournament_fact" if age > SPECIAL_FACT_TOURNAMENT_GRACE_SECONDS else ""
+
+
+_PRE_TOURNAMENT_FRESHNESS_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    # Youth statistics are an unconditional hard block for the three special
+    # sources and cannot be reopened by story/importance/reply-link exceptions.
+    if _final_special_source_youth_statistics(post):
+        return "special_source_youth_statistics"
+
+    reason = _PRE_TOURNAMENT_FRESHNESS_PRE_SEND(post)
+    if reason:
+        return reason
+
+    # This executes only after all cheap local filters have passed.  Therefore
+    # API calls are rare and cannot slow down the general RSS scan.
+    tournament_reason = _final_completed_tournament_fact_reason(post)
+    if tournament_reason:
+        return tournament_reason
+    return ""
+
+
+_PRE_TOURNAMENT_FRESHNESS_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    mapping = {
+        "special_source_youth_statistics": "ציוצי כדורגל/עובדות/אופטה: סטטיסטיקה או תוכן על נוער, אקדמיה או מילואים נחסמו",
+        "special_source_completed_tournament_fact": "ציוצי כדורגל/עובדות/אופטה: עובדה או סטטיסטיקה על טורניר שהסתיים לפני יותר מ-36 שעות",
+    }
+    return mapping.get(str(reason or ""), _PRE_TOURNAMENT_FRESHNESS_HEBREW_REASON(reason))
+
+
+_PRE_TOURNAMENT_FRESHNESS_DIAGNOSTICS = special_sources_diagnostics_text
+
+
+def special_sources_diagnostics_text() -> str:
+    text = _PRE_TOURNAMENT_FRESHNESS_DIAGNOSTICS()
+    if "רעננות משחקים וטורנירים" not in text:
+        key_status = "API-Football" if (os.environ.get("API_FOOTBALL_KEY", "").strip() or os.environ.get("API_SPORTS_KEY", "").strip()) else (
+            "football-data.org" if os.environ.get("FOOTBALL_DATA_API_KEY", "").strip() else "ללא מפתח API; מונדיאל 2026 עדיין מזוהה לפי לוח FIFA המובנה"
+        )
+        text += (
+            "\n\n⏱ רעננות משחקים וטורנירים\n"
+            "• עובדה התלויה במשחק מסוים: עד 36 שעות מסיום המשחק.\n"
+            "• עובדת עבר התלויה בטורניר שהסתיים: עד 36 שעות מסיום הטורניר.\n"
+            "• עובדה כללית על שחקן, סיפור עדכני, יום-שנה או מידע עתידי אינם נחסמים בגלל הטורניר.\n"
+            "• סטטיסטיקות נוער/אקדמיה/מילואים נחסמות תמיד בשלושת המקורות.\n"
+            f"• מקור זיהוי טורנירים זמין: {key_status}."
+        )
+    return text
+
+# ====== END SPECIAL-SOURCE TOURNAMENT FRESHNESS + YOUTH STATISTICS PATCH ======
 
 if __name__ == "__main__":
     main()
