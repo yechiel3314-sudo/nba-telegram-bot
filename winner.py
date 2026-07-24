@@ -44,7 +44,7 @@ from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from threading import BoundedSemaphore, Event, Lock, RLock, Thread
+from threading import BoundedSemaphore, Lock, RLock, Thread
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -26007,356 +26007,109 @@ def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state
 
 
 
-# ====== STABLE GEMINI TRANSLATION CORE — OFFICIAL REST CONTRACT (2026-07-22) ======
-# This final layer replaces only translation/network orchestration and final
-# hashtag placement. RSS collection/parsing functions and persistent filenames
-# are intentionally untouched. The request uses the documented generateContent
-# REST shape, structured JSON output, x-goog-api-key, and no deprecated sampling
-# parameters. One HTTP request equals one persistent post retry attempt.
+# ====== FINAL USER REQUEST PATCH — TRANSLATION + EDITORIAL RULES (2026-07-24) ======
+# This last layer intentionally does not replace FEED_TEMPLATES, http_get_feed,
+# fetch_feed, fetch_posts or collect_posts_from_feed_templates.  It rebuilds the
+# Gemini translation transaction and adds the requested final editorial guards.
 
-BOT_BUILD_ID = "winner-stable-gemini-translation-2026-07-22"
-STABLE_TRANSLATION_SCHEMA_VERSION = 7
-# One scheduled attempt performs one real HTTP request; send_post persists and
-# caps the post at three scheduled attempts. Old v2 exhaustion records remain in
-# JSON for compatibility but cannot suppress the repaired v3 translation path.
-GEMINI_TRANSLATION_ATTEMPTS = 1
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = 1
-GEMINI_RETRY_SCHEDULE_STATE_KEY = "__gemini_retry_schedule_v3_stable_translation__"
-STABLE_GEMINI_TIMEOUT_SECONDS = max(30, int(os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "45")))
-STABLE_GEMINI_FAILURE_SHARE_SECONDS = 30.0
-STABLE_GEMINI_DEFAULT_MODELS = (
-    "gemini-3.5-flash",
+BOT_BUILD_ID = "winner-translation-editorial-final-2026-07-24"
+GEMINI_RETRY_SCHEDULE_STATE_KEY = "__gemini_retry_schedule_v2__"
+GEMINI_RETRY_EXHAUSTED_STATE_KEY = "__gemini_retry_exhausted_v1__"
+GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS = max(
+    4096,
+    int(os.environ.get("GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS", "4096") or 4096),
+)
+FINAL_GEMINI_NETWORK_BUDGET = max(
+    1,
+    min(6, int(os.environ.get("GEMINI_TRANSLATION_NETWORK_BUDGET", "3") or 3)),
+)
+
+_FINAL_GEMINI_STABLE_MODELS = (
     "gemini-3.6-flash",
+    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
 )
-_STABLE_TRANSLATION_LOCK = RLock()
-_STABLE_TRANSLATION_INFLIGHT: dict[str, Event] = {}
-_STABLE_TRANSLATION_RECENT_FAILURES: dict[str, tuple[float, str]] = {}
-_STABLE_ROUTE_LOCK = Lock()
-_STABLE_ROUTE_COUNTER = 0
-_STABLE_RSS_FUNCTION_IDS = {
-    name: id(globals().get(name))
-    for name in ("http_get_feed", "fetch_feed", "fetch_posts", "collect_posts_from_feed_templates")
-}
-
-_STABLE_HERE_SOURCE_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:#\s*)?HERE(?:[_\s]+)WE(?:[_\s]+)GO(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-_STABLE_TODAY_SOURCE_RE = re.compile(
-    r"(?:#?היום(?:_|\s)+לפני|#?OnThisDay\b|(?<![A-Za-z0-9])On\s+this\s+day(?![A-Za-z0-9]))",
+_FINAL_GEMINI_CACHE_PREFIX = "combined-gemini-v7-faithful-2026-07-24:"
+_FINAL_HWG_SOURCE_RE = re.compile(
+    r"(?<![A-Za-z])#?here\s*[,!:.\-–—]*\s*we\s*[,!:.\-–—]*\s*go(?![A-Za-z])|"
+    r"(?<![A-Za-z])#?here[_\s]*we[_\s]*go(?![A-Za-z])",
     re.IGNORECASE | re.UNICODE,
 )
-_STABLE_FIXED_RE = re.compile(r"(#HERE_WE_GO|#היום_לפני|\n+)", re.UNICODE)
+_FINAL_HWG_OUTPUT_RE = re.compile(
+    r"(?<![A-Za-z])#?here\s*[,!:.\-–—]*\s*we\s*[,!:.\-–—]*\s*go(?![A-Za-z])|"
+    r"(?<![A-Za-z])#?here[_\s]*we[_\s]*go(?![A-Za-z])|"
+    r"היר\s*ווי\s*גו|הנה\s*(?:זה\s+קורה|אנחנו\s+הולכים)|כאן\s+אנחנו\s+הולכים",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_TODAY_BEFORE_RE = re.compile(r"(?<![א-ת])היום\s+לפני(?![א-ת])")
+_FINAL_ANCHOR_RE = re.compile(r"⟪(?:HWG|HAYOM)\d{4}⟫")
 
 
-class StableGeminiError(TranslationUnavailable):
-    def __init__(
-        self,
-        message: str,
-        *,
-        category: str = "unknown",
-        status: int = 0,
-        retryable: bool = False,
-        retry_after: float = 0.0,
-        response_debug: str = "",
-        model: str = "",
-        key_index: int | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.category = category
-        self.status = int(status or 0)
-        self.retryable = bool(retryable)
-        self.retry_after = float(retry_after or 0.0)
-        self.response_debug = compact_debug_text(response_debug, 1200)
-        self.model = str(model or "")
-        self.key_index = key_index
+class _FinalGeminiHTTPError(RuntimeError):
+    def __init__(self, code: int, body: str, retry_after: int = 0):
+        self.code = int(code or 0)
+        self.body = str(body or "")
+        self.retry_after = int(retry_after or 0)
+        super().__init__(f"Gemini HTTP {self.code}: {compact_debug_text(self.body, 1200)}")
 
 
-def _stable_clean_source_preserving_anchors(text: Any) -> str:
-    value = html.unescape(str(text or "")).replace("\r\n", "\n").replace("\r", "\n")
-    protected: list[tuple[str, str]] = []
-
-    def protect(kind: str):
-        def replace(_match: re.Match[str]) -> str:
-            token = f"ZXQSTABLE{kind}{len(protected):04d}QXZ"
-            protected.append((token, "#HERE_WE_GO" if kind == "HWG" else "#היום_לפני"))
-            return token
-        return replace
-
-    value = _STABLE_HERE_SOURCE_RE.sub(protect("HWG"), value)
-    value = _STABLE_TODAY_SOURCE_RE.sub(protect("OTD"), value)
-
-    def protect_break(match: re.Match[str]) -> str:
-        token = f"ZXQSTABLELB{len(protected):04d}QXZ"
-        protected.append((token, "\n\n" if len(match.group(0)) >= 2 else "\n"))
-        return f" {token} "
-
-    value = re.sub(r"\n+", protect_break, value)
-    value = clean_for_ai_translation(value)
-    for token, replacement in protected:
-        value = value.replace(token, replacement)
-    value = re.sub(r"[ \t]+\n", "\n", value)
-    value = re.sub(r"\n[ \t]+", "\n", value)
-    value = re.sub(r"\n{3,}", "\n\n", value)
-    return value.strip()
-
-
-def _stable_prepare_layout(text: Any) -> dict[str, Any]:
-    source = _stable_clean_source_preserving_anchors(text)
-    segments: list[str] = []
-    layout: list[tuple[str, Any, str, str]] = []
-    for part in _STABLE_FIXED_RE.split(source):
-        if not part:
-            continue
-        if part in {"#HERE_WE_GO", "#היום_לפני"} or part.startswith("\n"):
-            layout.append(("fixed", part, "", ""))
-            continue
-        leading = re.match(r"^[ \t]*", part).group(0)
-        trailing = re.search(r"[ \t]*$", part).group(0)
-        end = len(part) - len(trailing) if trailing else len(part)
-        core = part[len(leading):end]
-        if not core:
-            layout.append(("fixed", part, "", ""))
-            continue
-        index = len(segments)
-        segments.append(core)
-        layout.append(("segment", index, leading, trailing))
-    return {"source": source, "segments": segments, "layout": layout}
-
-
-def _stable_rebuild_layout(plan: dict[str, Any], translated_segments: Any) -> str:
-    expected = list(plan.get("segments", []) or [])
-    if not isinstance(translated_segments, list) or len(translated_segments) != len(expected):
-        raise StableGeminiError(
-            f"Structured output segment count mismatch: expected {len(expected)}, got "
-            f"{len(translated_segments) if isinstance(translated_segments, list) else 'non-list'}",
-            category="invalid_output",
-            retryable=True,
-        )
-    cleaned: list[str] = []
-    for value in translated_segments:
-        if not isinstance(value, str):
-            raise StableGeminiError("Structured output contains a non-string segment", category="invalid_output", retryable=True)
-        polished = final_visual_cleanup(final_hebrew_polish(value)).strip()
-        cleaned.append(polished)
-    output: list[str] = []
-    for kind, value, leading, trailing in plan.get("layout", []):
-        if kind == "fixed":
-            output.append(str(value))
-        else:
-            output.append(str(leading) + cleaned[int(value)] + str(trailing))
-    result = "".join(output)
-    result = re.sub(r"[ \t]+\n", "\n", result)
-    result = re.sub(r"\n[ \t]+", "\n", result)
-    result = re.sub(r"\n{3,}", "\n\n", result)
-    return result.strip()
-
-
-def _stable_canonicalize_special_tags(text: Any) -> str:
-    value = str(text or "")
-    value = re.sub(r"#?HERE(?:[_\s]+)WE(?:[_\s]+)GO\b", "#HERE_WE_GO", value, flags=re.IGNORECASE)
-    value = re.sub(r"#?היום(?:_|\s)+לפני\b", "#היום_לפני", value, flags=re.UNICODE)
-    value = re.sub(r"[ \t]{2,}", " ", value)
-    value = re.sub(r"\n{3,}", "\n\n", value)
-    return value.strip()
-
-
-def _stable_numeric_facts(text: Any) -> set[str]:
-    value = remove_urls(str(text or ""))
-    value = re.sub(r"@[A-Za-z0-9_]+", "", value)
-    facts: set[str] = set()
-    for raw in re.findall(r"\d+(?:[.,]\d+)*", value):
-        item = raw
-        if re.fullmatch(r"\d{1,3}(?:,\d{3})+", item):
-            item = item.replace(",", "")
-        elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", item):
-            item = item.replace(".", "")
-        else:
-            item = item.replace(",", ".")
-        item = item.lstrip("0") or "0"
-        facts.add(item)
-    return facts
-
-
-def _stable_validate_translation(post: Post, main_source: str, quote_source: str, main: str, quote: str) -> None:
-    combined_source = "\n".join(x for x in (main_source, quote_source) if x)
-    combined_output = "\n".join(x for x in (main, quote) if x)
-    if main_source and re.search(r"[A-Za-zא-ת]", main_source) and not has_meaningful_text(main):
-        raise StableGeminiError("Gemini returned no meaningful main translation", category="invalid_output", retryable=True)
-    if quote_source and not has_meaningful_text(quote):
-        raise StableGeminiError("Gemini returned no meaningful quote translation", category="invalid_output", retryable=True)
-    if re.search(r"(?is)(?:```|\"?(?:main_segments|quote_segments|quote_author)\"?\s*:)", combined_output):
-        raise StableGeminiError("Structured JSON leaked into visible translation", category="invalid_output", retryable=True)
-    if _stable_numeric_facts(combined_source) != _stable_numeric_facts(combined_output):
-        raise StableGeminiError("Gemini changed, added, or omitted locked numbers", category="invalid_output", retryable=True)
-    for tag in ("#HERE_WE_GO", "#היום_לפני"):
-        if combined_source.count(tag) != combined_output.count(tag):
-            raise StableGeminiError(f"Gemini special-tag count mismatch for {tag}", category="invalid_output", retryable=True)
-    if translation_contradicts_source(combined_source, combined_output):
-        raise StableGeminiError("Gemini translation contradicted a source entity", category="invalid_output", retryable=True)
-    if translation_changes_locked_numbers(combined_source, combined_output):
-        raise StableGeminiError("Gemini translation changed a locked year or score", category="invalid_output", retryable=True)
-    source_letters = len(re.findall(r"[A-Za-zא-ת]", combined_source))
-    output_letters = len(re.findall(r"[A-Za-zא-ת]", combined_output))
-    if source_letters >= 80 and output_letters < max(28, int(source_letters * 0.30)):
-        raise StableGeminiError("Gemini translation is materially incomplete", category="invalid_output", retryable=True)
-    if source_letters >= 12 and not re.search(r"[א-ת]", combined_output):
-        raise StableGeminiError("Gemini output contains no Hebrew", category="invalid_output", retryable=True)
-
-
-def _stable_cache_material(main_plan: dict[str, Any], quote_plan: dict[str, Any], author_source: str) -> tuple[str, str]:
-    material = json.dumps(
-        {"v": STABLE_TRANSLATION_SCHEMA_VERSION, "m": main_plan.get("source", ""), "q": quote_plan.get("source", ""), "a": author_source},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
-    return f"stable-gemini-v{STABLE_TRANSLATION_SCHEMA_VERSION}:{digest}", digest
-
-
-def _stable_cache_get(cache_key: str, source_hash: str, post: Post, main_source: str, quote_source: str) -> tuple[str, str, str] | None:
-    global TRANSLATION_CACHE_DIRTY
-    with _STABLE_TRANSLATION_LOCK:
-        raw = TRANSLATION_CACHE.get(cache_key)
-    if not raw:
-        return None
-    try:
-        record = json.loads(raw)
-        if not isinstance(record, dict) or int(record.get("schema_version", 0)) != STABLE_TRANSLATION_SCHEMA_VERSION:
-            raise ValueError("wrong cache schema")
-        if str(record.get("source_hash", "")) != source_hash:
-            raise ValueError("wrong source hash")
-        main = str(record.get("main", "") or "")
-        quote = str(record.get("quote", "") or "")
-        author = str(record.get("quote_author", "") or "")
-        _stable_validate_translation(post, main_source, quote_source, main, quote)
-        return main, quote, author
-    except Exception:
-        with _STABLE_TRANSLATION_LOCK:
-            TRANSLATION_CACHE.pop(cache_key, None)
-            TRANSLATION_CACHE_DIRTY = True
-        return None
-
-
-def _stable_cache_put(cache_key: str, source_hash: str, main: str, quote: str, author: str, model: str) -> None:
-    global TRANSLATION_CACHE_DIRTY
-    record = {
-        "schema_version": STABLE_TRANSLATION_SCHEMA_VERSION,
-        "source_hash": source_hash,
-        "main": main,
-        "quote": quote,
-        "quote_author": author,
-        "model": model,
-        "created_at": time.time(),
-    }
-    with _STABLE_TRANSLATION_LOCK:
-        TRANSLATION_CACHE[cache_key] = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-        TRANSLATION_CACHE_DIRTY = True
-        save_translation_cache(TRANSLATION_CACHE)
-
-def _stable_gemini_models() -> list[str]:
-    configured: list[str] = []
-    for env_name in ("GEMINI_MODEL", "GEMINI_FAST_MODEL", "GEMINI_FALLBACK_MODELS"):
-        for raw in re.split(r"[,;\r\n]+", os.environ.get(env_name, "")):
-            model = raw.strip()
-            if model and model not in configured:
-                configured.append(model)
-    ordered = configured + [model for model in STABLE_GEMINI_DEFAULT_MODELS if model not in configured]
-    retired = set(GEMINI_SHUTDOWN_MODELS) | {"gemini-3-pro-preview", "gemini-3.1-flash-lite-preview"}
-    ordered = [model for model in ordered if model not in retired]
+def _final_gemini_model_candidates() -> list[str]:
+    # Prefer current supported Flash models.  Only explicit Railway overrides are
+    # placed before them; the old default preview/pro chain is deliberately not
+    # inherited because stale model names were a frequent source of 404/latency.
+    values: list[str] = []
+    configured = [
+        os.environ.get("GEMINI_MODEL", ""),
+        os.environ.get("GEMINI_FAST_MODEL", ""),
+        os.environ.get("GEMINI_FALLBACK_MODEL", ""),
+        os.environ.get("GEMINI_FALLBACK_MODELS", ""),
+    ]
+    for raw in configured:
+        for part in re.split(r"[,\n\r;]+", str(raw or "")):
+            model = part.strip()
+            if model and model not in GEMINI_SHUTDOWN_MODELS and model not in values:
+                values.append(model)
+    for model in _FINAL_GEMINI_STABLE_MODELS:
+        if model not in values:
+            values.append(model)
     now = time.time()
-    available = [model for model in ordered if GEMINI_MODEL_COOLDOWNS.get(model, 0.0) <= now]
-    return available or ordered[:1]
+    available = [model for model in values if GEMINI_MODEL_COOLDOWNS.get(model, 0.0) <= now]
+    return available or values[:1]
 
 
-def _stable_select_route() -> tuple[int, str, str]:
-    global _STABLE_ROUTE_COUNTER
+def gemini_models_for_operation() -> list[str]:
+    return _final_gemini_model_candidates()
+
+
+def gemini_translation_keys_for_operation() -> list[tuple[int, str]]:
     refresh_gemini_api_keys_from_env()
-    if gemini_requests_paused_until_refill():
-        raise StableGeminiError("Gemini requests are paused by the quota guard", category="paused", retryable=False)
+    if gemini_requests_paused_until_refill() or not GEMINI_API_KEYS:
+        return []
     now = time.time()
-    keys = [(index, key) for index, key in enumerate(GEMINI_API_KEYS) if GEMINI_KEY_COOLDOWNS.get(key, 0.0) <= now]
-    if not keys:
-        raise StableGeminiError("No Gemini API key is locally available", category="no_key", retryable=True)
-    models = _stable_gemini_models()
-    if not models:
-        raise StableGeminiError("No supported Gemini model is configured", category="no_model", retryable=False)
-    with _STABLE_ROUTE_LOCK:
-        route = _STABLE_ROUTE_COUNTER
-        _STABLE_ROUTE_COUNTER += 1
-    key_index, key = keys[route % len(keys)]
-    model = models[(route // max(1, len(keys))) % len(models)]
-    return key_index, key, model
+    with GEMINI_KEY_LOCK:
+        start = int(globals().get("GEMINI_NEXT_KEY_INDEX", 0) or 0) % len(GEMINI_API_KEYS)
+        globals()["GEMINI_NEXT_KEY_INDEX"] = (start + 1) % len(GEMINI_API_KEYS)
+    indexed = [(index, key) for index, key in enumerate(GEMINI_API_KEYS)]
+    rotated = indexed[start:] + indexed[:start]
+    available = [(index, key) for index, key in rotated if GEMINI_KEY_COOLDOWNS.get(key, 0.0) <= now]
+    return available
 
 
-def _stable_retry_after(headers: Any) -> float:
-    try:
-        raw = str(headers.get("Retry-After", "") or "").strip()
-    except Exception:
-        raw = ""
-    if not raw:
-        return 0.0
-    try:
-        return max(0.0, float(raw))
-    except Exception:
-        try:
-            parsed = parsedate_to_datetime(raw)
-            now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
-            return max(0.0, (parsed - now).total_seconds())
-        except Exception:
-            return 0.0
+def has_gemini_key_available() -> bool:
+    return bool(gemini_translation_keys_for_operation())
 
 
-def _stable_http_category(status: int) -> tuple[str, bool]:
-    if status in {408, 409, 425, 429, 500, 502, 503, 504}:
-        return ("quota" if status == 429 else "transient"), True
-    if status in {401, 403}:
-        return "auth", False
-    if status == 404:
-        return "model_not_found", False
-    if status == 400:
-        return "bad_request", False
-    return "http_error", status >= 500
-
-
-def _stable_record_route_failure(error: StableGeminiError, key: str, key_index: int, model: str) -> None:
-    now = time.time()
-    if error.category == "quota":
-        GEMINI_KEY_COOLDOWNS[key] = max(GEMINI_KEY_COOLDOWNS.get(key, 0.0), now + max(180.0, error.retry_after))
-    elif error.category == "auth":
-        GEMINI_KEY_COOLDOWNS[key] = max(GEMINI_KEY_COOLDOWNS.get(key, 0.0), now + GEMINI_AUTH_KEY_COOLDOWN_SECONDS)
-    elif error.category in {"transient", "network"}:
-        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + max(60.0, error.retry_after))
-    elif error.category == "model_not_found":
-        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + 24 * 60 * 60)
-    elif error.category in {"bad_request", "invalid_output", "blocked"}:
-        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + 5 * 60)
-    GEMINI_KEY_LAST_ERRORS[key] = {
-        "at": now,
-        "label": gemini_key_label(key_index),
-        "summary": error.category,
-        "full_error": compact_debug_text(str(error), 900),
-        "cooled": GEMINI_KEY_COOLDOWNS.get(key, 0.0) > now,
-        "cooldown_seconds": int(max(0.0, GEMINI_KEY_COOLDOWNS.get(key, 0.0) - now)),
-        "response_debug": error.response_debug,
-        "model": model,
-        "status": error.status,
-    }
-    try:
-        daily_stat_increment("gemini_failures", error.category, 1)
-    except Exception:
-        pass
-
-
-def _stable_gemini_http_once(payload: dict[str, Any], key: str, key_index: int, model: str) -> dict[str, Any]:
-    url = "https://generativelanguage.googleapis.com/v1beta/models/" + urllib.parse.quote(model, safe="-._") + ":generateContent"
+def _final_gemini_request_json(model: str, key: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{urllib.parse.quote(model, safe='')}:generateContent"
+    )
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={
             "Content-Type": "application/json; charset=utf-8",
             "Accept": "application/json",
@@ -26366,467 +26119,881 @@ def _stable_gemini_http_once(payload: dict[str, Any], key: str, key_index: int, 
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=STABLE_GEMINI_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=max(8, int(timeout))) as response:
             raw = response.read().decode("utf-8", errors="replace")
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
-                raise ValueError("Gemini response root is not an object")
-            return parsed
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise RuntimeError("Gemini returned a non-object JSON response")
+            return data
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        category, retryable = _stable_http_category(int(exc.code or 0))
-        raise StableGeminiError(
-            f"Gemini HTTP {exc.code}: {compact_debug_text(raw, 900)}",
-            category=category,
-            status=int(exc.code or 0),
-            retryable=retryable,
-            retry_after=_stable_retry_after(exc.headers),
-            response_debug=raw,
-            model=model,
-            key_index=key_index,
-        ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise StableGeminiError(
-            f"Gemini network failure: {compact_debug_text(str(exc), 600)}",
-            category="network",
-            retryable=True,
-            model=model,
-            key_index=key_index,
-        ) from exc
-    except StableGeminiError:
-        raise
-    except Exception as exc:
-        raise StableGeminiError(
-            f"Gemini response decoding failed: {compact_debug_text(str(exc), 600)}",
-            category="invalid_response",
-            retryable=True,
-            model=model,
-            key_index=key_index,
-        ) from exc
+        body = exc.read().decode("utf-8", errors="replace")
+        retry_after_raw = str(exc.headers.get("Retry-After", "") or "").strip()
+        try:
+            retry_after = int(float(retry_after_raw)) if retry_after_raw else 0
+        except Exception:
+            retry_after = 0
+        raise _FinalGeminiHTTPError(exc.code, body, retry_after) from exc
 
 
-def _stable_translation_payload(main_plan: dict[str, Any], quote_plan: dict[str, Any], author_source: str) -> dict[str, Any]:
-    glossary_text = "\n".join(
-        item for item in (
-            relevant_name_glossary(str(main_plan.get("source", ""))),
-            relevant_name_glossary(str(quote_plan.get("source", ""))),
-            relevant_name_glossary(author_source),
-        ) if item
-    )
-    system_instruction = (
-        "You are a senior Hebrew men's-football news translator. The post already passed local editorial filters; translate only. "
-        "Return exactly the structured fields required by the schema. Translate every input segment fully and in the same array order. "
-        "The application will reinsert line breaks, #HERE_WE_GO and #היום_לפני between segments, so never add, remove, repeat, translate, or move those anchors. "
-        "Use natural concise Hebrew suitable for Telegram, but do not summarize or omit facts. Never add facts. Preserve every name, club, date, year, number, score, fee, currency, status, condition, denial and emoji in its corresponding segment. "
-        "Remove URLs, tracking text and pure source/promotion credits only. If a name is uncertain, keep the clean Latin spelling rather than inventing a Hebrew identity. "
-        "Do not output Markdown fences or explanatory text. quote_author must be a short natural Hebrew name, or an empty string when absent."
-    )
-    input_data = {
-        "main_full_context": main_plan.get("source", ""),
-        "main_segments": list(main_plan.get("segments", []) or []),
-        "quote_full_context": quote_plan.get("source", ""),
-        "quote_segments": list(quote_plan.get("segments", []) or []),
-        "quote_author": author_source,
-        "known_name_glossary": glossary_text,
-        "required_main_segment_count": len(main_plan.get("segments", []) or []),
-        "required_quote_segment_count": len(quote_plan.get("segments", []) or []),
-    }
-    schema = {
-        "type": "OBJECT",
-        "properties": {
-            "main_segments": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "quote_segments": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "quote_author": {"type": "STRING"},
-        },
-        "required": ["main_segments", "quote_segments", "quote_author"],
-        "propertyOrdering": ["main_segments", "quote_segments", "quote_author"],
-    }
-    return {
-        "systemInstruction": {"parts": [{"text": system_instruction}]},
-        "contents": [{"role": "user", "parts": [{"text": json.dumps(input_data, ensure_ascii=False, separators=(",", ":"))}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": schema,
-            "maxOutputTokens": GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS,
-        },
-    }
-
-
-def _stable_parse_gemini_response(data: dict[str, Any], model: str, key_index: int) -> dict[str, Any]:
-    candidates = data.get("candidates") or []
+def _final_gemini_response_text(data: dict[str, Any]) -> tuple[str, str]:
+    prompt_feedback = data.get("promptFeedback") if isinstance(data, dict) else None
+    if isinstance(prompt_feedback, dict) and prompt_feedback.get("blockReason"):
+        raise RuntimeError(
+            "Gemini prompt blocked: "
+            + compact_debug_text(json.dumps(prompt_feedback, ensure_ascii=False), 900)
+        )
+    candidates = data.get("candidates") if isinstance(data, dict) else None
     if not isinstance(candidates, list) or not candidates:
-        feedback = compact_debug_text(data.get("promptFeedback", {}), 700)
-        raise StableGeminiError(
-            f"Gemini returned no candidates; promptFeedback={feedback}",
-            category="blocked" if feedback else "invalid_response",
-            retryable=not bool(feedback),
-            response_debug=gemini_response_debug(data, ""),
-            model=model,
-            key_index=key_index,
+        raise RuntimeError(
+            "Gemini returned no candidates: "
+            + compact_debug_text(json.dumps(data, ensure_ascii=False), 1200)
         )
-    candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+    candidate = next((item for item in candidates if isinstance(item, dict)), {})
     finish_reason = str(candidate.get("finishReason", "") or "").upper()
-    parts = ((candidate.get("content") or {}).get("parts") or []) if isinstance(candidate, dict) else []
+    if finish_reason in {"MAX_TOKENS", "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}:
+        raise RuntimeError(f"Gemini candidate stopped with finishReason={finish_reason}")
+    content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+    parts = content.get("parts") if isinstance(content, dict) else []
     raw = "".join(str(part.get("text", "") or "") for part in parts if isinstance(part, dict)).strip()
-    if finish_reason != "STOP":
-        raise StableGeminiError(
-            f"Gemini stopped with finishReason={finish_reason or 'missing'}",
-            category="blocked" if finish_reason in {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"} else "invalid_output",
-            retryable=finish_reason in {"MAX_TOKENS", "OTHER", "FINISH_REASON_UNSPECIFIED", ""},
-            response_debug=gemini_response_debug(data, raw),
-            model=model,
-            key_index=key_index,
+    if not raw:
+        raise RuntimeError(
+            f"Gemini returned empty candidate text; finishReason={finish_reason or 'unknown'}; "
+            + compact_debug_text(json.dumps(candidate, ensure_ascii=False), 1000)
         )
+    return raw, finish_reason
+
+
+def _final_encode_special_anchors(value: str) -> tuple[str, list[dict[str, Any]]]:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    anchors: list[dict[str, Any]] = []
+
+    def replace_hwg(match: re.Match[str]) -> str:
+        marker = f"⟪HWG{len(anchors) + 1:04d}⟫"
+        anchors.append({"marker": marker, "replacement": "#HERE_WE_GO", "start": match.start(), "kind": "hwg"})
+        return marker
+
+    text = _FINAL_HWG_SOURCE_RE.sub(replace_hwg, text)
+
+    def replace_hayom(match: re.Match[str]) -> str:
+        marker = f"⟪HAYOM{len(anchors) + 1:04d}⟫"
+        anchors.append({"marker": marker, "replacement": "#היום_לפני", "start": match.start(), "kind": "hayom"})
+        return marker
+
+    text = _FINAL_TODAY_BEFORE_RE.sub(replace_hayom, text)
+    return text, anchors
+
+
+def _final_source_paragraph_index(source: str, position: int) -> tuple[int, float]:
+    before = str(source or "")[:max(0, int(position))]
+    paragraph_index = len(re.findall(r"\n{2,}", before))
+    blocks = [block for block in re.split(r"\n{2,}", str(source or ""))]
+    paragraph = blocks[min(paragraph_index, max(0, len(blocks) - 1))] if blocks else str(source or "")
+    paragraph_start = before.rfind("\n\n") + 2 if "\n\n" in before else 0
+    local_position = max(0, int(position) - paragraph_start)
+    ratio = local_position / max(1, len(paragraph))
+    return paragraph_index, min(1.0, max(0.0, ratio))
+
+
+def _final_insert_anchor_at_source_position(source: str, translated: str, anchor: dict[str, Any]) -> str:
+    value = str(translated or "")
+    replacement = str(anchor.get("replacement", "") or "")
+    paragraph_index, ratio = _final_source_paragraph_index(source, int(anchor.get("start", 0) or 0))
+    blocks = re.split(r"(\n{2,})", value)
+    text_indexes = [index for index, block in enumerate(blocks) if block and not re.fullmatch(r"\n{2,}", block)]
+    if not text_indexes:
+        return replacement
+    target_list_index = min(paragraph_index, len(text_indexes) - 1)
+    target_index = text_indexes[target_list_index]
+    block = blocks[target_index]
+    approximate = int(len(block) * ratio)
+    nearby = []
+    for match in re.finditer(r"[\s,;:.!?–—-]+", block):
+        nearby.append((abs(match.end() - approximate), match.end()))
+    insert_at = min(nearby)[1] if nearby else approximate
+    left = block[:insert_at].rstrip()
+    right = block[insert_at:].lstrip()
+    spacer_left = " " if left and not re.search(r"[\s,;:–—-]$", left) else ""
+    spacer_right = " " if right and not re.match(r"^[,;:.!?]", right) else ""
+    blocks[target_index] = left + spacer_left + replacement + spacer_right + right
+    return "".join(blocks)
+
+
+def _final_decode_special_anchors(source: str, translated: str, anchors: list[dict[str, Any]]) -> str:
+    value = str(translated or "")
+    source_has_hwg = any(item.get("kind") == "hwg" for item in anchors)
+    source_has_hayom = any(item.get("kind") == "hayom" for item in anchors)
+
+    if not source_has_hwg:
+        value = _FINAL_HWG_OUTPUT_RE.sub("", value)
+    if not source_has_hayom:
+        value = value.replace("#היום_לפני", "היום לפני")
+
+    for anchor in anchors:
+        marker = str(anchor.get("marker", "") or "")
+        replacement = str(anchor.get("replacement", "") or "")
+        if marker and marker in value:
+            value = value.replace(marker, replacement, 1)
+        elif replacement and replacement not in value:
+            value = _final_insert_anchor_at_source_position(source, value, anchor)
+
+    # Remove repeated/model-invented copies while preserving the first source-authorized copy.
+    if source_has_hwg:
+        value = _FINAL_HWG_OUTPUT_RE.sub("#HERE_WE_GO", value)
+        seen_hwg = False
+        def keep_first_hwg(match: re.Match[str]) -> str:
+            nonlocal seen_hwg
+            if seen_hwg:
+                return ""
+            seen_hwg = True
+            return "#HERE_WE_GO"
+        value = re.sub(r"(?i)#HERE_WE_GO", keep_first_hwg, value)
+    if source_has_hayom:
+        seen_hayom = False
+        def keep_first_hayom(match: re.Match[str]) -> str:
+            nonlocal seen_hayom
+            if seen_hayom:
+                return ""
+            seen_hayom = True
+            return "#היום_לפני"
+        value = re.sub(r"#היום_לפני", keep_first_hayom, value)
+
+    value = _FINAL_ANCHOR_RE.sub("", value)
+    value = re.sub(r"[ \t]+([,.;!?])", r"\1", value)
+    value = re.sub(r"([,;])\s*([.!?])", r"\2", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip(" \t,;:-")
+
+
+def _final_normalized_numbers(text: str) -> set[str]:
+    result: set[str] = set()
+    for raw in re.findall(r"(?<![A-Za-zא-ת])\d+(?:[.,]\d+)?(?:\s*[+])?(?![A-Za-zא-ת])", str(text or "")):
+        value = re.sub(r"\s+", "", raw).replace(",", ".")
+        if value.endswith(".0"):
+            value = value[:-2]
+        result.add(value)
+    return result
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    src = clean_before_translation(str(source or ""))
+    out = clean_before_translation(str(translated or ""))
+    issues: list[str] = []
+    if not has_meaningful_text(out):
+        return ["לא התקבל תרגום משמעותי"]
+    if translation_looks_incomplete(src, out):
+        issues.append("התרגום נראה חתוך או מקוצר")
+    source_numbers = _final_normalized_numbers(src)
+    output_numbers = _final_normalized_numbers(out)
+    missing = sorted(source_numbers - output_numbers)
+    if missing:
+        issues.append("חסרים מספרים מהמקור: " + ", ".join(missing[:8]))
+    currency_rules = (
+        (r"£|pounds?\b|sterling\b", r"£|ליש[\"״']?ט|פאונד", "חסר מטבע ליש״ט"),
+        (r"€|euros?\b", r"€|אירו", "חסר מטבע אירו"),
+        (r"\$|dollars?\b|usd\b", r"\$|דולר", "חסר מטבע דולר"),
+    )
+    for source_re, output_re, label in currency_rules:
+        if re.search(source_re, src, re.IGNORECASE) and not re.search(output_re, out, re.IGNORECASE):
+            issues.append(label)
+    last_word = re.sub(r"[.!?…,:;\s]+$", "", out).split()[-1] if out.split() else ""
+    partial_endings = {"ליש", "איר", "יור", "מילי", "מיליו", "דול", "פאונ", "בשווי", "תמורת", "של", "עם", "ו"}
+    if last_word in partial_endings or re.search(r"(?:ליש|מילי|אירו?\s+ב|million\s*)$", out, re.IGNORECASE):
+        issues.append("התרגום הסתיים באמצע מילה או משפט")
+    if src and len(src) > 45 and out and re.search(r"(?:\b(?:and|with|for|to|from|of)|[ושבלכמ])$", out.strip(), re.IGNORECASE):
+        issues.append("סיום התרגום אינו משפט שלם")
+    return list(dict.fromkeys(issues))
+
+
+def _final_repair_currency_tail(source: str, translated: str) -> str:
+    value = str(translated or "").strip()
+    if re.search(r"£|pounds?\b|sterling\b", source, re.IGNORECASE):
+        value = re.sub(r"\bליש\s*$", "ליש״ט.", value)
+        value = re.sub(r"\bלישט\s*$", "ליש״ט.", value)
+    if re.search(r"€|euros?\b", source, re.IGNORECASE):
+        value = re.sub(r"\bאיר\s*$", "אירו.", value)
+    return value
+
+
+def _final_translation_payload(main_source: str, quote_source: str, author_source: str, glossary: str) -> dict[str, Any]:
+    system_text = (
+        "You are a faithful senior Hebrew men's-football news translator. "
+        "The content has already been selected by local code. Never decide whether to publish and never return an empty result. "
+        "Translate every factual sentence fully and exactly. Do not summarize, omit, add, infer or change names, clubs, dates, numbers, fees, contract details or status. "
+        "Preserve every token shaped like ⟪LB0001⟫, ⟪HWG0001⟫ or ⟪HAYOM0001⟫ exactly and in the same position. "
+        "Do not move those tokens. Preserve lists and the original logical paragraph order. Remove only URLs and obvious source/promo credits. "
+        "Return valid JSON only."
+    )
+    prompt = (
+        "Translate the supplied fields to natural Hebrew football-news language.\n"
+        "Required JSON keys: main, quote, quote_author. Every value must be a string.\n"
+        "Do not translate or alter the protected markers.\n"
+        + (f"Use this names glossary when relevant:\n{glossary}\n\n" if glossary else "")
+        + "MAIN_TEXT:\n" + (main_source or "")
+        + "\n\nQUOTED_AUTHOR:\n" + (author_source or "")
+        + "\n\nQUOTED_TEXT:\n" + (quote_source or "")
+    )
+    return {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "candidateCount": 1,
+            "maxOutputTokens": GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS,
+            "responseMimeType": "application/json",
+        },
+    }
+
+
+def _final_parse_translation_json(raw: str) -> dict[str, str]:
+    parsed: Any = None
     try:
-        parsed = json.loads(raw)
-    except Exception as exc:
-        raise StableGeminiError(
-            "Gemini structured output was not valid JSON",
-            category="invalid_output",
-            retryable=True,
-            response_debug=gemini_response_debug(data, raw),
-            model=model,
-            key_index=key_index,
-        ) from exc
+        parsed = json.loads(str(raw or "").strip())
+    except Exception:
+        extractor = globals().get("_extract_json_object")
+        if callable(extractor):
+            parsed = extractor(raw)
     if not isinstance(parsed, dict):
-        raise StableGeminiError("Gemini structured output root is not an object", category="invalid_output", retryable=True, model=model, key_index=key_index)
-    return parsed
+        raise RuntimeError("Gemini returned non-JSON translation output")
+    return {
+        "main": str(parsed.get("main", "") or ""),
+        "quote": str(parsed.get("quote", "") or ""),
+        "quote_author": str(parsed.get("quote_author", "") or ""),
+    }
+
+
+def _final_apply_gemini_failure_cooldown(model: str, key: str, exc: Exception) -> tuple[bool, bool]:
+    """Return (try_next_key, try_next_model)."""
+    now = time.time()
+    code = int(getattr(exc, "code", 0) or 0)
+    lowered = str(exc or "").lower()
+    if code in {401, 403}:
+        GEMINI_KEY_COOLDOWNS[key] = max(GEMINI_KEY_COOLDOWNS.get(key, 0.0), now + 24 * 60 * 60)
+        return True, False
+    if code == 429 or "resource_exhausted" in lowered or "quota" in lowered:
+        retry_after = int(getattr(exc, "retry_after", 0) or 0)
+        cooldown = max(60, min(30 * 60, retry_after or 180))
+        GEMINI_KEY_COOLDOWNS[key] = max(GEMINI_KEY_COOLDOWNS.get(key, 0.0), now + cooldown)
+        return True, False
+    if code == 404 or "model not found" in lowered:
+        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + 6 * 60 * 60)
+        return False, True
+    if code == 400:
+        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + 30 * 60)
+        return False, True
+    if code in {408, 500, 502, 503, 504} or any(token in lowered for token in ("timeout", "timed out", "temporarily unavailable", "high demand", "connection")):
+        GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + 90)
+        return False, True
+    # Output/validation failures are model-specific, not key failures.
+    GEMINI_MODEL_COOLDOWNS[model] = max(GEMINI_MODEL_COOLDOWNS.get(model, 0.0), now + 45)
+    return False, True
 
 
 def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
-    """Exactly one real Gemini request, with cache and same-input coalescing."""
-    _reliable_hydrate_exact_post(post)
-    main_plan = _stable_prepare_layout(str(getattr(post, "text", "") or ""))
-    quote_text = str(getattr(post, "quoted_text", "") or "") if include_quote else ""
-    quote_plan = _stable_prepare_layout(quote_text)
-    author_source = clean_before_translation(str(getattr(post, "quoted_author", "") or "")) if include_quote else ""
-    if not main_plan.get("source") and not quote_plan.get("source"):
+    global TRANSLATION_CACHE_DIRTY
+    refresh_gemini_api_keys_from_env()
+    if gemini_requests_paused_until_refill():
+        raise TranslationUnavailable("Gemini requests are paused by the control setting")
+    keys = gemini_translation_keys_for_operation()
+    if not keys:
+        raise TranslationUnavailable("No Gemini API key is currently available")
+
+    raw_main = str(getattr(post, "text", "") or "")
+    raw_quote = str(getattr(post, "quoted_text", "") or "") if include_quote else ""
+    raw_author = str(getattr(post, "quoted_author", "") or "") if include_quote else ""
+
+    main_anchored, main_anchors = _final_encode_special_anchors(raw_main)
+    quote_anchored, quote_anchors = _final_encode_special_anchors(raw_quote)
+    main_encoded, main_breaks = _reliable_encode_breaks(main_anchored) if bool(getattr(post, "exact_source_structure", False)) else (main_anchored, [])
+    quote_encoded, quote_breaks = _reliable_encode_breaks(quote_anchored) if raw_quote and bool(getattr(post, "exact_source_structure", False)) else (quote_anchored, [])
+
+    main_source = clean_for_ai_translation(main_encoded) or clean_before_translation(main_encoded)
+    quote_source = clean_for_ai_translation(quote_encoded) if quote_encoded else ""
+    author_source = clean_before_translation(raw_author) if raw_author else ""
+    if not main_source and not quote_source:
         return "", "", ""
-    cache_key, source_hash = _stable_cache_material(main_plan, quote_plan, author_source)
-    cached = _stable_cache_get(cache_key, source_hash, post, str(main_plan.get("source", "")), str(quote_plan.get("source", "")))
-    if cached is not None:
-        post.translation_origin = "gemini_cache"
-        return cached
 
-    with _STABLE_TRANSLATION_LOCK:
-        existing = _STABLE_TRANSLATION_INFLIGHT.get(cache_key)
-        if existing is None:
-            event = Event()
-            _STABLE_TRANSLATION_INFLIGHT[cache_key] = event
-            owner = True
-        else:
-            event = existing
-            owner = False
-    if not owner:
-        event.wait(STABLE_GEMINI_TIMEOUT_SECONDS + 15)
-        cached = _stable_cache_get(cache_key, source_hash, post, str(main_plan.get("source", "")), str(quote_plan.get("source", "")))
-        if cached is not None:
-            post.translation_origin = "gemini_cache_coalesced"
-            return cached
-        with _STABLE_TRANSLATION_LOCK:
-            recent = _STABLE_TRANSLATION_RECENT_FAILURES.get(cache_key)
-        if recent and time.time() - recent[0] <= STABLE_GEMINI_FAILURE_SHARE_SECONDS:
-            raise StableGeminiError(recent[1], category="coalesced_failure", retryable=True)
-        raise StableGeminiError("Timed out waiting for identical Gemini translation", category="inflight_timeout", retryable=True)
+    cache_material = json.dumps(
+        {"main": raw_main, "quote": raw_quote, "author": raw_author, "exact": bool(getattr(post, "exact_source_structure", False))},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    cache_key = _FINAL_GEMINI_CACHE_PREFIX + hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+    cached_raw = TRANSLATION_CACHE.get(cache_key)
+    if cached_raw:
+        try:
+            cached = json.loads(cached_raw)
+            if isinstance(cached, dict) and cached.get("main"):
+                return str(cached.get("main", "")), str(cached.get("quote", "")), str(cached.get("quote_author", ""))
+        except Exception:
+            TRANSLATION_CACHE.pop(cache_key, None)
+            TRANSLATION_CACHE_DIRTY = True
 
-    key_index = -1
-    key = ""
-    model = ""
-    try:
-        key_index, key, model = _stable_select_route()
+    glossary = "\n".join(
+        part for part in (
+            relevant_name_glossary(raw_main),
+            relevant_name_glossary(raw_quote),
+            relevant_name_glossary(raw_author),
+        ) if part
+    )
+    payload = _final_translation_payload(main_source, quote_source, author_source, glossary)
+    models = gemini_models_for_operation()
+    last_error: Exception | None = None
+    requests_used = 0
+
+    for model in models:
+        if requests_used >= FINAL_GEMINI_NETWORK_BUDGET:
+            break
         globals()["GEMINI_LAST_MODEL_USED"] = model
-        payload = _stable_translation_payload(main_plan, quote_plan, author_source)
-        data = _stable_gemini_http_once(payload, key, key_index, model)
-        parsed = _stable_parse_gemini_response(data, model, key_index)
-        main = _stable_canonicalize_special_tags(_stable_rebuild_layout(main_plan, parsed.get("main_segments")))
-        quote = _stable_canonicalize_special_tags(_stable_rebuild_layout(quote_plan, parsed.get("quote_segments"))) if quote_plan.get("source") else ""
-        author = final_hebrew_polish(str(parsed.get("quote_author", "") or "")).strip() if author_source else ""
-        _stable_validate_translation(post, str(main_plan.get("source", "")), str(quote_plan.get("source", "")), main, quote)
-        _stable_cache_put(cache_key, source_hash, main, quote, author, model)
-        GEMINI_KEY_COOLDOWNS.pop(key, None)
-        GEMINI_MODEL_COOLDOWNS.pop(model, None)
-        mark_gemini_available()
-        post.translation_origin = "gemini"
-        return main, quote, author
-    except StableGeminiError as exc:
-        if key and key_index >= 0 and model:
-            _stable_record_route_failure(exc, key, key_index, model)
-        with _STABLE_TRANSLATION_LOCK:
-            _STABLE_TRANSLATION_RECENT_FAILURES[cache_key] = (time.time(), compact_debug_text(str(exc), 1000))
-        log_gemini_unavailable(exc)
-        raise
-    except Exception as exc:
-        wrapped = StableGeminiError(f"Unexpected Gemini translation failure: {compact_debug_text(str(exc), 900)}", category="unexpected", retryable=True, model=model, key_index=key_index if key_index >= 0 else None)
-        if key and key_index >= 0 and model:
-            _stable_record_route_failure(wrapped, key, key_index, model)
-        with _STABLE_TRANSLATION_LOCK:
-            _STABLE_TRANSLATION_RECENT_FAILURES[cache_key] = (time.time(), compact_debug_text(str(wrapped), 1000))
-        raise wrapped from exc
-    finally:
-        with _STABLE_TRANSLATION_LOCK:
-            finished = _STABLE_TRANSLATION_INFLIGHT.pop(cache_key, None)
-            if finished is not None:
-                finished.set()
-            cutoff = time.time() - STABLE_GEMINI_FAILURE_SHARE_SECONDS
-            for old_key, (saved_at, _message) in list(_STABLE_TRANSLATION_RECENT_FAILURES.items()):
-                if saved_at < cutoff:
-                    _STABLE_TRANSLATION_RECENT_FAILURES.pop(old_key, None)
+        move_model = False
+        for key_index, key in keys:
+            if requests_used >= FINAL_GEMINI_NETWORK_BUDGET:
+                break
+            try:
+                requests_used += 1
+                data = _final_gemini_request_json(model, key, payload, GEMINI_TRANSLATION_TIMEOUT_SECONDS)
+                raw_output, finish_reason = _final_gemini_response_text(data)
+                parsed = _final_parse_translation_json(raw_output)
+
+                main = final_visual_cleanup(final_hebrew_polish(parsed["main"]))
+                quote = final_visual_cleanup(final_hebrew_polish(parsed["quote"])) if quote_source else ""
+                author = final_hebrew_polish(parsed["quote_author"]).strip() if author_source else ""
+
+                if main_breaks:
+                    decoded, complete = _reliable_decode_breaks(main, main_breaks)
+                    main = decoded if complete else _restore_source_layout(post, main, quoted=False)
+                if quote_breaks and quote:
+                    decoded, complete = _reliable_decode_breaks(quote, quote_breaks)
+                    quote = decoded if complete else _restore_source_layout(post, quote, quoted=True)
+
+                main = _final_decode_special_anchors(raw_main, main, main_anchors)
+                quote = _final_decode_special_anchors(raw_quote, quote, quote_anchors) if quote else ""
+                main = _final_repair_currency_tail(raw_main, main)
+                quote = _final_repair_currency_tail(raw_quote, quote) if quote else ""
+                main = preserve_original_country_flags(raw_main, preserve_original_emojis(raw_main, main))
+                quote = preserve_original_country_flags(raw_quote, preserve_original_emojis(raw_quote, quote)) if quote else ""
+
+                issues = _final_translation_completeness_issues(raw_main, main)
+                if raw_quote and quote:
+                    issues.extend(_final_translation_completeness_issues(raw_quote, quote))
+                if translation_contradicts_source(raw_main + "\n" + raw_quote, main + "\n" + quote):
+                    issues.append("התרגום החליף קבוצה או ישות")
+                if issues:
+                    raise RuntimeError("Gemini output validation failed: " + "; ".join(dict.fromkeys(issues)))
+
+                TRANSLATION_CACHE[cache_key] = json.dumps(
+                    {"main": main, "quote": quote, "quote_author": author},
+                    ensure_ascii=False,
+                )
+                TRANSLATION_CACHE_DIRTY = True
+                GEMINI_KEY_COOLDOWNS.pop(key, None)
+                GEMINI_MODEL_COOLDOWNS.pop(model, None)
+                mark_gemini_available()
+                GEMINI_LAST_TRANSLATION_FAILURE.clear()
+                return main, quote, author
+            except Exception as exc:
+                last_error = exc
+                try_next_key, try_next_model = _final_apply_gemini_failure_cooldown(model, key, exc)
+                GEMINI_KEY_LAST_ERRORS[key] = {
+                    "at": time.time(),
+                    "label": gemini_key_label(key_index),
+                    "summary": gemini_error_summary(exc),
+                    "full_error": compact_debug_text(str(exc), 1200),
+                    "cooled": bool(GEMINI_KEY_COOLDOWNS.get(key, 0.0) > time.time()),
+                    "model": model,
+                }
+                logging.warning(
+                    "Gemini translation failed: model=%s key=%s request=%s/%s reason=%s",
+                    model,
+                    gemini_key_label(key_index),
+                    requests_used,
+                    FINAL_GEMINI_NETWORK_BUDGET,
+                    compact_debug_text(str(exc), 500),
+                )
+                if try_next_model:
+                    move_model = True
+                    break
+                if try_next_key:
+                    continue
+                move_model = True
+                break
+        if move_model:
+            continue
+
+    GEMINI_LAST_TRANSLATION_FAILURE.clear()
+    GEMINI_LAST_TRANSLATION_FAILURE.update({
+        "at": time.time(),
+        "username": str(getattr(post, "username", "") or ""),
+        "link": str(getattr(post, "link", "") or ""),
+        "summary": gemini_error_summary(last_error),
+        "error": compact_debug_text(str(last_error or "Unknown Gemini failure"), 1600),
+        "real_requests_used": requests_used,
+        "models": models,
+    })
+    raise TranslationUnavailable(
+        f"Gemini translation failed after {requests_used} request(s): {last_error or 'no usable response'}"
+    )
 
 
-def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    include_quote = bool(not is_self_quote(post) and post.quoted_text and TRANSLATE_QUOTED_POSTS)
+# ----- Final post-translation quality checks -----
+_PRE_USER_FINAL_TRANSLATION_QUALITY_ISSUE = globals().get("translation_quality_issue")
+
+
+def _final_combined_translation_inputs(source_or_post: Any, translated_text: Any = "", quoted_text: Any = "") -> tuple[str, str, Post | None]:
+    if isinstance(source_or_post, Post):
+        post = source_or_post
+        source = html.unescape("\n".join([
+            _post_original_text(post, quoted=False),
+            _post_original_text(post, quoted=True),
+        ]))
+        translated = "\n".join([str(translated_text or ""), str(quoted_text or "")]).strip()
+        return source, translated, post
+    return str(source_or_post or ""), str(translated_text or ""), None
+
+
+def _final_feminine_football_signal(text: str) -> bool:
+    value = html.unescape(str(text or ""))
+    if re.search(r"\b(?:women'?s?|female|woman|girl|lionesses|wsl|nwsl|uwcl|liga\s+f)\b|"
+                 r"כדורגל\s+נשים|נבחרת\s+הנשים|ליגת\s+הנשים|שחקנית|כדורגלנית|מאמנת", value, re.IGNORECASE):
+        return True
+    feminine_hits = len(re.findall(r"(?:\bher\b|\bshe\b|שלה|בחייה|הצטרפה|חתמה|כבשה|בישלה|שיחקה|נבחרה)", value, re.IGNORECASE))
+    football_context = bool(re.search(r"football|club|contract|signing|player|match|goal|כדורגל|מועדון|חוזה|החתמה|משחק|שער", value, re.IGNORECASE))
+    return football_context and feminine_hits >= 2
+
+
+def translation_quality_issues(source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any) -> list[str]:
+    source, translated, post = _final_combined_translation_inputs(source_or_post, translated_text, quoted_text)
+    issues = _final_translation_completeness_issues(source, translated)
+    if re.search(r"```|\"\s*(?:main|quote|quote_author)\s*\"\s*:", translated, re.IGNORECASE):
+        issues.append("דליפת JSON בתוך התרגום")
+    if _final_feminine_football_signal(source + "\n" + translated):
+        issues.append("כדורגל נשים נחסם")
+    if post is not None and _final_explicit_youth_text(source + "\n" + translated):
+        if not (_final_is_fabrizio(post) and _final_source_has_here_we_go(post)):
+            issues.append("אקדמיה, נוער או מילואים נחסמו")
+    foreign = re.findall(r"[\u0400-\u052F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]{2,}", translated)
+    if foreign:
+        issues.append("נשאר טקסט בשפה זרה שאינה עברית או אנגלית")
+    return list(dict.fromkeys(issues))[:10]
+
+
+def translation_quality_issue(source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    issues = translation_quality_issues(source_or_post, translated_text, quoted_text, *args, **kwargs)
+    return issues[0] if issues else ""
+
+
+def check_translation_quality(source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any) -> list[str]:
+    return translation_quality_issues(source_or_post, translated_text, quoted_text, *args, **kwargs)
+
+
+def translation_quality_block_reason(source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any) -> str:
+    return translation_quality_issue(source_or_post, translated_text, quoted_text, *args, **kwargs)
+
+
+def is_translation_quality_blocked(source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any) -> bool:
+    return bool(translation_quality_issue(source_or_post, translated_text, quoted_text, *args, **kwargs))
+
+
+# ----- Requested source/editorial policy -----
+_FINAL_SPECIAL_SOURCE_LOWER_DIVISION_RE = re.compile(
+    r"\b(?:2\.?\s*bundesliga|bundesliga\s*2|second\s+bundesliga|championship|league\s+one|league\s+two|"
+    r"segunda(?:\s+divisi[oó]n)?|laliga\s*2|serie\s+b|ligue\s*2|eFL\s+championship|european\s+league\s+2|"
+    r"eerste\s+divisie|keuken\s+kampioen|primera\s+federaci[oó]n|segunda\s+federaci[oó]n|"
+    r"3\.?\s*liga|national\s+league|league\s+two|division\s+2|second\s+division|third\s+division)\b|"
+    r"בונדסליגה\s+(?:הגרמנית\s+)?השנייה|הליגה\s+הגרמנית\s+השנייה|ליגה\s+שנייה|הליגה\s+השנייה|"
+    r"ליגה\s+שלישית|הליגה\s+השלישית|צ'מפיונשיפ|סרייה\s+ב|ליג\s*2|לה\s+ליגה\s*2|סגונדה",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_ALLOWED_TOP_COMPETITION_RE = re.compile(
+    r"\b(?:premier\s+league|la\s+liga|serie\s+a|bundesliga|ligue\s*1|primeira\s+liga|eredivisie|"
+    r"belgian\s+pro\s+league|jupiler\s+pro\s+league|scottish\s+premiership|s[uü]per\s+lig|"
+    r"major\s+league\s+soccer|mls|saudi\s+pro\s+league|brasileir[aã]o|serie\s+a\s+brazil|"
+    r"argentine\s+primera|liga\s+mx|israeli\s+premier\s+league|champions\s+league|europa\s+league|"
+    r"conference\s+league|world\s+cup|euros?|copa\s+america|afcon|nations\s+league)\b|"
+    r"פרמייר\s+ליג|לה\s+ליגה|הליגה\s+הספרדית|סרייה\s+א|בונדסליגה|ליג\s*1|ליגה\s*1|"
+    r"הליגה\s+הפורטוגלית|הליגה\s+ההולנדית|הליגה\s+הבלגית|הליגה\s+הסקוטית|הליגה\s+הטורקית|"
+    r"MLS|הליגה\s+הסעודית|הליגה\s+הברזילאית|הליגה\s+הארגנטינאית|הליגה\s+המקסיקנית|"
+    r"ליגת\s+העל|ליגת\s+האלופות|הליגה\s+האירופית|קונפרנס|מונדיאל|גביע\s+העולם|יורו|קופה\s+אמריקה|אליפות\s+אפריקה|ליגת\s+האומות",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_EXPLICIT_YOUTH_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:U[- ]?(?:15|16|17|18|19|20|21|23)|under[- ]?(?:15|16|17|18|19|20|21|23)|"
+    r"academy|youth(?:\s+(?:team|side|squad))?|primavera|castilla|reserve(?:\s+(?:team|side|squad))?|"
+    r"B\s+team|development\s+squad|next\s+gen|will\s+join\s+when\s+(?:he|the\s+player)\s+turns?\s+18|"
+    r"joins?\s+(?:in|when)\s+20\d{2}\s+after\s+turning\s+18|"
+    r"אקדמיה|מחלקת\s+נוער|קבוצת\s+נוער|סגל\s+הנוער|קבוצת\s+מילואים|סגל\s+המילואים|"
+    r"הקבוצה\s+הצעירה|מיועד\s+לקבוצה\s+הצעירה|יצטרף\s+כשימלאו\s+לו\s+18|יצטרף\s+לאחר\s+שימלאו\s+לו\s+18)"
+    r"(?=$|[^A-Za-z0-9])",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_SPECIAL_TRANSFER_RE = re.compile(
+    r"\b(?:transfer|sign(?:s|ed|ing)?|join(?:s|ed|ing)?|loan|option\s+to\s+buy|buy[- ]?back|"
+    r"agreement|personal\s+terms|medical|bid|offer|negotiations?|talks?|deal|here\s+we\s+go)\b|"
+    r"העבר(?:ה|ת)|עובר|מצטרף|יחתום|חתם|החתמ(?:ה|ת)|השאלה|אופציית\s+רכישה|רכישה\s+בחזרה|"
+    r"סיכום|הסכם|תנאים\s+אישיים|בדיקות\s+רפואיות|הצעה|משא\s+ומתן|מגעים|עסקה",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_STRONG_STAT_RE = re.compile(
+    r"\b(?:record|most|fewest|highest|lowest|first\s+player|only\s+player|ranked|top\s+two|"
+    r"goals?|assists?|clean\s+sheets?|chances?\s+created|passes?|tackles?|duels?|minutes?|appearances?|"
+    r"titles?|troph(?:y|ies)|champion|won|achievement|milestone|percent|percentage|per\s+90)\b|"
+    r"שיא|הכי\s+הרבה|הכי\s+מעט|הגבוה\s+ביותר|הנמוך\s+ביותר|ראשון|שני|דורג|שערים|בישולים|"
+    r"שערים\s+נקיים|יצירת\s+מצבים|מסירות|תיקולים|מאבקים|דקות|הופעות|תארים|אליפויות|זכה|הישג|"
+    r"אחוז|ל[-־]?90\s+דקות",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_OPINION_HYPOTHETICAL_RE = re.compile(
+    r"\b(?:what\s+if|imagine|put\s+.+\s+in\s+.+\s+and\s+tell\s+me|how\s+many\s+.+\s+would|"
+    r"would\s+he|debate|unpopular\s+opinion|agree\s+or\s+disagree|who\s+is\s+better)\b|"
+    r"שים\s+את\s+.+\s+ב.+\s+ותגיד\s+לי|בכמה\s+.+\s+היה\s+זוכה|מה\s+היה\s+קורה\s+אם|"
+    r"דעה\s+לא\s+פופולרית|מי\s+יותר\s+טוב|מסכימים\s+או\s+לא|ויכוח",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_SOCIAL_TRIVIA_RE = re.compile(
+    r"\b(?:instagram|tiktok|followers?|profile\s+(?:picture|photo)|deleted\s+(?:a\s+)?post|"
+    r"social\s+media\s+comments?|fan\s+comments?|old\s+post|changed\s+(?:his|her|their)\s+profile)\b|"
+    r"אינסטגרם|טיקטוק|עוקבים|תמונת\s+פרופיל|מחק(?:ה|ו)?\s+פוסט|תגובות\s+אוהדים|פוסט\s+ישן\s+ברשת",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_CONTRACT_EXTENSION_RE = re.compile(
+    r"\b(?:contract\s+extension|extends?\s+(?:his\s+)?contract|new\s+contract|renewal|renews?\s+(?:his\s+)?deal)\b|"
+    r"הארכת\s+חוזה|חוזה\s+חדש|האריך\s+את\s+חוזהו|האריכה\s+את\s+חוזהו|חידוש\s+חוזה",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_STRONG_REPORT_RE = re.compile(
+    r"\b(?:exclusive|advanced\s+talks?|deal\s+expected\s+to\s+close|personal\s+terms\s+(?:almost\s+)?agreed|"
+    r"club\s+to\s+club\s+talks?|set\s+to\s+sign|medical(?:s)?\s+(?:booked|scheduled)|agreement\s+reached|green\s+light)\b|"
+    r"בלעדי|משא\s+ומתן\s+מתקדם|העסקה\s+צפויה\s+להיסגר|התנאים\s+האישיים\s+כמעט\s+סוכמו|"
+    r"הדיונים\s+בין\s+המועדונים\s+ממשיכים|צפוי\s+לחתום|בדיקות\s+רפואיות|הושג\s+הסכם|אור\s+ירוק",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_source_text(post: Post) -> str:
+    return html.unescape("\n".join(filter(None, [
+        _post_original_text(post, quoted=False),
+        _post_original_text(post, quoted=True),
+    ]))).strip()
+
+
+def _final_is_fabrizio(post: Post) -> bool:
+    return str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() == "fabrizioromano"
+
+
+def _final_source_has_here_we_go(post: Post) -> bool:
+    return bool(_FINAL_HWG_SOURCE_RE.search(_post_original_text(post, quoted=False)))
+
+
+def _final_explicit_youth_text(text: str) -> bool:
+    return bool(_FINAL_EXPLICIT_YOUTH_RE.search(str(text or "")))
+
+
+def is_youth_or_academy_post(post: Post) -> bool:
+    return _final_explicit_youth_text(_final_source_text(post))
+
+
+def _final_is_special_source(post: Post) -> bool:
+    username = str(getattr(post, "username", "") or "")
+    return bool(
+        value_contains_football_factly(username)
+        or value_contains_optajoe(username)
+        or value_contains_footballtweet(username)
+    )
+
+
+def _final_is_strong_stat_fact(text: str) -> bool:
+    value = str(text or "")
+    numeric = bool(re.search(r"\d+(?:[.,]\d+)?(?:%|\+)?", value))
+    historical = _acceptance_historical_significance(value) if "_acceptance_historical_significance" in globals() else False
+    return bool((numeric and _FINAL_STRONG_STAT_RE.search(value)) or historical)
+
+
+def _final_special_source_issue(post: Post) -> str:
+    if not _final_is_special_source(post):
+        return ""
+    text = _final_source_text(post)
+    if _final_feminine_football_signal(text):
+        return "special_source_women"
+    if is_other_sport_post(post):
+        return "special_source_other_sport"
+    if _final_explicit_youth_text(text):
+        return "special_source_youth_or_reserve"
+    if _FINAL_SPECIAL_TRANSFER_RE.search(text):
+        return "special_source_transfer_report"
+    if _FINAL_SPECIAL_SOURCE_LOWER_DIVISION_RE.search(text):
+        return "special_source_lower_division"
+    if _FINAL_OPINION_HYPOTHETICAL_RE.search(text):
+        return "special_source_opinion_or_hypothetical"
+    if _FINAL_SOCIAL_TRIVIA_RE.search(text):
+        return "special_source_social_media_trivia"
+    if not _final_is_strong_stat_fact(text):
+        return "special_source_not_meaningful_fact"
+    explicit_competition = bool(re.search(r"league|liga|serie|bundesliga|ligue|divisi[oó]n|ליגה|סרייה|בונדסליגה|ליג\s*\d", text, re.IGNORECASE))
+    if explicit_competition and not _FINAL_ALLOWED_TOP_COMPETITION_RE.search(text):
+        return "special_source_competition_not_allowed"
+    return ""
+
+
+def _final_contract_extension_tier1(post: Post) -> bool:
+    text = _final_source_text(post)
+    return bool(
+        _FINAL_CONTRACT_EXTENSION_RE.search(text)
+        and matches_managed_team_tier("tier1", text)
+        and not _final_explicit_youth_text(text)
+    )
+
+
+def _final_padova_buyback_minor_transfer(post: Post) -> bool:
+    text = _final_source_text(post)
+    return bool(
+        re.search(r"Padova|פדובה", text, re.IGNORECASE)
+        and re.search(r"loan|השאלה", text, re.IGNORECASE)
+        and re.search(r"Inter|אינטר", text, re.IGNORECASE)
+        and re.search(r"buy[- ]?back|רכישה\s+בחזרה|קנייה\s+בחזרה", text, re.IGNORECASE)
+    )
+
+
+def _final_hypothetical_or_social_noise(post: Post) -> str:
+    text = _final_source_text(post)
+    if _FINAL_OPINION_HYPOTHETICAL_RE.search(text):
+        return "opinion_or_hypothetical"
+    if _FINAL_SOCIAL_TRIVIA_RE.search(text):
+        return "social_media_trivia"
+    return ""
+
+
+_PRE_USER_FINAL_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    text = _final_source_text(post)
+
+    # Absolute hard blocks, including feminine-language cases missed by older lists.
+    if _final_feminine_football_signal(text) or is_women_or_wnba_post(post):
+        return "women_football_final"
+    if is_other_sport_post(post):
+        return "other_sport_final"
+
+    # Every genuine Fabrizio HERE WE GO passes all importance/youth/fee/team gates.
+    # Exact/link/event duplicates are checked elsewhere and remain active.
+    if _final_is_fabrizio(post) and _final_source_has_here_we_go(post):
+        return ""
+
+    if _final_explicit_youth_text(text):
+        return "youth_or_academy_final"
+    if _final_padova_buyback_minor_transfer(post):
+        return "minor_padova_buyback_transfer"
+    noise = _final_hypothetical_or_social_noise(post)
+    if noise:
+        return noise
+    special_issue = _final_special_source_issue(post)
+    if special_issue:
+        return special_issue
+
+    base = _PRE_USER_FINAL_PRE_SEND(post)
+
+    # First-team contract renewals at tier-A clubs are meaningful news.
+    if base and _final_contract_extension_tier1(post):
+        hard_tokens = ("women", "other_sport", "old_post", "duplicate", "podcast", "live_goal")
+        if not any(token in str(base).casefold() for token in hard_tokens):
+            return ""
+
+    # A concrete report does not need the literal word "report".
+    if base and _FINAL_STRONG_REPORT_RE.search(text) and _acceptance_text_has_managed_club(text):
+        soft_tokens = ("vague", "unclear", "weak", "no_action", "contextless", "too_short", "importance")
+        if any(token in str(base).casefold() for token in soft_tokens):
+            return ""
+    return base
+
+
+_PRE_USER_FINAL_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    mapping = {
+        "women_football_final": "כדורגל נשים נחסם לפי הטקסט המקורי או התרגום",
+        "other_sport_final": "הפוסט עוסק בענף שאינו כדורגל גברים",
+        "youth_or_academy_final": "אקדמיה, נוער או קבוצת מילואים נחסמו",
+        "minor_padova_buyback_transfer": "השאלה שולית לפדובה; אינטר מוזכרת רק בסעיף רכישה בחזרה",
+        "opinion_or_hypothetical": "דעה, ויכוח או השוואה היפותטית ללא דיווח עובדתי",
+        "social_media_trivia": "תוכן שולי על אינסטגרם, טיקטוק, עוקבים או תגובות ברשת",
+        "special_source_women": "מקור העובדות/אופטה/ציוצים: כדורגל נשים נחסם",
+        "special_source_other_sport": "מקור העובדות/אופטה/ציוצים: ענף שאינו כדורגל גברים",
+        "special_source_youth_or_reserve": "מקור העובדות/אופטה/ציוצים: נוער, אקדמיה או מילואים",
+        "special_source_transfer_report": "מקור העובדות/אופטה/ציוצים מיועד לעובדות וסטטיסטיקות, לא לדיווח העברה רגיל",
+        "special_source_lower_division": "הנתון עוסק בליגה שאינה הליגה הראשונה במדינה",
+        "special_source_opinion_or_hypothetical": "דעה או השוואה היפותטית אינה עובדה לפרסום",
+        "special_source_social_media_trivia": "תוכן שולי מרשתות חברתיות אינו עובדה לפרסום",
+        "special_source_not_meaningful_fact": "לא זוהה שיא, הישג או נתון משמעותי מספיק",
+        "special_source_competition_not_allowed": "הליגה או המסגרת אינן ברשימת הליגות הבכירות המותרות",
+    }
+    return mapping.get(str(reason or ""), _PRE_USER_FINAL_HEBREW_REASON(reason))
+
+
+# ----- Final text cleanup and exact hashtag position -----
+_FINAL_EDITORIAL_TAILS = {
+    "וילן", "טון", "יוצא דופן", "מדויק", "קליני", "מדהים", "וואו", "אמן",
+    "villain", "tone", "exceptional", "clinical", "precision", "wow", "special",
+}
+
+
+def _final_known_team_aliases() -> set[str]:
+    aliases: set[str] = set()
     try:
-        main, quote, author = gemini_translate_post_once(post, include_quote)
-        if not (has_meaningful_text(main) or has_meaningful_text(quote)):
-            raise StableGeminiError("Gemini returned no publishable Hebrew", category="invalid_output", retryable=True)
-        return main, quote, author
-    except Exception as exc:
-        GEMINI_LAST_TRANSLATION_FAILURE.clear()
-        GEMINI_LAST_TRANSLATION_FAILURE.update({
-            "at": time.time(),
-            "username": str(getattr(post, "username", "") or ""),
-            "link": str(getattr(post, "link", "") or ""),
-            "summary": getattr(exc, "category", gemini_error_summary(exc)),
-            "error": compact_debug_text(str(exc), 1200),
-            "real_requests_used": 1 if getattr(exc, "category", "") not in {"no_key", "paused", "inflight_timeout", "coalesced_failure"} else 0,
-            "response_debug": compact_debug_text(getattr(exc, "response_debug", ""), 1200),
-            "model": str(getattr(exc, "model", "") or GEMINI_LAST_MODEL_USED),
-        })
-        raise
+        items = all_team_catalog_items()
+    except Exception:
+        items = TEAM_CATALOG
+    for item in items.values() if isinstance(items, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        for value in [item.get("name", ""), *(item.get("aliases", []) or [])]:
+            normalized = re.sub(r"\s+", " ", str(value or "").strip(" .,!?:;–—-\n")).casefold()
+            if normalized:
+                aliases.add(normalized)
+    return aliases
 
 
-def manual_force_translation(post: Post) -> tuple[str, str, str]:
-    _reliable_hydrate_exact_post(post, force=True)
-    translated = translate_post_for_send(post)
-    post.translation_origin = "gemini" if not str(getattr(post, "translation_origin", "")).startswith("gemini_cache") else post.translation_origin
-    return translated
+def _final_remove_orphan_tail(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    team_aliases = _final_known_team_aliases()
 
-_PRE_STABLE_OUTGOING_BODY_TEXT = _outgoing_body_text
+    def is_orphan(tail: str, earlier: str) -> bool:
+        normalized = re.sub(r"\s+", " ", tail.strip(" .,!?:;–—-\n")).casefold()
+        if not normalized or len(normalized.split()) > 3:
+            return False
+        if normalized in _FINAL_EDITORIAL_TAILS:
+            return True
+        earlier_normalized = re.sub(r"\s+", " ", str(earlier or "")).casefold()
+        if normalized in team_aliases and normalized in earlier_normalized:
+            return True
+        # RSS/translation occasionally leaves a repeated player or club label
+        # after the last full stop.  A short content phrase already present in
+        # the completed sentence is an orphan even when it is not in our catalog.
+        tail_words = normalized.split()
+        generic_stopwords = {"של", "עם", "על", "אל", "את", "גם", "כדי", "לפי", "the", "of", "and", "with", "for"}
+        if (1 <= len(tail_words) <= 3 and len(normalized) >= 3
+                and not all(word in generic_stopwords for word in tail_words)
+                and re.search(rf"(?<![A-Za-zא-ת])(?:[בוכלמשה])?{re.escape(normalized)}(?![A-Za-zא-ת])", earlier_normalized)):
+            return True
+        if re.fullmatch(r"[A-Za-z]{3,18}", normalized) and normalized not in earlier_normalized:
+            return True
+        return False
+
+    blocks = [block for block in re.split(r"\n{2,}", value) if block.strip()]
+    while len(blocks) >= 2 and is_orphan(blocks[-1], "\n\n".join(blocks[:-1])):
+        blocks.pop()
+    value = "\n\n".join(blocks).strip()
+
+    inline = re.match(r"(?s)^(.*?[.!?])\s+([^.!?\n]{1,45}[.]?)$", value)
+    if inline and is_orphan(inline.group(2), inline.group(1)):
+        value = inline.group(1).rstrip()
+    return value.strip()
 
 
-def _stable_source_tag_counts(post: Post, quoted: bool = False) -> dict[str, int]:
-    source = _post_original_text(_ensure_post_original_structure(post), quoted=quoted)
-    cleaned = _stable_clean_source_preserving_anchors(source)
-    return {"#HERE_WE_GO": cleaned.count("#HERE_WE_GO"), "#היום_לפני": cleaned.count("#היום_לפני")}
+def _acceptance_hashtag_rules(post: Post, text: str) -> str:
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    value = str(text or "")
+    source_has_hwg = bool(_FINAL_HWG_SOURCE_RE.search(source))
+    source_has_hayom = bool(_FINAL_TODAY_BEFORE_RE.search(source))
+    if source_has_hwg:
+        value = _FINAL_HWG_OUTPUT_RE.sub("#HERE_WE_GO", value)
+    else:
+        value = _FINAL_HWG_OUTPUT_RE.sub("", value)
+        value = value.replace("#HERE_WE_GO", "")
+    if source_has_hayom:
+        value = value.replace("היום לפני", "#היום_לפני")
+    else:
+        value = value.replace("#היום_לפני", "היום לפני")
+    value = re.sub(r"[ \t]+([,.;!?])", r"\1", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+_PRE_USER_FINAL_OUTGOING_BODY = _outgoing_body_text
 
 
 def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
-    """Final location-safe tag renderer; it never prepends or appends a missing tag."""
-    value = _PRE_STABLE_OUTGOING_BODY_TEXT(post, translated, quoted=quoted)
-    value = _stable_canonicalize_special_tags(value)
-    expected = _stable_source_tag_counts(post, quoted=quoted)
-    for tag in ("#HERE_WE_GO", "#היום_לפני"):
-        wanted = int(expected.get(tag, 0))
-        present = value.count(tag)
-        if wanted == 0 and present:
-            value = value.replace(tag, "")
-        elif present != wanted:
-            # The translation layer reconstructs anchors deterministically. If an
-            # old prepared/cached payload violates that contract, do not guess a
-            # new position here; log it and leave the post for a clean retranslation.
-            logging.error("Special tag position contract failed for %s: source=%s output=%s", tag, wanted, present)
-    value = re.sub(r"[ \t]+([,.;:!?])", r"\1", value)
+    value = _PRE_USER_FINAL_OUTGOING_BODY(post, translated, quoted=quoted)
+    if quoted:
+        return value
+    value = _final_remove_orphan_tail(value)
+    value = _acceptance_hashtag_rules(post, value)
     value = re.sub(r"[ \t]{2,}", " ", value)
-    value = re.sub(r"[ \t]+\n", "\n", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
-    return value.strip(" ,")
+    return value.strip()
 
 
-def _stable_translation_acceptance_tests() -> list[str]:
-    """Offline acceptance suite. Set WINNER_RUN_ACCEPTANCE_TESTS=1 to run it."""
-    passed: list[str] = []
+# ----- Statistics from special sources reply to a recent transfer about the same player -----
+_PRE_USER_FINAL_REPLY_TARGET = find_bot_reply_target_for_post
 
-    def check(name: str, condition: bool) -> None:
-        if not condition:
-            raise AssertionError(name)
-        passed.append(name)
 
-    plan = _stable_prepare_layout("Opening HERE WE GO! Middle On this day ending")
-    rebuilt = _stable_rebuild_layout(plan, [f"קטע{i}" for i in range(len(plan["segments"]))])
-    check("here_we_go_keeps_inline_position", rebuilt.find("קטע0") < rebuilt.find("#HERE_WE_GO") < rebuilt.find("קטע1"))
-    check("today_before_keeps_inline_position", rebuilt.find("קטע1") < rebuilt.find("#היום_לפני") < rebuilt.find("קטע2"))
-    check("special_tags_are_canonical", rebuilt.count("#HERE_WE_GO") == 1 and rebuilt.count("#היום_לפני") == 1)
+def _final_name_phrases(text: str) -> set[str]:
+    value = html.unescape(str(text or ""))
+    phrases: set[str] = set()
+    extractor = globals().get("_confirmation_name_phrases")
+    if callable(extractor):
+        try:
+            for phrase in extractor(value):
+                normalized = _duplicate_phrase_norm(phrase) if "_duplicate_phrase_norm" in globals() else normalize_memory_text(phrase)
+                if len(normalized) >= 5:
+                    phrases.add(normalized)
+        except Exception:
+            pass
+    for match in re.finditer(r"(?<![א-ת])([א-ת][א-ת'׳״-]{2,}(?:\s+[א-ת][א-ת'׳״-]{2,}){1,3})(?![א-ת])", value):
+        normalized = normalize_memory_text(match.group(1))
+        if len(normalized) >= 5:
+            phrases.add(normalized)
+    return phrases
 
-    layout_plan = _stable_prepare_layout("First line\nSecond line\n\nThird paragraph")
-    layout_output = _stable_rebuild_layout(layout_plan, [f"שורה{i}" for i in range(len(layout_plan["segments"]))])
-    check("single_line_break_preserved", layout_output.count("\n") == 3)
-    check("blank_line_preserved", "\n\n" in layout_output)
 
-    plain_plan = _stable_prepare_layout("Ordinary transfer update")
-    plain_output = _stable_rebuild_layout(plain_plan, ["עדכון העברה רגיל"])
-    check("tags_are_never_invented", "#HERE_WE_GO" not in plain_output and "#היום_לפני" not in plain_output)
+def _final_same_player_fuzzy(current_text: str, previous_text: str) -> bool:
+    current = _final_name_phrases(current_text)
+    previous = _final_name_phrases(previous_text)
+    if current & previous:
+        return True
+    for left in current:
+        for right in previous:
+            if SequenceMatcher(None, left, right).ratio() >= 0.84:
+                return True
+    return False
 
-    quote_plan = _stable_prepare_layout("")
-    payload = _stable_translation_payload(plain_plan, quote_plan, "")
-    config = payload.get("generationConfig", {})
-    check("structured_json_requested", config.get("responseMimeType") == "application/json" and isinstance(config.get("responseSchema"), dict))
-    check("deprecated_sampling_removed", not any(key in config for key in ("temperature", "topP", "topK")))
-    check("production_timeout_is_bounded", STABLE_GEMINI_TIMEOUT_SECONDS >= 30)
 
-    fake = {
-        "candidates": [{
-            "finishReason": "STOP",
-            "content": {"parts": [{"text": json.dumps({"main_segments": ["טקסט"], "quote_segments": [], "quote_author": ""}, ensure_ascii=False)}]},
-        }]
-    }
-    parsed = _stable_parse_gemini_response(fake, "test-model", 0)
-    check("stop_response_parses", parsed.get("main_segments") == ["טקסט"])
-    try:
-        _stable_parse_gemini_response({"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "{}"}]}}]}, "test-model", 0)
-        max_tokens_rejected = False
-    except StableGeminiError:
-        max_tokens_rejected = True
-    check("truncated_response_rejected", max_tokens_rejected)
+def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    existing = _PRE_USER_FINAL_REPLY_TARGET(post, state)
+    if existing:
+        return existing
+    if not _final_is_special_source(post) or not _final_is_strong_stat_fact(_final_source_text(post)):
+        return {}
+    current_text = _final_source_text(post)
+    current_sig = news_event_signature(post)
+    current_players, _current_teams = _canonical_sets_from_signature(current_sig)
+    now = time.time()
+    for key in (BOT_SENT_REPLY_STATE_KEY, CHANNEL_RECENT_NEWS_STATE_KEY):
+        rows = state.get(key, []) if isinstance(state, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for item in reversed(rows):
+            if not isinstance(item, dict):
+                continue
+            ts = float(item.get("ts", 0.0) or 0.0)
+            if ts and now - ts > 24 * 60 * 60:
+                continue
+            ids = _message_ids_from_reply_item(item)
+            if not ids:
+                continue
+            previous_sig = item.get("signature", {})
+            previous_players, _previous_teams = _canonical_sets_from_signature(previous_sig) if isinstance(previous_sig, dict) else (set(), set())
+            previous_text = str(item.get("text") or item.get("original_text") or item.get("preview") or item.get("ai_text") or "")
+            actions = set(previous_sig.get("actions", [])) if isinstance(previous_sig, dict) else set()
+            previous_is_transfer = bool(_FINAL_SPECIAL_TRANSFER_RE.search(previous_text) or _duplicate_family_overlap(actions, {"transfer", "agreement", "sign", "medical", "contract"}))
+            same_player = bool(current_players & previous_players) or _final_same_player_fuzzy(current_text, previous_text)
+            if previous_is_transfer and same_player:
+                return ids
+    return {}
 
-    check("numbers_normalize_without_change", _stable_numeric_facts("€50m, 2026, 1,000") == _stable_numeric_facts("50 מיליון, 2026, 1000"))
-    try:
-        _stable_validate_translation(None, "Player signs for €50m until 2026", "", "השחקן חתם תמורת 50 מיליון עד 2027", "")
-        changed_number_rejected = False
-    except StableGeminiError:
-        changed_number_rejected = True
-    check("changed_number_is_rejected", changed_number_rejected)
 
-    key1, digest1 = _stable_cache_material(plain_plan, quote_plan, "")
-    key2, digest2 = _stable_cache_material(plain_plan, quote_plan, "")
-    changed_plan = _stable_prepare_layout("Different transfer update")
-    key3, _digest3 = _stable_cache_material(changed_plan, quote_plan, "")
-    check("cache_key_is_deterministic", key1 == key2 and digest1 == digest2)
-    check("cache_key_changes_with_source", key1 != key3)
-    check("cache_is_versioned", key1.startswith(f"stable-gemini-v{STABLE_TRANSLATION_SCHEMA_VERSION}:"))
-
-    models = _stable_gemini_models()
-    check("retired_models_excluded", not any(model in GEMINI_SHUTDOWN_MODELS for model in models))
-    check("exactly_three_persistent_attempts", AUTO_GEMINI_RETRY_ATTEMPTS == 3 and GEMINI_MAX_REAL_TRANSLATION_REQUESTS == 1)
-    check("retry_state_is_versioned_for_repaired_engine", GEMINI_RETRY_SCHEDULE_STATE_KEY == "__gemini_retry_schedule_v3_stable_translation__")
-    check("translation_cache_filename_preserved", TRANSLATION_CACHE_FILE == "football_translation_cache.json")
-    check(
-        "rss_functions_untouched",
-        all(id(globals().get(name)) == function_id for name, function_id in _STABLE_RSS_FUNCTION_IDS.items()),
-    )
-
-    # Integration: a successful identical translation is requested once, then
-    # served from cache; simultaneous callers also share one in-flight request.
-    saved_hydrate = globals()["_reliable_hydrate_exact_post"]
-    saved_select = globals()["_stable_select_route"]
-    saved_http = globals()["_stable_gemini_http_once"]
-    saved_save_cache = globals()["save_translation_cache"]
-    cache_snapshot = dict(TRANSLATION_CACHE)
-    request_counter = {"count": 0}
-
-    def fake_http(payload_value: dict[str, Any], _key: str, _key_index: int, _model: str) -> dict[str, Any]:
-        request_counter["count"] += 1
-        if "Another" in str(payload_value):
-            time.sleep(0.15)
-        request_input = json.loads(payload_value["contents"][0]["parts"][0]["text"])
-
-        def fake_segments(values: list[str]) -> list[str]:
-            output: list[str] = []
-            for segment in values:
-                translated = str(segment).replace("Another", "עוד").replace("Deal", "עסקה").replace("deal", "עסקה")
-                translated = translated.replace(" for ", " תמורת ").replace(" in ", " בשנת ").replace("50m", "50 מיליון")
-                output.append(translated)
-            return output
-
-        body = {
-            "main_segments": fake_segments(request_input.get("main_segments", [])),
-            "quote_segments": fake_segments(request_input.get("quote_segments", [])),
-            "quote_author": "",
-        }
-        return {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps(body, ensure_ascii=False)}]}}]}
-
-    class FakePost:
-        def __init__(self, text_value: str, post_id: str) -> None:
-            self.text = text_value
-            self.original_text = text_value
-            self.quoted_text = ""
-            self.quoted_author = ""
-            self.username = "test_writer"
-            self.link = ""
-            self.post_id = post_id
-            self.dedupe_ids = [post_id]
-            self.source_name = "acceptance"
-            self.translation_origin = ""
-
-    try:
-        globals()["_reliable_hydrate_exact_post"] = lambda post_value, force=False: post_value
-        globals()["_stable_select_route"] = lambda: (0, "test-key", "gemini-3.5-flash")
-        globals()["_stable_gemini_http_once"] = fake_http
-        globals()["save_translation_cache"] = lambda _cache: None
-        with _STABLE_TRANSLATION_LOCK:
-            TRANSLATION_CACHE.clear()
-            _STABLE_TRANSLATION_RECENT_FAILURES.clear()
-            _STABLE_TRANSLATION_INFLIGHT.clear()
-
-        first_post = FakePost("Deal HERE WE GO for 50m in 2026", "acceptance-cache-1")
-        first_result = gemini_translate_post_once(first_post, False)
-        second_result = gemini_translate_post_once(first_post, False)
-        check("successful_translation_uses_one_request", request_counter["count"] == 1)
-        check("validated_translation_cache_is_reused", first_result == second_result and first_post.translation_origin.startswith("gemini_cache"))
-
-        concurrent_post = FakePost("Another deal On this day for 50m in 2026", "acceptance-inflight-2")
-        concurrent_results: list[tuple[str, str, str]] = []
-        concurrent_errors: list[str] = []
-
-        def concurrent_translate() -> None:
-            try:
-                concurrent_results.append(gemini_translate_post_once(concurrent_post, False))
-            except Exception as exc:
-                concurrent_errors.append(str(exc))
-
-        before_concurrent = request_counter["count"]
-        worker_one = Thread(target=concurrent_translate)
-        worker_two = Thread(target=concurrent_translate)
-        worker_one.start()
-        worker_two.start()
-        worker_one.join(5)
-        worker_two.join(5)
-        check("identical_inflight_requests_are_coalesced", not concurrent_errors and len(concurrent_results) == 2 and request_counter["count"] == before_concurrent + 1)
-    finally:
-        globals()["_reliable_hydrate_exact_post"] = saved_hydrate
-        globals()["_stable_select_route"] = saved_select
-        globals()["_stable_gemini_http_once"] = saved_http
-        globals()["save_translation_cache"] = saved_save_cache
-        with _STABLE_TRANSLATION_LOCK:
-            TRANSLATION_CACHE.clear()
-            TRANSLATION_CACHE.update(cache_snapshot)
-            _STABLE_TRANSLATION_RECENT_FAILURES.clear()
-            _STABLE_TRANSLATION_INFLIGHT.clear()
-
-    # Integration: the persistent scheduler performs attempts 1/2/3 only. A
-    # fourth call for the same identity returns the exhausted state immediately.
-    saved_retry_hydrate = globals()["_reliable_hydrate_exact_post"]
-    saved_media_gate = globals()["_acceptance_media_block_reason"]
-    saved_single_attempt = globals()["_single_old_send_attempt"]
-    saved_retry_wait = globals()["AUTO_GEMINI_RETRY_WAIT_SECONDS"]
-    retry_counter = {"count": 0}
-
-    def fake_failed_send(_post: Any, _reply_ids: Any, _state: Any) -> dict[str, Any]:
-        retry_counter["count"] += 1
-        return {"sent": False, "mode": "translation_unavailable", "source_name": "acceptance", "total_seconds": 0.0}
-
-    try:
-        globals()["_reliable_hydrate_exact_post"] = lambda post_value, force=False: post_value
-        globals()["_acceptance_media_block_reason"] = lambda _post: ""
-        globals()["_single_old_send_attempt"] = fake_failed_send
-        globals()["AUTO_GEMINI_RETRY_WAIT_SECONDS"] = 0
-        retry_post = FakePost("Retry translation", "acceptance-retry-3")
-        retry_state: dict[str, Any] = {}
-        retry_results = [send_post(retry_post, state=retry_state) for _ in range(4)]
-        check("three_failed_attempts_make_three_requests", retry_counter["count"] == 3)
-        check("fourth_attempt_is_blocked_without_request", retry_results[-1].get("mode") == "translation_unavailable_retries_exhausted_no_fourth_attempt" and retry_counter["count"] == 3)
-    finally:
-        globals()["_reliable_hydrate_exact_post"] = saved_retry_hydrate
-        globals()["_acceptance_media_block_reason"] = saved_media_gate
-        globals()["_single_old_send_attempt"] = saved_single_attempt
-        globals()["AUTO_GEMINI_RETRY_WAIT_SECONDS"] = saved_retry_wait
-
-    return passed
-
-# ====== END STABLE GEMINI TRANSLATION CORE ======
+# ====== END FINAL USER REQUEST PATCH ======
 
 if __name__ == "__main__":
-    if os.environ.get("WINNER_RUN_ACCEPTANCE_TESTS", "0") == "1":
-        acceptance_results = _stable_translation_acceptance_tests()
-        print(json.dumps({"passed": len(acceptance_results), "tests": acceptance_results}, ensure_ascii=False, indent=2))
-    else:
-        main()
+    main()
