@@ -30619,5 +30619,951 @@ def control_loop() -> None:
 
 # ====== END FINAL FAST AUTO / CONSERVATIVE TEXT / LIVE MANUAL EDIT PATCH ======
 
+
+# ====== PERFORMANCE-ONLY AUTOMATIC SCAN PATCH (2026-07-26) ======
+# This patch changes discovery/scheduling speed only. It does not add or change
+# filtering rules, translation prompts, media rules, formatting or RSS parsing.
+# The existing stable RSS route remains the source of truth; public-X is only a
+# bounded parallel freshness check and never creates an extra Gemini request.
+
+BOT_BUILD_ID = "winner-performance-only-fast-scan-2026-07-26"
+
+PERFORMANCE_SCAN_SECONDS = max(8, int(os.environ.get("PERFORMANCE_SCAN_SECONDS", "12")))
+PERFORMANCE_DIRECT_PRIORITY_SECONDS = max(30, int(os.environ.get("PERFORMANCE_DIRECT_PRIORITY_SECONDS", "40")))
+PERFORMANCE_DIRECT_NORMAL_SECONDS = max(45, int(os.environ.get("PERFORMANCE_DIRECT_NORMAL_SECONDS", "65")))
+PERFORMANCE_RSS_FRESH_SECONDS = max(20, int(os.environ.get("PERFORMANCE_RSS_FRESH_SECONDS", "35")))
+PERFORMANCE_DIRECT_LIMIT = max(2, min(5, int(os.environ.get("PERFORMANCE_DIRECT_LIMIT", "3"))))
+PERFORMANCE_DIRECT_WAIT_SECONDS = max(1.0, min(6.0, float(os.environ.get("PERFORMANCE_DIRECT_WAIT_SECONDS", "3.5"))))
+PERFORMANCE_DIRECT_MAX_PARALLEL = max(2, min(4, int(os.environ.get("PERFORMANCE_DIRECT_MAX_PARALLEL", "3"))))
+PERFORMANCE_ACCOUNT_WORKERS = max(6, min(10, int(os.environ.get("PERFORMANCE_ACCOUNT_WORKERS", "8"))))
+
+# Faster cycles and less backlog, without increasing Gemini attempts per post.
+CHECK_EVERY_SECONDS = min(int(CHECK_EVERY_SECONDS), PERFORMANCE_SCAN_SECONDS)
+MAX_PARALLEL_ACCOUNT_CHECKS = max(int(MAX_PARALLEL_ACCOUNT_CHECKS), PERFORMANCE_ACCOUNT_WORKERS)
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = max(int(NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS), min(6, PERFORMANCE_ACCOUNT_WORKERS))
+MAX_POSTS_SENT_PER_CYCLE = max(int(MAX_POSTS_SENT_PER_CYCLE), 6)
+MAX_PARALLEL_POST_SENDS = max(int(MAX_PARALLEL_POST_SENDS), 5)
+
+# Use the exact RSS implementation that existed before the previous speed wrapper.
+# This avoids touching feed templates, mirror order, retries, parsing or cooldowns.
+_PERFORMANCE_RSS_FETCH = _FAST_AUTO_FETCH_BASE
+_PERFORMANCE_DIRECT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=PERFORMANCE_DIRECT_MAX_PARALLEL,
+    thread_name_prefix="fresh-x",
+)
+_PERFORMANCE_DIRECT_LOCK = RLock()
+_PERFORMANCE_DIRECT_LAST_ATTEMPT: dict[str, float] = {}
+_PERFORMANCE_DIRECT_INFLIGHT: dict[str, Any] = {}
+_PERFORMANCE_RSS_STALE_HINT: dict[str, bool] = {}
+
+
+def _performance_is_special_username(username: str) -> bool:
+    key = str(username or "").strip().lstrip("@").casefold()
+    known = {
+        str(globals().get("FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME", "FootballFactly")).casefold(),
+        str(globals().get("OPTAJOE_DEFAULT_ACTIVE_USERNAME", "OptaJoe")).casefold(),
+        str(globals().get("FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME", "Footballtweet")).casefold(),
+        "sofascore",
+    }
+    if key in known:
+        return True
+    try:
+        return bool(_final_is_extra_fact_source(key))
+    except Exception:
+        return False
+
+
+def _performance_direct_interval(username: str) -> int:
+    key = str(username or "").strip().lstrip("@").casefold()
+    priority = {str(value or "").strip().lstrip("@").casefold() for value in PRIORITY_X_ACCOUNTS}
+    if key in priority or _performance_is_special_username(key):
+        return PERFORMANCE_DIRECT_PRIORITY_SECONDS
+    return PERFORMANCE_DIRECT_NORMAL_SECONDS
+
+
+def _performance_cached_direct(username: str, max_age: float) -> list[Post]:
+    key = str(username or "").strip().lstrip("@").casefold()
+    try:
+        with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+            cached = _RELIABLE_DIRECT_PROFILE_CACHE.get(key)
+            if cached and time.time() - float(cached[0] or 0.0) <= max_age:
+                return list(cached[1][:PERFORMANCE_DIRECT_LIMIT])
+    except Exception:
+        pass
+    return []
+
+
+def _performance_direct_job(username: str) -> list[Post]:
+    try:
+        return list(
+            _reliable_direct_profile_posts(
+                username,
+                limit=PERFORMANCE_DIRECT_LIMIT,
+                force=True,
+            )
+            or []
+        )
+    except Exception as exc:
+        logging.debug("Parallel fresh-X check failed safely for @%s: %s", username, short_error(exc, 300))
+        return []
+
+
+def _performance_start_direct(username: str, now: float, interval: float):
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _PERFORMANCE_DIRECT_LOCK:
+        existing = _PERFORMANCE_DIRECT_INFLIGHT.get(key)
+        if existing is not None and not existing.done():
+            return existing
+        last_attempt = float(_PERFORMANCE_DIRECT_LAST_ATTEMPT.get(key, 0.0) or 0.0)
+        if now - last_attempt < interval:
+            return existing if existing is not None and existing.done() else None
+        _PERFORMANCE_DIRECT_LAST_ATTEMPT[key] = now
+        future = _PERFORMANCE_DIRECT_EXECUTOR.submit(_performance_direct_job, username)
+        _PERFORMANCE_DIRECT_INFLIGHT[key] = future
+        return future
+
+
+def _performance_future_result(future: Any, timeout: float) -> list[Post]:
+    if future is None:
+        return []
+    try:
+        return list(future.result(timeout=timeout) or [])
+    except FuturesTimeoutError:
+        # The request continues in the small background pool and fills the shared
+        # cache for the next scan. It never blocks the whole writer scan.
+        return []
+    except Exception:
+        return []
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Run stable RSS and the already-existing direct freshness check in parallel.
+
+    A direct request is made only at the bounded interval already intended by the
+    speed layer. When RSS is known to be behind from the previous cycle, the direct
+    check starts before RSS finishes, cutting sequential wait time. No filtering,
+    translation or media behavior is changed here.
+    """
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    now = time.time()
+    interval = float(_performance_direct_interval(canonical))
+
+    direct_posts = _performance_cached_direct(canonical, max_age=interval)
+    direct_future = None
+    if not direct_posts and _PERFORMANCE_RSS_STALE_HINT.get(key, False):
+        direct_future = _performance_start_direct(canonical, now, interval)
+
+    rss_started = time.perf_counter()
+    try:
+        base_posts = list(_PERFORMANCE_RSS_FETCH(canonical) or [])
+    except Exception as exc:
+        logging.debug("Stable RSS route failed safely for @%s: %s", canonical, short_error(exc, 300))
+        base_posts = []
+    rss_elapsed = time.perf_counter() - rss_started
+
+    latest_ts = _fast_auto_latest_timestamp(base_posts)
+    latest_age = (time.time() - latest_ts) if latest_ts else float("inf")
+    rss_is_stale = latest_age > PERFORMANCE_RSS_FRESH_SECONDS
+    _PERFORMANCE_RSS_STALE_HINT[key] = rss_is_stale
+
+    # Reuse a result populated by the manual 10-latest path or by a background
+    # request that completed while RSS was running.
+    if not direct_posts:
+        direct_posts = _performance_cached_direct(canonical, max_age=interval)
+
+    if rss_is_stale and not direct_posts:
+        if direct_future is None:
+            direct_future = _performance_start_direct(canonical, time.time(), interval)
+        # Do not add the RSS duration and the full direct-X duration together.
+        # Wait only a small bounded remainder; a slower request completes in the
+        # background and is merged on the next 12-second cycle.
+        wait_budget = max(0.5, PERFORMANCE_DIRECT_WAIT_SECONDS - min(PERFORMANCE_DIRECT_WAIT_SECONDS - 0.5, rss_elapsed))
+        direct_posts = _performance_future_result(direct_future, wait_budget)
+        if not direct_posts:
+            direct_posts = _performance_cached_direct(canonical, max_age=interval)
+
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, base_posts, canonical)
+    _reliable_merge_posts(merged, direct_posts, canonical)
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+# ====== END PERFORMANCE-ONLY AUTOMATIC SCAN PATCH ======
+
+
+# ====== FINAL EQUAL-SPEED FULL-PIPELINE DISCOVERY PATCH (2026-07-26) ======
+# Production diagnosis:
+# - The automatic route accepted one RSS row as "healthy" even when that row was
+#   many minutes old, so it could wait for the mirror to refresh.
+# - The control/manual route performs a broader live lookup and therefore saw the
+#   new post much earlier.
+# - Source priority and the per-cycle candidate cap could delay otherwise-ready
+#   posts during bursts.
+#
+# This final layer changes discovery and scheduling only. It does not change the
+# RSS parser, feed URLs, Gemini prompts/attempts, editorial filters, media rules,
+# duplicate logic, message formatting, state filenames or persistent JSON keys.
+
+BOT_BUILD_ID = "winner-equal-speed-full-pipeline-2026-07-26"
+
+FULL_SPEED_SCAN_SECONDS = max(6, int(os.environ.get("FULL_SPEED_SCAN_SECONDS", "10")))
+FULL_SPEED_LIVE_REFRESH_SECONDS = max(20, int(os.environ.get("FULL_SPEED_LIVE_REFRESH_SECONDS", "30")))
+FULL_SPEED_LIVE_WAIT_SECONDS = max(1.0, min(7.0, float(os.environ.get("FULL_SPEED_LIVE_WAIT_SECONDS", "4.5"))))
+FULL_SPEED_LIVE_LIMIT = max(5, min(20, int(os.environ.get("FULL_SPEED_LIVE_LIMIT", "10"))))
+FULL_SPEED_LIVE_WORKERS = max(4, min(12, int(os.environ.get("FULL_SPEED_LIVE_WORKERS", "8"))))
+FULL_SPEED_ACCOUNT_WORKERS = max(12, min(24, int(os.environ.get("FULL_SPEED_ACCOUNT_WORKERS", "20"))))
+FULL_SPEED_SEND_WORKERS = max(5, min(12, int(os.environ.get("FULL_SPEED_SEND_WORKERS", "8"))))
+FULL_SPEED_MAX_CANDIDATES_PER_CYCLE = max(20, min(60, int(os.environ.get("FULL_SPEED_MAX_CANDIDATES_PER_CYCLE", "30"))))
+
+# Every writer receives the same scan cadence, direct-X cadence and queue priority.
+CHECK_EVERY_SECONDS = min(int(CHECK_EVERY_SECONDS), FULL_SPEED_SCAN_SECONDS)
+NIGHT_CHECK_EVERY_SECONDS = min(int(NIGHT_CHECK_EVERY_SECONDS), FULL_SPEED_SCAN_SECONDS)
+MAX_PARALLEL_ACCOUNT_CHECKS = max(int(MAX_PARALLEL_ACCOUNT_CHECKS), FULL_SPEED_ACCOUNT_WORKERS)
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = max(int(NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS), FULL_SPEED_ACCOUNT_WORKERS)
+MAX_PARALLEL_POST_SENDS = max(int(MAX_PARALLEL_POST_SENDS), FULL_SPEED_SEND_WORKERS)
+NIGHT_MAX_PARALLEL_POST_SENDS = max(int(NIGHT_MAX_PARALLEL_POST_SENDS), FULL_SPEED_SEND_WORKERS)
+MAX_POSTS_SENT_PER_CYCLE = max(int(MAX_POSTS_SENT_PER_CYCLE), FULL_SPEED_MAX_CANDIDATES_PER_CYCLE)
+
+# Use the stable RSS implementation captured before the earlier speed wrappers.
+# It remains untouched; the live reader is only merged alongside it.
+_FULL_SPEED_RSS_BASE = globals().get("_PERFORMANCE_RSS_FETCH") or globals().get("_FAST_AUTO_FETCH_BASE") or fetch_posts
+_FULL_SPEED_LIVE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=FULL_SPEED_LIVE_WORKERS,
+    thread_name_prefix="equal-live-x",
+)
+_FULL_SPEED_LIVE_LOCK = RLock()
+_FULL_SPEED_LIVE_LAST_STARTED: dict[str, float] = {}
+_FULL_SPEED_LIVE_INFLIGHT: dict[str, Any] = {}
+_FULL_SPEED_LIVE_CACHE: dict[str, tuple[float, list[Post]]] = {}
+_FULL_SPEED_DISCOVERY_STATS: dict[str, dict[str, Any]] = {}
+
+
+def _full_speed_post_identity(post: Post) -> str:
+    return str(
+        getattr(post, "post_id", "")
+        or getattr(post, "link", "")
+        or post_content_signature(
+            str(getattr(post, "username", "") or ""),
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+        )
+    )
+
+
+def _full_speed_latest_ts(posts: Any) -> float:
+    return max(
+        (
+            float(getattr(post, "published_ts", 0.0) or 0.0)
+            for post in (posts or [])
+            if isinstance(post, Post)
+        ),
+        default=0.0,
+    )
+
+
+def _full_speed_cache_get(username: str) -> list[Post]:
+    key = str(username or "").strip().lstrip("@").casefold()
+    now = time.time()
+    with _FULL_SPEED_LIVE_LOCK:
+        item = _FULL_SPEED_LIVE_CACHE.get(key)
+        if item and now - float(item[0] or 0.0) <= FULL_SPEED_LIVE_REFRESH_SECONDS + 15:
+            return list(item[1])
+    # A manual "10 latest" or writer check may already have refreshed the shared
+    # direct-X cache. Reuse it immediately instead of performing another request.
+    try:
+        with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+            shared = _RELIABLE_DIRECT_PROFILE_CACHE.get(key)
+            if shared and now - float(shared[0] or 0.0) <= FULL_SPEED_LIVE_REFRESH_SECONDS + 15:
+                return list(shared[1][:FULL_SPEED_LIVE_LIMIT])
+    except Exception:
+        pass
+    return []
+
+
+def _full_speed_live_job(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    result: list[Post] = []
+    started = time.perf_counter()
+    try:
+        # This is the same no-key direct reader used by the successful control
+        # path. It never invokes Gemini and never consumes Gemini credits.
+        result = list(
+            _reliable_direct_profile_posts(
+                canonical,
+                limit=FULL_SPEED_LIVE_LIMIT,
+                force=True,
+            )
+            or []
+        )
+    except Exception as exc:
+        logging.debug("Equal-speed direct lookup failed safely for @%s: %s", canonical, short_error(exc, 300))
+        result = []
+    result = sorted(
+        [post for post in result if isinstance(post, Post)],
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )[:FULL_SPEED_LIVE_LIMIT]
+    key = canonical.casefold()
+    with _FULL_SPEED_LIVE_LOCK:
+        _FULL_SPEED_LIVE_CACHE[key] = (time.time(), list(result))
+        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
+        stats["last_live_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+        stats["last_live_rows"] = len(result)
+        stats["last_live_at"] = time.time()
+        _FULL_SPEED_DISCOVERY_STATS[key] = stats
+    return result
+
+
+def _full_speed_start_live(username: str):
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    now = time.time()
+    with _FULL_SPEED_LIVE_LOCK:
+        existing = _FULL_SPEED_LIVE_INFLIGHT.get(key)
+        if existing is not None and not existing.done():
+            return existing
+        last_started = float(_FULL_SPEED_LIVE_LAST_STARTED.get(key, 0.0) or 0.0)
+        if now - last_started < FULL_SPEED_LIVE_REFRESH_SECONDS:
+            return existing if existing is not None and existing.done() else None
+        _FULL_SPEED_LIVE_LAST_STARTED[key] = now
+        future = _FULL_SPEED_LIVE_EXECUTOR.submit(_full_speed_live_job, canonical)
+        _FULL_SPEED_LIVE_INFLIGHT[key] = future
+        return future
+
+
+def _full_speed_future_rows(future: Any, timeout: float) -> list[Post]:
+    if future is None:
+        return []
+    try:
+        return list(future.result(timeout=max(0.0, float(timeout))) or [])
+    except FuturesTimeoutError:
+        # The task continues in the background and stores its result for the next
+        # ten-second cycle. One slow X response cannot block all writers.
+        return []
+    except Exception:
+        return []
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Fetch stable RSS and the live public-X profile in parallel for every writer.
+
+    Unlike the previous route, a stale-but-nonempty RSS feed can never suppress
+    the live check. All writers use the same refresh interval and worker pool.
+    """
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    total_started = time.perf_counter()
+
+    # Start the live freshness request before waiting for RSS. This removes the
+    # sequential RSS-delay + X-delay pattern.
+    live_rows = _full_speed_cache_get(canonical)
+    live_future = None if live_rows else _full_speed_start_live(canonical)
+
+    rss_started = time.perf_counter()
+    try:
+        rss_rows = list(_FULL_SPEED_RSS_BASE(canonical) or [])
+    except Exception as exc:
+        logging.debug("Stable RSS base failed safely for @%s: %s", canonical, short_error(exc, 300))
+        rss_rows = []
+    rss_ms = (time.perf_counter() - rss_started) * 1000.0
+
+    if not live_rows:
+        # Most live requests finish while RSS is running. Wait only a bounded
+        # remainder; a slower request is picked up from cache next cycle.
+        live_rows = _full_speed_future_rows(live_future, FULL_SPEED_LIVE_WAIT_SECONDS)
+        if not live_rows:
+            live_rows = _full_speed_cache_get(canonical)
+
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rss_rows, canonical)
+    _reliable_merge_posts(merged, live_rows, canonical)
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+
+    rss_latest = _full_speed_latest_ts(rss_rows)
+    live_latest = _full_speed_latest_ts(live_rows)
+    with _FULL_SPEED_LIVE_LOCK:
+        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
+        stats.update({
+            "last_total_ms": round((time.perf_counter() - total_started) * 1000.0, 1),
+            "last_rss_ms": round(rss_ms, 1),
+            "last_rss_rows": len(rss_rows),
+            "last_merged_rows": len(ordered),
+            "rss_latest_ts": rss_latest,
+            "live_latest_ts": live_latest,
+            "live_was_newer": bool(live_latest and live_latest > rss_latest),
+            "checked_at": time.time(),
+        })
+        _FULL_SPEED_DISCOVERY_STATS[key] = stats
+
+    if live_latest and live_latest > rss_latest:
+        gap = max(0.0, live_latest - rss_latest) if rss_latest else 0.0
+        logging.info(
+            "⚡ @%s: המסלול החי מצא פוסט חדש יותר מה-RSS%s; הוא נכנס מיד לעיבוד האוטומטי.",
+            canonical,
+            f" בפער של {gap:.0f} שניות" if gap else "",
+        )
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+def ordered_accounts() -> list[str]:
+    """No writer receives an earlier or slower discovery lane."""
+    return list(active_x_accounts())
+
+
+def sort_candidate_posts_for_priority(candidates: list[tuple[str, Post, float]]) -> list[tuple[str, Post, float]]:
+    """Equal writer priority; newest discovered report is handled first."""
+    return sorted(
+        candidates,
+        key=lambda item: (
+            -(float(getattr(item[1], "published_ts", 0.0) or 0.0)),
+            float(item[2] or 0.0),
+            str(item[0] or "").casefold(),
+        ),
+    )
+
+# ====== END FINAL EQUAL-SPEED FULL-PIPELINE DISCOVERY PATCH ======
+
+
+# ----- Bounded whole-account fetch: one slow RSS source cannot hold all writers -----
+FULL_SPEED_FETCH_BUDGET_SECONDS = max(2.0, min(8.0, float(os.environ.get("FULL_SPEED_FETCH_BUDGET_SECONDS", "5.0"))))
+FULL_SPEED_RSS_WORKERS = max(8, min(24, int(os.environ.get("FULL_SPEED_RSS_WORKERS", "17"))))
+_FULL_SPEED_RSS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=FULL_SPEED_RSS_WORKERS,
+    thread_name_prefix="equal-stable-rss",
+)
+_FULL_SPEED_RSS_LOCK = RLock()
+_FULL_SPEED_RSS_INFLIGHT: dict[str, Any] = {}
+_FULL_SPEED_RSS_CACHE: dict[str, tuple[float, list[Post]]] = {}
+
+
+def _full_speed_rss_job(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    try:
+        rows = list(_FULL_SPEED_RSS_BASE(canonical) or [])
+    except Exception as exc:
+        logging.debug("Equal-speed RSS job failed safely for @%s: %s", canonical, short_error(exc, 300))
+        rows = []
+    rows = sorted(
+        [post for post in rows if isinstance(post, Post)],
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    key = canonical.casefold()
+    with _FULL_SPEED_RSS_LOCK:
+        _FULL_SPEED_RSS_CACHE[key] = (time.time(), list(rows))
+    with _FULL_SPEED_LIVE_LOCK:
+        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
+        stats["last_rss_job_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+        stats["last_rss_job_rows"] = len(rows)
+        stats["last_rss_job_at"] = time.time()
+        _FULL_SPEED_DISCOVERY_STATS[key] = stats
+    return rows
+
+
+def _full_speed_start_rss(username: str):
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    with _FULL_SPEED_RSS_LOCK:
+        existing = _FULL_SPEED_RSS_INFLIGHT.get(key)
+        if existing is not None and not existing.done():
+            return existing
+        future = _FULL_SPEED_RSS_EXECUTOR.submit(_full_speed_rss_job, canonical)
+        _FULL_SPEED_RSS_INFLIGHT[key] = future
+        return future
+
+
+def _full_speed_rss_cache_get(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    with _FULL_SPEED_RSS_LOCK:
+        item = _FULL_SPEED_RSS_CACHE.get(key)
+        if item:
+            return list(item[1])
+    try:
+        return list(_stable_rss_cached_posts(canonical, limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))) or [])
+    except Exception:
+        return []
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Bound the entire discovery stage while RSS and live X run concurrently.
+
+    The original RSS function continues running unchanged in its own worker. If it
+    is slow, the automatic route can already proceed with the live result or the
+    last valid RSS cache. Completed background results are used next cycle.
+    """
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    started = time.perf_counter()
+
+    rss_rows = _full_speed_rss_cache_get(canonical)
+    live_rows = _full_speed_cache_get(canonical)
+    rss_future = _full_speed_start_rss(canonical)
+    live_future = None if live_rows else _full_speed_start_live(canonical)
+
+    # Consume futures that completed before the pending set was built. This also
+    # closes a small race where a very fast live result could otherwise be missed
+    # until the next cycle.
+    for future, kind in ((rss_future, "rss"), (live_future, "live")):
+        if future is None or not future.done():
+            continue
+        try:
+            rows = list(future.result() or [])
+        except Exception:
+            rows = []
+        if kind == "live":
+            live_rows = rows or _full_speed_cache_get(canonical)
+        else:
+            rss_rows = rows or _full_speed_rss_cache_get(canonical)
+
+    pending = {future for future in (rss_future, live_future) if future is not None and not future.done()}
+    deadline = time.perf_counter() + FULL_SPEED_FETCH_BUDGET_SECONDS
+    while pending and time.perf_counter() < deadline:
+        remaining = max(0.0, deadline - time.perf_counter())
+        done, still_pending = _rss_wait(pending, timeout=remaining, return_when=_RSS_FIRST_COMPLETED)
+        if not done:
+            break
+        for future in done:
+            try:
+                rows = list(future.result() or [])
+            except Exception:
+                rows = []
+            if future is live_future:
+                live_rows = rows or _full_speed_cache_get(canonical)
+            elif future is rss_future:
+                rss_rows = rows or _full_speed_rss_cache_get(canonical)
+        pending = set(still_pending)
+        # A live result is the freshness signal that the old automatic path was
+        # missing. Do not wait for a slow RSS mirror after it is available.
+        if live_rows:
+            break
+
+    if not rss_rows:
+        rss_rows = _full_speed_rss_cache_get(canonical)
+    if not live_rows:
+        live_rows = _full_speed_cache_get(canonical)
+
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rss_rows, canonical)
+    _reliable_merge_posts(merged, live_rows, canonical)
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+
+    rss_latest = _full_speed_latest_ts(rss_rows)
+    live_latest = _full_speed_latest_ts(live_rows)
+    with _FULL_SPEED_LIVE_LOCK:
+        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
+        stats.update({
+            "last_bounded_fetch_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "last_rss_rows": len(rss_rows),
+            "last_live_rows_used": len(live_rows),
+            "last_merged_rows": len(ordered),
+            "rss_latest_ts": rss_latest,
+            "live_latest_ts": live_latest,
+            "live_was_newer": bool(live_latest and live_latest > rss_latest),
+            "checked_at": time.time(),
+        })
+        _FULL_SPEED_DISCOVERY_STATS[key] = stats
+
+    if live_latest and live_latest > rss_latest:
+        gap = max(0.0, live_latest - rss_latest) if rss_latest else 0.0
+        logging.info(
+            "⚡ @%s: נמצא פוסט חי חדש יותר מה-RSS%s והוא הועבר מיד למסלול האוטומטי.",
+            canonical,
+            f" בפער של {gap:.0f} שניות" if gap else "",
+        )
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+# ====== FINAL CONSERVATIVE DUPLICATES + TIER-A NEWS RESCUE PATCH (2026-07-26) ======
+# User policy:
+# - Block only a certain duplicate. A reporter who adds a real detail is an update.
+# - A shared club or a similar writing template is never enough by itself.
+# - Meaningful reports involving a tier-A club pass soft importance/vagueness gates.
+# - Exact tweet/link duplicates, unsafe content and other hard policies remain active.
+
+BOT_BUILD_ID = "winner-full-speed-equal-conservative-duplicates-tier1-2026-07-26"
+
+_FINAL_TIER1_MATERIAL_NEWS_RE = re.compile(
+    r"\b(?:exclusive|breaking|official|confirmed?|confirms?|decision|decided|will\s+stay|won['’]?t\s+leave|"
+    r"not\s+for\s+sale|important\s+role|priority|focus(?:ed)?|target|interest(?:ed)?|offer|bid|proposal|"
+    r"talks?|negotiations?|agreement|agreed|personal\s+terms|medical(?:s)?|contract|extension|renewal|"
+    r"sign(?:s|ed|ing)?|join(?:s|ed|ing)?|leave|depart|reject(?:s|ed)?|accepted?|green\s+light|"
+    r"club[- ]to[- ]club|fee|loan|option\s+to\s+buy|buy[- ]?back|appointed?|sacked?|dismissed?)\b|"
+    r"בלעדי|דיווח|רשמי|אושר|מאשר|אישר|החלטה|החליט|יישאר|לא\s+יעזוב|לא\s+למכירה|תפקיד\s+חשוב|"
+    r"עדיפות|ממוקד|ממוקדים|יעד|מעוניין|מעוניינת|עניין|הצעה|שיחות|מגעים|משא\s+ומתן|הסכם|סיכום|"
+    r"תנאים\s+אישיים|בדיקות\s+רפואיות|חוזה|הארכת\s+חוזה|חתם|יחתום|מצטרף|עובר|עזיבה|יעזוב|"
+    r"נדחתה|דחה|התקבלה|אור\s+ירוק|בין\s+המועדונים|דמי\s+העברה|השאלה|אופציית\s+רכישה|"
+    r"רכישה\s+בחזרה|מונה|מינוי|פוטר|פיטורים",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_FINAL_MATERIAL_UPDATE_RE = re.compile(
+    r"\b(?:official|confirmed?|confirms?|agreement|agreed|full\s+agreement|personal\s+terms|"
+    r"medical(?:s)?|scheduled|booked|contract|until\s+20\d{2}|fee|million|add[- ]?ons?|bonus|"
+    r"bid|offer|rejected|accepted|green\s+light|will\s+stay|won['’]?t\s+leave|not\s+for\s+sale|"
+    r"priority|focus|decision|signed|here\s+we\s+go)\b|"
+    r"רשמי|אושר|מאשר|הסכם|סיכום\s+מלא|תנאים\s+אישיים|בדיקות\s+רפואיות|נקבעו|חוזה|עד\s+20\d{2}|"
+    r"דמי\s+העברה|מיליון|בונוסים|הצעה|נדחתה|התקבלה|אור\s+ירוק|יישאר|לא\s+יעזוב|לא\s+למכירה|"
+    r"עדיפות|ממוקד|החלטה|חתם|#?HERE_WE_GO",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_FINAL_DUPLICATE_HARD_REASON_TOKENS = (
+    "women", "wnba", "other_sport", "youth", "academy", "reserve", "duplicate",
+    "old_post", "too_old", "podcast", "live_goal", "live_or_talk", "lineup", "poll",
+    "social_media_trivia", "opinion_or_hypothetical", "question", "quiz", "malware", "spam",
+    "translation", "video_too_large", "video_missing", "no_video", "shabbat", "special_source_",
+)
+
+
+def _final_tier1_material_report(post: Post) -> bool:
+    if not isinstance(post, Post) or _final_is_special_source(post):
+        return False
+    text = _final_source_text(post)
+    if not text or not matches_managed_team_tier("tier1", text):
+        return False
+    if count_regular_words(text) < 7:
+        return False
+    if (
+        _final_feminine_football_signal(text)
+        or is_women_or_wnba_post(post)
+        or is_other_sport_post(post)
+        or re.search(r"\b(?:basketball|nba|wnba|tennis|golf|formula\s*1|f1|cricket|baseball|nfl|nhl)\b|כדורסל|טניס|גולף|פורמולה|בייסבול|פוטבול\s+אמריקאי", text, re.IGNORECASE)
+    ):
+        return False
+    if _final_explicit_youth_text(text):
+        return False
+    if _FINAL_SOCIAL_TRIVIA_RE.search(text) or _FINAL_OPINION_HYPOTHETICAL_RE.search(text):
+        return False
+    if "_final_special_program_or_conversation_promo" in globals() and _final_special_program_or_conversation_promo(text):
+        # A promotional post remains blocked. A factual report followed by a promo
+        # is handled by the existing line-preservation cleanup.
+        factual_lines = [line for line in text.splitlines() if _FINAL_TIER1_MATERIAL_NEWS_RE.search(line)]
+        if not factual_lines:
+            return False
+    return bool(
+        _FINAL_TIER1_MATERIAL_NEWS_RE.search(text)
+        or _FINAL_STRONG_REPORT_RE.search(text)
+        or _FINAL_CONTRACT_EXTENSION_RE.search(text)
+        or _final_source_has_here_we_go(post)
+    )
+
+
+def _final_duplicate_item_text(item: dict[str, Any] | None) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("original_text", "ai_text", "channel_memory_text", "preview", "text"):
+        value = str(item.get(key, "") or "").strip()
+        if value:
+            return html.unescape(value)
+    signature = item.get("signature")
+    if isinstance(signature, dict):
+        return html.unescape(str(signature.get("text", "") or ""))
+    return ""
+
+
+def _final_duplicate_normalized_text(value: Any) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"https?://\S+|@[A-Za-z0-9_]+|#[A-Za-z0-9_א-ת]+", " ", text)
+    text = re.sub(r"[^0-9A-Za-zא-ת€£$%]+", " ", text).casefold()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _final_duplicate_exact_item_match(post: Post, item: dict[str, Any] | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    current_link = str(getattr(post, "link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+    previous_link = str(item.get("link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+    if current_link and previous_link and current_link == previous_link:
+        return True
+    current_id = _acceptance_tweet_id(post) if "_acceptance_tweet_id" in globals() else str(getattr(post, "post_id", "") or "")
+    previous_id = str(item.get("post_id", "") or "")
+    if current_id and previous_id and current_id == previous_id:
+        return True
+    current_text = _final_duplicate_normalized_text(_final_source_text(post))
+    previous_text = _final_duplicate_normalized_text(_final_duplicate_item_text(item))
+    same_author = str(getattr(post, "username", "") or "").casefold() == str(item.get("username", "") or "").casefold()
+    return bool(same_author and current_text and previous_text and current_text == previous_text)
+
+
+def _final_duplicate_sentence_addition(current_text: str, previous_text: str) -> bool:
+    current_sentences = [
+        _final_duplicate_normalized_text(part)
+        for part in re.split(r"(?<=[.!?…])\s+|\n+", current_text)
+        if count_regular_words(part) >= 4
+    ]
+    previous_sentences = [
+        _final_duplicate_normalized_text(part)
+        for part in re.split(r"(?<=[.!?…])\s+|\n+", previous_text)
+        if count_regular_words(part) >= 4
+    ]
+    for sentence in current_sentences:
+        if not sentence:
+            continue
+        best = max((SequenceMatcher(None, sentence, old).ratio() for old in previous_sentences if old), default=0.0)
+        if best < 0.78 and (_FINAL_MATERIAL_UPDATE_RE.search(sentence) or re.search(r"\d|[€£$%]", sentence)):
+            return True
+    return False
+
+
+def _final_duplicate_has_material_addition(post: Post, item: dict[str, Any] | None) -> bool:
+    if not isinstance(item, dict) or _final_duplicate_exact_item_match(post, item):
+        return False
+    current_text = _final_source_text(post)
+    previous_text = _final_duplicate_item_text(item)
+    if not current_text or not previous_text:
+        return False
+
+    current_sig = news_event_signature(post)
+    previous_sig = item.get("signature") if isinstance(item.get("signature"), dict) else news_event_signature(channel_duplicate_text_to_post(previous_text))
+    current_rank = int(current_sig.get("stage_rank", 0) or 0)
+    previous_rank = int(previous_sig.get("stage_rank", 0) or 0)
+    if current_rank >= previous_rank + 10 and current_rank >= 40:
+        return True
+
+    current_tokens = set(current_sig.get("tokens", []))
+    previous_tokens = set(previous_sig.get("tokens", []))
+    if len(_material_number_detail_tokens(current_text) - _material_number_detail_tokens(previous_text)) >= 1:
+        return True
+    if len((current_tokens - previous_tokens) & IMPORTANT_DETAIL_WORDS) >= 2:
+        return True
+
+    current_players, current_teams = _canonical_sets_from_signature(current_sig)
+    previous_players, previous_teams = _canonical_sets_from_signature(previous_sig)
+    if current_players - previous_players:
+        return True
+    # A new relevant club in the same report can change the meaning materially.
+    if current_teams - previous_teams and len(current_teams) >= 2:
+        return True
+
+    if _final_duplicate_sentence_addition(current_text, previous_text):
+        return True
+
+    current_richness = event_detail_richness(post)
+    try:
+        previous_richness = event_detail_richness(channel_duplicate_text_to_post(previous_text))
+    except Exception:
+        previous_richness = 0
+    if current_richness >= previous_richness + 3:
+        return True
+
+    # A fresh confirmation/denial/decision quote about a tier-A club is useful even
+    # when the underlying player and club were already mentioned earlier.
+    if _final_tier1_material_report(post):
+        current_material = set(_FINAL_MATERIAL_UPDATE_RE.findall(current_text))
+        previous_material = set(_FINAL_MATERIAL_UPDATE_RE.findall(previous_text))
+        if current_material - previous_material:
+            return True
+        if ('"' in current_text or "“" in current_text or "״" in current_text) and not any(mark in previous_text for mark in ('"', "“", "״")):
+            return True
+    return False
+
+
+def _final_duplicate_candidate_is_certain(post: Post, item: dict[str, Any] | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if _final_duplicate_exact_item_match(post, item):
+        return True
+    if _final_duplicate_has_material_addition(post, item):
+        return False
+
+    current_text = _final_duplicate_normalized_text(_final_source_text(post))
+    previous_text = _final_duplicate_normalized_text(_final_duplicate_item_text(item))
+    text_ratio = SequenceMatcher(None, current_text, previous_text).ratio() if current_text and previous_text else 0.0
+    current_sig = news_event_signature(post)
+    previous_sig = item.get("signature") if isinstance(item.get("signature"), dict) else {}
+    score = _event_similarity(current_sig, previous_sig) if previous_sig else 0.0
+    cur_players, cur_teams = _canonical_sets_from_signature(current_sig)
+    prev_players, prev_teams = _canonical_sets_from_signature(previous_sig)
+    family = _duplicate_family_overlap(set(current_sig.get("actions", [])), set(previous_sig.get("actions", [])))
+    same_stage = int(current_sig.get("stage_rank", 0) or 0) == int(previous_sig.get("stage_rank", 0) or 0)
+    same_author = str(getattr(post, "username", "") or "").casefold() == str(item.get("username", "") or "").casefold()
+
+    if _final_tier1_material_report(post):
+        # Tier-A reports are blocked semantically only when the match is virtually
+        # certain. Ambiguous similarities are allowed through as useful updates.
+        if same_author and text_ratio >= 0.975:
+            return True
+        return bool(
+            text_ratio >= 0.95
+            and score >= 0.92
+            and family
+            and same_stage
+            and (bool(cur_players & prev_players) or len(cur_teams & prev_teams) >= 2)
+        )
+
+    if same_author and text_ratio >= 0.965:
+        return True
+    return bool(
+        text_ratio >= 0.925
+        and score >= 0.90
+        and family
+        and same_stage
+        and (bool(cur_players & prev_players) or len(cur_teams & prev_teams) >= 2)
+    )
+
+
+_PRE_RELAXED_LOCAL_DUPLICATE_VERDICT = local_duplicate_verdict
+
+
+def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
+    if _final_duplicate_exact_item_match(current_post, previous_item):
+        return "SAME_DUPLICATE"
+    if _final_duplicate_has_material_addition(current_post, previous_item):
+        return "ADVANCED_NEW"
+    verdict = _PRE_RELAXED_LOCAL_DUPLICATE_VERDICT(current_post, previous_item, score)
+    if verdict == "SAME_DUPLICATE" and not _final_duplicate_candidate_is_certain(current_post, previous_item):
+        return "DIFFERENT" if _final_tier1_material_report(current_post) else "BORDERLINE"
+    return verdict
+
+
+_PRE_RELAXED_STRICT_DUPLICATE_MATCH = strict_duplicate_match
+
+
+def strict_duplicate_match(current: dict[str, Any], previous: dict[str, Any], score: float, local: str = "BORDERLINE") -> bool:
+    if local == "SAME_DUPLICATE":
+        return True
+    if local in {"ADVANCED_NEW", "DIFFERENT"}:
+        return False
+    current_players, current_teams = _canonical_sets_from_signature(current)
+    previous_players, previous_teams = _canonical_sets_from_signature(previous)
+    family = _duplicate_family_overlap(set(current.get("actions", [])), set(previous.get("actions", [])))
+    same_stage = int(current.get("stage_rank", 0) or 0) == int(previous.get("stage_rank", 0) or 0)
+    if not family or not same_stage:
+        return False
+    if score >= 0.97 and (bool(current_players & previous_players) or len(current_teams & previous_teams) >= 2):
+        return True
+    if score >= 0.94 and bool(current_players & previous_players) and len(current_teams & previous_teams) >= 2:
+        return True
+    return False
+
+
+def _final_wrap_duplicate_finder(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+    def wrapper(post: Post, *args: Any, _previous=previous, **kwargs: Any):
+        item = _previous(post, *args, **kwargs)
+        if isinstance(item, dict) and not _final_duplicate_candidate_is_certain(post, item):
+            logging.info("🆕 כפילות לא ודאית הותרה כעדכון מ-@%s: %s", getattr(post, "username", ""), getattr(post, "link", ""))
+            return None
+        return item
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _relaxed_duplicate_name in (
+    "find_recent_duplicate_event",
+    "find_recent_duplicate_event_ai_aware",
+    "find_channel_duplicate_event",
+    "find_post_translation_duplicate_event",
+    "find_recent_burst_spam_event",
+    "_final_existing_strict_duplicate",
+):
+    _final_wrap_duplicate_finder(_relaxed_duplicate_name)
+
+
+_PRE_RELAXED_GEMINI_DUPLICATE_VERDICT = gemini_duplicate_event_verdict
+
+
+def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, Any]) -> str:
+    if _final_duplicate_has_material_addition(current_post, previous_item):
+        return "ADVANCED_NEW"
+    verdict = _PRE_RELAXED_GEMINI_DUPLICATE_VERDICT(current_post, previous_item)
+    if verdict == "SAME_DUPLICATE" and not _final_duplicate_candidate_is_certain(current_post, previous_item):
+        return "DIFFERENT"
+    return verdict
+
+
+def _final_tier1_hard_reason(reason: Any) -> bool:
+    value = str(reason or "").casefold()
+    return any(token in value for token in _FINAL_DUPLICATE_HARD_REASON_TOKENS)
+
+
+def _final_wrap_tier1_soft_filter(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+    def wrapper(post: Post, *args: Any, _previous=previous, **kwargs: Any):
+        if _final_tier1_material_report(post):
+            return False
+        return _previous(post, *args, **kwargs)
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _tier1_soft_filter_name in (
+    "is_contextless_teaser_post",
+    "is_unclear_subject_news_post",
+    "is_vague_status_without_primary_context",
+    "is_media_without_report_post",
+    "is_too_short_without_strong_news_post",
+    "is_name_without_news_action_post",
+    "is_unclear_main_club_context_post",
+    "is_weak_copy_without_primary_value_post",
+    "is_writer_profile_noise_post",
+    "is_link_only_or_details_post",
+    "is_podcast_or_longform_post",
+    "is_non_news_social_post",
+    "is_interview_post",
+    "is_non_elite_loose_transfer_report",
+    "is_untracked_transfer_or_staff_news",
+    "is_recycled_report_post",
+):
+    _final_wrap_tier1_soft_filter(_tier1_soft_filter_name)
+
+
+_PRE_RELAXED_TIER1_IMPORTANCE = football_importance_block_reason
+
+
+def football_importance_block_reason(post: Post) -> str:
+    if _final_tier1_material_report(post):
+        return ""
+    return _PRE_RELAXED_TIER1_IMPORTANCE(post)
+
+
+_PRE_RELAXED_TIER1_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _PRE_RELAXED_TIER1_PRE_SEND(post)
+    if reason and _final_tier1_material_report(post) and not _final_tier1_hard_reason(reason):
+        logging.info("⭐ דרג א׳: מסנן רך בוטל עבור דיווח מהותי מ-@%s (%s)", getattr(post, "username", ""), reason)
+        return ""
+    return reason
+
+# ====== END FINAL CONSERVATIVE DUPLICATES + TIER-A NEWS RESCUE PATCH ======
+
 if __name__ == "__main__":
     main()
