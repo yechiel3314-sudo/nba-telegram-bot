@@ -32062,6 +32062,510 @@ def process_control_update(update: dict[str, Any]) -> None:
 
 # ====== END FINAL QUOTE-CREDIT / SEMANTIC-QUOTE-DEDUPE / REAL PIPELINE TIMING PATCH ======
 
+# ====== FINAL USER CONTROL / HISTORICAL TAGS / AGGRESSIVE DISCOVERY PATCH (2026-07-26) ======
+# Requested behavior:
+# - Footballtweet starts disabled once, while the normal management toggle remains usable.
+# - Real-delay results are sent as a separate disposable message.
+# - Cleanup never drops a leading club/entity from the beginning of a report.
+# - Significant "On this day" posts are allowed and formatted as historical posts.
+# - Prepared quiet-channel messages use the exact final renderer.
+# - Add clickable #ביום_זה and #מזל_טוב markers in their original position.
+# - The automatic route continuously races the same RSS mirrors that make the
+#   manual 10-latest path fresh, without any extra Gemini request.
+
+BOT_BUILD_ID = "winner-final-user-control-history-fast-discovery-2026-07-26"
+
+# ----- 1. Footballtweet is off by default, once, without permanently locking the toggle -----
+FOOTBALLTWEET_DEFAULT_OFF_MIGRATION_KEY = "footballtweet_default_off_2026_07_26_v1"
+
+
+def ensure_footballtweet_default_off_once() -> None:
+    if "FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME" not in globals():
+        return
+    state = load_control_state()
+    if bool(state.get(FOOTBALLTWEET_DEFAULT_OFF_MIGRATION_KEY, False)):
+        return
+    disabled = state.get("default_active_disabled_accounts", [])
+    if isinstance(disabled, dict):
+        disabled = [name for name, flag in disabled.items() if flag]
+    if not isinstance(disabled, list):
+        disabled = []
+    disabled = [name for name in disabled if not value_contains_footballtweet(name)]
+    disabled.append(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME)
+    save_control_state(**{
+        FOOTBALLTWEET_DEFAULT_OFF_MIGRATION_KEY: True,
+        "default_active_disabled_accounts": disabled,
+    })
+
+
+# ----- 2. Delay diagnostics always open a new result with Delete only -----
+_PRE_FINAL_DELAY_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    if str(callback.get("data", "") or "") != "football_pipeline_timings":
+        return _PRE_FINAL_DELAY_PROCESS_CONTROL_UPDATE(update)
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    if callback_id:
+        answer_control_callback(callback_id, "מכין תוצאות עיכוב")
+    # Do not edit or resend the management panel. This is a brand-new result.
+    send_control_text(
+        pipeline_timing_report_text(20),
+        None,
+        control_delete_message_reply_markup(),
+    )
+
+
+# ----- 3. Preserve a leading club/entity; cleanup is allowed only at the end -----
+def _final_leading_nontext_split(value: str) -> tuple[str, str]:
+    text = str(value or "")
+    match = re.search(r"[A-Za-zא-ת0-9]", text)
+    if not match:
+        return text, ""
+    return text[:match.start()], text[match.start():]
+
+
+def _final_leading_club_match(value: str) -> tuple[str, str, str] | None:
+    text = html.unescape(str(value or "")).replace("\r\n", "\n").replace("\r", "\n")
+    prefix, body = _final_leading_nontext_split(text)
+    if not body:
+        return None
+    candidates: list[tuple[str, str]] = []
+    for mapping in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS):
+        for source_name, target_name in mapping.items():
+            source_clean = str(source_name or "").strip()
+            target_clean = str(target_name or "").strip()
+            if len(source_clean) >= 3 and target_clean:
+                candidates.append((source_clean, target_clean))
+    candidates.sort(key=lambda pair: len(pair[0]), reverse=True)
+    for source_name, target_name in candidates:
+        match = re.match(
+            rf"(?iu)^{re.escape(source_name)}(?=$|[\s,;:–—\-])",
+            body,
+        )
+        if match:
+            return prefix, match.group(0), target_name
+    return None
+
+
+def _final_restore_leading_source_club(original: str, cleaned: str) -> str:
+    match = _final_leading_club_match(original)
+    value = str(cleaned or "")
+    if not match or not value.strip():
+        return value
+    _source_prefix, source_club, target_club = match
+    clean_prefix, clean_body = _final_leading_nontext_split(value)
+    if re.match(rf"(?iu)^(?:{re.escape(source_club)}|{re.escape(target_club)})(?=$|[\s,;:–—\-])", clean_body):
+        return value
+    # This stage is before Gemini, so preserve the untouched source spelling.
+    return clean_prefix + source_club + " " + clean_body.lstrip()
+
+
+def _final_restore_leading_translated_club(post: Post, translated: str) -> str:
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    match = _final_leading_club_match(source)
+    value = str(translated or "")
+    if not match or not value.strip():
+        return value
+    _source_prefix, source_club, target_club = match
+    prefix, body = _final_leading_nontext_split(value)
+    first_sentence = re.split(r"[.!?…\n]", body, maxsplit=1)[0]
+    equivalents = {source_club.casefold(), target_club.casefold()}
+    # Include all aliases that translate to the same target.
+    for mapping in (TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS):
+        equivalents.update(
+            str(alias or "").casefold()
+            for alias, target in mapping.items()
+            if str(target or "").casefold() == target_club.casefold()
+        )
+    if any(re.search(rf"(?<![A-Za-zא-ת0-9]){re.escape(alias)}(?![A-Za-zא-ת0-9])", first_sentence.casefold()) for alias in equivalents if alias):
+        return value
+    return prefix + target_club + " " + body.lstrip()
+
+
+_PRE_FINAL_PREFIX_STRIP_REPORTED_SOURCE = _final_strip_reported_source
+
+
+def _final_strip_reported_source(value: str) -> str:
+    original = str(value or "")
+    cleaned = _PRE_FINAL_PREFIX_STRIP_REPORTED_SOURCE(original)
+    return _final_restore_leading_source_club(original, cleaned)
+
+
+_PRE_FINAL_PREFIX_CLEAN_BEFORE_TRANSLATION = clean_before_translation
+_PRE_FINAL_PREFIX_CLEAN_FOR_AI = clean_for_ai_translation
+
+
+def clean_before_translation(text: str) -> str:
+    original = str(text or "")
+    cleaned = _PRE_FINAL_PREFIX_CLEAN_BEFORE_TRANSLATION(original)
+    return _final_restore_leading_source_club(original, cleaned)
+
+
+def clean_for_ai_translation(text: str) -> str:
+    original = str(text or "")
+    cleaned = _PRE_FINAL_PREFIX_CLEAN_FOR_AI(original)
+    return _final_restore_leading_source_club(original, cleaned)
+
+
+# ----- 4 + 6. Historical exception and exact clickable markers -----
+_FINAL_ON_THIS_DAY_RE = re.compile(
+    r"(?iu)(?<![A-Za-zא-ת])(?:on\s+this\s+day|ביום\s+זה|ביום\s+הזה)(?![A-Za-zא-ת])"
+)
+_FINAL_MAZAL_TOV_RE = re.compile(
+    r"(?iu)(?<![A-Za-zא-ת])(?:מזל\s+טוב|יום\s+הולדת\s+שמח|happy\s+birthday|congratulations)(?![A-Za-zא-ת])"
+)
+_FINAL_HISTORICAL_VALUE_RE = re.compile(
+    r"(?iu)(?:\d{1,4}|€|£|\$|מיליון|תמורת|החתימ|הצטרף|זכתה?|תואר|אליפות|"
+    r"ליגת\s+האלופות|טרבל|שיא|הופעות|שערים|בישולים|🏆|record|title|troph|signed|joined|won)"
+)
+_FINAL_HISTORICAL_HARD_BLOCK_TOKENS = (
+    "women", "wnba", "other_sport", "youth", "academy", "reserve",
+    "duplicate", "old_post", "too_old", "podcast", "live_goal", "live_or_talk",
+    "lineup", "poll", "question", "quiz", "social_media_trivia", "opinion_or_hypothetical",
+    "video_too_large", "video_missing", "no_video", "translation", "shabbat",
+)
+
+
+def _final_is_significant_on_this_day(post: Post) -> bool:
+    if not isinstance(post, Post):
+        return False
+    source = _final_source_text(post)
+    return bool(
+        _FINAL_ON_THIS_DAY_RE.search(source)
+        and _FINAL_HISTORICAL_VALUE_RE.search(source)
+        and count_regular_words(source) >= 9
+    )
+
+
+def _final_historical_reason_is_hard(reason: Any) -> bool:
+    value = str(reason or "").casefold()
+    return any(token in value for token in _FINAL_HISTORICAL_HARD_BLOCK_TOKENS)
+
+
+_PRE_FINAL_HISTORICAL_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _PRE_FINAL_HISTORICAL_PRE_SEND(post)
+    if reason and _final_is_significant_on_this_day(post) and not _final_historical_reason_is_hard(reason):
+        logging.info("📅 ביום זה: מסנן רך בוטל עבור פוסט היסטורי משמעותי מ-@%s (%s)", getattr(post, "username", ""), reason)
+        return ""
+    return reason
+
+
+_PRE_FINAL_HISTORICAL_IMPORTANCE = football_importance_block_reason
+
+
+def football_importance_block_reason(post: Post) -> str:
+    if _final_is_significant_on_this_day(post):
+        return ""
+    return _PRE_FINAL_HISTORICAL_IMPORTANCE(post)
+
+
+def _final_wrap_historical_soft_boolean(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+    def wrapper(post: Post, *args: Any, _previous=previous, **kwargs: Any):
+        if _final_is_significant_on_this_day(post):
+            return False
+        return _previous(post, *args, **kwargs)
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _historical_soft_filter in (
+    "is_interview_post", "is_contextless_teaser_post", "is_unclear_subject_news_post",
+    "is_vague_status_without_primary_context", "is_match_result_or_engagement_post",
+    "is_match_context_noise_post", "is_media_without_report_post",
+    "is_too_short_without_strong_news_post", "is_name_without_news_action_post",
+    "is_unclear_main_club_context_post", "is_weak_copy_without_primary_value_post",
+    "is_writer_profile_noise_post", "is_link_only_or_details_post",
+    "is_non_news_social_post", "is_recycled_report_post",
+):
+    _final_wrap_historical_soft_boolean(_historical_soft_filter)
+
+
+def _final_apply_requested_clickable_markers(post: Post, value: str) -> str:
+    text = str(value or "")
+    source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    source_or_output = source + "\n" + text
+
+    # Preserve the phrase position. Replacement is in-place, never appended.
+    if _FINAL_ON_THIS_DAY_RE.search(source_or_output):
+        text = _FINAL_ON_THIS_DAY_RE.sub("#ביום_זה", text, count=1)
+        text = re.sub(r"(?iu)#ביום_זה(?:\s*,?\s*#ביום_זה)+", "#ביום_זה", text)
+    else:
+        text = text.replace("#ביום_זה", "ביום זה")
+
+    if _FINAL_MAZAL_TOV_RE.search(source_or_output):
+        text = _FINAL_MAZAL_TOV_RE.sub("#מזל_טוב", text, count=1)
+        text = re.sub(r"(?iu)#מזל_טוב(?:\s*,?\s*#מזל_טוב)+", "#מזל_טוב", text)
+    else:
+        text = text.replace("#מזל_טוב", "מזל טוב")
+
+    # Inline trophy lists are formatted as real lines without touching ordinary prose.
+    if _FINAL_ON_THIS_DAY_RE.search(source_or_output):
+        text = re.sub(r"(?iu)(טרבל|תארים?|הישגים?)\s*:\s*(?=🏆)", r"\1:\n\n", text)
+        text = re.sub(r"[ \t]+(?=🏆)", "\n", text)
+        text = re.sub(r"([.!?🤯🇮🇹])\s+(?=בעונה\s+שלאחר\s+מכן)", r"\1\n\n", text)
+
+    text = re.sub(r"[ \t]+([,.;!?])", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+_PRE_FINAL_HISTORICAL_OUTGOING_BODY = _outgoing_body_text
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _PRE_FINAL_HISTORICAL_OUTGOING_BODY(post, translated, quoted=quoted)
+    if quoted:
+        return value
+    value = _final_restore_leading_translated_club(post, value)
+    value = _final_apply_requested_clickable_markers(post, value)
+    return value.strip()
+
+
+# ----- 5. Every prepared quiet-channel item is the exact final publication body -----
+_PRE_FINAL_EXACT_PREPARE_HISTORY = prepare_history_post_with_ai
+
+
+def prepare_history_post_with_ai(token: str) -> None:
+    item = _restore_prepared_send(token)
+    if not item:
+        send_control_text("הפוסט כבר לא נמצא בזיכרון. פתח שוב את 10 האחרונים של הכתב.")
+        return
+    post = _ensure_post_original_structure(item.get("post"))
+    if not isinstance(post, Post):
+        send_control_text("אין מספיק נתונים לשחזור הפוסט.")
+        return
+    try:
+        # Hydrate the exact X text/media only after the user selected the item.
+        _reliable_hydrate_exact_post(post, force=True)
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        final_message = _render_full_control_candidate(
+            post,
+            translated,
+            quoted_translated,
+            quoted_author_translated,
+        )
+        item.update({
+            "post": post,
+            "translated": translated,
+            "quoted_translated": quoted_translated,
+            "quoted_author_translated": quoted_author_translated,
+            "prepared_final_message_html": final_message,
+        })
+        CONTROL_PREPARED_SENDS[token] = item
+        _persist_prepared_send(token, item)
+        try:
+            _persist_prepared_send_durable(token, item)
+        except Exception:
+            pass
+        _send_full_control_candidate(post, token, final_message)
+    except Exception as exc:
+        logging.exception("Final history preparation failed")
+        send_control_text(f"הכנת ההודעה באמצעות Gemini נכשלה:\n{short_error(exc, 900)}")
+
+
+# ----- 7. Automatic mirror race: the automatic lane sees what 10-latest sees -----
+AUTO_FRESH_MIRROR_INTERVAL_SECONDS = max(15, int(os.environ.get("AUTO_FRESH_MIRROR_INTERVAL_SECONDS", "25")))
+AUTO_FRESH_MIRROR_FULL_PROBE_SECONDS = max(60, int(os.environ.get("AUTO_FRESH_MIRROR_FULL_PROBE_SECONDS", "90")))
+AUTO_FRESH_MIRROR_WAIT_SECONDS = max(0.5, min(3.0, float(os.environ.get("AUTO_FRESH_MIRROR_WAIT_SECONDS", "1.4"))))
+AUTO_FRESH_MIRROR_JOB_TIMEOUT_SECONDS = max(4.0, min(12.0, float(os.environ.get("AUTO_FRESH_MIRROR_JOB_TIMEOUT_SECONDS", "7.0"))))
+AUTO_FRESH_MIRROR_LIMIT = max(5, min(20, int(os.environ.get("AUTO_FRESH_MIRROR_LIMIT", "10"))))
+AUTO_FRESH_ACCOUNT_WORKERS = max(6, min(20, int(os.environ.get("AUTO_FRESH_ACCOUNT_WORKERS", "12"))))
+AUTO_FRESH_FEED_WORKERS = max(12, min(36, int(os.environ.get("AUTO_FRESH_FEED_WORKERS", "24"))))
+
+CHECK_EVERY_SECONDS = min(int(CHECK_EVERY_SECONDS), 8)
+NIGHT_CHECK_EVERY_SECONDS = min(int(NIGHT_CHECK_EVERY_SECONDS), 8)
+MAX_PARALLEL_ACCOUNT_CHECKS = max(int(MAX_PARALLEL_ACCOUNT_CHECKS), AUTO_FRESH_ACCOUNT_WORKERS)
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = max(int(NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS), AUTO_FRESH_ACCOUNT_WORKERS)
+
+_AUTO_FRESH_ACCOUNT_EXECUTOR = ThreadPoolExecutor(max_workers=AUTO_FRESH_ACCOUNT_WORKERS, thread_name_prefix="auto-fresh-account")
+_AUTO_FRESH_FEED_EXECUTOR = ThreadPoolExecutor(max_workers=AUTO_FRESH_FEED_WORKERS, thread_name_prefix="auto-fresh-feed")
+_AUTO_FRESH_LOCK = RLock()
+_AUTO_FRESH_LAST_STARTED: dict[str, float] = {}
+_AUTO_FRESH_LAST_FULL_PROBE: dict[str, float] = {}
+_AUTO_FRESH_INFLIGHT: dict[str, Any] = {}
+_AUTO_FRESH_CACHE: dict[str, tuple[float, list[Post]]] = {}
+_AUTO_FRESH_SOURCE_SCORE: dict[str, tuple[float, float, int]] = {}
+_AUTO_FRESH_ROTATION: dict[str, int] = {}
+_PRE_FINAL_AUTO_FRESH_FETCH_POSTS = fetch_posts
+
+
+def _auto_fresh_template_score(template: str) -> tuple[float, float, int]:
+    return _AUTO_FRESH_SOURCE_SCORE.get(template, (0.0, 0.0, 0))
+
+
+def _auto_fresh_selected_templates(username: str, force_full: bool = False) -> list[str]:
+    templates = list(active_feed_templates())
+    if len(templates) <= 3 or force_full:
+        return templates
+    primary = templates[0]
+    remaining = templates[1:]
+    ranked = sorted(
+        remaining,
+        key=lambda template: _auto_fresh_template_score(template),
+        reverse=True,
+    )
+    selected: list[str] = [primary]
+    # Keep the two recently best/freshest mirrors.
+    for template in ranked:
+        if template not in selected:
+            selected.append(template)
+        if len(selected) >= 3:
+            break
+    # Before scores exist, rotate fallbacks so all mirrors are covered within two cycles.
+    if not any(_auto_fresh_template_score(t)[2] for t in remaining):
+        key = str(username or "").casefold()
+        index = int(_AUTO_FRESH_ROTATION.get(key, 0) or 0) % max(1, len(remaining))
+        _AUTO_FRESH_ROTATION[key] = index + 2
+        selected = [primary, remaining[index], remaining[(index + 1) % len(remaining)]]
+    return list(dict.fromkeys(selected))
+
+
+def _auto_fresh_job(username: str, force_full: bool) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    templates = _auto_fresh_selected_templates(canonical, force_full=force_full)
+    variants = _control_rss_username_variants(canonical) if "_control_rss_username_variants" in globals() else [canonical]
+    future_meta: dict[Any, tuple[str, str]] = {}
+    for variant in variants:
+        for template in templates:
+            future = _AUTO_FRESH_FEED_EXECUTOR.submit(fetch_feed, variant, template)
+            future_meta[future] = (variant, template)
+    merged: dict[str, Post] = {}
+    deadline = time.perf_counter() + AUTO_FRESH_MIRROR_JOB_TIMEOUT_SECONDS
+    pending = set(future_meta)
+    while pending and time.perf_counter() < deadline:
+        remaining = max(0.0, deadline - time.perf_counter())
+        done, pending = _rss_wait(pending, timeout=remaining, return_when=_RSS_FIRST_COMPLETED)
+        if not done:
+            break
+        for future in done:
+            variant, template = future_meta[future]
+            try:
+                rows = list(future.result() or [])
+            except Exception:
+                rows = []
+            newest = max((float(getattr(row, "published_ts", 0.0) or 0.0) for row in rows if isinstance(row, Post)), default=0.0)
+            with _AUTO_FRESH_LOCK:
+                old_newest, _old_seen, old_success = _AUTO_FRESH_SOURCE_SCORE.get(template, (0.0, 0.0, 0))
+                _AUTO_FRESH_SOURCE_SCORE[template] = (
+                    max(old_newest, newest),
+                    time.time(),
+                    old_success + (1 if rows else 0),
+                )
+            for post in rows:
+                if not isinstance(post, Post):
+                    continue
+                post.username = canonical
+                identity = _full_speed_post_identity(post) if "_full_speed_post_identity" in globals() else (post.post_id or post.link)
+                if identity:
+                    merged.setdefault(identity, post)
+    for future in pending:
+        future.cancel()
+    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)[:AUTO_FRESH_MIRROR_LIMIT]
+    with _AUTO_FRESH_LOCK:
+        _AUTO_FRESH_CACHE[canonical.casefold()] = (time.time(), list(ordered))
+    observed = time.time()
+    for post in ordered:
+        try:
+            _pipeline_mark_seen(post, "fast_mirror", observed, time.perf_counter() - started)
+        except Exception:
+            pass
+    return ordered
+
+
+def _auto_fresh_start(username: str):
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    now = time.time()
+    with _AUTO_FRESH_LOCK:
+        current = _AUTO_FRESH_INFLIGHT.get(key)
+        if current is not None and not current.done():
+            return current
+        last = float(_AUTO_FRESH_LAST_STARTED.get(key, 0.0) or 0.0)
+        if now - last < AUTO_FRESH_MIRROR_INTERVAL_SECONDS:
+            return current if current is not None and current.done() else None
+        full_last = float(_AUTO_FRESH_LAST_FULL_PROBE.get(key, 0.0) or 0.0)
+        force_full = now - full_last >= AUTO_FRESH_MIRROR_FULL_PROBE_SECONDS
+        if force_full:
+            _AUTO_FRESH_LAST_FULL_PROBE[key] = now
+        _AUTO_FRESH_LAST_STARTED[key] = now
+        future = _AUTO_FRESH_ACCOUNT_EXECUTOR.submit(_auto_fresh_job, canonical, force_full)
+        _AUTO_FRESH_INFLIGHT[key] = future
+        return future
+
+
+def _auto_fresh_cached(username: str) -> list[Post]:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _AUTO_FRESH_LOCK:
+        item = _AUTO_FRESH_CACHE.get(key)
+        if item and time.time() - float(item[0] or 0.0) <= AUTO_FRESH_MIRROR_FULL_PROBE_SECONDS + 30:
+            return list(item[1])
+    return []
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Merge the stable automatic route with a continuously refreshed mirror race.
+
+    This invokes no Gemini operation. It starts the same broad RSS lookup used by
+    the manual history button before waiting for the base route, then takes the
+    newest post from either lane.
+    """
+    canonical = str(username or "").strip().lstrip("@")
+    fresh_future = _auto_fresh_start(canonical)
+    try:
+        base_rows = list(_PRE_FINAL_AUTO_FRESH_FETCH_POSTS(canonical) or [])
+    except Exception as exc:
+        logging.debug("Base automatic fetch failed safely for @%s: %s", canonical, short_error(exc, 300))
+        base_rows = []
+    fresh_rows = _auto_fresh_cached(canonical)
+    if not fresh_rows and fresh_future is not None:
+        try:
+            fresh_rows = list(fresh_future.result(timeout=AUTO_FRESH_MIRROR_WAIT_SECONDS) or [])
+        except Exception:
+            fresh_rows = _auto_fresh_cached(canonical)
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, base_rows, canonical)
+    _reliable_merge_posts(merged, fresh_rows, canonical)
+    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    base_latest = _full_speed_latest_ts(base_rows) if "_full_speed_latest_ts" in globals() else 0.0
+    fresh_latest = _full_speed_latest_ts(fresh_rows) if "_full_speed_latest_ts" in globals() else 0.0
+    if fresh_latest and fresh_latest > base_latest:
+        logging.info(
+            "🚀 @%s: סריקת המראות המהירה מצאה פוסט חדש יותר מהמסלול הרגיל והוא נכנס מיד לעיבוד.",
+            canonical,
+        )
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+# Run the one-time source migration before validation/scan starts.
+_PRE_FINAL_USER_MAIN = main
+
+
+def main() -> None:
+    ensure_footballtweet_default_off_once()
+    return _PRE_FINAL_USER_MAIN()
+
+# ====== END FINAL USER CONTROL / HISTORICAL TAGS / AGGRESSIVE DISCOVERY PATCH ======
+
 
 if __name__ == "__main__":
     main()
