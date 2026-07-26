@@ -34872,5 +34872,732 @@ def mark_fabrizio_confirmation_from_state(post: Post, state: dict[str, Any]) -> 
 
 # ====== END FINAL SMART NO-CUT / SAFE TAIL / FABRIZIO CONFIRMATION PATCH ======
 
+# ====== FINAL CONTEXT / MEDIA INTEGRITY / EXACT PHOTO DEDUPE PATCH (2026-07-26) ======
+# This patch is intentionally appended around the existing pipeline. It does not
+# redefine feed templates, RSS request functions, discovery cadence, Gemini key
+# loading, persistent filenames, or the existing two-hour publication limit.
+
+BOT_BUILD_ID = "winner-context-media-exact-dedupe-2026-07-26"
+
+_FINAL_CONTEXT_CACHE_LOCK = RLock()
+_FINAL_CONTEXT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_FINAL_CONTEXT_CACHE_SECONDS = int(os.environ.get("FINAL_CONTEXT_CACHE_SECONDS", "900"))
+
+_FINAL_GENERIC_CONTEXT_WORDS = {
+    "אלא", "אם", "יקרה", "משהו", "יוצא", "דופן", "התוכנית", "תכנית", "העסקה", "עסקה",
+    "תיסגר", "נסגרה", "קרסה", "לא", "כפי", "הדברים", "עומדים", "כרגע", "למרות", "הדיווחים",
+    "בשבוע", "הבא", "הקרוב", "היום", "מחר", "בקרוב", "שיחות", "מגעים", "הסכם", "סיכום",
+    "הצעה", "הצעות", "חדשות", "דיווח", "דיווחים", "בלעדי", "רשמי", "החלטה", "פרטים",
+    "אחרונים", "עוד", "המשך", "עדכון", "חדש", "חדשה", "השחקן", "המאמן", "המועדון", "הקבוצה",
+    "הוא", "היא", "הם", "זה", "זאת", "אותו", "אותה", "אותם", "צפוי", "צפויה", "נשאר",
+}
+
+_FINAL_NAMED_CONTEXT_ACTION_RE = re.compile(
+    r"\b(?:deal|agreement|agreed|close|closed|collapse|collapsed|transfer|move|join|sign|bid|offer|talks|"
+    r"negotiations|medical|contract|leave|stay|decision|plan|expected|next week)\b|"
+    r"עסק(?:ה|ת)|הסכם|סיכום|קרוב|נסגר|קרסה|העברה|מעבר|מצטרף|יחתום|חתם|הצעה|שיחות|מגעים|"
+    r"משא\s+ומתן|בדיקות\s+רפואיות|חוזה|יעזוב|יישאר|החלטה|התוכנית|התכנית|צפוי|בשבוע\s+הבא",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+_FINAL_SINGLE_HEBREW_ROLE_NAME_RE = re.compile(
+    r"(?:השחקן|הבלם|הקשר|החלוץ|השוער|המאמן|המנהל)\s+([א-ת][א-ת'׳״-]{3,})",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_SINGLE_LATIN_SUBJECT_RE = re.compile(
+    r"(?:player|defender|midfielder|winger|striker|goalkeeper|coach|manager|for|sign|signing|join|move)\s+"
+    r"([A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{3,})",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_FINAL_HEBREW_NAME_AFTER_ROLE_RE = re.compile(
+    r"(?:הבלם|הקשר|החלוץ|השוער|שחקן(?:\s+הכנף)?|המאמן|המנהל|עבור|לגבי|בנוגע\s+ל|להחתים\s+את|"
+    r"לצרף\s+את|עם|של|את)\s+"
+    r"([א-ת][א-ת'׳״-]{2,}(?:\s+[א-ת][א-ת'׳״-]{2,}){1,3})",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_context_post_id(value: Any) -> str:
+    raw = str(value or "")
+    matches = re.findall(r"(?<!\d)(\d{12,24})(?!\d)", raw)
+    return matches[-1] if matches else ""
+
+
+def _final_context_item_text(item: dict[str, Any]) -> str:
+    for key in ("original_text", "text", "ai_text", "preview", "rendered"):
+        value = str(item.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _final_context_message_ids(item: dict[str, Any]) -> dict[str, int]:
+    if "_smart_message_ids_from_item" in globals():
+        try:
+            values = _smart_message_ids_from_item(item)
+            if values:
+                return values
+        except Exception:
+            pass
+    for key in ("message_ids", "message_ids_by_chat", "telegram_message_ids"):
+        raw = item.get(key)
+        if not isinstance(raw, dict):
+            continue
+        result: dict[str, int] = {}
+        for chat_id, message_id in raw.items():
+            try:
+                if message_id:
+                    result[str(chat_id)] = int(message_id)
+            except Exception:
+                continue
+        if result:
+            return result
+    return {}
+
+
+def _final_context_payload_details(post: Post) -> dict[str, Any]:
+    current_id = _final_tweet_numeric_id(post) if "_final_tweet_numeric_id" in globals() else _final_context_post_id(getattr(post, "post_id", ""))
+    cache_key = current_id or str(getattr(post, "link", "") or getattr(post, "post_id", "") or "")
+    if not cache_key:
+        return {}
+    with _FINAL_CONTEXT_CACHE_LOCK:
+        cached = _FINAL_CONTEXT_CACHE.get(cache_key)
+        if cached and time.time() - cached[0] <= _FINAL_CONTEXT_CACHE_SECONDS:
+            return dict(cached[1])
+
+    parent_ids: list[str] = []
+    context_texts: list[str] = []
+
+    def add_id(value: Any) -> None:
+        found = _final_context_post_id(value)
+        if found and found != current_id and found not in parent_ids:
+            parent_ids.append(found)
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth > 12:
+            return
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_l = str(key).casefold()
+                if key_l in {
+                    "in_reply_to_status_id", "in_reply_to_status_id_str", "quoted_status_id", "quoted_status_id_str",
+                    "referenced_tweet_id", "parent_tweet_id", "reply_to_tweet_id",
+                }:
+                    add_id(value)
+                if key_l in {"quoted_text", "quoted_full_text", "parent_text", "reply_text"} and isinstance(value, str):
+                    cleaned = _reliable_normalize_x_text(value) if "_reliable_normalize_x_text" in globals() else value.strip()
+                    if cleaned and cleaned not in context_texts:
+                        context_texts.append(cleaned)
+                walk(value, depth + 1)
+        elif isinstance(node, list):
+            for value in node[:200]:
+                walk(value, depth + 1)
+
+    payloads: list[Any] = []
+    for loader_name in ("_final_syndication_payload", "_final_x_guest_tweet_payload"):
+        loader = globals().get(loader_name)
+        if not callable(loader) or not current_id:
+            continue
+        try:
+            payload = loader(current_id)
+            if payload:
+                payloads.append(payload)
+                walk(payload)
+        except Exception as exc:
+            logging.debug("Context provider %s failed safely for %s: %s", loader_name, current_id, short_error(exc, 180))
+
+    # If the public payload exposes only a parent ID, fetch that parent once and
+    # keep its exact text. This path runs only for contextless reports.
+    for parent_id in list(parent_ids[:3]):
+        for loader_name in ("_final_syndication_payload", "_final_x_guest_tweet_payload"):
+            loader = globals().get(loader_name)
+            if not callable(loader):
+                continue
+            try:
+                payload = loader(parent_id)
+                if not payload:
+                    continue
+                text_value = ""
+                if "_final_payload_main_text" in globals():
+                    try:
+                        text_value = str(_final_payload_main_text(payload, parent_id) or "").strip()
+                    except Exception:
+                        text_value = ""
+                if not text_value and "_reliable_extract_single_tweet_text" in globals():
+                    try:
+                        text_value = str(_reliable_extract_single_tweet_text(payload) or "").strip()
+                    except Exception:
+                        text_value = ""
+                if text_value:
+                    normalized = _reliable_normalize_x_text(text_value) if "_reliable_normalize_x_text" in globals() else text_value
+                    if normalized and normalized not in context_texts:
+                        context_texts.append(normalized)
+                    break
+            except Exception:
+                continue
+
+    details = {
+        "parent_ids": parent_ids,
+        "context_text": max(context_texts, key=len, default=""),
+    }
+    with _FINAL_CONTEXT_CACHE_LOCK:
+        _FINAL_CONTEXT_CACHE[cache_key] = (time.time(), dict(details))
+    return details
+
+
+def _final_named_subject_texts(post: Post) -> list[str]:
+    values: list[str] = []
+    for value in (
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "original_text", "") or ""),
+        _post_original_text(post) if "_post_original_text" in globals() else "",
+    ):
+        value = html.unescape(str(value or "")).strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def _final_has_named_subject(post: Post) -> bool:
+    for source in _final_named_subject_texts(post):
+        primary_post = clone_post_with_text(post, source) if "clone_post_with_text" in globals() else post
+        try:
+            signature = news_event_signature(primary_post)
+            if "_canonical_sets_from_signature" in globals():
+                canonical_players, canonical_teams = _canonical_sets_from_signature(signature)
+                if canonical_players or canonical_teams:
+                    return True
+        except Exception:
+            pass
+        try:
+            if contains_tracked_club_or_israeli_league(primary_post):
+                return True
+        except Exception:
+            pass
+        # Unknown Latin player/club names are usually still capitalised in the
+        # original X body, even when the local dictionaries do not know them.
+        if re.search(r"\b[A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{2,}(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{2,}){1,4}\b", source):
+            return True
+        if re.search(r"\b(?:FC|CF|AC|AS|SC|RB)\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{2,}\b", source):
+            return True
+        latin_single = _FINAL_SINGLE_LATIN_SUBJECT_RE.search(source)
+        if latin_single and latin_single.group(1).casefold() not in {"player", "coach", "manager", "club", "team", "deal"}:
+            return True
+        hebrew_single = _FINAL_SINGLE_HEBREW_ROLE_NAME_RE.search(source)
+        if hebrew_single and normalize_memory_text(hebrew_single.group(1)) not in _FINAL_GENERIC_CONTEXT_WORDS:
+            return True
+        for match in _FINAL_HEBREW_NAME_AFTER_ROLE_RE.finditer(source):
+            phrase = match.group(1)
+            words = [normalize_memory_text(word) for word in re.findall(r"[א-ת][א-ת'׳״-]{2,}", phrase)]
+            if len(words) >= 2 and all(word not in _FINAL_GENERIC_CONTEXT_WORDS for word in words):
+                return True
+        # A Hebrew two-word proper-name-like phrase at the beginning is accepted
+        # only when neither word is generic transfer/status prose.
+        start = re.sub(r"^[^א-תA-Za-z]+", "", source)
+        match = re.match(r"([א-ת][א-ת'׳״-]{2,})\s+([א-ת][א-ת'׳״-]{2,})", start)
+        if match:
+            words = [normalize_memory_text(match.group(1)), normalize_memory_text(match.group(2))]
+            if all(word not in _FINAL_GENERIC_CONTEXT_WORDS for word in words):
+                return True
+    return False
+
+
+def _final_context_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for getter_name in ("cleanup_bot_sent_reply_targets", "cleanup_channel_recent_news_events", "cleanup_recent_news_events"):
+        getter = globals().get(getter_name)
+        if not callable(getter):
+            continue
+        try:
+            values = getter(state)
+        except Exception:
+            values = []
+        for item in values or []:
+            if isinstance(item, dict) and item not in rows and _final_context_message_ids(item):
+                rows.append(item)
+    return rows
+
+
+def _final_context_text_match(context_text: str, item_text: str) -> bool:
+    left = _final_duplicate_normalized_text(context_text) if "_final_duplicate_normalized_text" in globals() else normalize_memory_text(context_text)
+    right = _final_duplicate_normalized_text(item_text) if "_final_duplicate_normalized_text" in globals() else normalize_memory_text(item_text)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    ratio = SequenceMatcher(None, left, right).ratio()
+    if ratio >= 0.82:
+        return True
+    left_tokens = set(left.split())
+    right_tokens = set(right.split())
+    overlap = len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+    return overlap >= 0.78 and len(left_tokens & right_tokens) >= 5
+
+
+def _final_confident_context_item(post: Post, state: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    cached_item = getattr(post, "final_context_item", None)
+    if isinstance(cached_item, dict) and _final_context_message_ids(cached_item):
+        return cached_item
+    if bool(getattr(post, "final_context_checked", False)):
+        return None
+
+    explicit_context_hint = bool(str(getattr(post, "quoted_text", "") or "").strip())
+    if not explicit_context_hint:
+        for attr in (
+            "in_reply_to_status_id", "in_reply_to_status_id_str", "reply_to_post_id", "parent_post_id",
+            "quoted_status_id", "quoted_status_id_str", "quoted_post_id", "context_parent_id",
+        ):
+            if _final_context_post_id(getattr(post, attr, "")):
+                explicit_context_hint = True
+                break
+    # Normal reports with a clear named subject never spend extra X requests on
+    # parent-context lookup. The public parent lookup is reserved for the vague
+    # reports that actually need it.
+    if _final_has_named_subject(post) and not explicit_context_hint:
+        post.final_context_checked = True
+        return None
+
+    context_text = str(getattr(post, "quoted_text", "") or "").strip()
+    context_ids: list[str] = []
+    for attr in (
+        "in_reply_to_status_id", "in_reply_to_status_id_str", "reply_to_post_id", "parent_post_id",
+        "quoted_status_id", "quoted_status_id_str", "quoted_post_id", "context_parent_id",
+    ):
+        value = _final_context_post_id(getattr(post, attr, ""))
+        if value and value not in context_ids:
+            context_ids.append(value)
+
+    if not context_text or not context_ids:
+        details = _final_context_payload_details(post)
+        for value in details.get("parent_ids", []) or []:
+            value = _final_context_post_id(value)
+            if value and value not in context_ids:
+                context_ids.append(value)
+        if not context_text:
+            context_text = str(details.get("context_text") or "").strip()
+            if context_text:
+                try:
+                    post.quoted_text = context_text
+                except Exception:
+                    pass
+
+    if state is None:
+        try:
+            state = load_state()
+        except Exception:
+            state = {}
+    if not isinstance(state, dict):
+        state = {}
+
+    matched: dict[str, Any] | None = None
+    for item in reversed(_final_context_rows(state)[-1200:]):
+        item_ids = {
+            _final_context_post_id(item.get("post_id")),
+            _final_context_post_id(item.get("link")),
+        }
+        item_ids.discard("")
+        exact_parent = bool(set(context_ids) & item_ids)
+        text_match = bool(context_text and _final_context_text_match(context_text, _final_context_item_text(item)))
+        if exact_parent or text_match:
+            matched = item
+            break
+
+    post.final_context_checked = True
+    if matched:
+        post.final_context_item = matched
+        post.final_context_reply_message_ids = _final_context_message_ids(matched)
+        return matched
+    return None
+
+
+def _final_requires_named_context(post: Post) -> bool:
+    text = clean_for_ai_translation(html.unescape(str(getattr(post, "text", "") or "")))
+    return bool(text and _FINAL_NAMED_CONTEXT_ACTION_RE.search(text))
+
+
+def _final_missing_named_context(post: Post, state: dict[str, Any] | None = None) -> bool:
+    if not _final_requires_named_context(post):
+        return False
+    if _final_has_named_subject(post):
+        return False
+    return _final_confident_context_item(post, state) is None
+
+
+_PRE_CONTEXT_UNCLEAR_SUBJECT = is_unclear_subject_news_post
+_PRE_CONTEXT_VAGUE_STATUS = is_vague_status_without_primary_context
+
+
+def is_unclear_subject_news_post(post: Post) -> bool:
+    if _final_has_named_subject(post) or _final_confident_context_item(post):
+        return False
+    if _final_missing_named_context(post):
+        return True
+    return _PRE_CONTEXT_UNCLEAR_SUBJECT(post)
+
+
+def is_vague_status_without_primary_context(post: Post) -> bool:
+    if _final_has_named_subject(post) or _final_confident_context_item(post):
+        return False
+    if _final_missing_named_context(post):
+        return True
+    return _PRE_CONTEXT_VAGUE_STATUS(post)
+
+
+_PRE_CONTEXT_RELEVANCE = football_relevance_decision
+
+
+def football_relevance_decision(post: Post) -> tuple[bool, str, int, list[str]]:
+    has_named_subject = _final_has_named_subject(post)
+    context_item = None if has_named_subject else _final_confident_context_item(post)
+    if not has_named_subject and context_item is None and _final_requires_named_context(post):
+        return False, "missing_named_subject_or_context", 0, ["missing_named_subject_or_context"]
+    allowed, reason, score, signals = _PRE_CONTEXT_RELEVANCE(post)
+    if context_item and not allowed and reason in {
+        "unclear_subject_news", "vague_status_without_primary_context", "untracked_transfer_or_staff_news",
+        "not_connected_to_tracked_club", "name_without_news_action", "unclear_main_club_context",
+    }:
+        return True, "identified_reply_context", max(70, int(score or 0)), list(dict.fromkeys([*(signals or []), "identified_reply_context"]))
+    return allowed, reason, score, signals
+
+
+_PRE_CONTEXT_PRE_SEND_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    has_named_subject = _final_has_named_subject(post)
+    context_item = None if has_named_subject else _final_confident_context_item(post)
+    if not has_named_subject and context_item is None and _final_requires_named_context(post):
+        return "missing_named_subject_or_context"
+    reason = _PRE_CONTEXT_PRE_SEND_BLOCK(post)
+    if context_item and reason in {
+        "unclear_subject_news", "vague_status_without_primary_context", "untracked_transfer_or_staff_news",
+        "not_connected_to_tracked_club", "name_without_news_action", "unclear_main_club_context",
+        "hard_transfer_without_tracked_team",
+    }:
+        return ""
+    return reason
+
+
+_PRE_CONTEXT_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "missing_named_subject_or_context" in raw:
+        return "הדיווח אינו כולל שחקן, קבוצה או הקשר מזוהה להודעה קודמת"
+    if "original_photo_missing" in raw:
+        return "בפוסט המקורי קיימת תמונה, אך לא נמצא קובץ התמונה האמיתי"
+    return _PRE_CONTEXT_HEBREW_BLOCK_REASON(reason)
+
+
+_PRE_CONTEXT_REPLY_TARGET = find_bot_reply_target_for_post
+
+
+def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    explicit_context_hint = bool(str(getattr(post, "quoted_text", "") or "").strip()) or any(
+        _final_context_post_id(getattr(post, attr, ""))
+        for attr in (
+            "in_reply_to_status_id", "in_reply_to_status_id_str", "reply_to_post_id", "parent_post_id",
+            "quoted_status_id", "quoted_status_id_str", "quoted_post_id", "context_parent_id",
+        )
+    )
+    if explicit_context_hint or not _final_has_named_subject(post):
+        item = _final_confident_context_item(post, state)
+        if item:
+            ids = _final_context_message_ids(item)
+            if ids:
+                return ids
+    return _PRE_CONTEXT_REPLY_TARGET(post, state)
+
+
+# ----- Exact, non-perceptual image deduplication -----
+def _final_exact_photo_asset_key(url: Any) -> str:
+    value = html.unescape(str(url or "")).strip()
+    if not value:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.netloc.casefold()
+        path = urllib.parse.unquote(parsed.path)
+        if host.endswith("pbs.twimg.com") and "/media/" in path:
+            # Different ?name=small/large URLs are renditions of the exact same X
+            # media object. The media path/ID is an exact identifier, not a visual
+            # similarity guess.
+            media_name = path.rsplit("/", 1)[-1]
+            media_id = media_name.split(".", 1)[0]
+            return f"x-media:{media_id.casefold()}"
+        normalized_query = urllib.parse.urlencode(sorted(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)))
+        return urllib.parse.urlunsplit((parsed.scheme.casefold(), host, path, normalized_query, ""))
+    except Exception:
+        return value
+
+
+def _final_dedupe_exact_photos(urls: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in list(urls or []):
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        key = _final_exact_photo_asset_key(value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+_PRE_MEDIA_HYDRATE = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    initial_real_images = [
+        value for value in list(getattr(post, "image_urls", []) or [])
+        if not callable(globals().get("_real_tweet_photo_url")) or _real_tweet_photo_url(value)
+    ]
+    if initial_real_images:
+        try:
+            post.photo_expected = True
+        except Exception:
+            pass
+    result = _PRE_MEDIA_HYDRATE(post, force=force)
+    if isinstance(result, Post):
+        result.image_urls = _final_dedupe_exact_photos(getattr(result, "image_urls", []) or [])
+        if result.image_urls:
+            result.photo_expected = True
+        if hasattr(result, "exact_image_urls"):
+            result.exact_image_urls = _final_dedupe_exact_photos(getattr(result, "exact_image_urls", []) or [])
+    return result
+
+
+_PRE_MEDIA_SELECTED_IMAGES = selected_post_images
+
+
+def selected_post_images(post: Post) -> list[str]:
+    _reliable_hydrate_exact_post(post)
+    images = _final_dedupe_exact_photos(_PRE_MEDIA_SELECTED_IMAGES(post))
+    return images[:MAX_IMAGES_PER_POST]
+
+
+def _final_photo_required(post: Post) -> bool:
+    return bool(getattr(post, "photo_expected", False) or selected_post_images(post)) and not _acceptance_post_requires_video(post)
+
+
+_PRE_MEDIA_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    _reliable_hydrate_exact_post(post, force=True)
+    if _acceptance_post_requires_video(post):
+        # The existing all-or-nothing video path remains authoritative.
+        return _PRE_MEDIA_CONTROL_CANDIDATE(post, token, message_html)
+    images = selected_post_images(post)
+    if bool(getattr(post, "photo_expected", False)) and not images:
+        send_control_text(
+            "⛔ לא ניתן להכין את הפוסט עם המדיה המקורית.\n\n" + hebrew_block_reason("original_photo_missing"),
+            None,
+            control_delete_message_reply_markup(),
+        )
+        return []
+    return _PRE_MEDIA_CONTROL_CANDIDATE(post, token, message_html)
+
+
+_PRE_MEDIA_RAW_MAIN_SENDER = _raw_main_sender_consolidated
+
+
+def _final_media_integrity_main_sender(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    _reliable_hydrate_exact_post(post, force=True)
+    exact_images = selected_post_images(post) if not _acceptance_post_requires_video(post) else []
+    exact_images = _final_dedupe_exact_photos(exact_images or images)
+    if bool(getattr(post, "photo_expected", False)) and not _acceptance_post_requires_video(post) and not exact_images:
+        raise RuntimeError(hebrew_block_reason("original_photo_missing"))
+    return _PRE_MEDIA_RAW_MAIN_SENDER(
+        post,
+        message,
+        exact_images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+
+
+_raw_main_sender_consolidated = _final_media_integrity_main_sender
+
+
+_PRE_MEDIA_SEND_PREPARED = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    _reliable_hydrate_exact_post(post, force=True)
+    exact_images = [] if _acceptance_post_requires_video(post) else selected_post_images(post)
+    if bool(getattr(post, "photo_expected", False)) and not _acceptance_post_requires_video(post) and not exact_images:
+        raise RuntimeError(hebrew_block_reason("original_photo_missing"))
+    return _PRE_MEDIA_SEND_PREPARED(
+        post,
+        message,
+        exact_images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+
+
+if "manual_force_send_prepared_message" in globals():
+    _PRE_MEDIA_MANUAL_SEND = manual_force_send_prepared_message
+
+    def manual_force_send_prepared_message(
+        post: Post,
+        message: str,
+        images: list[str],
+        video_url: str = "",
+        reply_message_ids: dict[str, int] | None = None,
+    ) -> tuple[dict[str, int], str]:
+        _reliable_hydrate_exact_post(post, force=True)
+        exact_images = [] if _acceptance_post_requires_video(post) else selected_post_images(post)
+        if bool(getattr(post, "photo_expected", False)) and not _acceptance_post_requires_video(post) and not exact_images:
+            raise RuntimeError(hebrew_block_reason("original_photo_missing"))
+        return _PRE_MEDIA_MANUAL_SEND(
+            post,
+            message,
+            exact_images,
+            video_url=video_url,
+            reply_message_ids=reply_message_ids,
+        )
+
+
+# ----- Important additions always beat fuzzy duplicate suppression -----
+_FINAL_EXTRA_MATERIAL_UPDATE_RE = re.compile(
+    r"\b(?:asking\s+price|valuation|valued\s+at|willing\s+to\s+sell|open\s+to\s+sell|prepared\s+to\s+sell|"
+    r"inquir(?:y|ies)|enquir(?:y|ies)|lower\s+the\s+price|reduce\s+the\s+fee|several\s+clubs|multiple\s+clubs)\b|"
+    r"מחיר|הערכת\s+שווי|מוערכ(?:ת|ים)?\s+ב|מוכנה\s+למכור|מוכן\s+למכור|פתוחה\s+למכירה|"
+    r"בירורים|מספר\s+מועדונים|כמה\s+מועדונים|להוריד\s+את\s+המחיר|להפחית\s+את\s+המחיר",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_explicit_material_update(post: Post, item: dict[str, Any] | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if _final_duplicate_exact_item_match(post, item):
+        return False
+    try:
+        if _final_duplicate_has_material_addition(post, item):
+            return True
+    except Exception:
+        pass
+    current = _final_duplicate_item_text({"original_text": _final_source_text(post)})
+    previous = _final_duplicate_item_text(item)
+    current_norm = _final_duplicate_normalized_text(current)
+    previous_norm = _final_duplicate_normalized_text(previous)
+    if not current_norm or not previous_norm:
+        return False
+
+    current_amounts = set(re.findall(r"(?:€|£|\$)?\s*\d+(?:[.,]\d+)?\s*(?:m|million|מיליון|מיליארד|אלף)?", current, re.IGNORECASE))
+    previous_amounts = set(re.findall(r"(?:€|£|\$)?\s*\d+(?:[.,]\d+)?\s*(?:m|million|מיליון|מיליארד|אלף)?", previous, re.IGNORECASE))
+    if current_amounts - previous_amounts:
+        return True
+
+    current_phrases = {m.group(0).casefold() for m in _FINAL_EXTRA_MATERIAL_UPDATE_RE.finditer(current)}
+    previous_phrases = {m.group(0).casefold() for m in _FINAL_EXTRA_MATERIAL_UPDATE_RE.finditer(previous)}
+    if current_phrases - previous_phrases:
+        return True
+    return False
+
+
+_PRE_MATERIAL_LOCAL_DUPLICATE = local_duplicate_verdict
+
+
+def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
+    if not _final_duplicate_exact_item_match(current_post, previous_item) and _final_explicit_material_update(current_post, previous_item):
+        return "ADVANCED_NEW"
+    return _PRE_MATERIAL_LOCAL_DUPLICATE(current_post, previous_item, score)
+
+
+_PRE_MATERIAL_DUP_CERTAIN = _final_duplicate_candidate_is_certain
+
+
+def _final_duplicate_candidate_is_certain(post: Post, item: dict[str, Any] | None) -> bool:
+    if isinstance(item, dict) and not _final_duplicate_exact_item_match(post, item) and _final_explicit_material_update(post, item):
+        return False
+    return _PRE_MATERIAL_DUP_CERTAIN(post, item)
+
+
+def _final_wrap_duplicate_result(post: Post, item: dict[str, Any] | None) -> dict[str, Any] | None:
+    if item and not _final_duplicate_exact_item_match(post, item) and _final_explicit_material_update(post, item):
+        return None
+    return item
+
+
+_PRE_MATERIAL_FIND_RECENT = find_recent_duplicate_event
+_PRE_MATERIAL_FIND_CHANNEL = find_channel_duplicate_event
+_PRE_MATERIAL_FIND_TRANSLATED = find_post_translation_duplicate_event
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _final_wrap_duplicate_result(post, _PRE_MATERIAL_FIND_RECENT(post, state))
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _final_wrap_duplicate_result(post, _PRE_MATERIAL_FIND_CHANNEL(post, state))
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _final_wrap_duplicate_result(post, _PRE_MATERIAL_FIND_TRANSLATED(post, translated_message, state))
+
+
+if callable(globals().get("find_recent_duplicate_event_ai_aware")):
+    _PRE_MATERIAL_FIND_AI = find_recent_duplicate_event_ai_aware
+
+    def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        return _final_wrap_duplicate_result(post, _PRE_MATERIAL_FIND_AI(post, state, *args, **kwargs))
+
+
+if callable(globals().get("find_recent_burst_spam_event")):
+    _PRE_MATERIAL_FIND_BURST = find_recent_burst_spam_event
+
+    def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        return _final_wrap_duplicate_result(post, _PRE_MATERIAL_FIND_BURST(post, state, *args, **kwargs))
+
+
+# Re-assert that age-only blocks never appear in the user-facing 30-block list.
+_PRE_FINAL_CONTEXT_REMEMBER_BLOCK = remember_control_block_event
+
+
+def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
+    if "_smart_is_two_hour_age_block" in globals() and _smart_is_two_hour_age_block(reason):
+        return
+    return _PRE_FINAL_CONTEXT_REMEMBER_BLOCK(reason, post, rendered, duplicate=duplicate)
+
+
+def _recent_blocked_separate_report() -> str:
+    state = load_control_state()
+    raw = state.get("last_blocked_posts", [])
+    items = [
+        item for item in (raw if isinstance(raw, list) else [])
+        if isinstance(item, dict)
+        and not ("_smart_is_two_hour_age_block" in globals() and _smart_is_two_hour_age_block(item))
+    ][-30:]
+    return _control_list_text(
+        "📋 30 חסימות אחרונות",
+        items,
+        "אין חסימות שמורות כרגע.",
+        limit=30,
+    )
+
+# ====== END FINAL CONTEXT / MEDIA INTEGRITY / EXACT PHOTO DEDUPE PATCH ======
+
+
 if __name__ == "__main__":
     main()
