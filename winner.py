@@ -36885,5 +36885,257 @@ def _forwarded_source_details_text(message: dict[str, Any]) -> str:
 
 # ====== END FINAL FORCED PREVIEW / WRITER HEADER / FABRIZIO FULLNESS / WEDDING PATCH ======
 
+
+# ====== FINAL EXACT RSS RESTORE / CONFLICT GUARD (2026-07-26) ======
+# This final runtime layer restores the exact stable RSS behavior that was used
+# before the later experimental wrappers.  It intentionally leaves translation,
+# filters, media, duplicate memory, forced previews and continuous direct-X
+# discovery untouched.
+BOT_BUILD_ID = "winner-rss-exact-restore-latest-fixes-2026-07-26"
+
+
+def _stable_rss_network_fetch(username: str, limit: int = 30, exhaustive: bool = False) -> tuple[list[Post], dict[str, Any]]:
+    """Exact stable collector + direct-X fallback from the last working RSS build."""
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rss_posts, diagnostics = _PRE_RELIABLE_STABLE_NETWORK_FETCH(
+            canonical,
+            limit=limit,
+            exhaustive=exhaustive,
+        )
+    except Exception as exc:
+        rss_posts, diagnostics = [], {
+            "errors": [f"stable_rss: {short_error(exc, 350)}"],
+            "timeouts": [],
+            "sources": {},
+        }
+    if not isinstance(diagnostics, dict):
+        diagnostics = {"errors": [], "timeouts": [], "sources": {}}
+    diagnostics.setdefault("errors", [])
+    diagnostics.setdefault("timeouts", [])
+    diagnostics.setdefault("sources", {})
+
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rss_posts, canonical)
+    target = min(max(1, int(limit)), 10 if exhaustive else 1)
+    if len(merged) < target:
+        try:
+            direct = _reliable_direct_profile_posts(
+                canonical,
+                limit=max(20, int(limit)),
+            )
+            before = len(merged)
+            _reliable_merge_posts(merged, direct, canonical)
+            diagnostics["sources"]["direct_x_profile"] = len(merged) - before
+        except Exception as exc:
+            diagnostics["errors"].append(
+                f"direct_x_profile: {short_error(exc, 300)}"
+            )
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    diagnostics["returned_network"] = len(ordered)
+    # A successful path must not be presented as a total RSS outage just because
+    # another mirror failed in parallel.
+    if ordered:
+        diagnostics["successful"] = True
+    return ordered[:max(1, int(limit))], diagnostics
+
+
+def _fetch_footballtweet_posts_isolated(limit: int = 25) -> list[Post]:
+    """Restore Footballtweet's isolated working path and safe direct fallback."""
+    canonical = FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+    merged: dict[str, Post] = {}
+    try:
+        _reliable_merge_posts(
+            merged,
+            _PRE_RELIABLE_FOOTBALLTWEET_ISOLATED(limit=limit),
+            canonical,
+        )
+    except Exception as exc:
+        logging.debug(
+            "Footballtweet stable reader failed safely: %s",
+            short_error(exc, 300),
+        )
+    if not merged:
+        try:
+            _reliable_merge_posts(
+                merged,
+                _reliable_direct_profile_posts(
+                    canonical,
+                    limit=max(20, int(limit)),
+                ),
+                canonical,
+            )
+        except Exception as exc:
+            logging.debug(
+                "Footballtweet direct fallback failed safely: %s",
+                short_error(exc, 300),
+            )
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:max(1, int(limit))]
+
+
+def _rss_exact_base_fetch_posts(username: str) -> list[Post]:
+    """The exact stable automatic RSS/cache behavior, before late wrappers."""
+    canonical = str(username or "").strip().lstrip("@")
+    if value_contains_footballtweet(canonical):
+        return _fetch_footballtweet_posts_isolated(
+            limit=max(25, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)
+        )
+    try:
+        posts, diagnostics = _stable_rss_network_fetch(
+            canonical,
+            limit=max(30, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK),
+            exhaustive=False,
+        )
+    except Exception as exc:
+        posts, diagnostics = [], {
+            "errors": [f"network: {short_error(exc, 400)}"],
+            "timeouts": [],
+        }
+    if posts:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+        _stable_rss_remember(canonical, posts)
+        return posts
+
+    failures = FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) + 1
+    FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
+    cached = _stable_rss_cached_posts(
+        canonical,
+        limit=max(30, MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK),
+    )
+    if failures == 1 or failures % 20 == 0:
+        logging.warning(
+            "RSS @%s returned no rows; using %s cached/history rows. errors=%s timeouts=%s",
+            canonical,
+            len(cached),
+            "; ".join((diagnostics.get("errors") or [])[:4]),
+            ", ".join((diagnostics.get("timeouts") or [])[:4]),
+        )
+    return cached
+
+
+def _rss_exact_merge_posts(base_rows: list[Post], extra_rows: list[Post], username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        return _canonical_merge(base_rows or [], extra_rows or [], canonical)
+    except Exception:
+        merged: dict[str, Post] = {}
+        try:
+            _reliable_merge_posts(merged, base_rows or [], canonical)
+            _reliable_merge_posts(merged, extra_rows or [], canonical)
+        except Exception:
+            pass
+        return sorted(
+            merged.values(),
+            key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Stable RSS first, plus the already-existing continuous forced-live cache."""
+    canonical = str(username or "").strip().lstrip("@")
+    base_rows = _rss_exact_base_fetch_posts(canonical)
+    forced_rows: list[Post] = []
+    try:
+        if callable(globals().get("_continuous_force_cached_rows")):
+            forced_rows = list(_continuous_force_cached_rows(canonical) or [])
+    except Exception:
+        forced_rows = []
+    return _rss_exact_merge_posts(base_rows, forced_rows, canonical)
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    started = time.perf_counter()
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows = fetch_posts(canonical)
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        return canonical, rows
+    except Exception as exc:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        logging.exception("Stable RSS fetch failed safely for @%s: %s", canonical, exc)
+        try:
+            return canonical, list(_stable_rss_cached_posts(canonical, limit=30) or [])
+        except Exception:
+            return canonical, []
+
+
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    """The RSS diagnostics button uses the restored stable route, not late wrappers."""
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows = _rss_exact_base_fetch_posts(canonical)
+        return canonical, rows, None
+    except Exception as exc:
+        logging.warning(
+            "⚠️ בדיקת RSS ידנית נכשלה עבור @%s: %s",
+            canonical,
+            exc,
+        )
+        try:
+            cached = list(_stable_rss_cached_posts(canonical, limit=30) or [])
+        except Exception:
+            cached = []
+        # If durable cache/history exists, report the source as available instead
+        # of showing every broken mirror as a total account outage.
+        return canonical, cached, None if cached else exc
+
+
+def _rss_runtime_consistency_issues() -> list[str]:
+    issues: list[str] = []
+    required = {
+        "http_get_feed": globals().get("http_get_feed"),
+        "fetch_feed": globals().get("fetch_feed"),
+        "parse_posts": globals().get("parse_posts"),
+        "collect_posts_from_feed_templates": globals().get("collect_posts_from_feed_templates"),
+        "_stable_rss_network_fetch": globals().get("_stable_rss_network_fetch"),
+        "fetch_posts": globals().get("fetch_posts"),
+    }
+    for name, value in required.items():
+        if not callable(value):
+            issues.append(f"{name} אינה פונקציה פעילה")
+    templates = list(FEED_TEMPLATES or [])
+    if len(templates) != len(list(dict.fromkeys(templates))):
+        issues.append("יש כתובות RSS כפולות ב-FEED_TEMPLATES")
+    if not any("nitter.net" in str(item) for item in templates):
+        issues.append("מקור nitter.net חסר מרשימת ה-RSS")
+    if globals().get("_stable_rss_network_fetch") is globals().get("_final_rss_network_fetch"):
+        issues.append("שכבת ה-RSS הניסיונית עדיין דורסת את המסלול היציב")
+    return issues
+
+
+def _rss_log_runtime_consistency() -> None:
+    issues = _rss_runtime_consistency_issues()
+    if issues:
+        logging.error("❌ סתירות RSS פעילות: %s", " | ".join(issues))
+    else:
+        logging.info(
+            "✅ RSS שוחזר למסלול היציב: אספן מקורי, מטמון/היסטוריה, ו-X חי מבודד ללא דריסה."
+        )
+
+
+_RSS_EXACT_PREVIOUS_MAIN = main
+
+
+def main() -> None:
+    _rss_log_runtime_consistency()
+    return _RSS_EXACT_PREVIOUS_MAIN()
+
+# ====== END FINAL EXACT RSS RESTORE / CONFLICT GUARD ======
+
 if __name__ == "__main__":
     main()
