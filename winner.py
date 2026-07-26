@@ -31565,5 +31565,503 @@ def pre_send_final_local_block_reason(post: Post) -> str:
 
 # ====== END FINAL CONSERVATIVE DUPLICATES + TIER-A NEWS RESCUE PATCH ======
 
+
+# ====== FINAL QUOTE-CREDIT / SEMANTIC-QUOTE-DEDUPE / REAL PIPELINE TIMING PATCH (2026-07-26) ======
+# This layer fixes only three requested areas:
+# 1) remove malformed trailing outlet attributions after a complete quotation;
+# 2) block a truly identical quote/report even when two writers phrase names differently;
+# 3) record real production timestamps for every successful automatic send.
+# RSS URLs/parsers, Gemini prompts/models, media policy and persistent filenames are unchanged.
+
+BOT_BUILD_ID = "winner-quote-dedupe-real-pipeline-timing-2026-07-26"
+
+# ----- 1. Safe removal of a trailing outlet attribution after a complete quote -----
+_FINAL_QUOTE_ATTRIBUTION_VERB_RE = re.compile(
+    r"(?iu)(?:אמר|אמרה|מסר|מסרה|הוסיף|הוסיפה|סיפר|סיפרה|ציין|ציינה|"
+    r"told|said\s+to|speaking\s+to|as\s+told\s+to)"
+)
+_FINAL_QUOTE_ATTRIBUTION_SOURCE_HINT_RE = re.compile(
+    r"(?iu)(?:ל-|ל\s+|ב-|ב\s+|בראיון\s+ל|בשיחה\s+עם|"
+    r"gazzett|gazetta|sport|sports|sky|marca|as\b|relevo|athletic|"
+    r"עיתון|אתר|ערוץ|רדיו|טלוויזיה)"
+)
+
+
+def _final_strip_malformed_trailing_quote_attribution(value: str) -> str:
+    """Remove only a detached attribution that follows a fully closed quotation.
+
+    The quoted statement is preserved. Text before a quote, normal prose and an
+    attribution that carries additional news are never touched.
+    """
+    lines = str(value or "").splitlines()
+    cleaned: list[str] = []
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        # Find the last closed quotation on this line. Hebrew/curly/straight quote
+        # forms are supported. The tail must contain a reporting verb and an outlet
+        # hint, and must be short enough to be attribution metadata only.
+        match = re.match(
+            r"(?s)^(?P<quote>.*(?:[\"”״][^\"”״\n]{1,900}[\"”״]))"
+            r"(?P<tail>\s*[,;:–—-]?\s*[^\n]{1,140})$",
+            line,
+        )
+        if match:
+            quote = match.group("quote").rstrip()
+            tail = match.group("tail").strip()
+            if (
+                _FINAL_QUOTE_ATTRIBUTION_VERB_RE.search(tail)
+                and _FINAL_QUOTE_ATTRIBUTION_SOURCE_HINT_RE.search(tail)
+                and count_regular_words(tail) <= 14
+                and not _FINAL_MATERIAL_UPDATE_RE.search(tail)
+            ):
+                # Keep one normal sentence-ending dot outside the closing quote,
+                # matching the channel's established Hebrew layout.
+                quote = re.sub(r"[\s,;:–—-]+$", "", quote)
+                line = quote if re.search(r"[.!?…]\s*$", quote) else quote + "."
+        cleaned.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip()
+
+
+_PRE_QUOTE_CREDIT_OUTGOING_BODY = _outgoing_body_text
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _PRE_QUOTE_CREDIT_OUTGOING_BODY(post, translated, quoted=quoted)
+    if quoted:
+        return value
+    return _final_strip_malformed_trailing_quote_attribution(value)
+
+
+# ----- 2. Conservative semantic duplicate for the same reported quotation -----
+_FINAL_QUOTE_REPORT_MARKER_RE = re.compile(
+    r"(?iu)(?:[\"”״].{4,}[\"”״]|מאשר|אישר|אמר|אומר|confirms?|says?|said)"
+)
+_FINAL_QUOTE_CONCEPTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("wants_move", re.compile(r"(?iu)(?:רוצה\s+לעבור|מעוניין\s+לעבור|wants?\s+to\s+(?:move|leave)|seeking\s+a\s+move)")),
+    ("summer", re.compile(r"(?iu)(?:הקיץ|בקיץ|this\s+summer|in\s+the\s+summer)")),
+    ("goalkeeper", re.compile(r"(?iu)(?:שוער(?:ים)?|goalkeeper(?:s)?|keeper(?:s)?)")),
+    ("competition", re.compile(r"(?iu)(?:מחפש(?:ים)?\s+תחרות|תחרות\s+בתפקיד|competition\s+(?:for|in)|add\s+competition)")),
+    ("two_keepers", re.compile(r"(?iu)(?:שני\s+שוערים|2\s+שוערים|two\s+goalkeepers|two\s+keepers)")),
+    ("interest", re.compile(r"(?iu)(?:מעוניינים\s+בו|רוצים\s+אותו|interested\s+in\s+him|want\s+him)")),
+    ("currently_have", re.compile(r"(?iu)(?:כרגע\s+יש|יש\s+לנו\s+כבר|currently\s+have|already\s+have)")),
+)
+_FINAL_SEMANTIC_QUOTE_STOPWORDS = {
+    "מאמן", "המאמן", "מאשר", "אומר", "אמר", "שחקן", "שוער", "שוערים", "נהדר",
+    "רוצה", "לעבור", "הקיץ", "אנחנו", "כרגע", "כבר", "תחרות", "תפקיד", "לפי",
+    "coach", "manager", "confirms", "says", "said", "player", "goalkeeper", "summer",
+    "competition", "currently", "already", "great", "want", "wants", "move",
+}
+
+
+def _final_quote_semantic_tokens(value: Any) -> set[str]:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"https?://\S+|@[A-Za-z0-9_]+|#[A-Za-z0-9_א-ת]+", " ", text)
+    words = re.findall(r"[A-Za-zא-ת][A-Za-zא-ת'׳״-]{3,}", text.casefold())
+    return {
+        word.strip("-'׳״") for word in words
+        if word.strip("-'׳״") not in _FINAL_SEMANTIC_QUOTE_STOPWORDS
+        and len(word.strip("-'׳״")) >= 4
+    }
+
+
+def _final_quote_concepts(value: Any) -> set[str]:
+    text = html.unescape(str(value or ""))
+    return {name for name, pattern in _FINAL_QUOTE_CONCEPTS if pattern.search(text)}
+
+
+def _final_same_reported_quote_event(post: Post, item: dict[str, Any] | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    current = _final_source_text(post)
+    previous = _final_duplicate_item_text(item)
+    if not current or not previous:
+        return False
+    if not (_FINAL_QUOTE_REPORT_MARKER_RE.search(current) and _FINAL_QUOTE_REPORT_MARKER_RE.search(previous)):
+        return False
+
+    current_concepts = _final_quote_concepts(current)
+    previous_concepts = _final_quote_concepts(previous)
+    shared_concepts = current_concepts & previous_concepts
+    # Three aligned facts are required; one generic quote or club is never enough.
+    if len(shared_concepts) < 3:
+        return False
+
+    current_tokens = _final_quote_semantic_tokens(current)
+    previous_tokens = _final_quote_semantic_tokens(previous)
+    shared_tokens = current_tokens & previous_tokens
+    # Require at least three distinctive shared tokens, normally speaker, subject
+    # surname and club. This deliberately catches Spalletti/Martinez/Juventus while
+    # avoiding unrelated quotes from the same club.
+    if len(shared_tokens) < 3:
+        return False
+
+    # A later contractual/medical/official development is an update, not the same
+    # quote. Names in parentheses or a fuller rendering of the same quote do not
+    # count as a new stage.
+    current_sig = news_event_signature(post)
+    previous_sig = item.get("signature") if isinstance(item.get("signature"), dict) else news_event_signature(channel_duplicate_text_to_post(previous))
+    current_rank = int(current_sig.get("stage_rank", 0) or 0)
+    previous_rank = int(previous_sig.get("stage_rank", 0) or 0)
+    if current_rank >= previous_rank + 10 and current_rank >= 40:
+        return False
+    return True
+
+
+_PRE_QUOTE_SEMANTIC_LOCAL_DUPLICATE = local_duplicate_verdict
+
+
+def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
+    if _final_same_reported_quote_event(current_post, previous_item):
+        return "SAME_DUPLICATE"
+    return _PRE_QUOTE_SEMANTIC_LOCAL_DUPLICATE(current_post, previous_item, score)
+
+
+_PRE_QUOTE_SEMANTIC_CERTAIN = _final_duplicate_candidate_is_certain
+
+
+def _final_duplicate_candidate_is_certain(post: Post, item: dict[str, Any] | None) -> bool:
+    if _final_same_reported_quote_event(post, item):
+        return True
+    return _PRE_QUOTE_SEMANTIC_CERTAIN(post, item)
+
+
+def _final_find_same_quote_in_state(post: Post, state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    now = time.time()
+    rows: list[dict[str, Any]] = []
+    for getter in (cleanup_recent_news_events, cleanup_channel_recent_news_events, cleanup_bot_sent_reply_targets):
+        try:
+            values = getter(state)
+        except Exception:
+            values = []
+        for item in values or []:
+            if isinstance(item, dict) and item not in rows:
+                rows.append(item)
+    for item in reversed(rows[-800:]):
+        ts = float(item.get("ts", 0.0) or 0.0)
+        if ts and now - ts > 24 * 60 * 60:
+            continue
+        if is_pending_memory_item(item):
+            continue
+        if _final_same_reported_quote_event(post, item):
+            return item
+    return None
+
+
+def _final_extract_state_arg(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = list(args) + list(kwargs.values())
+    for value in reversed(candidates):
+        if isinstance(value, dict) and any(key in value for key in (
+            "recent_news_events", "channel_recent_news_events", "bot_sent_reply_targets",
+            globals().get("RECENT_NEWS_STATE_KEY", "__recent_news_events__"),
+            globals().get("CHANNEL_RECENT_NEWS_STATE_KEY", "__channel_recent_news_events__"),
+            globals().get("BOT_SENT_REPLY_TARGETS_STATE_KEY", "__bot_sent_reply_targets__"),
+            "last_sent_posts", FINAL_ATOMIC_SEND_STATE_KEY,
+        )):
+            return value
+    return None
+
+
+def _final_wrap_quote_duplicate_finder(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+    def wrapper(post: Post, *args: Any, _previous=previous, **kwargs: Any):
+        found = _previous(post, *args, **kwargs)
+        if found:
+            return found
+        state = _final_extract_state_arg(args, kwargs)
+        return _final_find_same_quote_in_state(post, state)
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _quote_dup_name in (
+    "find_recent_duplicate_event",
+    "find_recent_duplicate_event_ai_aware",
+    "find_channel_duplicate_event",
+    "find_post_translation_duplicate_event",
+    "find_recent_burst_spam_event",
+    "_final_existing_strict_duplicate",
+):
+    _final_wrap_quote_duplicate_finder(_quote_dup_name)
+
+
+# ----- 3. Real production pipeline telemetry -----
+# Historical exact stage times cannot be reconstructed if they were never logged.
+# From this build onward, every successful automatic send stores the actual wall
+# clock timestamps and stage durations in the existing control-state JSON.
+PIPELINE_TIMING_STATE_KEY = "pipeline_timing_samples_v1"
+PIPELINE_TIMING_LIMIT = max(20, min(200, int(os.environ.get("PIPELINE_TIMING_LIMIT", "80"))))
+_PIPELINE_TIMING_LOCK = RLock()
+_PIPELINE_FIRST_SEEN: dict[str, dict[str, Any]] = {}
+_PIPELINE_STAGE_ACCUM: dict[str, dict[str, float]] = {}
+
+
+def _pipeline_post_key(post: Post) -> str:
+    return str(
+        getattr(post, "post_id", "")
+        or getattr(post, "link", "")
+        or post_content_signature(
+            str(getattr(post, "username", "") or ""),
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+        )
+    )
+
+
+def _pipeline_mark_seen(post: Post, lane: str, observed_at: float, fetch_seconds: float = 0.0) -> None:
+    key = _pipeline_post_key(post)
+    if not key:
+        return
+    with _PIPELINE_TIMING_LOCK:
+        row = dict(_PIPELINE_FIRST_SEEN.get(key, {}))
+        first = float(row.get("first_seen_at", 0.0) or 0.0)
+        if not first or observed_at < first:
+            row["first_seen_at"] = observed_at
+            row["first_seen_lane"] = lane
+        lane_key = "rss_seen_at" if lane == "rss" else "live_seen_at"
+        previous_lane = float(row.get(lane_key, 0.0) or 0.0)
+        if not previous_lane or observed_at < previous_lane:
+            row[lane_key] = observed_at
+        if fetch_seconds:
+            row[f"{lane}_fetch_seconds"] = float(fetch_seconds)
+        _PIPELINE_FIRST_SEEN[key] = row
+
+
+def _pipeline_add_stage(post: Post, stage: str, elapsed: float) -> None:
+    key = _pipeline_post_key(post)
+    if not key:
+        return
+    with _PIPELINE_TIMING_LOCK:
+        row = _PIPELINE_STAGE_ACCUM.setdefault(key, {})
+        row[stage] = float(row.get(stage, 0.0) or 0.0) + max(0.0, float(elapsed or 0.0))
+
+
+# Mark the real completion time of the stable RSS worker and the direct live worker.
+if callable(globals().get("_full_speed_rss_job")):
+    _PRE_PIPELINE_RSS_JOB = _full_speed_rss_job
+    def _full_speed_rss_job(username: str) -> list[Post]:
+        started = time.perf_counter()
+        rows = _PRE_PIPELINE_RSS_JOB(username)
+        elapsed = time.perf_counter() - started
+        observed = time.time()
+        for post in rows or []:
+            if isinstance(post, Post):
+                _pipeline_mark_seen(post, "rss", observed, elapsed)
+        return rows
+
+if callable(globals().get("_full_speed_live_job")):
+    _PRE_PIPELINE_LIVE_JOB = _full_speed_live_job
+    def _full_speed_live_job(username: str) -> list[Post]:
+        started = time.perf_counter()
+        rows = _PRE_PIPELINE_LIVE_JOB(username)
+        elapsed = time.perf_counter() - started
+        observed = time.time()
+        for post in rows or []:
+            if isinstance(post, Post):
+                _pipeline_mark_seen(post, "live", observed, elapsed)
+        return rows
+
+
+# Aggregate the actual filter and duplicate function runtimes per post. This does
+# not change their return values or decision logic.
+def _pipeline_wrap_post_timer(name: str, bucket: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+    def wrapper(*args: Any, _previous=previous, **kwargs: Any):
+        post = next((value for value in list(args) + list(kwargs.values()) if isinstance(value, Post)), None)
+        started = time.perf_counter()
+        try:
+            return _previous(*args, **kwargs)
+        finally:
+            if post is not None:
+                _pipeline_add_stage(post, bucket, time.perf_counter() - started)
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _filter_timer_name in (
+    "is_interview_post", "is_lineup_or_teamsheet_post", "is_poll_or_audience_post",
+    "has_small_total_transfer_fee", "is_minor_destination_from_big_club_source",
+    "football_factly_filter_issue", "is_too_old_post", "is_women_or_wnba_post",
+    "is_medical_staff_post", "is_contextless_teaser_post", "is_unclear_subject_news_post",
+    "is_vague_status_without_primary_context", "is_live_goal_or_match_moment_post",
+    "is_match_result_or_engagement_post", "is_match_context_noise_post",
+    "is_media_without_report_post", "is_too_short_without_strong_news_post",
+    "is_name_without_news_action_post", "is_unclear_main_club_context_post",
+    "is_weak_copy_without_primary_value_post", "is_writer_profile_noise_post",
+    "is_link_only_or_details_post", "is_podcast_or_longform_post", "is_non_news_social_post",
+    "football_importance_block_reason", "pre_send_final_local_block_reason",
+):
+    _pipeline_wrap_post_timer(_filter_timer_name, "filter_seconds")
+
+for _duplicate_timer_name in (
+    "find_recent_burst_spam_event", "find_channel_duplicate_event",
+    "find_recent_duplicate_event", "find_recent_duplicate_event_ai_aware",
+    "find_post_translation_duplicate_event", "_final_existing_strict_duplicate",
+):
+    _pipeline_wrap_post_timer(_duplicate_timer_name, "duplicate_seconds")
+
+
+def _pipeline_store_sample(post: Post, result: dict[str, Any], process_started_at: float, sent_at: float) -> None:
+    key = _pipeline_post_key(post)
+    with _PIPELINE_TIMING_LOCK:
+        seen = dict(_PIPELINE_FIRST_SEEN.get(key, {}))
+        stages = dict(_PIPELINE_STAGE_ACCUM.get(key, {}))
+    published = float(getattr(post, "published_ts", 0.0) or 0.0)
+    first_seen = float(seen.get("first_seen_at", 0.0) or 0.0)
+    sample = {
+        "ts": sent_at,
+        "username": str(getattr(post, "username", "") or ""),
+        "post_id": str(getattr(post, "post_id", "") or ""),
+        "link": str(getattr(post, "link", "") or ""),
+        "source_name": str(result.get("source_name") or getattr(post, "source_name", "") or ""),
+        "published_at": published,
+        "rss_first_seen_at": float(seen.get("rss_seen_at", 0.0) or 0.0),
+        "live_first_seen_at": float(seen.get("live_seen_at", 0.0) or 0.0),
+        "first_seen_at": first_seen,
+        "first_seen_lane": str(seen.get("first_seen_lane", "") or ""),
+        "processing_started_at": process_started_at,
+        "telegram_sent_at": sent_at,
+        "publish_to_first_seen_seconds": max(0.0, first_seen - published) if first_seen and published else 0.0,
+        "first_seen_to_processing_seconds": max(0.0, process_started_at - first_seen) if first_seen else 0.0,
+        "filter_seconds": float(stages.get("filter_seconds", 0.0) or 0.0),
+        "duplicate_seconds": float(stages.get("duplicate_seconds", 0.0) or 0.0),
+        "translation_seconds": float(result.get("translation_seconds", 0.0) or 0.0),
+        "media_lookup_seconds": float(result.get("video_lookup_seconds", 0.0) or 0.0),
+        "prepare_seconds": float(result.get("prepare_seconds", 0.0) or 0.0),
+        "telegram_send_seconds": float(result.get("send_seconds", 0.0) or 0.0),
+        "processing_total_seconds": float(result.get("total_seconds", 0.0) or 0.0),
+        "publish_to_telegram_seconds": max(0.0, sent_at - published) if published else 0.0,
+        "rss_fetch_seconds": float(seen.get("rss_fetch_seconds", 0.0) or 0.0),
+        "live_fetch_seconds": float(seen.get("live_fetch_seconds", 0.0) or 0.0),
+    }
+    with _PIPELINE_TIMING_LOCK:
+        state = load_control_state()
+        rows = state.get(PIPELINE_TIMING_STATE_KEY, [])
+        rows = list(rows) if isinstance(rows, list) else []
+        rows.append(sample)
+        state[PIPELINE_TIMING_STATE_KEY] = rows[-PIPELINE_TIMING_LIMIT:]
+        save_control_state(**{PIPELINE_TIMING_STATE_KEY: state[PIPELINE_TIMING_STATE_KEY]})
+        _PIPELINE_FIRST_SEEN.pop(key, None)
+        _PIPELINE_STAGE_ACCUM.pop(key, None)
+    logging.info(
+        "⏱️ מסלול אמיתי @%s | פרסום→גילוי %.1fs | גילוי→עיבוד %.1fs | סינון %.3fs | כפילות %.3fs | תרגום %.2fs | מדיה %.2fs | טלגרם %.2fs | כולל %.1fs | נתיב %s",
+        sample["username"], sample["publish_to_first_seen_seconds"], sample["first_seen_to_processing_seconds"],
+        sample["filter_seconds"], sample["duplicate_seconds"], sample["translation_seconds"],
+        sample["media_lookup_seconds"], sample["telegram_send_seconds"], sample["publish_to_telegram_seconds"],
+        sample["first_seen_lane"] or "לא ידוע",
+    )
+
+
+_PRE_PIPELINE_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    process_started_at = time.time()
+    result = _PRE_PIPELINE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    if isinstance(result, dict) and result.get("sent"):
+        try:
+            _pipeline_store_sample(post, result, process_started_at, time.time())
+        except Exception as exc:
+            logging.warning("שמירת מדידת מסלול נכשלה בלי לפגוע בשליחה: %s", short_error(exc, 300))
+    return result
+
+
+def _pipeline_format_clock(ts: Any) -> str:
+    try:
+        value = float(ts or 0.0)
+    except Exception:
+        value = 0.0
+    if not value:
+        return "לא נמדד"
+    return datetime.fromtimestamp(value, tz=ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m %H:%M:%S")
+
+
+def pipeline_timing_report_text(limit: int = 20) -> str:
+    state = load_control_state()
+    rows = state.get(PIPELINE_TIMING_STATE_KEY, [])
+    rows = [row for row in rows if isinstance(row, dict)][-max(1, int(limit)):]
+    if not rows:
+        return (
+            "⏱️ בדיקת עיכוב אמיתית\n\n"
+            "עדיין אין מדידות מהגרסה הזאת. המדידה מתחילה רק אחרי העלאת הקובץ ושליחה אוטומטית מוצלחת. "
+            "אי אפשר לשחזר בדיעבד שעות של שלבים שלא נרשמו בלוגים הישנים."
+        )
+
+    numeric_keys = (
+        "publish_to_first_seen_seconds", "first_seen_to_processing_seconds", "filter_seconds",
+        "duplicate_seconds", "translation_seconds", "media_lookup_seconds", "prepare_seconds",
+        "telegram_send_seconds", "publish_to_telegram_seconds",
+    )
+    averages = {
+        key: sum(float(row.get(key, 0.0) or 0.0) for row in rows) / len(rows)
+        for key in numeric_keys
+    }
+    max_row = max(rows, key=lambda row: float(row.get("publish_to_telegram_seconds", 0.0) or 0.0))
+    lines = [
+        "⏱️ בדיקת עיכוב אמיתית",
+        "",
+        f"נמדדו {len(rows)} שליחות אוטומטיות אחרונות.",
+        f"• פרסום → גילוי ראשון: {averages['publish_to_first_seen_seconds']:.1f} שנ׳",
+        f"• גילוי → תחילת עיבוד: {averages['first_seen_to_processing_seconds']:.1f} שנ׳",
+        f"• סינון מקומי: {averages['filter_seconds']:.3f} שנ׳",
+        f"• בדיקת כפילות: {averages['duplicate_seconds']:.3f} שנ׳",
+        f"• תרגום Gemini: {averages['translation_seconds']:.2f} שנ׳",
+        f"• בדיקת מדיה: {averages['media_lookup_seconds']:.2f} שנ׳",
+        f"• הכנת הודעה: {averages['prepare_seconds']:.3f} שנ׳",
+        f"• שליחת Telegram: {averages['telegram_send_seconds']:.2f} שנ׳",
+        f"• פרסום → Telegram: {averages['publish_to_telegram_seconds']:.1f} שנ׳",
+        "",
+        "השליחה האיטית ביותר במדגם:",
+        f"• {_hebrew_account_label(str(max_row.get('username', '') or ''))}",
+        f"• פורסם: {_pipeline_format_clock(max_row.get('published_at'))}",
+        f"• נראה לראשונה: {_pipeline_format_clock(max_row.get('first_seen_at'))} ({max_row.get('first_seen_lane') or 'לא ידוע'})",
+        f"• נשלח: {_pipeline_format_clock(max_row.get('telegram_sent_at'))}",
+        f"• זמן כולל: {float(max_row.get('publish_to_telegram_seconds', 0.0) or 0.0):.1f} שנ׳",
+    ]
+    return "\n".join(lines)
+
+
+# Add one requested diagnostics action under monitoring.
+_PRE_PIPELINE_MONITOR_MENU = monitor_menu_reply_markup
+
+
+def monitor_menu_reply_markup() -> dict[str, Any]:
+    markup = _PRE_PIPELINE_MONITOR_MENU()
+    keyboard = [list(row) for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])]
+    if not any(
+        str(button.get("callback_data", "")) == "football_pipeline_timings"
+        for row in keyboard for button in row if isinstance(button, dict)
+    ):
+        insert_at = max(0, len(keyboard) - 1)
+        keyboard.insert(insert_at, [{"text": "⏱️ בדיקת עיכוב אמיתית", "callback_data": "football_pipeline_timings"}])
+    return {"inline_keyboard": keyboard}
+
+
+_PRE_PIPELINE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    if str(callback.get("data", "") or "") != "football_pipeline_timings":
+        return _PRE_PIPELINE_PROCESS_CONTROL_UPDATE(update)
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    if callback_id:
+        answer_control_callback(callback_id, "מחשב זמנים אמיתיים")
+    send_control_text(pipeline_timing_report_text(20), None, monitor_menu_reply_markup())
+
+# ====== END FINAL QUOTE-CREDIT / SEMANTIC-QUOTE-DEDUPE / REAL PIPELINE TIMING PATCH ======
+
+
 if __name__ == "__main__":
     main()
