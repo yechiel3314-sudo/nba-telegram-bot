@@ -33559,5 +33559,1318 @@ def send_prepared_message_to_main(
 # ====== END FINAL TELEGRAM VIDEO UPLOAD FALLBACK ======
 
 
+# ====== FINAL RSS RESTORE / FULL TEXT / BLOCKED TIMING PATCH (2026-07-26) ======
+# This final layer deliberately leaves FEED_TEMPLATES, http_get_feed, fetch_feed,
+# collect_posts_from_feed_templates and the existing RSS parser untouched.
+# Automatic discovery now consumes the same exhaustive fresh-source path as the
+# manual 10-latest action, while retaining the last healthy cache during outages.
+
+BOT_BUILD_ID = "winner-rss-restored-full-text-blocked-timing-2026-07-26"
+
+# ---------------------------------------------------------------------------
+# 1) Restore stable RSS behaviour and make automatic discovery use the same
+#    exhaustive fresh lookup as the manual 10-latest route.
+# ---------------------------------------------------------------------------
+RESTORED_AUTO_DISCOVERY_INTERVAL_SECONDS = max(
+    12.0,
+    float(os.environ.get("RESTORED_AUTO_DISCOVERY_INTERVAL_SECONDS", "25") or 25),
+)
+RESTORED_AUTO_DISCOVERY_WAIT_SECONDS = max(
+    2.0,
+    min(10.0, float(os.environ.get("RESTORED_AUTO_DISCOVERY_WAIT_SECONDS", "6.5") or 6.5)),
+)
+RESTORED_AUTO_DISCOVERY_LIMIT = max(
+    30,
+    int(os.environ.get("RESTORED_AUTO_DISCOVERY_LIMIT", "50") or 50),
+)
+CHECK_EVERY_SECONDS = min(int(CHECK_EVERY_SECONDS), 8)
+MAX_PARALLEL_ACCOUNT_CHECKS = max(int(MAX_PARALLEL_ACCOUNT_CHECKS), 17)
+
+_RESTORED_DISCOVERY_LOCK = RLock()
+_RESTORED_DISCOVERY_ACCOUNT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(8, min(20, int(os.environ.get("RESTORED_DISCOVERY_ACCOUNT_WORKERS", "12") or 12)))
+)
+_RESTORED_DISCOVERY_LANE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(16, min(40, int(os.environ.get("RESTORED_DISCOVERY_LANE_WORKERS", "28") or 28)))
+)
+_RESTORED_DISCOVERY_CACHE: dict[str, tuple[float, list[Post]]] = {}
+_RESTORED_DISCOVERY_INFLIGHT: dict[str, Any] = {}
+_RESTORED_DISCOVERY_LAST_STARTED: dict[str, float] = {}
+_RESTORED_DISCOVERY_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
+
+
+def _restored_post_order(rows: list[Post], username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rows or [], canonical)
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return ordered[:RESTORED_AUTO_DISCOVERY_LIMIT]
+
+
+def _restored_direct_lane(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    try:
+        rows = list(_reliable_direct_profile_posts(canonical, limit=RESTORED_AUTO_DISCOVERY_LIMIT, force=True) or [])
+    except Exception as exc:
+        logging.debug("Direct X discovery failed safely for @%s: %s", canonical, short_error(exc, 260))
+        rows = []
+    observed = time.time()
+    for post in rows:
+        if isinstance(post, Post):
+            try:
+                _pipeline_mark_seen(post, "live", observed, time.perf_counter() - started)
+            except Exception:
+                pass
+    return rows
+
+
+def _restored_manual_fresh_lane(username: str) -> tuple[list[Post], dict[str, Any]]:
+    """Use the exact exhaustive fresh-source route used by the 10-latest control action."""
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    try:
+        rows, diagnostics = _final_rss_network_fetch(
+            canonical,
+            limit=RESTORED_AUTO_DISCOVERY_LIMIT,
+            exhaustive=True,
+        )
+        rows = list(rows or [])
+        diagnostics = dict(diagnostics or {})
+    except Exception as exc:
+        rows = []
+        diagnostics = {"errors": ["fresh_network: " + short_error(exc, 300)], "path": []}
+    observed = time.time()
+    for post in rows:
+        if isinstance(post, Post):
+            try:
+                lane = "rss" if "primary_rss" in (diagnostics.get("path") or []) else "fresh_network"
+                _pipeline_mark_seen(post, lane, observed, time.perf_counter() - started)
+            except Exception:
+                pass
+    return rows, diagnostics
+
+
+def _restored_discovery_job(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    started = time.perf_counter()
+    direct_future = _RESTORED_DISCOVERY_LANE_EXECUTOR.submit(_restored_direct_lane, canonical)
+    fresh_future = _RESTORED_DISCOVERY_LANE_EXECUTOR.submit(_restored_manual_fresh_lane, canonical)
+    rows: list[Post] = []
+    diagnostics: dict[str, Any] = {"path": [], "errors": []}
+    deadline = time.perf_counter() + RESTORED_AUTO_DISCOVERY_WAIT_SECONDS
+    pending = {direct_future, fresh_future}
+    while pending and time.perf_counter() < deadline:
+        remaining = max(0.0, deadline - time.perf_counter())
+        done, pending = _rss_wait(pending, timeout=remaining, return_when=_RSS_FIRST_COMPLETED)
+        if not done:
+            break
+        for future in done:
+            try:
+                value = future.result()
+            except Exception as exc:
+                diagnostics["errors"].append(short_error(exc, 260))
+                continue
+            if future is fresh_future:
+                fresh_rows, fresh_diag = value
+                rows.extend(list(fresh_rows or []))
+                diagnostics.update(dict(fresh_diag or {}))
+            else:
+                rows.extend(list(value or []))
+                if value:
+                    diagnostics.setdefault("path", []).append("direct_x_no_key")
+        # A genuinely recent live row is the missing freshness signal.  If the
+        # direct profile itself is stale, keep waiting for the exhaustive RSS lane
+        # instead of repeating the old "one stale row means success" mistake.
+        if any(future is direct_future for future in done) and rows:
+            latest_live = max(
+                (float(getattr(item, "published_ts", 0.0) or 0.0) for item in rows if isinstance(item, Post)),
+                default=0.0,
+            )
+            if latest_live and time.time() - latest_live <= 10 * 60:
+                break
+
+    ordered = _restored_post_order(rows, canonical)
+    if not ordered:
+        try:
+            ordered = _restored_post_order(
+                _stable_rss_cached_posts(canonical, limit=RESTORED_AUTO_DISCOVERY_LIMIT),
+                canonical,
+            )
+            if ordered:
+                diagnostics.setdefault("path", []).append("stable_cache")
+        except Exception:
+            ordered = []
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+        except Exception:
+            pass
+    with _RESTORED_DISCOVERY_LOCK:
+        previous = _RESTORED_DISCOVERY_CACHE.get(key)
+        # Never replace a healthy cache with an empty outage result.
+        if ordered or not previous:
+            _RESTORED_DISCOVERY_CACHE[key] = (time.time(), list(ordered))
+        _RESTORED_DISCOVERY_DIAGNOSTICS[key] = {
+            "checked_at": time.time(),
+            "elapsed_seconds": time.perf_counter() - started,
+            "rows": len(ordered),
+            "path": list(dict.fromkeys(diagnostics.get("path") or [])),
+            "errors": list(dict.fromkeys(diagnostics.get("errors") or []))[-8:],
+        }
+    return ordered
+
+
+def _restored_start_discovery(username: str):
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    now = time.time()
+    with _RESTORED_DISCOVERY_LOCK:
+        current = _RESTORED_DISCOVERY_INFLIGHT.get(key)
+        if current is not None and not current.done():
+            return current
+        last = float(_RESTORED_DISCOVERY_LAST_STARTED.get(key, 0.0) or 0.0)
+        if now - last < RESTORED_AUTO_DISCOVERY_INTERVAL_SECONDS:
+            return current if current is not None and current.done() else None
+        _RESTORED_DISCOVERY_LAST_STARTED[key] = now
+        future = _RESTORED_DISCOVERY_ACCOUNT_EXECUTOR.submit(_restored_discovery_job, canonical)
+        _RESTORED_DISCOVERY_INFLIGHT[key] = future
+        return future
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Stable cache + the same exhaustive fresh lookup used by 10-latest.
+
+    Low-level RSS functions and feed templates are intentionally untouched.
+    Every writer uses this identical discovery cadence and no Gemini request is
+    made during discovery.
+    """
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    future = _restored_start_discovery(canonical)
+    with _RESTORED_DISCOVERY_LOCK:
+        cached = list((_RESTORED_DISCOVERY_CACHE.get(key) or (0.0, []))[1])
+    if not cached and future is not None:
+        try:
+            cached = list(future.result(timeout=RESTORED_AUTO_DISCOVERY_WAIT_SECONDS) or [])
+        except Exception:
+            with _RESTORED_DISCOVERY_LOCK:
+                cached = list((_RESTORED_DISCOVERY_CACHE.get(key) or (0.0, []))[1])
+    if not cached:
+        try:
+            cached = list(_stable_rss_cached_posts(canonical, limit=RESTORED_AUTO_DISCOVERY_LIMIT) or [])
+        except Exception:
+            cached = []
+    return _restored_post_order(cached, canonical)
+
+
+# ---------------------------------------------------------------------------
+# 2) Exact text: select the fullest main-tweet body, never the first short field.
+# ---------------------------------------------------------------------------
+def _final_text_cut_signal(value: str) -> bool:
+    text = clean_before_translation(str(value or "")).strip()
+    if not text:
+        return True
+    if re.search(r"(?iu)(?:^|\s)(?:ו?את|ו?של|ו?עם|ו?על|ו?אל|ו?מול|ו?בין|ו?עבור|ו?כדי|ו?כאשר|ו?אם|ו?כי|ו?אך|ו?או|ו?לאחר|ו?לפני|ו?מאז|ו?למרות|ו?בגלל|ו?בעקבות|ו?כולל|to|and|or|with|for|of|the)\s*$", text):
+        return True
+    if re.search(r"[,;:–—-]\s*$", text):
+        return True
+    if re.search(r"(?iu)(?:\b(?:ליש|מילי|מיליו|איר|יור|דול|פאונ)|\b[בלכמשהו])\s*$", text):
+        return True
+    return False
+
+
+def _final_payload_main_text(payload: Any, tweet_id: str = "") -> str:
+    if not isinstance(payload, dict):
+        return ""
+    roots: list[dict[str, Any]] = []
+    for candidate in (
+        payload.get("tweet"),
+        payload.get("data"),
+        payload.get("status"),
+        payload,
+    ):
+        if isinstance(candidate, dict):
+            roots.append(candidate)
+    try:
+        exact = _acceptance_exact_node(payload, tweet_id) if tweet_id else None
+        if isinstance(exact, dict):
+            roots.insert(0, exact)
+    except Exception:
+        pass
+    values: list[tuple[int, str]] = []
+    for index, node in enumerate(roots):
+        legacy = node.get("legacy") if isinstance(node.get("legacy"), dict) else {}
+        note = node.get("note_tweet") if isinstance(node.get("note_tweet"), dict) else {}
+        note_results = note.get("note_tweet_results") if isinstance(note.get("note_tweet_results"), dict) else {}
+        note_result = note_results.get("result") if isinstance(note_results.get("result"), dict) else {}
+        candidates = (
+            (1000 - index * 20, note_result.get("text")),
+            (980 - index * 20, node.get("raw_text")),
+            (960 - index * 20, node.get("full_text")),
+            (940 - index * 20, legacy.get("full_text")),
+            (900 - index * 20, node.get("tweet_text")),
+            (860 - index * 20, node.get("text")),
+            (840 - index * 20, legacy.get("text")),
+        )
+        for priority, raw in candidates:
+            if not isinstance(raw, str):
+                continue
+            value = _reliable_normalize_x_text(raw)
+            if value:
+                values.append((priority, value))
+    if not values:
+        return ""
+    values.sort(
+        key=lambda item: (
+            0 if _final_text_cut_signal(item[1]) else 1,
+            item[0],
+            len(item[1]),
+            item[1].count("\n"),
+        ),
+        reverse=True,
+    )
+    return values[0][1]
+
+
+def _reliable_extract_single_tweet_text(data: Any) -> str:
+    value = _final_payload_main_text(data)
+    if value:
+        return value
+    candidates: list[str] = []
+    if isinstance(data, dict):
+        for node in _reliable_deep_values(data):
+            legacy = node.get("legacy") if isinstance(node.get("legacy"), dict) else {}
+            for raw in (node.get("raw_text"), node.get("full_text"), legacy.get("full_text"), node.get("tweet_text"), node.get("text")):
+                if isinstance(raw, str):
+                    cleaned = _reliable_normalize_x_text(raw)
+                    if cleaned:
+                        candidates.append(cleaned)
+    candidates.sort(key=lambda text: (0 if _final_text_cut_signal(text) else 1, len(text), text.count("\n")), reverse=True)
+    return candidates[0] if candidates else ""
+
+
+_PRE_FULL_TEXT_EXACT_DETAILS = _acceptance_fetch_exact_details
+
+
+def _acceptance_fetch_exact_details(post: Post) -> dict[str, Any]:
+    """Collect all available providers and choose the fullest verified tweet body."""
+    tweet_id = _acceptance_tweet_id(post)
+    if not tweet_id:
+        return dict(_PRE_FULL_TEXT_EXACT_DETAILS(post) or {})
+    baseline = str(getattr(post, "original_text", "") or getattr(post, "text", "") or "").strip()
+    with _EXACT_POST_DETAILS_CACHE_LOCK:
+        cached = _EXACT_POST_DETAILS_CACHE.get(tweet_id)
+        if cached and time.time() - cached[0] <= EXACT_POST_DETAILS_CACHE_SECONDS:
+            cached_details = dict(cached[1])
+            cached_text = str(cached_details.get("text") or "").strip()
+            if cached_text and not _final_text_cut_signal(cached_text) and len(cached_text) >= max(40, int(len(baseline) * 0.80)):
+                return cached_details
+
+    parts = _reliable_tweet_parts(post) if "_reliable_tweet_parts" in globals() else tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+    username = (parts[0] if parts else str(getattr(post, "username", "") or "")).strip().lstrip("@")
+    token = (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    )
+
+    def load_provider(provider: str) -> tuple[str, Any]:
+        if provider == "x-syndication-result":
+            return provider, _fetch_syndication_tweet_result(tweet_id)
+        if provider == "x-api-v2":
+            query = urllib.parse.urlencode({
+                "tweet.fields": "text,attachments,note_tweet",
+                "expansions": "attachments.media_keys",
+                "media.fields": "url,preview_image_url,type,variants",
+            })
+            url = f"https://api.x.com/2/tweets/{tweet_id}?{query}"
+            headers = {"Authorization": f"Bearer {token}", "User-Agent": "NetoSportBot/1.0", "Accept": "application/json"}
+        else:
+            url = f"https://api.{provider}.com/{urllib.parse.quote(username)}/status/{tweet_id}"
+            headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=max(4.0, float(RELIABLE_EXACT_POST_TIMEOUT_SECONDS))) as response:
+            return provider, json.loads(response.read().decode("utf-8", errors="replace"))
+
+    providers = ["x-syndication-result"]
+    if token:
+        providers.insert(0, "x-api-v2")
+    if username:
+        providers.extend(["fxtwitter", "vxtwitter"])
+    provider_futures = {
+        _RESTORED_DISCOVERY_LANE_EXECUTOR.submit(load_provider, provider): provider
+        for provider in providers
+    }
+    candidates: list[dict[str, Any]] = []
+    try:
+        for future in as_completed(provider_futures, timeout=max(6.0, float(RELIABLE_EXACT_POST_TIMEOUT_SECONDS) + 2.0)):
+            provider = provider_futures[future]
+            try:
+                _provider, payload = future.result()
+            except Exception as exc:
+                logging.debug("Full exact text provider %s failed safely for %s: %s", provider, tweet_id, short_error(exc, 220))
+                continue
+            node = _acceptance_exact_node(payload, tweet_id) or payload
+            text_value = _final_payload_main_text(payload, tweet_id)
+            if provider == "x-api-v2":
+                images, videos = _acceptance_extract_official_media(payload)
+            else:
+                images, videos = _precise_tweet_media(node if isinstance(node, dict) else payload)
+            candidates.append({
+                "text": text_value,
+                "images": [u for u in images if _real_tweet_photo_url(u)],
+                "videos": [u for u in videos if _real_tweet_video_url(u)],
+                "provider": provider,
+            })
+    except FuturesTimeoutError:
+        pass
+    finally:
+        for future in provider_futures:
+            if not future.done():
+                future.cancel()
+
+    # Keep verified media from every provider, but choose one complete main body.
+    images: list[str] = []
+    videos: list[str] = []
+    text_options: list[tuple[str, str]] = []
+    if baseline:
+        text_options.append((baseline, "rss"))
+    for item in candidates:
+        images.extend(item.get("images") or [])
+        videos.extend(item.get("videos") or [])
+        if str(item.get("text") or "").strip():
+            text_options.append((str(item.get("text") or "").strip(), str(item.get("provider") or "")))
+    text_options.sort(
+        key=lambda item: (
+            0 if _final_text_cut_signal(item[0]) else 1,
+            item[0].count("\n"),
+            len(item[0]),
+        ),
+        reverse=True,
+    )
+    best_text, best_provider = text_options[0] if text_options else ("", "")
+    details = {
+        "text": best_text,
+        "images": list(dict.fromkeys(images)),
+        "videos": list(dict.fromkeys(videos)),
+        "provider": best_provider,
+        "media_verified": bool(candidates),
+    }
+    if best_text or images or videos:
+        with _EXACT_POST_DETAILS_CACHE_LOCK:
+            _EXACT_POST_DETAILS_CACHE[tweet_id] = (time.time(), dict(details))
+        return details
+    return dict(_PRE_FULL_TEXT_EXACT_DETAILS(post) or {})
+
+
+# ---------------------------------------------------------------------------
+# 3) Never publish a partial-prefix translation. Retry a malformed cached result
+#    once, otherwise let the existing automatic Gemini retry schedule handle it.
+# ---------------------------------------------------------------------------
+_PRE_FULL_TEXT_GEMINI_TRANSLATE_ONCE = gemini_translate_post_once
+
+
+def _final_sentence_count(value: str) -> int:
+    text = clean_before_translation(str(value or ""))
+    return len(re.findall(r"[.!?…](?:[\"'״׳)\]]+)?(?=\s|$)", text))
+
+
+def _final_full_translation_issues(source: str, translated: str, exact_layout: bool = False) -> list[str]:
+    src = clean_before_translation(str(source or "")).strip()
+    out = clean_before_translation(str(translated or "")).strip()
+    issues = list(_final_translation_completeness_issues(src, out))
+    if not src or not out:
+        return list(dict.fromkeys(issues or ["התרגום ריק"]))
+    if len(src) >= 280 and len(out) < len(src) * 0.43:
+        issues.append("התרגום קצר מדי וחסרות פסקאות מהמקור")
+    src_paragraphs = [part for part in re.split(r"\n\s*\n", src) if part.strip()]
+    out_paragraphs = [part for part in re.split(r"\n\s*\n", out) if part.strip()]
+    if exact_layout and len(src_paragraphs) >= 2 and len(out_paragraphs) < len(src_paragraphs):
+        issues.append("חסרות פסקאות מהמבנה המקורי")
+    src_sentences = _final_sentence_count(src)
+    out_sentences = _final_sentence_count(out)
+    if src_sentences >= 4 and out_sentences < max(1, src_sentences - 1):
+        issues.append("חסרים משפטים מהמקור")
+    if _final_text_cut_signal(out):
+        issues.append("התרגום הסתיים באמצע משפט")
+    return list(dict.fromkeys(issues))
+
+
+def _final_clear_translation_cache_for_post(post: Post, include_quote: bool) -> bool:
+    global TRANSLATION_CACHE_DIRTY
+    try:
+        key = _final_translation_cache_key_for_post(post, include_quote)
+    except Exception:
+        return False
+    existed = key in TRANSLATION_CACHE
+    if existed:
+        TRANSLATION_CACHE.pop(key, None)
+        TRANSLATION_CACHE_DIRTY = True
+    return existed
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    _reliable_hydrate_exact_post(post, force=True)
+    source = str(getattr(post, "text", "") or "")
+    quote_source = str(getattr(post, "quoted_text", "") or "") if include_quote else ""
+    main, quote, author = _PRE_FULL_TEXT_GEMINI_TRANSLATE_ONCE(post, include_quote)
+    issues = _final_full_translation_issues(source, main, bool(getattr(post, "exact_source_structure", False)))
+    if quote_source and quote:
+        issues.extend(_final_full_translation_issues(quote_source, quote, False))
+    if not issues:
+        return main, quote, author
+
+    # A malformed cache is retried immediately once.  This is exceptional only;
+    # normal translations still use exactly the existing request count.
+    had_cache = _final_clear_translation_cache_for_post(post, include_quote)
+    if had_cache and callable(globals().get("_FAST_SAFE_GEMINI_BASE")):
+        main, quote, author = _FAST_SAFE_GEMINI_BASE(post, include_quote)
+        issues = _final_full_translation_issues(source, main, bool(getattr(post, "exact_source_structure", False)))
+        if quote_source and quote:
+            issues.extend(_final_full_translation_issues(quote_source, quote, False))
+        if not issues:
+            return main, quote, author
+    raise TranslationUnavailable("התרגום לא הושלם במלואו ולכן הפוסט לא נשלח חלקית: " + "; ".join(dict.fromkeys(issues)))
+
+
+# ---------------------------------------------------------------------------
+# 4) Florian Plettenberg: remove a detached Sky Sport Germany credit line only.
+# ---------------------------------------------------------------------------
+_FINAL_SKY_GERMANY_LINE_RE = re.compile(
+    r"(?iu)^(?:sky\s*sports?\s*(?:germany|de)|sky\s*germany|skysportde|"
+    r"סקיי\s*ספורט(?:ס)?\s*גרמניה|סקיי\s*גרמניה)$"
+)
+
+
+def _final_plain_line(value: str) -> str:
+    plain = html.unescape(re.sub(r"<[^>]+>", "", str(value or "")))
+    plain = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", plain)
+    plain = TAG_FLAG_RE.sub("", plain)
+    plain = EMOJI_RE.sub("", plain)
+    plain = re.sub(r"(?<!\w)[@#][A-Za-z0-9_]+", "", plain)
+    plain = re.sub(r"[^A-Za-zא-ת]+", " ", plain)
+    return re.sub(r"\s+", " ", plain).strip()
+
+
+def _final_remove_sky_germany_credit(value: str) -> str:
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    kept: list[str] = []
+    for line in lines:
+        if _FINAL_SKY_GERMANY_LINE_RE.fullmatch(_final_plain_line(line)):
+            while kept and not kept[-1].strip():
+                kept.pop()
+            continue
+        kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def _final_is_plettigoal(post: Any) -> bool:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    return username == "plettigoal"
+
+
+_PRE_SKY_BUILD_MESSAGE = build_message
+
+
+def build_message(post: Post, *args: Any, **kwargs: Any) -> str:
+    message = _PRE_SKY_BUILD_MESSAGE(post, *args, **kwargs)
+    return _final_remove_sky_germany_credit(message) if _final_is_plettigoal(post) else message
+
+
+_PRE_SKY_PREPARED_SEND = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    if _final_is_plettigoal(post):
+        message = _final_remove_sky_germany_credit(message)
+    return _PRE_SKY_PREPARED_SEND(post, message, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+# ---------------------------------------------------------------------------
+# 5) Store timing for blocked posts as well as successful sends.
+# ---------------------------------------------------------------------------
+PIPELINE_BLOCKED_TIMING_STATE_KEY = "pipeline_blocked_timing_samples_v2"
+PIPELINE_BLOCKED_TIMING_LIMIT = max(30, min(300, int(os.environ.get("PIPELINE_BLOCKED_TIMING_LIMIT", "120") or 120)))
+_PIPELINE_PROCESS_STARTED: dict[str, float] = {}
+_PIPELINE_BLOCK_RECORDED: set[str] = set()
+
+
+_PRE_BLOCK_TIMING_ADD_STAGE = _pipeline_add_stage
+
+
+def _pipeline_add_stage(post: Post, stage: str, elapsed: float) -> None:
+    key = _pipeline_post_key(post)
+    if key:
+        with _PIPELINE_TIMING_LOCK:
+            started = time.time() - max(0.0, float(elapsed or 0.0))
+            previous = float(_PIPELINE_PROCESS_STARTED.get(key, 0.0) or 0.0)
+            if not previous or started < previous:
+                _PIPELINE_PROCESS_STARTED[key] = started
+    _PRE_BLOCK_TIMING_ADD_STAGE(post, stage, elapsed)
+
+
+def _pipeline_record_blocked(post: Post, reason: str) -> None:
+    key = _pipeline_post_key(post)
+    if not key:
+        return
+    identity = hashlib.sha1((key + "|" + str(reason or "")).encode("utf-8", errors="ignore")).hexdigest()
+    with _PIPELINE_TIMING_LOCK:
+        if identity in _PIPELINE_BLOCK_RECORDED:
+            return
+        _PIPELINE_BLOCK_RECORDED.add(identity)
+        if len(_PIPELINE_BLOCK_RECORDED) > 4000:
+            _PIPELINE_BLOCK_RECORDED.clear()
+        seen = dict(_PIPELINE_FIRST_SEEN.get(key, {}))
+        stages = dict(_PIPELINE_STAGE_ACCUM.get(key, {}))
+        process_started = float(_PIPELINE_PROCESS_STARTED.get(key, 0.0) or time.time())
+    published = float(getattr(post, "published_ts", 0.0) or 0.0)
+    first_seen = float(seen.get("first_seen_at", 0.0) or 0.0)
+    blocked_at = time.time()
+    reason_he = hebrew_block_reason(str(reason or ""))
+    sample = {
+        "ts": blocked_at,
+        "status": "blocked",
+        "username": str(getattr(post, "username", "") or ""),
+        "post_id": str(getattr(post, "post_id", "") or ""),
+        "link": str(getattr(post, "link", "") or ""),
+        "published_at": published,
+        "first_seen_at": first_seen,
+        "first_seen_lane": str(seen.get("first_seen_lane", "") or ""),
+        "processing_started_at": process_started,
+        "blocked_at": blocked_at,
+        "publish_to_first_seen_seconds": max(0.0, first_seen - published) if first_seen and published else 0.0,
+        "first_seen_to_processing_seconds": max(0.0, process_started - first_seen) if first_seen else 0.0,
+        "filter_seconds": float(stages.get("filter_seconds", 0.0) or 0.0),
+        "duplicate_seconds": float(stages.get("duplicate_seconds", 0.0) or 0.0),
+        "block_reason": str(reason or ""),
+        "block_reason_he": reason_he,
+    }
+    with _PIPELINE_TIMING_LOCK:
+        state = load_control_state()
+        rows = state.get(PIPELINE_BLOCKED_TIMING_STATE_KEY, [])
+        rows = list(rows) if isinstance(rows, list) else []
+        rows.append(sample)
+        save_control_state(**{PIPELINE_BLOCKED_TIMING_STATE_KEY: rows[-PIPELINE_BLOCKED_TIMING_LIMIT:]})
+        _PIPELINE_FIRST_SEEN.pop(key, None)
+        _PIPELINE_STAGE_ACCUM.pop(key, None)
+        _PIPELINE_PROCESS_STARTED.pop(key, None)
+
+
+_PRE_BLOCK_TIMING_LOG_SKIP_ONCE = log_skip_once
+
+
+def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
+    try:
+        _pipeline_record_blocked(post, reason)
+    except Exception as exc:
+        logging.debug("Blocked timing storage failed safely: %s", short_error(exc, 180))
+    return _PRE_BLOCK_TIMING_LOG_SKIP_ONCE(reason, post, message, *args)
+
+
+_PRE_BLOCK_TIMING_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = _PRE_BLOCK_TIMING_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    if isinstance(result, dict) and not result.get("sent"):
+        mode = str(result.get("mode", "") or "")
+        if "blocked" in mode or "duplicate" in mode or "no_news" in mode:
+            reason = mode.split(":", 1)[-1] if ":" in mode else mode
+            try:
+                _pipeline_record_blocked(post, reason)
+            except Exception:
+                pass
+    return result
+
+
+_PRE_BLOCK_TIMING_STORE_SENT = _pipeline_store_sample
+
+
+def _pipeline_store_sample(post: Post, result: dict[str, Any], process_started_at: float, sent_at: float) -> None:
+    _PRE_BLOCK_TIMING_STORE_SENT(post, result, process_started_at, sent_at)
+    key = _pipeline_post_key(post)
+    with _PIPELINE_TIMING_LOCK:
+        _PIPELINE_PROCESS_STARTED.pop(key, None)
+
+
+def pipeline_timing_report_text(limit: int = 20) -> str:
+    state = load_control_state()
+    sent_rows = [row for row in (state.get(PIPELINE_TIMING_STATE_KEY, []) or []) if isinstance(row, dict)]
+    blocked_rows = [row for row in (state.get(PIPELINE_BLOCKED_TIMING_STATE_KEY, []) or []) if isinstance(row, dict)]
+    combined = sorted(
+        [dict(row, status="sent") for row in sent_rows] + blocked_rows,
+        key=lambda row: float(row.get("ts", 0.0) or 0.0),
+    )[-max(1, int(limit)):]
+    if not combined:
+        return "⏱️ בדיקת עיכוב אמיתית\n\nעדיין אין מדידות של פוסטים שנשלחו או נחסמו מהגרסה הזאת."
+    delays = [float(row.get("publish_to_first_seen_seconds", 0.0) or 0.0) for row in combined if row.get("published_at") and row.get("first_seen_at")]
+    processing = [float(row.get("first_seen_to_processing_seconds", 0.0) or 0.0) for row in combined if row.get("first_seen_at")]
+    sent_count = sum(1 for row in combined if row.get("status") == "sent")
+    blocked_count = len(combined) - sent_count
+    lines = [
+        "⏱️ בדיקת עיכוב אמיתית",
+        "",
+        f"נמדדו {len(combined)} פוסטים אחרונים: {sent_count} נשלחו ו־{blocked_count} נחסמו.",
+        f"• פרסום → גילוי ראשון, כל הפוסטים: {(sum(delays) / len(delays)):.1f} שנ׳" if delays else "• פרסום → גילוי ראשון: אין מספיק נתונים",
+        f"• גילוי → תחילת עיבוד: {(sum(processing) / len(processing)):.1f} שנ׳" if processing else "• גילוי → תחילת עיבוד: אין מספיק נתונים",
+    ]
+    if sent_count:
+        sent_sample = [row for row in combined if row.get("status") == "sent"]
+        total = [float(row.get("publish_to_telegram_seconds", 0.0) or 0.0) for row in sent_sample]
+        lines.append(f"• פרסום → Telegram בשליחות: {sum(total) / len(total):.1f} שנ׳")
+    recent_blocked = [row for row in combined if row.get("status") == "blocked"][-10:]
+    if recent_blocked:
+        lines.extend(["", "פוסטים שנחסמו:"])
+        for row in recent_blocked:
+            lines.extend([
+                "",
+                f"• {_hebrew_account_label(str(row.get('username', '') or ''))}",
+                f"  פורסם: {_pipeline_format_clock(row.get('published_at'))}",
+                f"  נמצא לראשונה: {_pipeline_format_clock(row.get('first_seen_at'))} ({row.get('first_seen_lane') or 'לא ידוע'})",
+                f"  פרסום → גילוי: {float(row.get('publish_to_first_seen_seconds', 0.0) or 0.0):.1f} שנ׳",
+                f"  התחיל עיבוד: {_pipeline_format_clock(row.get('processing_started_at'))}",
+                f"  סיבת חסימה: {row.get('block_reason_he') or hebrew_block_reason(str(row.get('block_reason') or ''))}",
+            ])
+    return "\n".join(lines)
+
+# ====== END FINAL RSS RESTORE / FULL TEXT / BLOCKED TIMING PATCH ======
+
+
+# ====== FINAL SMART NO-CUT / SAFE TAIL / FABRIZIO CONFIRMATION PATCH (2026-07-26) ======
+# This layer does not alter RSS discovery, feed templates, mirror order, Gemini
+# key loading, Telegram media handling, or persistent filenames. It only tightens
+# final-text integrity, hides two-hour age blocks from the 30-block list, limits
+# delay reports to the current process, and links a certain Fabrizio confirmation
+# to the earlier report instead of suppressing it as a fuzzy duplicate.
+
+BOT_BUILD_ID = "winner-no-cut-safe-tail-fabrizio-confirmation-2026-07-26"
+
+# Fabrice Hawkins is an approved source for a strict Fabrizio confirmation.
+try:
+    _FABRIZIO_CONFIRMATION_SOURCES.setdefault("fabricehawkins", "פבריס הוקינס")
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
+# 1) Only proven short metadata may be removed from the tail. A long ordinary
+#    sentence is never deleted merely because it lacks punctuation or looks odd.
+# ---------------------------------------------------------------------------
+_SMART_PROMO_PREFIX_RE = re.compile(
+    r"(?iu)^\s*(?:"
+    r"כפי\s+(?:ש(?:דיווחנו|דווח|נחשף|הוסבר|אמרנו|ציינו|פורסם|נכתב)|שכבר\s+(?:דיווחנו|הסברנו|אמרנו|ציינו))"
+    r"|כמו\s+ש(?:דיווחנו|אמרנו|הסברנו|ציינו)"
+    r"|כבר\s+(?:דיווחנו|אמרנו|הסברנו|ציינו|חשפנו)"
+    r"|אין\s+(?:כאן\s+)?(?:חדש|חדשות|הפתעה|הפתעות)"
+    r"|לא\s+(?:מדובר\s+בחדשות|חדש\s+כאן)"
+    r"|as\s+(?:(?:we|i)\s+)?(?:already\s+)?(?:reported|revealed|explained|said|mentioned|published|wrote)"
+    r"|as\s+(?:reported|revealed|explained|mentioned)\s+(?:for|since)"
+    r"|nothing\s+new|no\s+surprises?(?:\s+here)?"
+    r")\b"
+)
+
+_SMART_PROMO_SUBSTANTIVE_RE = re.compile(
+    r"(?iu)\b(?:"
+    r"חתם|יחתום|הסכ(?:ם|מה)|סיכמ|הצעה|בדיקות|חוזה|יעבור|מעבר|יצטרף|עזב|יעזוב|"
+    r"משא\s+ומתן|מגעים|שיחות|דמי\s+העברה|מיליון|מחר|היום|רשמי|אושר|נדחה|"
+    r"signed?|will\s+sign|agreement|agreed|offer|bid|medical|contract|move|transfer|"
+    r"join|leave|fee|million|tomorrow|today|official|confirmed|rejected"
+    r")\b"
+)
+
+_SMART_SOURCE_CREDIT_SHORT_RE = re.compile(
+    r"(?iu)^\s*(?:"
+    r"sky\s*sports?\s*(?:germany|de)|sky\s+germany|skysportde|"
+    r"סקיי\s*ספורט(?:ס)?\s*גרמניה|סקיי\s*גרמניה|"
+    r"rmc\s*sport|foot\s*mercato|the\s*athletic|bild|marca|relevo|l['’]?equipe|"
+    r"מקור|קרדיט|source|credit|via"
+    r")\s*[.!?…]*\s*$"
+)
+
+
+def _smart_regular_tokens(value: str) -> list[str]:
+    plain = html.unescape(re.sub(r"<[^>]+>", " ", str(value or "")))
+    return re.findall(r"[@#]?[A-Za-z0-9_א-ת][A-Za-z0-9_א-ת'׳״\-]*", plain, re.UNICODE)
+
+
+def _smart_split_trailing_sentence(value: str) -> tuple[str, str]:
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    # Greedy body means the last completed sentence/paragraph boundary wins.
+    match = re.match(
+        r"(?s)^(?P<body>.*(?:[.!?…][\"'״׳)\]]|[.!?…]|\n\s*\n))\s*(?P<tail>[^\n].*)$",
+        text,
+    )
+    if not match:
+        return "", text
+    return match.group("body").rstrip(), match.group("tail").strip()
+
+
+def _smart_strip_known_promotional_tail(value: str) -> str:
+    """Remove only a trailing self-credit sentence/clause with a known prefix.
+
+    If a self-credit prefix is followed by a real complete news fact, strip only
+    the prefix and preserve that fact. If the remainder is generic/incomplete,
+    remove the entire promotional tail. Ordinary final sentences are untouched.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return text
+    for _ in range(3):
+        body, tail = _smart_split_trailing_sentence(text)
+        if not body or not _SMART_PROMO_PREFIX_RE.match(tail):
+            break
+        clause = re.match(
+            r"(?is)^\s*(?P<prefix>.*?)(?:\s*[,;:–—-]\s+)(?P<rest>.+)$",
+            tail,
+        )
+        if clause:
+            rest = clause.group("rest").strip()
+            rest_words = _smart_regular_tokens(rest)
+            rest_terminal = bool(re.search(r"[.!?…][\"'״׳)\]]*\s*$", EMOJI_RE.sub("", rest).strip()))
+            if len(rest_words) >= 4 and rest_terminal and _SMART_PROMO_SUBSTANTIVE_RE.search(rest):
+                text = f"{body} {rest}".strip()
+                continue
+        # Known self-promotion with no safely separable complete fact: drop it.
+        text = body.rstrip()
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _smart_phrase_repeated_in_body(tail: str, body: str) -> bool:
+    phrase = re.sub(r"[^A-Za-z0-9א-ת'׳״\-]+", " ", html.unescape(str(tail or ""))).strip().casefold()
+    earlier = re.sub(r"[^A-Za-z0-9א-ת'׳״\-]+", " ", html.unescape(str(body or ""))).strip().casefold()
+    return bool(phrase and len(phrase) >= 3 and re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", earlier))
+
+
+def _smart_is_proven_short_tail(tail: str, body: str = "") -> bool:
+    raw = html.unescape(str(tail or "")).strip()
+    tokens = _smart_regular_tokens(raw)
+    if not tokens or len(tokens) > 3:
+        return False
+    if callable(globals().get("_final_is_detached_source_metadata")):
+        try:
+            if _final_is_detached_source_metadata(raw):
+                return True
+        except Exception:
+            pass
+    if callable(globals().get("_FAST_SAFE_STANDALONE_JUNK_RE")):
+        try:
+            if _FAST_SAFE_STANDALONE_JUNK_RE.fullmatch(raw):
+                return True
+        except Exception:
+            pass
+    if _SMART_SOURCE_CREDIT_SHORT_RE.fullmatch(raw):
+        return True
+    # A line made only of handles/hashtags is metadata, not report content.
+    if all(token.startswith(("@", "#")) for token in tokens):
+        return True
+    # A repeated one-to-three-word team/source tag after a completed sentence is
+    # removable; an unknown word such as "מחר" is not.
+    if body and _smart_phrase_repeated_in_body(raw.rstrip(".!?…"), body):
+        known_names: list[str] = []
+        if callable(globals().get("_known_team_display_names")):
+            try:
+                known_names = list(_known_team_display_names())
+            except Exception:
+                known_names = []
+        clean = raw.rstrip(".!?… ").casefold()
+        if any(clean == str(name).casefold() for name in known_names):
+            return True
+    return False
+
+
+def _smart_conservative_tail_cleanup(value: str) -> str:
+    text = _smart_strip_known_promotional_tail(str(value or ""))
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    while len([line for line in lines if line.strip()]) >= 2:
+        index = len(lines) - 1
+        while index >= 0 and not lines[index].strip():
+            index -= 1
+        if index < 0:
+            break
+        body = "\n".join(lines[:index]).rstrip()
+        tail = lines[index].strip()
+        if _smart_is_proven_short_tail(tail, body):
+            lines = lines[:index]
+            while lines and not lines[-1].strip():
+                lines.pop()
+            continue
+        break
+    result = "\n".join(lines).strip()
+    # Inline deletion is limited to a proven 1-3 word tail after a completed
+    # sentence. It can never remove a long final sentence.
+    inline = re.match(
+        r"(?s)^(?P<body>.*[.!?…][\"'״׳)\]]*)\s+(?P<tail>[^\n]+?)\s*$",
+        result,
+    )
+    if inline and _smart_is_proven_short_tail(inline.group("tail"), inline.group("body")):
+        result = inline.group("body").rstrip()
+    return re.sub(r"\n{3,}", "\n\n", result).strip()
+
+
+# ---------------------------------------------------------------------------
+# 2) Strict translation completeness. A long incomplete sentence is retried or
+#    blocked, never silently deleted. Salvage is allowed only for 1-3 dangling
+#    words, or for a recognized self-promotional tail described above.
+# ---------------------------------------------------------------------------
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    src = clean_before_translation(_smart_strip_known_promotional_tail(str(source or ""))).strip()
+    out = clean_before_translation(_smart_strip_known_promotional_tail(str(translated or ""))).strip()
+    issues = list(_fast_safe_hard_truncation_issues(src, out))
+    if not out:
+        return list(dict.fromkeys(issues or ["לא התקבל תרגום משמעותי"]))
+
+    source_numbers = _final_normalized_numbers(src)
+    output_numbers = _final_normalized_numbers(out)
+    missing_numbers = sorted(source_numbers - output_numbers)
+    if missing_numbers:
+        issues.append("חסרים מספרים מהמקור: " + ", ".join(missing_numbers[:8]))
+    currency_rules = (
+        (r"£|pounds?\b|sterling\b", r"£|ליש[\"״']?ט|פאונד", "חסר מטבע ליש״ט"),
+        (r"€|euros?\b", r"€|אירו", "חסר מטבע אירו"),
+        (r"\$|dollars?\b|usd\b", r"\$|דולר", "חסר מטבע דולר"),
+    )
+    for source_re, output_re, label in currency_rules:
+        if re.search(source_re, src, re.IGNORECASE) and not re.search(output_re, out, re.IGNORECASE):
+            issues.append(label)
+
+    if len(src) >= 260 and len(out) < len(src) * 0.55:
+        issues.append("התרגום קצר מדי ביחס למקור")
+    src_paragraphs = [part for part in re.split(r"\n\s*\n", src) if part.strip()]
+    out_paragraphs = [part for part in re.split(r"\n\s*\n", out) if part.strip()]
+    if len(src_paragraphs) >= 3 and len(out_paragraphs) < len(src_paragraphs) - 1:
+        issues.append("חסרות פסקאות מהמקור")
+    src_sentences = _final_sentence_count(src) if callable(globals().get("_final_sentence_count")) else len(re.findall(r"[.!?…](?=\s|$)", src))
+    out_sentences = _final_sentence_count(out) if callable(globals().get("_final_sentence_count")) else len(re.findall(r"[.!?…](?=\s|$)", out))
+    if src_sentences >= 4 and out_sentences < src_sentences - 1:
+        issues.append("חסרים משפטים מהמקור")
+
+    # If the full source ends as a sentence but the output ends with a long
+    # unpunctuated fragment, this is a cut even when its final Hebrew word looks
+    # grammatically normal (the exact cause of the Florian/Hawkins failures).
+    src_terminal = EMOJI_RE.sub("", src).rstrip()
+    out_terminal = EMOJI_RE.sub("", out).rstrip()
+    if re.search(r"[.!?…][\"'״׳)\]]*$", src_terminal) and not re.search(r"[.!?…][\"'״׳)\]]*$", out_terminal):
+        prefix = _fast_safe_complete_sentence_prefix(out_terminal)
+        fragment = out_terminal[len(prefix):].strip() if prefix and out_terminal.startswith(prefix) else out_terminal
+        fragment_words = _smart_regular_tokens(fragment)
+        if fragment_words:
+            issues.append("התרגום הסתיים באמצע משפט")
+    return list(dict.fromkeys(issues))
+
+
+def _final_salvage_complete_translation(source: str, translated: str) -> str:
+    original = str(translated or "").strip()
+    promo_cleaned = _smart_strip_known_promotional_tail(original)
+    if promo_cleaned != original:
+        # A known promo tail may be long; it is the only safe long-tail removal.
+        if promo_cleaned and not _final_translation_completeness_issues(
+            _smart_strip_known_promotional_tail(source), promo_cleaned
+        ):
+            return promo_cleaned
+    hard_issues = _fast_safe_hard_truncation_issues(source, original)
+    terminal_source = EMOJI_RE.sub("", clean_before_translation(str(source or ""))).rstrip()
+    terminal_out = EMOJI_RE.sub("", clean_before_translation(original)).rstrip()
+    terminal_mismatch = bool(
+        re.search(r"[.!?…][\"'״׳)\]]*$", terminal_source)
+        and not re.search(r"[.!?…][\"'״׳)\]]*$", terminal_out)
+    )
+    if not hard_issues and not terminal_mismatch:
+        return original
+    prefix = _fast_safe_complete_sentence_prefix(original)
+    if not prefix or prefix == original:
+        return ""
+    removed = original[len(prefix):].strip() if original.startswith(prefix) else ""
+    # Never remove a whole sentence or a long fragment. Only 1-3 dangling words
+    # after a fully completed sentence may be discarded after retries fail.
+    if not removed or len(_smart_regular_tokens(removed)) > 3:
+        return ""
+    if count_regular_words(prefix) < 3:
+        return ""
+    return prefix
+
+
+# Rebuild the final one-operation translation from the established Gemini base,
+# avoiding the older large-prefix salvage wrapper.
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    global TRANSLATION_CACHE_DIRTY
+    _reliable_hydrate_exact_post(post, force=True)
+    source = str(getattr(post, "text", "") or "")
+    quote_source = str(getattr(post, "quoted_text", "") or "") if include_quote else ""
+
+    def run_once() -> tuple[str, str, str, list[str]]:
+        main_value, quote_value, author_value = _FAST_SAFE_GEMINI_BASE(post, include_quote)
+        main_value = _smart_strip_known_promotional_tail(main_value)
+        quote_value = _smart_strip_known_promotional_tail(quote_value) if quote_value else ""
+        found_issues = _final_translation_completeness_issues(source, main_value)
+        if quote_source and quote_value:
+            found_issues.extend(_final_translation_completeness_issues(quote_source, quote_value))
+        return main_value, quote_value, author_value, list(dict.fromkeys(found_issues))
+
+    main, quote, author, issues = run_once()
+    if not issues:
+        return main, quote, author
+
+    cache_key = _final_translation_cache_key_for_post(post, include_quote)
+    if cache_key in TRANSLATION_CACHE:
+        TRANSLATION_CACHE.pop(cache_key, None)
+        TRANSLATION_CACHE_DIRTY = True
+        main, quote, author, issues = run_once()
+        if not issues:
+            return main, quote, author
+
+    safe_main = _final_salvage_complete_translation(source, main)
+    safe_quote = quote
+    if quote_source and quote and _final_translation_completeness_issues(quote_source, quote):
+        safe_quote = _final_salvage_complete_translation(quote_source, quote)
+    if safe_main and not _final_translation_completeness_issues(
+        _smart_strip_known_promotional_tail(source), safe_main
+    ):
+        return safe_main, safe_quote or "", author
+    raise TranslationUnavailable(
+        "התרגום נחתך או שחסרים ממנו חלקים, ולכן הוא לא נשלח חלקית: "
+        + "; ".join(dict.fromkeys(issues))
+    )
+
+
+_PRE_SMART_NO_CUT_OUTGOING_BODY = _outgoing_body_text
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _PRE_SMART_NO_CUT_OUTGOING_BODY(post, translated, quoted=quoted)
+    if quoted:
+        return re.sub(r"\n{3,}", "\n\n", value).strip()
+    value = _smart_conservative_tail_cleanup(value)
+    # A remaining hard cut is not converted to a shorter report here. Translation
+    # must retry/fail before this point; final rendering never deletes a sentence.
+    if _fast_safe_hard_truncation_issues(str(getattr(post, "text", "") or ""), value):
+        raise TranslationUnavailable("הטקסט הסופי עדיין מסתיים באמצע משפט")
+    return value
+
+
+# ---------------------------------------------------------------------------
+# 3) Two-hour age blocks stay in telemetry, but never occupy the user-facing
+#    "30 חסימות אחרונות" history.
+# ---------------------------------------------------------------------------
+def _smart_is_two_hour_age_block(reason_or_item: Any) -> bool:
+    if isinstance(reason_or_item, dict):
+        raw = " ".join(str(reason_or_item.get(key, "") or "") for key in ("raw_reason", "reason", "rendered"))
+    else:
+        raw = str(reason_or_item or "")
+    base = raw.split(";", 1)[0].strip().casefold()
+    return bool(
+        re.search(r"(?:^|[:\s])(?:old_post|post_too_old|older_than_two_hours|over_two_hours)(?:$|[:\s])", base)
+        or "פוסט ישן מדי" in raw
+        or "עברו יותר משעתיים" in raw
+        or "מעל שעתיים" in raw
+    )
+
+
+_PRE_SMART_NO_CUT_REMEMBER_BLOCK = remember_control_block_event
+
+
+def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
+    if _smart_is_two_hour_age_block(reason):
+        return
+    return _PRE_SMART_NO_CUT_REMEMBER_BLOCK(reason, post, rendered, duplicate=duplicate)
+
+
+def _recent_blocked_separate_report() -> str:
+    state = load_control_state()
+    raw = state.get("last_blocked_posts", [])
+    items = [
+        item for item in (raw if isinstance(raw, list) else [])
+        if isinstance(item, dict) and not _smart_is_two_hour_age_block(item)
+    ][-30:]
+    return _control_list_text(
+        "📋 30 חסימות אחרונות",
+        items,
+        "אין חסימות שמורות כרגע.",
+        limit=30,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4) The real-delay report shows only samples collected since this process/build
+#    started, so an old deployment's 15-minute sample is not presented as current.
+# ---------------------------------------------------------------------------
+def pipeline_timing_report_text(limit: int = 20) -> str:
+    state = load_control_state()
+    current_since = float(BOT_STARTED_AT or 0.0)
+    sent_rows = [
+        row for row in (state.get(PIPELINE_TIMING_STATE_KEY, []) or [])
+        if isinstance(row, dict) and float(row.get("ts", 0.0) or 0.0) >= current_since
+    ]
+    blocked_rows = [
+        row for row in (state.get(PIPELINE_BLOCKED_TIMING_STATE_KEY, []) or [])
+        if isinstance(row, dict) and float(row.get("ts", 0.0) or 0.0) >= current_since
+    ]
+    combined = sorted(
+        [dict(row, status="sent") for row in sent_rows] + blocked_rows,
+        key=lambda row: float(row.get("ts", 0.0) or 0.0),
+    )[-max(1, int(limit)):]
+    if not combined:
+        return "⏱️ בדיקת עיכוב אמיתית\n\nעדיין אין מדידות מההפעלה הנוכחית של הקוד."
+    delays = [float(row.get("publish_to_first_seen_seconds", 0.0) or 0.0) for row in combined if row.get("published_at") and row.get("first_seen_at")]
+    processing = [float(row.get("first_seen_to_processing_seconds", 0.0) or 0.0) for row in combined if row.get("first_seen_at")]
+    sent_sample = [row for row in combined if row.get("status") == "sent"]
+    blocked_sample = [row for row in combined if row.get("status") == "blocked"]
+    lines = [
+        "⏱️ בדיקת עיכוב אמיתית",
+        "",
+        f"נמדדו {len(combined)} פוסטים מההפעלה הנוכחית: {len(sent_sample)} נשלחו ו־{len(blocked_sample)} נחסמו.",
+        f"• פרסום → גילוי ראשון: {sum(delays) / len(delays):.1f} שנ׳" if delays else "• פרסום → גילוי ראשון: אין מספיק נתונים",
+        f"• גילוי → תחילת עיבוד: {sum(processing) / len(processing):.1f} שנ׳" if processing else "• גילוי → תחילת עיבוד: אין מספיק נתונים",
+    ]
+    if sent_sample:
+        total = [float(row.get("publish_to_telegram_seconds", 0.0) or 0.0) for row in sent_sample]
+        lines.append(f"• פרסום → Telegram: {sum(total) / len(total):.1f} שנ׳")
+    if blocked_sample:
+        lines.extend(["", "פוסטים שנחסמו:"])
+        for row in blocked_sample[-10:]:
+            lines.extend([
+                "",
+                f"• {_hebrew_account_label(str(row.get('username', '') or ''))}",
+                f"  פורסם: {_pipeline_format_clock(row.get('published_at'))}",
+                f"  נמצא: {_pipeline_format_clock(row.get('first_seen_at'))} ({row.get('first_seen_lane') or 'לא ידוע'})",
+                f"  פרסום → גילוי: {float(row.get('publish_to_first_seen_seconds', 0.0) or 0.0):.1f} שנ׳",
+                f"  סיבת חסימה: {row.get('block_reason_he') or hebrew_block_reason(str(row.get('block_reason') or ''))}",
+            ])
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 5) Certain Fabrizio confirmation of a prior Hawkins/approved-source report:
+#    send it, reply to the previous Telegram message, and use "מאשר". A shared
+#    club alone is never enough; same named person + team + event family is needed.
+# ---------------------------------------------------------------------------
+_PRE_SMART_FABRIZIO_MATCH = _fabrizio_confirmation_match
+
+
+def _smart_confirmation_person_keys(text: str, signature: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    try:
+        keys.update(_strict_confirmation_person_keys(text, signature))
+    except Exception:
+        pass
+    normalized = _duplicate_phrase_norm(str(text or ""))
+    for phrase in _confirmation_name_phrases(str(text or "")):
+        phrase_norm = _duplicate_phrase_norm(phrase)
+        words = [word for word in phrase_norm.split() if len(word) >= 3]
+        if len(words) >= 2:
+            keys.add("full:" + " ".join(words[:4]))
+            keys.add("surname:" + words[-1])
+    # Canonical player IDs are the strongest identity.
+    try:
+        players, _teams = _canonical_sets_from_signature(signature)
+        keys.update("player:" + str(player).casefold() for player in players if str(player).strip())
+    except Exception:
+        pass
+    return keys
+
+
+def _smart_confirmation_event_family(text: str, signature: dict[str, Any]) -> set[str]:
+    value = _duplicate_phrase_norm(str(text or ""))
+    families = set(signature.get("actions", []) or []) if isinstance(signature, dict) else set()
+    patterns = {
+        "contract_decision": r"\b(?:contract|renewal|extension|new deal|חוזה|הארכ|לא יחתום|לא יאריך|הצעת חוזה)\b",
+        "transfer_open": r"\b(?:move|transfer|leave|departure|מעבר|לעבור|עזיבה|לעזוב)\b",
+        "rejection": r"\b(?:reject|rejected|turned down|דחה|דחתה|נדחתה)\b",
+        "interest": r"\b(?:interest|shortlist|top of.*list|מעוניינ|בראש הרשימה)\b",
+    }
+    for family, pattern in patterns.items():
+        if re.search(pattern, value, re.IGNORECASE):
+            families.add(family)
+    return families
+
+
+def _smart_fabrizio_confirmation_match(post: Post, item: Any) -> bool:
+    if not isinstance(post, Post) or not isinstance(item, dict):
+        return False
+    if str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() != _FABRIZIO_USERNAME:
+        return False
+    source = str(item.get("username") or item.get("source") or "").strip().lstrip("@").casefold()
+    if source not in _FABRIZIO_CONFIRMATION_SOURCES or is_pending_memory_item(item):
+        return False
+    ts = float(item.get("ts", 0.0) or 0.0)
+    if ts and time.time() - ts > 72 * 60 * 60:
+        return False
+    try:
+        if _PRE_SMART_FABRIZIO_MATCH(post, item):
+            return True
+    except Exception:
+        pass
+    previous_text = _confirmation_item_text(item)
+    current_text = _post_original_text(post) or str(getattr(post, "text", "") or "")
+    current_sig = news_event_signature(post)
+    previous_sig = item.get("signature", {}) if isinstance(item.get("signature"), dict) else {}
+    if not previous_sig:
+        previous_sig = news_event_signature(channel_duplicate_text_to_post(previous_text))
+    current_people = _smart_confirmation_person_keys(current_text, current_sig)
+    previous_people = _smart_confirmation_person_keys(previous_text, previous_sig)
+    if not current_people or not previous_people or not (current_people & previous_people):
+        return False
+    current_teams = _confirmation_team_ids(current_text)
+    previous_teams = _confirmation_team_ids(previous_text)
+    if not current_teams or not previous_teams or not (current_teams & previous_teams):
+        return False
+    current_family = _smart_confirmation_event_family(current_text, current_sig)
+    previous_family = _smart_confirmation_event_family(previous_text, previous_sig)
+    return bool(current_family & previous_family)
+
+
+def _smart_find_fabrizio_confirmation_item(post: Post, state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    rows: list[dict[str, Any]] = []
+    for getter in (cleanup_bot_sent_reply_targets, cleanup_channel_recent_news_events, cleanup_recent_news_events):
+        try:
+            values = getter(state)
+        except Exception:
+            values = []
+        for item in values or []:
+            if isinstance(item, dict) and item not in rows:
+                rows.append(item)
+    for item in reversed(rows[-1000:]):
+        if _smart_fabrizio_confirmation_match(post, item):
+            return item
+    return None
+
+
+def _smart_mark_fabrizio_confirmation(post: Post, item: dict[str, Any] | None) -> None:
+    if not item:
+        return
+    source = str(item.get("username") or item.get("source") or "").strip().lstrip("@").casefold()
+    setattr(post, "fabrizio_confirmation", True)
+    setattr(post, "fabrizio_confirmation_source", _FABRIZIO_CONFIRMATION_SOURCES.get(source, source))
+
+
+def _smart_message_ids_from_item(item: dict[str, Any] | None) -> dict[str, int]:
+    if not isinstance(item, dict):
+        return {}
+    for key in ("message_ids", "message_ids_by_chat", "telegram_message_ids"):
+        raw = item.get(key)
+        if isinstance(raw, dict) and raw:
+            result: dict[str, int] = {}
+            for chat_id, message_id in raw.items():
+                try:
+                    if message_id:
+                        result[str(chat_id)] = int(message_id)
+                except Exception:
+                    continue
+            if result:
+                return result
+    return {}
+
+
+_PRE_SMART_LOCAL_DUPLICATE = local_duplicate_verdict
+
+
+def local_duplicate_verdict(current_post: Post, previous_item: dict[str, Any], score: float | None = None) -> str:
+    if _smart_fabrizio_confirmation_match(current_post, previous_item):
+        _smart_mark_fabrizio_confirmation(current_post, previous_item)
+        return "ADVANCED_NEW"
+    return _PRE_SMART_LOCAL_DUPLICATE(current_post, previous_item, score)
+
+
+_PRE_SMART_DUP_CERTAIN = _final_duplicate_candidate_is_certain
+
+
+def _final_duplicate_candidate_is_certain(post: Post, item: dict[str, Any] | None) -> bool:
+    if item and _smart_fabrizio_confirmation_match(post, item):
+        _smart_mark_fabrizio_confirmation(post, item)
+        return False
+    return _PRE_SMART_DUP_CERTAIN(post, item)
+
+
+_PRE_SMART_FIND_RECENT = find_recent_duplicate_event
+_PRE_SMART_FIND_CHANNEL = find_channel_duplicate_event
+_PRE_SMART_FIND_TRANSLATED = find_post_translation_duplicate_event
+_PRE_SMART_FIND_AI = globals().get("find_recent_duplicate_event_ai_aware")
+_PRE_SMART_FIND_BURST = globals().get("find_recent_burst_spam_event")
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    item = _smart_find_fabrizio_confirmation_item(post, state)
+    if item:
+        _smart_mark_fabrizio_confirmation(post, item)
+        return None
+    return _PRE_SMART_FIND_RECENT(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    item = _smart_find_fabrizio_confirmation_item(post, state)
+    if item:
+        _smart_mark_fabrizio_confirmation(post, item)
+        return None
+    return _PRE_SMART_FIND_CHANNEL(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    item = _smart_find_fabrizio_confirmation_item(post, state)
+    if item:
+        _smart_mark_fabrizio_confirmation(post, item)
+        return None
+    return _PRE_SMART_FIND_TRANSLATED(post, translated_message, state)
+
+
+if callable(_PRE_SMART_FIND_AI):
+    def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        item = _smart_find_fabrizio_confirmation_item(post, state)
+        if item:
+            _smart_mark_fabrizio_confirmation(post, item)
+            return None
+        return _PRE_SMART_FIND_AI(post, state, *args, **kwargs)
+
+
+if callable(_PRE_SMART_FIND_BURST):
+    def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        item = _smart_find_fabrizio_confirmation_item(post, state)
+        if item:
+            _smart_mark_fabrizio_confirmation(post, item)
+            return None
+        return _PRE_SMART_FIND_BURST(post, state, *args, **kwargs)
+
+
+_PRE_SMART_REPLY_TARGET = find_bot_reply_target_for_post
+
+
+def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    item = _smart_find_fabrizio_confirmation_item(post, state)
+    if item:
+        _smart_mark_fabrizio_confirmation(post, item)
+        ids = _smart_message_ids_from_item(item)
+        if ids:
+            return ids
+    return _PRE_SMART_REPLY_TARGET(post, state)
+
+
+_PRE_SMART_MARK_CONFIRMATION = mark_fabrizio_confirmation_from_state
+
+
+def mark_fabrizio_confirmation_from_state(post: Post, state: dict[str, Any]) -> str:
+    item = _smart_find_fabrizio_confirmation_item(post, state)
+    if item:
+        _smart_mark_fabrizio_confirmation(post, item)
+        source = str(item.get("username") or item.get("source") or "").strip().lstrip("@").casefold()
+        return source
+    return _PRE_SMART_MARK_CONFIRMATION(post, state)
+
+# ====== END FINAL SMART NO-CUT / SAFE TAIL / FABRIZIO CONFIRMATION PATCH ======
+
 if __name__ == "__main__":
     main()
