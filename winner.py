@@ -36526,5 +36526,439 @@ def main() -> None:
 
 # ====== END CONTINUOUS FORCED LIVE DISCOVERY ======
 
+# ====== FINAL REQUESTED SURGICAL EDITORIAL FIXES (2026-07-27) ======
+# Scope: only the requested editorial/control behavior. RSS sources, cadence,
+# credentials, persistent filenames/keys, team tiers and Gemini settings remain unchanged.
+
+BOT_BUILD_ID = "winner-requested-editorial-fixes-2026-07-27"
+
+# 1) A reply/context match is accepted only by an exact parent post ID or exact
+# normalized quoted body. Fuzzy similarity is not sufficient for contextless reports.
+_PRE_REQUESTED_CONTEXT_TEXT_MATCH = _final_context_text_match
+
+
+def _final_context_text_match(context_text: str, item_text: str) -> bool:
+    left = _final_duplicate_normalized_text(context_text) if "_final_duplicate_normalized_text" in globals() else normalize_memory_text(context_text)
+    right = _final_duplicate_normalized_text(item_text) if "_final_duplicate_normalized_text" in globals() else normalize_memory_text(item_text)
+    return bool(left and right and left == right)
+
+
+# 2) Weddings are personal/social news, not football reporting.
+_REQUESTED_WEDDING_RE = re.compile(
+    r"\b(?:wedding|married|marriage|gets?\s+married|ties?\s+the\s+knot)\b|"
+    r"חתונ(?:ה|תו|תם|ת)|התחתנ(?:ה|ו|וּ|ן)|נישא(?:ה|ו)?|נישואין|חופה",
+    re.IGNORECASE | re.UNICODE,
+)
+_PRE_REQUESTED_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    source = clean_for_ai_translation(html.unescape("\n".join([
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "quoted_text", "") or ""),
+    ])))
+    if _REQUESTED_WEDDING_RE.search(source):
+        return "player_wedding_non_football"
+    return _PRE_REQUESTED_LOCAL_BLOCK(post)
+
+
+_PRE_REQUESTED_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "player_wedding_non_football" in raw:
+        return "דיווח על חתונה או נישואין אינו דיווח כדורגל"
+    return _PRE_REQUESTED_HEBREW_REASON(reason)
+
+
+# 3) Remove only proven detached trailing junk: reporter credit, club tag,
+# @handle, a lone "עוד", or a trailing video marker. Never remove by similarity.
+def _requested_tail_aliases() -> set[str]:
+    aliases: set[str] = set()
+    for mapping_name in (
+        "ACCOUNT_DISPLAY_NAMES", "CONTROLLED_BASE_ACCOUNT_LABELS",
+        "OPTIONAL_CONTROLLED_ACCOUNT_LABELS", "TEAM_REPLACEMENTS",
+    ):
+        mapping = globals().get(mapping_name, {})
+        if isinstance(mapping, dict):
+            aliases.update(str(value or "").strip() for value in mapping.values())
+            if mapping_name == "TEAM_REPLACEMENTS":
+                aliases.update(str(value or "").strip() for value in mapping.keys())
+    catalog = globals().get("TEAM_CATALOG", {})
+    if isinstance(catalog, dict):
+        for item in catalog.values():
+            if not isinstance(item, dict):
+                continue
+            aliases.add(str(item.get("name") or "").strip())
+            aliases.update(str(value or "").strip() for value in (item.get("aliases") or []))
+    return {value for value in aliases if value}
+
+
+def _requested_tail_norm(value: str) -> str:
+    value = html.unescape(re.sub(r"<[^>]+>", "", str(value or "")))
+    value = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", value)
+    value = TAG_FLAG_RE.sub("", value)
+    value = re.sub(r"[🎥🎬📹▶️]+", "", value)
+    value = re.sub(r"[^A-Za-zא-ת0-9@_]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _requested_is_proven_detached_tail(candidate: str) -> bool:
+    raw = html.unescape(re.sub(r"<[^>]+>", "", str(candidate or ""))).strip()
+    raw = re.sub(r"^[\s:;,.!?…\-–—]+|[\s:;,.!?…\-–—]+$", "", raw).strip()
+    if not raw:
+        return True
+    if re.fullmatch(r"@?[A-Za-z0-9_]{2,40}", raw) and raw.startswith("@"):
+        return True
+    normalized = _requested_tail_norm(raw)
+    if normalized in {"עוד", "more", "video", "watch video"}:
+        return True
+    alias_norms = {_requested_tail_norm(value) for value in _requested_tail_aliases()}
+    return bool(normalized and normalized in alias_norms and len(normalized.split()) <= 4)
+
+
+def _requested_safe_tail_cleanup(value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return text
+    text = re.sub(r"(?:\s*[🎥🎬📹▶️]+\s*)+$", "", text).rstrip()
+    text = re.sub(r"(?iu)(?<=[.!?…])\s+עוד\s*$", "", text).rstrip()
+    text = re.sub(r"(?iu)\s+@[A-Za-z0-9_]{2,40}\s*$", "", text).rstrip()
+
+    lines = text.splitlines()
+    nonempty = [index for index, line in enumerate(lines) if line.strip()]
+    if len(nonempty) >= 2:
+        last_index = nonempty[-1]
+        before = "\n".join(lines[:last_index]).rstrip()
+        tail = lines[last_index].strip()
+        if before and re.search(r"[.!?…][\"'״׳)\]]*\s*$", before) and _requested_is_proven_detached_tail(tail):
+            text = before
+
+    match = re.match(r"(?s)^(?P<body>.*[.!?…][\"'״׳)\]]*)\s+(?P<tail>[^\n]{1,80})$", text)
+    if match and _requested_is_proven_detached_tail(match.group("tail")):
+        text = match.group("body").rstrip()
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+# 4) Known reporter posts always keep the reporter heading. Special fact/Opta/
+# Footballtweet sources retain their existing no-heading rule.
+def _requested_reporter_header_required(post: Post) -> bool:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    if not username:
+        return False
+    for checker_name in ("_final_is_special_source", "is_football_factly_context", "_is_footballtweet_post"):
+        checker = globals().get(checker_name)
+        if callable(checker):
+            try:
+                if checker(post):
+                    return False
+            except Exception:
+                pass
+    known = set(globals().get("ACCOUNT_DISPLAY_NAMES", {}).keys())
+    known.update(globals().get("CONTROLLED_BASE_ACCOUNT_LABELS", {}).keys())
+    known.update(globals().get("OPTIONAL_CONTROLLED_ACCOUNT_LABELS", {}).keys())
+    return username in known
+
+
+_PRE_REQUESTED_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _requested_safe_tail_cleanup(translated)
+    quoted_translated = _requested_safe_tail_cleanup(quoted_translated)
+    message = _PRE_REQUESTED_BUILD_MESSAGE(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+    if not _requested_reporter_header_required(post):
+        return message
+    display_name = str(ACCOUNT_DISPLAY_NAMES.get(post.username, post.username) or post.username).strip()
+    plain = html_message_to_plain_text(message)
+    first_line = next((line.strip().lstrip("\u200f\u2063") for line in plain.splitlines() if line.strip()), "")
+    if first_line.rstrip(":：") == display_name.rstrip(":："):
+        return message
+    header = f"<b>{html.escape(rtl(display_name + ':'))}</b>\n\u2063\n"
+    return header + message.lstrip()
+
+
+# 5) Fabrizio reports must not pass with an abnormally shortened translation.
+_PRE_REQUESTED_GEMINI_POST_ONCE = gemini_translate_post_once
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    main_text, quote_text, author_text = _PRE_REQUESTED_GEMINI_POST_ONCE(post, include_quote)
+    if str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() == "fabrizioromano":
+        source = clean_before_translation(str(getattr(post, "text", "") or "")).strip()
+        output = clean_before_translation(main_text).strip()
+        if len(source) >= 180 and len(output) < len(source) * 0.52:
+            raise TranslationUnavailable("התרגום של פבריציו קצר מדי ואינו שומר את פרטי הדיווח המרכזיים")
+        source_paragraphs = [part for part in re.split(r"\n\s*\n", source) if part.strip()]
+        output_paragraphs = [part for part in re.split(r"\n\s*\n", output) if part.strip()]
+        if len(source_paragraphs) >= 3 and len(output_paragraphs) < 2:
+            raise TranslationUnavailable("התרגום של פבריציו איבד את חלוקת הדיווח והפרטים המרכזיים")
+    return main_text, quote_text, author_text
+
+
+# 6) Reconstruct a forwarded/replied prepared item in the quiet channel with
+# the exact prepared post, original media and the stored block reason.
+def _requested_forward_message_ids(message: dict[str, Any]) -> set[int]:
+    ids: set[int] = set()
+    target = _forward_target_message(message) if "_forward_target_message" in globals() else message
+    candidates = [
+        target.get("message_id"),
+        target.get("forward_from_message_id"),
+        (target.get("forward_origin") or {}).get("message_id") if isinstance(target.get("forward_origin"), dict) else None,
+        (message.get("reply_to_message") or {}).get("message_id") if isinstance(message.get("reply_to_message"), dict) else None,
+    ]
+    for value in candidates:
+        try:
+            if value:
+                ids.add(int(value))
+        except Exception:
+            continue
+    return ids
+
+
+def _requested_find_prepared_item(message: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    wanted_ids = _requested_forward_message_ids(message)
+    if not wanted_ids:
+        return None
+    items = _fast_edit_all_prepared_items() if "_fast_edit_all_prepared_items" in globals() else dict(CONTROL_PREPARED_SENDS)
+    for token, item in items.items():
+        if not isinstance(item, dict):
+            continue
+        saved_ids: set[int] = set()
+        for value in item.get("control_media_message_ids", []) or []:
+            try:
+                saved_ids.add(int(value))
+            except Exception:
+                continue
+        if wanted_ids & saved_ids:
+            restored = _restore_prepared_send(str(token)) if "_restore_prepared_send" in globals() else item
+            if isinstance(restored, dict):
+                return str(token), restored
+    return None
+
+
+def _requested_block_reason_for_post(post: Post) -> str:
+    state = load_control_state()
+    for key in ("last_blocked_posts", "last_duplicate_posts", "last_borderline_posts", "last_filtered_posts"):
+        rows = state.get(key, [])
+        if not isinstance(rows, list):
+            continue
+        for item in reversed(rows):
+            if isinstance(item, dict) and _history_item_matches_post(item, post):
+                raw = str(item.get("reason_he") or item.get("reason") or item.get("block_reason") or "").strip()
+                return hebrew_block_reason(raw) if raw else "לא נשמרה סיבת חסימה מפורטת"
+    return "הפוסט הוכן או הוחזר לבדיקה ידנית"
+
+
+def _requested_reason_html(reason: str) -> str:
+    return (
+        "\n\n<b>" + html.escape(rtl("סיבת החסימה:")) + "</b>\n" +
+        html.escape(rtl(str(reason or "לא נשמרה סיבה")))
+    )
+
+
+_PRE_REQUESTED_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    message = update.get("message") or update.get("channel_post") or update.get("edited_channel_post") or {}
+    if isinstance(message, dict):
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        is_control = bool(CONTROL_CHAT_ID and chat_id == str(CONTROL_CHAT_ID))
+        has_forward_or_reply = bool(
+            message.get("forward_origin") or message.get("forward_from_chat") or
+            message.get("forward_from_message_id") or isinstance(message.get("reply_to_message"), dict)
+        )
+        if is_control and has_forward_or_reply:
+            matched = _requested_find_prepared_item(message)
+            if matched:
+                token, item = matched
+                post = item.get("post")
+                if not isinstance(post, Post):
+                    post = post_from_control_payload(post)
+                if isinstance(post, Post):
+                    translated = str(item.get("translated", "") or "")
+                    quoted = str(item.get("quoted_translated", "") or "")
+                    author = str(item.get("quoted_author_translated", "") or "")
+                    if not (translated or quoted):
+                        translated, quoted, author = manual_force_translation(post)
+                    final_message = build_message(post, translated, quoted, author, include_video_link=False)
+                    final_message += _requested_reason_html(_requested_block_reason_for_post(post))
+                    _send_full_control_candidate(post, token, final_message)
+                    return
+    return _PRE_REQUESTED_CONTROL_TEXT_UPDATE(update)
+
+
+# 7) Borderline/suspicious previews use the same full prepared text and media.
+_PRE_REQUESTED_BORDERLINE_NOTIFY = maybe_notify_control_borderline_item
+
+
+def maybe_notify_control_borderline_item(item: dict[str, Any]) -> None:
+    if not isinstance(item, dict) or not should_notify_control_borderline_item(item):
+        return
+    post = post_from_control_payload(item.get("post"))
+    if not isinstance(post, Post):
+        return _PRE_REQUESTED_BORDERLINE_NOTIFY(item)
+    item_id = control_item_id(item)
+    if not item_id or item_id in CONTROL_BORDERLINE_NOTIFIED_KEYS:
+        return
+    now_ts = time.time()
+    if control_borderline_rate_limited(now_ts):
+        return
+    CONTROL_BORDERLINE_NOTIFIED_KEYS.add(item_id)
+    if len(CONTROL_BORDERLINE_NOTIFIED_KEYS) > 500:
+        CONTROL_BORDERLINE_NOTIFIED_KEYS.clear()
+        CONTROL_BORDERLINE_NOTIFIED_KEYS.add(item_id)
+
+    def _notify_full() -> None:
+        try:
+            translated, quoted, author = manual_force_translation(post)
+            token = remember_control_prepared_send(post, translated, quoted, author)
+            message_html = build_message(post, translated, quoted, author, include_video_link=False)
+            reason = hebrew_block_reason(str(item.get("reason") or item.get("raw_reason") or "דיווח חשוד"))
+            _send_full_control_candidate(post, token, message_html + _requested_reason_html(reason))
+        except Exception as exc:
+            logging.debug("Full borderline media preview failed safely: %s", short_error(exc, 400))
+            _PRE_REQUESTED_BORDERLINE_NOTIFY(item)
+
+    Thread(target=_notify_full, daemon=True).start()
+
+# ====== END FINAL REQUESTED SURGICAL EDITORIAL FIXES ======
+
+# ----- Exact context correction for generic transfer prose -----
+_REQUESTED_GENERIC_LATIN_WORDS = {
+    "unless", "something", "extraordinary", "happens", "plan", "deal", "next", "week",
+    "current", "situation", "reports", "report", "agreement", "talks", "negotiations",
+    "player", "club", "team", "coach", "manager", "transfer", "move", "official", "exclusive",
+    "breaking", "expected", "close", "completed", "collapsed", "today", "tomorrow", "soon",
+}
+
+
+def _requested_source_text(post: Post) -> str:
+    values = [
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "original_text", "") or ""),
+        _post_original_text(post) if "_post_original_text" in globals() else "",
+    ]
+    return max((html.unescape(value).strip() for value in values if str(value).strip()), key=len, default="")
+
+
+def _requested_has_real_named_subject(post: Post) -> bool:
+    source = _requested_source_text(post)
+    if not source:
+        return False
+    # Canonical known player/team entities are strong evidence. Do not use the
+    # broad tracked-club matcher here because short aliases can match ordinary prose.
+    try:
+        signature = news_event_signature(clone_post_with_text(post, source))
+        players, teams = _canonical_sets_from_signature(signature)
+        if players or teams:
+            return True
+    except Exception:
+        pass
+
+    normalized = unicodedata.normalize("NFKC", source)
+    # Unknown person/club names: two or more capitalized words.
+    for match in re.finditer(r"\b([A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{2,}(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{2,}){1,4})\b", normalized):
+        words = [word.casefold().strip(".'’-") for word in match.group(1).split()]
+        if any(word not in _REQUESTED_GENERIC_LATIN_WORDS for word in words):
+            return True
+    # Unknown one-word proper subject only when introduced by an explicit role/action.
+    if re.search(
+        r"(?i)\b(?:player|defender|midfielder|winger|striker|goalkeeper|coach|manager|sign|signing|join|move|for|from|to)\s+"
+        r"([A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{3,})\b",
+        normalized,
+    ):
+        candidate = re.search(
+            r"(?i)\b(?:player|defender|midfielder|winger|striker|goalkeeper|coach|manager|sign|signing|join|move|for|from|to)\s+"
+            r"([A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{3,})\b",
+            normalized,
+        )
+        if candidate and candidate.group(1).casefold() not in _REQUESTED_GENERIC_LATIN_WORDS:
+            return True
+    # Hebrew proper-name patterns, including names unknown to local dictionaries.
+    if re.search(r"(?:השחקן|הבלם|הקשר|החלוץ|השוער|המאמן|עבור|לגבי|בנוגע\s+ל|להחתים\s+את|לצרף\s+את)\s+"
+                 r"[א-ת][א-ת'׳״-]{2,}(?:\s+[א-ת][א-ת'׳״-]{2,}){1,3}", normalized):
+        return True
+    return False
+
+
+def _requested_exact_context_item(post: Post, state: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    cached = getattr(post, "requested_exact_context_item", None)
+    if isinstance(cached, dict) and _final_context_message_ids(cached):
+        return cached
+    if state is None:
+        try:
+            state = load_state()
+        except Exception:
+            state = {}
+    if not isinstance(state, dict):
+        state = {}
+    context_ids: set[str] = set()
+    for attr in (
+        "in_reply_to_status_id", "in_reply_to_status_id_str", "reply_to_post_id", "parent_post_id",
+        "quoted_status_id", "quoted_status_id_str", "quoted_post_id", "context_parent_id",
+    ):
+        value = _final_context_post_id(getattr(post, attr, ""))
+        if value:
+            context_ids.add(value)
+    context_text = str(getattr(post, "quoted_text", "") or "").strip()
+    if not context_ids:
+        try:
+            details = _final_context_payload_details(post)
+            context_ids.update(_final_context_post_id(value) for value in (details.get("parent_ids") or []))
+            context_ids.discard("")
+            if not context_text:
+                context_text = str(details.get("context_text") or "").strip()
+        except Exception:
+            pass
+    normalized_context = _final_duplicate_normalized_text(context_text) if context_text else ""
+    for item in reversed(_final_context_rows(state)[-1200:]):
+        item_ids = {_final_context_post_id(item.get("post_id")), _final_context_post_id(item.get("link"))}
+        item_ids.discard("")
+        exact_id = bool(context_ids & item_ids)
+        exact_text = bool(normalized_context and normalized_context == _final_duplicate_normalized_text(_final_context_item_text(item)))
+        if exact_id or exact_text:
+            post.requested_exact_context_item = item
+            post.final_context_item = item
+            post.final_context_reply_message_ids = _final_context_message_ids(item)
+            return item
+    return None
+
+
+_PRE_REQUESTED_CONTEXT_BLOCK_CORRECTION = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    source = clean_for_ai_translation(_requested_source_text(post))
+    if _REQUESTED_WEDDING_RE.search(source):
+        return "player_wedding_non_football"
+    if _FINAL_NAMED_CONTEXT_ACTION_RE.search(source) and not _requested_has_real_named_subject(post):
+        if _requested_exact_context_item(post) is None:
+            return "missing_named_subject_or_context"
+    return _PRE_REQUESTED_CONTEXT_BLOCK_CORRECTION(post)
+
+
+_PRE_REQUESTED_REPLY_TARGET_CORRECTION = find_bot_reply_target_for_post
+
+
+def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    if not _requested_has_real_named_subject(post):
+        item = _requested_exact_context_item(post, state)
+        if item:
+            ids = _final_context_message_ids(item)
+            if ids:
+                return ids
+    return _PRE_REQUESTED_REPLY_TARGET_CORRECTION(post, state)
+
 if __name__ == "__main__":
     main()
