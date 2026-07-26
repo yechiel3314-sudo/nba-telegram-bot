@@ -35599,5 +35599,932 @@ def _recent_blocked_separate_report() -> str:
 # ====== END FINAL CONTEXT / MEDIA INTEGRITY / EXACT PHOTO DEDUPE PATCH ======
 
 
+
+# ====== FINAL HIDE ALL >2H BLOCKS FROM USER-FACING REPORTS (2026-07-26) ======
+# Posts older than two hours are operationally ignored. They must not occupy the
+# user-facing 30-block history or distort the real-delay report, even when another
+# filter (for example interview/opinion) happened to become the recorded reason.
+# RSS discovery, fetching, translation, media and duplicate logic are untouched.
+
+BOT_BUILD_ID = "winner-hide-old-blocks-everywhere-2026-07-26"
+_FINAL_USER_VISIBLE_BLOCK_MAX_AGE_SECONDS = 2 * 60 * 60
+
+
+def _final_record_published_ts(value: Any) -> float:
+    """Return the original X publication timestamp from a post/history/timing row."""
+    if isinstance(value, Post):
+        return float(getattr(value, "published_ts", 0.0) or 0.0)
+    if not isinstance(value, dict):
+        return 0.0
+    candidates: list[Any] = [
+        value.get("published_at"),
+        value.get("published_ts"),
+        value.get("post_published_at"),
+    ]
+    nested = value.get("post")
+    if isinstance(nested, dict):
+        candidates.extend([
+            nested.get("published_at"),
+            nested.get("published_ts"),
+        ])
+    for candidate in candidates:
+        try:
+            parsed = float(candidate or 0.0)
+        except (TypeError, ValueError):
+            parsed = 0.0
+        if parsed > 0:
+            return parsed
+    return 0.0
+
+
+def _final_record_is_older_than_two_hours(value: Any, now_ts: float | None = None) -> bool:
+    published = _final_record_published_ts(value)
+    if published <= 0:
+        return False
+    current = float(now_ts or time.time())
+    # Small future clock skew must not be interpreted as age.
+    return current >= published and (current - published) > _FINAL_USER_VISIBLE_BLOCK_MAX_AGE_SECONDS
+
+
+def _final_hide_from_block_reports(value: Any) -> bool:
+    if _final_record_is_older_than_two_hours(value):
+        return True
+    try:
+        if _smart_is_two_hour_age_block(value):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# Do not add old posts to the persistent user-facing blocked history, regardless
+# of which local filter happened to produce the final reason.
+_PRE_HIDE_OLD_REMEMBER_CONTROL_BLOCK_EVENT = remember_control_block_event
+
+
+def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
+    if _final_record_is_older_than_two_hours(post) or _final_hide_from_block_reports(reason):
+        return
+    return _PRE_HIDE_OLD_REMEMBER_CONTROL_BLOCK_EVENT(reason, post, rendered, duplicate=duplicate)
+
+
+# Do not add old blocked posts to delay telemetry either. This prevents stale
+# months-old posts returned by a public X fallback from dominating the averages.
+_PRE_HIDE_OLD_PIPELINE_RECORD_BLOCKED = _pipeline_record_blocked
+
+
+def _pipeline_record_blocked(post: Post, reason: str) -> None:
+    if _final_record_is_older_than_two_hours(post) or _final_hide_from_block_reports(reason):
+        return
+    return _PRE_HIDE_OLD_PIPELINE_RECORD_BLOCKED(post, reason)
+
+
+def _final_visible_recent_block_items(limit: int = 30) -> list[dict[str, Any]]:
+    state = load_control_state()
+    raw = state.get("last_blocked_posts", [])
+    items = [
+        item for item in (raw if isinstance(raw, list) else [])
+        if isinstance(item, dict) and not _final_hide_from_block_reports(item)
+    ]
+    return items[-max(1, int(limit)):]
+
+
+def _recent_blocked_separate_report() -> str:
+    items = _final_visible_recent_block_items(30)
+    return _control_list_text(
+        "📋 30 חסימות אחרונות",
+        items,
+        "אין חסימות שמורות כרגע.",
+        limit=30,
+    )
+
+
+# Rebuild the timing report with only fresh posts from this process. Both sent and
+# blocked rows older than two hours are excluded, so stale discoveries never
+# distort the average or appear in the detailed blocked list.
+def pipeline_timing_report_text(limit: int = 20) -> str:
+    state = load_control_state()
+    current_since = float(BOT_STARTED_AT or 0.0)
+    sent_rows = [
+        row for row in (state.get(PIPELINE_TIMING_STATE_KEY, []) or [])
+        if isinstance(row, dict)
+        and float(row.get("ts", 0.0) or 0.0) >= current_since
+        and not _final_record_is_older_than_two_hours(row)
+    ]
+    blocked_rows = [
+        row for row in (state.get(PIPELINE_BLOCKED_TIMING_STATE_KEY, []) or [])
+        if isinstance(row, dict)
+        and float(row.get("ts", 0.0) or 0.0) >= current_since
+        and not _final_hide_from_block_reports(row)
+    ]
+    combined = sorted(
+        [dict(row, status="sent") for row in sent_rows]
+        + [dict(row, status="blocked") for row in blocked_rows],
+        key=lambda row: float(row.get("ts", 0.0) or 0.0),
+    )[-max(1, int(limit)):]
+    if not combined:
+        return (
+            "⏱️ בדיקת עיכוב אמיתית\n\n"
+            "עדיין אין מדידות של פוסטים בני עד שעתיים מההפעלה הנוכחית."
+        )
+
+    delays = [
+        float(row.get("publish_to_first_seen_seconds", 0.0) or 0.0)
+        for row in combined
+        if row.get("published_at") and row.get("first_seen_at")
+    ]
+    processing = [
+        float(row.get("first_seen_to_processing_seconds", 0.0) or 0.0)
+        for row in combined
+        if row.get("first_seen_at")
+    ]
+    sent_sample = [row for row in combined if row.get("status") == "sent"]
+    blocked_sample = [row for row in combined if row.get("status") == "blocked"]
+
+    lines = [
+        "⏱️ בדיקת עיכוב אמיתית",
+        "",
+        f"נמדדו {len(combined)} פוסטים בני עד שעתיים: "
+        f"{len(sent_sample)} נשלחו ו־{len(blocked_sample)} נחסמו.",
+        (
+            f"• פרסום → גילוי ראשון: {sum(delays) / len(delays):.1f} שנ׳"
+            if delays else "• פרסום → גילוי ראשון: אין מספיק נתונים"
+        ),
+        (
+            f"• גילוי → תחילת עיבוד: {sum(processing) / len(processing):.1f} שנ׳"
+            if processing else "• גילוי → תחילת עיבוד: אין מספיק נתונים"
+        ),
+    ]
+    if sent_sample:
+        totals = [
+            float(row.get("publish_to_telegram_seconds", 0.0) or 0.0)
+            for row in sent_sample
+            if row.get("publish_to_telegram_seconds") is not None
+        ]
+        if totals:
+            lines.append(f"• פרסום → Telegram: {sum(totals) / len(totals):.1f} שנ׳")
+    if blocked_sample:
+        lines.extend(["", "פוסטים שנחסמו:"])
+        for row in blocked_sample[-10:]:
+            lines.extend([
+                "",
+                f"• {_hebrew_account_label(str(row.get('username', '') or ''))}",
+                f"  פורסם: {_pipeline_format_clock(row.get('published_at'))}",
+                f"  נמצא: {_pipeline_format_clock(row.get('first_seen_at'))} "
+                f"({row.get('first_seen_lane') or 'לא ידוע'})",
+                f"  פרסום → גילוי: "
+                f"{float(row.get('publish_to_first_seen_seconds', 0.0) or 0.0):.1f} שנ׳",
+                f"  סיבת חסימה: "
+                f"{row.get('block_reason_he') or hebrew_block_reason(str(row.get('block_reason') or ''))}",
+            ])
+    return "\n".join(lines)
+
+
+# The original callback branch reads last_blocked_posts directly. Intercept that
+# button so old records already persisted by earlier builds are filtered too.
+_PRE_HIDE_OLD_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if data != "football_last_blocked":
+        return _PRE_HIDE_OLD_PROCESS_CONTROL_UPDATE(update)
+
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    if callback_id:
+        answer_control_callback(callback_id, "מציג 30 חסימות")
+    blocked_posts = _final_visible_recent_block_items(30)
+    send_control_text(
+        _control_list_text(
+            "📋 30 חסימות אחרונות",
+            blocked_posts,
+            "אין חסימות שמורות כרגע.",
+            limit=30,
+        ),
+        message.get("message_id"),
+        control_history_reply_markup() if blocked_posts else monitor_menu_reply_markup(),
+    )
+
+# ====== END FINAL HIDE ALL >2H BLOCKS FROM USER-FACING REPORTS ======
+
+
+
+# ---- Exact stable low-level RSS definitions restored ----
+def http_get_feed(url: str, timeout: int = 8) -> bytes:
+    """Stable RSS GET: retry the exact URL, never append unsupported query data."""
+    effective_timeout = max(5.0, float(timeout or _STABLE_RSS_REQUEST_TIMEOUT_SECONDS))
+    last_error: Exception | None = None
+    attempts = max(2, int(FEED_HTTP_RETRIES or 1))
+    for attempt in range(1, attempts + 1):
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+            "Accept-Encoding": "identity",
+        }
+        if attempt > 1:
+            headers.update({"Cache-Control": "no-cache", "Pragma": "no-cache"})
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=effective_timeout) as response:
+                payload = response.read()
+            probe = payload[:4096].lstrip().lower()
+            if not payload or not any(token in probe for token in (b"<?xml", b"<rss", b"<feed")):
+                raise RuntimeError("RSS endpoint returned an empty or non-XML response")
+            return payload
+        except Exception as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(min(1.2, 0.35 * attempt))
+    raise RuntimeError(f"RSS GET failed: {url}. Last error: {short_error(last_error, 500)}")
+
+def parse_posts(username: str, xml_bytes: bytes, source_name: str) -> list[Post]:
+    """Parse RSS with structure preservation, then fall back safely.
+
+    This wrapper makes paragraph-preservation optional from the RSS engine's
+    perspective.  If the enhanced parser rejects a mirror's unusual XML, the
+    proven basic parser still returns the feed instead of producing an RSS outage.
+    """
+    primary_error: Exception | None = None
+    try:
+        posts = _RSS_STRUCTURE_PARSER_BEFORE_EMERGENCY_PATCH(username, xml_bytes, source_name)
+        if posts:
+            return posts
+    except Exception as exc:
+        primary_error = exc
+        logging.debug(
+            "Enhanced RSS parser failed for @%s via %s; trying basic parser: %s",
+            username,
+            source_name,
+            short_error(exc, 400),
+        )
+    try:
+        fallback_posts = _rss_basic_fallback_parse_posts(username, xml_bytes, source_name)
+        if fallback_posts and primary_error is not None:
+            logging.info(
+                "RSS parser fallback recovered @%s via %s with %s posts.",
+                username,
+                source_name,
+                len(fallback_posts),
+            )
+        return fallback_posts
+    except Exception as fallback_exc:
+        if primary_error is not None:
+            raise RuntimeError(
+                "RSS parse failed in both parsers: "
+                f"enhanced={short_error(primary_error, 300)} | "
+                f"basic={short_error(fallback_exc, 300)}"
+            ) from fallback_exc
+        raise
+
+def collect_posts_from_feed_templates(username: str, feed_templates: list[str]) -> tuple[list[Post], list[str], list[str]]:
+    templates = list(dict.fromkeys(feed_templates or []))
+    if not templates:
+        return [], [], []
+
+    merged: dict[str, Post] = {}
+    errors: list[str] = []
+    timeouts: list[str] = []
+    future_to_template: dict[Any, str] = {}
+
+    try:
+        for template in templates:
+            future_to_template[_RELIABLE_RSS_EXECUTOR.submit(fetch_feed, username, template)] = template
+    except RuntimeError as exc:
+        # Extremely defensive fallback if the OS refuses even the bounded pool.
+        logging.warning("Shared RSS pool unavailable; using sequential fallback: %s", short_error(exc, 350))
+        for template in templates:
+            source = feed_source_name(template)
+            try:
+                _reliable_merge_posts(merged, fetch_feed(username, template), username)
+            except Exception as item_exc:
+                summary = short_error(item_exc, 350)
+                errors.append(f"{source}: {type(item_exc).__name__}: {summary}")
+                if "timeout" in summary.casefold() or "timed out" in summary.casefold():
+                    timeouts.append(source)
+        ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+        return ordered, errors, list(dict.fromkeys(timeouts))
+
+    pending = set(future_to_template)
+    deadline = time.monotonic() + max(6.0, float(_STABLE_RSS_BATCH_TIMEOUT_SECONDS), float(FEED_COLLECTION_TIMEOUT_SECONDS))
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        done, pending = _reliable_wait(pending, timeout=min(0.8, remaining), return_when=_RELIABLE_FIRST_COMPLETED)
+        if not done:
+            continue
+        for future in done:
+            template = future_to_template[future]
+            source = feed_source_name(template)
+            try:
+                posts = future.result() or []
+                _reliable_merge_posts(merged, posts, username)
+            except Exception as exc:
+                summary = short_error(exc, 350)
+                errors.append(f"{source}: {type(exc).__name__}: {summary}")
+                if "timeout" in summary.casefold() or "timed out" in summary.casefold():
+                    timeouts.append(source)
+
+    for future in pending:
+        source = feed_source_name(future_to_template[future])
+        timeouts.append(source)
+        future.cancel()
+
+    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    return ordered, errors, list(dict.fromkeys(timeouts))
+
+
+# ====== CANONICAL RUNTIME CONSOLIDATION / RSS RESTORE / CONFLICT AUDIT (2026-07-26) ======
+# This final layer intentionally resolves patch-shadowing in the critical runtime
+# paths. Earlier compatibility definitions remain in the file because some later
+# wrappers captured them, but the active public functions below are the single
+# canonical entry points used after module loading.
+
+BOT_BUILD_ID = "winner-rss-canonical-conflicts-cleaned-2026-07-26"
+
+# Restore the exact stable feed list/order. Optional EXTRA_FEED_TEMPLATES remain
+# supported, but cannot replace or reorder the proven built-in sources.
+_CANONICAL_STABLE_FEED_TEMPLATES = (
+    "https://nitter.net/{username}/rss",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
+)
+FEED_TEMPLATES = list(dict.fromkeys(list(_CANONICAL_STABLE_FEED_TEMPLATES) + list(EXTRA_FEED_TEMPLATES or [])))
+
+# Equal cadence for every account. This affects discovery only and does not spend
+# Gemini credits. The stable RSS reader and direct public X reader race each other;
+# dead mirrors are consulted only when both useful routes are empty/stale.
+CANONICAL_DISCOVERY_INTERVAL_SECONDS = max(20.0, float(os.environ.get("CANONICAL_DISCOVERY_INTERVAL_SECONDS", "30")))
+CANONICAL_AUTO_WAIT_SECONDS = max(1.0, float(os.environ.get("CANONICAL_AUTO_WAIT_SECONDS", "3.0")))
+CANONICAL_CONTROL_WAIT_SECONDS = max(CANONICAL_AUTO_WAIT_SECONDS, float(os.environ.get("CANONICAL_CONTROL_WAIT_SECONDS", "8.0")))
+CANONICAL_STALE_PRIMARY_SECONDS = max(60.0, float(os.environ.get("CANONICAL_STALE_PRIMARY_SECONDS", "180")))
+CANONICAL_DISCOVERY_LIMIT = max(30, int(os.environ.get("CANONICAL_DISCOVERY_LIMIT", "60")))
+CANONICAL_DISCOVERY_WORKERS = max(4, min(12, int(os.environ.get("CANONICAL_DISCOVERY_WORKERS", "8"))))
+
+_CANONICAL_DISCOVERY_EXECUTOR = ThreadPoolExecutor(max_workers=CANONICAL_DISCOVERY_WORKERS, thread_name_prefix="canonical-discovery")
+_CANONICAL_LANE_EXECUTOR = ThreadPoolExecutor(max_workers=max(4, CANONICAL_DISCOVERY_WORKERS), thread_name_prefix="canonical-lane")
+_CANONICAL_DISCOVERY_LOCK = RLock()
+_CANONICAL_DISCOVERY_CACHE: dict[str, tuple[float, list[Post]]] = {}
+_CANONICAL_DISCOVERY_INFLIGHT: dict[str, Any] = {}
+_CANONICAL_DISCOVERY_LAST_STARTED: dict[str, float] = {}
+_CANONICAL_DISCOVERY_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
+
+
+def _canonical_username(username: str) -> str:
+    return FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME if value_contains_footballtweet(username) else str(username or "").strip().lstrip("@")
+
+
+def _canonical_merge(rows: list[Post], incoming: Any, username: str) -> list[Post]:
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rows or [], username)
+    _reliable_merge_posts(merged, incoming or [], username)
+    return sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )[:CANONICAL_DISCOVERY_LIMIT]
+
+
+def _canonical_latest_age(rows: list[Post]) -> float | None:
+    latest = max((float(getattr(item, "published_ts", 0.0) or 0.0) for item in rows or []), default=0.0)
+    if latest <= 0:
+        return None
+    return max(0.0, time.time() - latest)
+
+
+def _canonical_primary_rss_lane(username: str) -> tuple[list[Post], list[str]]:
+    rows: list[Post] = []
+    errors: list[str] = []
+    primary_templates = [t for t in FEED_TEMPLATES if "nitter.net" in feed_source_name(t).casefold()]
+    variants = _stable_rss_username_variants(username) or [username]
+    for variant in variants:
+        for template in primary_templates:
+            try:
+                rows = _canonical_merge(rows, fetch_feed(variant, template), username)
+            except Exception as exc:
+                errors.append(f"{feed_source_name(template)}: {short_error(exc, 300)}")
+        if rows:
+            break
+    return rows, errors
+
+
+def _canonical_direct_x_lane(username: str) -> tuple[list[Post], list[str]]:
+    try:
+        return list(_reliable_direct_profile_posts(username, limit=CANONICAL_DISCOVERY_LIMIT, force=True) or []), []
+    except Exception as exc:
+        return [], ["direct_x: " + short_error(exc, 300)]
+
+
+def _canonical_fallback_rss_lane(username: str) -> tuple[list[Post], list[str], list[str]]:
+    fallback = [t for t in FEED_TEMPLATES if "nitter.net" not in feed_source_name(t).casefold()]
+    if not fallback:
+        return [], [], []
+    try:
+        return collect_posts_from_feed_templates(username, fallback)
+    except Exception as exc:
+        return [], ["fallback_rss: " + short_error(exc, 300)], []
+
+
+def _canonical_discovery_job(username: str) -> list[Post]:
+    canonical = _canonical_username(username)
+    key = canonical.casefold()
+    started = time.perf_counter()
+    rows: list[Post] = []
+    errors: list[str] = []
+    timeouts: list[str] = []
+    path: list[str] = []
+
+    primary_future = _CANONICAL_LANE_EXECUTOR.submit(_canonical_primary_rss_lane, canonical)
+    direct_future = _CANONICAL_LANE_EXECUTOR.submit(_canonical_direct_x_lane, canonical)
+    for label, future in (("primary_rss", primary_future), ("direct_x", direct_future)):
+        try:
+            lane_rows, lane_errors = future.result(timeout=max(4.0, FEED_COLLECTION_TIMEOUT_SECONDS + 1.0))
+            if lane_rows:
+                rows = _canonical_merge(rows, lane_rows, canonical)
+                path.append(label)
+            errors.extend(lane_errors or [])
+        except Exception as exc:
+            errors.append(f"{label}: {short_error(exc, 300)}")
+
+    # A stale primary row is not proof that the feed is current. Only then consult
+    # fallback mirrors. This preserves the old stable order while avoiding the
+    # old 10-15 minute stale-RSS trap.
+    latest_age = _canonical_latest_age(rows)
+    if not rows or latest_age is None or latest_age > CANONICAL_STALE_PRIMARY_SECONDS:
+        fallback_rows, fallback_errors, fallback_timeouts = _canonical_fallback_rss_lane(canonical)
+        if fallback_rows:
+            rows = _canonical_merge(rows, fallback_rows, canonical)
+            path.append("fallback_rss")
+        errors.extend(fallback_errors or [])
+        timeouts.extend(fallback_timeouts or [])
+
+    # Never replace a healthy cache with an outage result.
+    if rows:
+        try:
+            _stable_rss_remember(canonical, rows)
+            _remember_control_rss_posts(canonical, rows)
+            _ten_history_save(canonical, rows)
+        except Exception:
+            pass
+    else:
+        try:
+            rows = list(_stable_rss_cached_posts(canonical, limit=CANONICAL_DISCOVERY_LIMIT) or [])
+            if rows:
+                path.append("stable_cache")
+        except Exception:
+            rows = []
+
+    with _CANONICAL_DISCOVERY_LOCK:
+        previous = _CANONICAL_DISCOVERY_CACHE.get(key)
+        if rows or not previous:
+            _CANONICAL_DISCOVERY_CACHE[key] = (time.time(), list(rows))
+        _CANONICAL_DISCOVERY_DIAGNOSTICS[key] = {
+            "checked_at": time.time(),
+            "elapsed_seconds": time.perf_counter() - started,
+            "rows": len(rows),
+            "path": list(dict.fromkeys(path)),
+            "errors": list(dict.fromkeys(errors))[-8:] if not rows else [],
+            "timeouts": list(dict.fromkeys(timeouts))[-8:] if not rows else [],
+        }
+    return rows
+
+
+def _canonical_start_discovery(username: str, force: bool = False):
+    canonical = _canonical_username(username)
+    key = canonical.casefold()
+    now = time.time()
+    with _CANONICAL_DISCOVERY_LOCK:
+        current = _CANONICAL_DISCOVERY_INFLIGHT.get(key)
+        if current is not None and not current.done():
+            return current
+        last = float(_CANONICAL_DISCOVERY_LAST_STARTED.get(key, 0.0) or 0.0)
+        if not force and now - last < CANONICAL_DISCOVERY_INTERVAL_SECONDS:
+            return current if current is not None and current.done() else None
+        _CANONICAL_DISCOVERY_LAST_STARTED[key] = now
+        future = _CANONICAL_DISCOVERY_EXECUTOR.submit(_canonical_discovery_job, canonical)
+        _CANONICAL_DISCOVERY_INFLIGHT[key] = future
+        return future
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Canonical automatic discovery: stable RSS + direct X, same for all writers."""
+    canonical = _canonical_username(username)
+    key = canonical.casefold()
+    future = _canonical_start_discovery(canonical, force=False)
+    with _CANONICAL_DISCOVERY_LOCK:
+        cached = list((_CANONICAL_DISCOVERY_CACHE.get(key) or (0.0, []))[1])
+    if future is not None:
+        try:
+            fresh = list(future.result(timeout=CANONICAL_AUTO_WAIT_SECONDS) or [])
+            if fresh:
+                cached = fresh
+        except Exception:
+            pass
+    if not cached:
+        try:
+            cached = list(_stable_rss_cached_posts(canonical, limit=CANONICAL_DISCOVERY_LIMIT) or [])
+        except Exception:
+            cached = []
+    return _canonical_merge([], cached, canonical)
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    started = time.perf_counter()
+    canonical = _canonical_username(username)
+    try:
+        posts = fetch_posts(canonical)
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        return canonical, posts
+    except Exception as exc:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        logging.exception("Canonical RSS discovery failed safely for @%s: %s", canonical, exc)
+        try:
+            return canonical, list(_stable_rss_cached_posts(canonical, limit=30) or [])
+        except Exception:
+            return canonical, []
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    """Control history uses the same live route, then cache/history without noisy false outages."""
+    canonical = _canonical_username(username)
+    requested = max(1, int(limit))
+    rows: list[Post] = []
+    future = _canonical_start_discovery(canonical, force=True)
+    if future is not None:
+        try:
+            rows = _canonical_merge(rows, future.result(timeout=CANONICAL_CONTROL_WAIT_SECONDS), canonical)
+        except Exception:
+            pass
+    for loader in (
+        lambda: _stable_rss_cached_posts(canonical, limit=max(60, requested * 6)),
+        lambda: _ten_history_load(canonical),
+        lambda: _ten_history_collect_existing_state_posts(canonical),
+    ):
+        if len(rows) >= requested:
+            break
+        try:
+            rows = _canonical_merge(rows, loader(), canonical)
+        except Exception:
+            pass
+    rows = [row for row in rows if str(_stable_rss_post_text(row) or "").strip()]
+    diag = dict(_CANONICAL_DISCOVERY_DIAGNOSTICS.get(canonical.casefold()) or {})
+    diag.update({"requested": requested, "returned": min(requested, len(rows)), "after_dedupe": len(rows)})
+    LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diag
+    return rows[:requested]
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    return fetch_last_ten_control_isolated(username, limit=limit)
+
+
+# ---- Runtime contradiction audit ----
+# A contradiction is flagged when two active settings/policies cannot both be
+# true at runtime, not merely because the historical file contains old wrappers.
+_CANONICAL_POLICY_PRECEDENCE = (
+    "hard safety/source validity",
+    "original publication age",
+    "exact duplicate identity",
+    "media integrity",
+    "clear subject/context",
+    "importance and tier rules",
+    "formatting and cleanup",
+)
+
+
+def runtime_consistency_audit() -> list[str]:
+    issues: list[str] = []
+    accounts = list(active_x_accounts())
+    folded = [str(item).casefold() for item in accounts]
+    if len(folded) != len(set(folded)):
+        issues.append("אותו חשבון מופיע יותר מפעם אחת ברשימת הכתבים הפעילים")
+    if list(FEED_TEMPLATES[:len(_CANONICAL_STABLE_FEED_TEMPLATES)]) != list(_CANONICAL_STABLE_FEED_TEMPLATES):
+        issues.append("סדר מקורות ה-RSS אינו תואם לסדר היציב")
+    for name in ("http_get_feed", "fetch_feed", "parse_posts", "collect_posts_from_feed_templates", "fetch_posts", "fetch_posts_safely"):
+        if not callable(globals().get(name)):
+            issues.append(f"פונקציית RSS חסרה או אינה ניתנת להפעלה: {name}")
+    if int(MAX_POST_AGE_SECONDS) != 2 * 60 * 60:
+        issues.append("מגבלת גיל הפוסט אינה שעתיים")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) < 1:
+        issues.append("מספר סריקות הכתבים המקבילות אינו תקין")
+    if int(MAX_PARALLEL_POST_SENDS) < 1:
+        issues.append("מספר השליחות המקבילות אינו תקין")
+    # Both migration flags may exist historically. The current disabled list is
+    # the sole source of truth; do not force-enable or force-disable on every boot.
+    try:
+        state = load_control_state()
+        disabled = state.get("default_active_disabled_accounts", [])
+        if isinstance(disabled, list):
+            normalized = [str(item).strip() for item in disabled if str(item).strip()]
+            if len([x.casefold() for x in normalized]) != len(set(x.casefold() for x in normalized)):
+                issues.append("יש כפילות ברשימת הכתבים הכבויים")
+    except Exception as exc:
+        issues.append("לא ניתן היה לבדוק את מצב הכתבים: " + short_error(exc, 180))
+    return issues
+
+
+def canonical_runtime_summary() -> dict[str, Any]:
+    return {
+        "build": BOT_BUILD_ID,
+        "rss_sources": list(FEED_TEMPLATES),
+        "active_accounts": list(active_x_accounts()),
+        "discovery_interval_seconds": CANONICAL_DISCOVERY_INTERVAL_SECONDS,
+        "automatic_wait_seconds": CANONICAL_AUTO_WAIT_SECONDS,
+        "policy_precedence": list(_CANONICAL_POLICY_PRECEDENCE),
+        "issues": runtime_consistency_audit(),
+    }
+
+
+_CANONICAL_PRE_MAIN = main
+
+def main() -> None:
+    issues = runtime_consistency_audit()
+    if issues:
+        for issue in issues:
+            logging.error("⚠️ בדיקת עקביות: %s", issue)
+    else:
+        logging.info("✅ בדיקת עקביות עברה: מסלול RSS אחד, סדר מקורות יציב וללא סתירות פעילות קריטיות")
+    return _CANONICAL_PRE_MAIN()
+
+# ====== END CANONICAL RUNTIME CONSOLIDATION ======
+
+
+
+# ====== CONTINUOUS FORCED LIVE DISCOVERY (2026-07-26) ======
+# The operator's manual "10 last" / forced lookup succeeds because it starts a
+# fresh direct-X discovery immediately and waits for it, while the normal cycle
+# may read an older cache before that live result is ready.  This final layer
+# keeps the same live lookup running continuously in the background for every
+# active account at an equal cadence.  It does not call Gemini, does not alter
+# RSS URLs/parsers, and never replaces a healthy cache with an empty/error result.
+
+BOT_BUILD_ID = "winner-continuous-forced-live-discovery-2026-07-26"
+
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = os.environ.get(
+    "CONTINUOUS_FORCE_DISCOVERY_ENABLED", "1"
+) == "1"
+# Each account receives one fresh direct-X probe per cadence.  Accounts are
+# staggered evenly across the cadence instead of all firing in one burst.
+CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS = max(
+    12.0,
+    float(os.environ.get("CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS", "15")),
+)
+CONTINUOUS_FORCE_WORKERS = max(
+    2,
+    min(8, int(os.environ.get("CONTINUOUS_FORCE_WORKERS", "6"))),
+)
+CONTINUOUS_FORCE_LIMIT = max(
+    20,
+    int(os.environ.get("CONTINUOUS_FORCE_LIMIT", "60")),
+)
+CONTINUOUS_FORCE_CACHE_SECONDS = max(
+    CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS * 3.0,
+    float(os.environ.get("CONTINUOUS_FORCE_CACHE_SECONDS", "75")),
+)
+
+_CONTINUOUS_FORCE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=CONTINUOUS_FORCE_WORKERS,
+    thread_name_prefix="continuous-live-x",
+)
+_CONTINUOUS_FORCE_LOCK = RLock()
+_CONTINUOUS_FORCE_CACHE: dict[str, tuple[float, list[Post]]] = {}
+_CONTINUOUS_FORCE_INFLIGHT: dict[str, Any] = {}
+_CONTINUOUS_FORCE_LAST_STARTED: dict[str, float] = {}
+_CONTINUOUS_FORCE_LAST_SUCCESS: dict[str, float] = {}
+_CONTINUOUS_FORCE_STARTED = False
+_CONTINUOUS_FORCE_STOP_EVENT = __import__("threading").Event()
+
+
+def _continuous_force_account_name(username: str) -> str:
+    try:
+        return _canonical_username(username)
+    except Exception:
+        return str(username or "").strip().lstrip("@")
+
+
+def _continuous_force_latest_ts(rows: list[Post]) -> float:
+    return max(
+        (float(getattr(item, "published_ts", 0.0) or 0.0) for item in rows or []),
+        default=0.0,
+    )
+
+
+def _continuous_force_cached_rows(username: str) -> list[Post]:
+    key = _continuous_force_account_name(username).casefold()
+    now = time.time()
+    with _CONTINUOUS_FORCE_LOCK:
+        item = _CONTINUOUS_FORCE_CACHE.get(key)
+        if not item:
+            return []
+        checked_at, rows = item
+        if now - float(checked_at or 0.0) > CONTINUOUS_FORCE_CACHE_SECONDS:
+            return []
+        return list(rows)
+
+
+def _continuous_force_store_rows(username: str, rows: list[Post], elapsed: float) -> list[Post]:
+    canonical = _continuous_force_account_name(username)
+    key = canonical.casefold()
+    rows = _canonical_merge([], rows or [], canonical)
+    if not rows:
+        return []
+
+    now = time.time()
+    with _CONTINUOUS_FORCE_LOCK:
+        previous_rows = list((_CONTINUOUS_FORCE_CACHE.get(key) or (0.0, []))[1])
+        merged_force = _canonical_merge(previous_rows, rows, canonical)
+        _CONTINUOUS_FORCE_CACHE[key] = (now, merged_force)
+        _CONTINUOUS_FORCE_LAST_SUCCESS[key] = now
+
+    # Feed the same canonical cache read by the automatic route.  Empty results
+    # never overwrite prior good data.
+    try:
+        with _CANONICAL_DISCOVERY_LOCK:
+            canonical_previous = list((_CANONICAL_DISCOVERY_CACHE.get(key) or (0.0, []))[1])
+            canonical_merged = _canonical_merge(canonical_previous, rows, canonical)
+            _CANONICAL_DISCOVERY_CACHE[key] = (now, canonical_merged)
+            diagnostic = dict(_CANONICAL_DISCOVERY_DIAGNOSTICS.get(key) or {})
+            path = list(diagnostic.get("path") or [])
+            if "continuous_force_x" not in path:
+                path.append("continuous_force_x")
+            diagnostic.update({
+                "checked_at": now,
+                "continuous_force_elapsed_seconds": float(elapsed),
+                "continuous_force_rows": len(rows),
+                "rows": len(canonical_merged),
+                "path": path,
+            })
+            _CANONICAL_DISCOVERY_DIAGNOSTICS[key] = diagnostic
+    except Exception:
+        pass
+
+    try:
+        _stable_rss_remember(canonical, rows)
+        _remember_control_rss_posts(canonical, rows)
+        _ten_history_save(canonical, rows)
+    except Exception:
+        pass
+
+    observed = time.time()
+    for post in rows:
+        try:
+            _pipeline_mark_seen(post, "continuous_force_x", observed, elapsed)
+        except Exception:
+            pass
+
+    old_latest = _continuous_force_latest_ts(previous_rows)
+    new_latest = _continuous_force_latest_ts(rows)
+    if new_latest > old_latest + 0.5:
+        logging.info(
+            "⚡ @%s: הבדיקה החיה הרציפה מצאה פוסט חדש; הוא זמין מיד לסבב האוטומטי.",
+            canonical,
+        )
+    return rows
+
+
+def _continuous_force_probe_account(username: str) -> list[Post]:
+    canonical = _continuous_force_account_name(username)
+    started = time.perf_counter()
+    try:
+        # This is the same fresh direct-X reader used by the forced/manual route.
+        # force=True bypasses the short local profile cache, but it does not call
+        # Gemini and does not touch the RSS parser or source order.
+        rows = list(
+            _reliable_direct_profile_posts(
+                canonical,
+                limit=CONTINUOUS_FORCE_LIMIT,
+                force=True,
+            )
+            or []
+        )
+        elapsed = time.perf_counter() - started
+        return _continuous_force_store_rows(canonical, rows, elapsed)
+    except Exception as exc:
+        logging.debug(
+            "Continuous forced live lookup failed safely for @%s: %s",
+            canonical,
+            short_error(exc, 300),
+        )
+        return []
+    finally:
+        key = canonical.casefold()
+        with _CONTINUOUS_FORCE_LOCK:
+            _CONTINUOUS_FORCE_INFLIGHT.pop(key, None)
+
+
+def _continuous_force_submit(username: str) -> bool:
+    canonical = _continuous_force_account_name(username)
+    if not canonical:
+        return False
+    key = canonical.casefold()
+    with _CONTINUOUS_FORCE_LOCK:
+        current = _CONTINUOUS_FORCE_INFLIGHT.get(key)
+        if current is not None and not current.done():
+            return False
+        future = _CONTINUOUS_FORCE_EXECUTOR.submit(_continuous_force_probe_account, canonical)
+        _CONTINUOUS_FORCE_INFLIGHT[key] = future
+        _CONTINUOUS_FORCE_LAST_STARTED[key] = time.time()
+    return True
+
+
+def _continuous_force_loop() -> None:
+    position = 0
+    next_launch = time.monotonic()
+    while not _CONTINUOUS_FORCE_STOP_EVENT.is_set():
+        try:
+            control_state = load_control_state()
+            if bool(control_state.get("paused", False)) or is_shabbat_now():
+                _CONTINUOUS_FORCE_STOP_EVENT.wait(5.0)
+                next_launch = time.monotonic()
+                continue
+
+            accounts = list(ordered_accounts())
+            if not accounts:
+                accounts = list(active_x_accounts())
+            # Preserve order but remove accidental duplicates.
+            unique_accounts: list[str] = []
+            seen_accounts: set[str] = set()
+            for account in accounts:
+                canonical = _continuous_force_account_name(account)
+                folded = canonical.casefold()
+                if canonical and folded not in seen_accounts:
+                    seen_accounts.add(folded)
+                    unique_accounts.append(canonical)
+            accounts = unique_accounts
+            if not accounts:
+                _CONTINUOUS_FORCE_STOP_EVENT.wait(3.0)
+                continue
+
+            spacing = max(
+                0.35,
+                CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS / max(1, len(accounts)),
+            )
+            now_mono = time.monotonic()
+            if now_mono < next_launch:
+                _CONTINUOUS_FORCE_STOP_EVENT.wait(min(1.0, next_launch - now_mono))
+                continue
+
+            account = accounts[position % len(accounts)]
+            position = (position + 1) % len(accounts)
+            _continuous_force_submit(account)
+            next_launch = max(next_launch + spacing, time.monotonic() + 0.05)
+        except Exception as exc:
+            logging.debug("Continuous force scheduler recovered safely: %s", short_error(exc, 300))
+            _CONTINUOUS_FORCE_STOP_EVENT.wait(1.0)
+
+
+def start_continuous_force_discovery() -> None:
+    global _CONTINUOUS_FORCE_STARTED
+    if not CONTINUOUS_FORCE_DISCOVERY_ENABLED:
+        logging.info("Continuous forced live discovery is disabled by environment.")
+        return
+    with _CONTINUOUS_FORCE_LOCK:
+        if _CONTINUOUS_FORCE_STARTED:
+            return
+        _CONTINUOUS_FORCE_STARTED = True
+    Thread(
+        target=_continuous_force_loop,
+        daemon=True,
+        name="continuous-forced-live-discovery",
+    ).start()
+    logging.info(
+        "⚡ בדיקה חיה רציפה הופעלה לכל הכתבים: כל חשבון נבדק בכוח בערך כל %.0f שניות, ללא Gemini.",
+        CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS,
+    )
+
+
+# The normal automatic route now also merges the continuously forced cache.  It
+# keeps all existing filters, duplicate checks and age gates unchanged.
+_CONTINUOUS_FORCE_BASE_FETCH_POSTS = fetch_posts
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = _continuous_force_account_name(username)
+    try:
+        base_rows = list(_CONTINUOUS_FORCE_BASE_FETCH_POSTS(canonical) or [])
+    except Exception as exc:
+        logging.debug("Base fetch failed safely while forced cache remained available for @%s: %s", canonical, short_error(exc, 300))
+        base_rows = []
+    forced_rows = _continuous_force_cached_rows(canonical)
+    return _canonical_merge(base_rows, forced_rows, canonical)
+
+
+_CONTINUOUS_FORCE_PRE_MAIN = main
+
+
+def main() -> None:
+    start_continuous_force_discovery()
+    return _CONTINUOUS_FORCE_PRE_MAIN()
+
+# ====== END CONTINUOUS FORCED LIVE DISCOVERY ======
+
 if __name__ == "__main__":
     main()
