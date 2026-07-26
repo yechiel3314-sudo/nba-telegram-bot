@@ -32567,5 +32567,997 @@ def main() -> None:
 # ====== END FINAL USER CONTROL / HISTORICAL TAGS / AGGRESSIVE DISCOVERY PATCH ======
 
 
+
+# ====== FINAL VIDEO RECOVERY / LONG-MEMORY DEDUPE / HARD ORIGINAL-AGE PATCH (2026-07-26) ======
+# This patch is intentionally placed after every earlier compatibility layer.
+# It changes no RSS URL/parser and no Gemini implementation.  It only:
+# 1) recovers real X video MP4 variants through several independent providers;
+# 2) verifies the actual video size before Telegram and preserves all-or-nothing;
+# 3) keeps durable duplicate fingerprints even if a Telegram message is deleted;
+# 4) applies the two-hour limit to the original X timestamp (snowflake when available);
+# 5) turns Footballtweet back on once after the age gate is installed.
+
+BOT_BUILD_ID = "winner-video-recovery-durable-dedupe-hard-age-2026-07-26"
+
+FINAL_ORIGINAL_AGE_LIMIT_SECONDS = max(1, int(os.environ.get("FINAL_ORIGINAL_AGE_LIMIT_SECONDS", str(2 * 60 * 60))))
+FINAL_EXACT_DUPLICATE_MEMORY_SECONDS = max(FINAL_ORIGINAL_AGE_LIMIT_SECONDS, int(os.environ.get("FINAL_EXACT_DUPLICATE_MEMORY_SECONDS", str(180 * 24 * 60 * 60))))
+FINAL_SPECIAL_REPOST_MEMORY_SECONDS = max(24 * 60 * 60, int(os.environ.get("FINAL_SPECIAL_REPOST_MEMORY_SECONDS", str(45 * 24 * 60 * 60))))
+FINAL_SENT_MEMORY_LIMIT = max(700, int(os.environ.get("FINAL_SENT_MEMORY_LIMIT", "5000")))
+FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS = max(4.0, float(os.environ.get("FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS", "10")))
+FINAL_VIDEO_STREAM_PROBE_TIMEOUT_SECONDS = max(8.0, float(os.environ.get("FINAL_VIDEO_STREAM_PROBE_TIMEOUT_SECONDS", "25")))
+FINAL_VIDEO_MAX_CANDIDATES = max(3, int(os.environ.get("FINAL_VIDEO_MAX_CANDIDATES", "10")))
+
+_FINAL_VIDEO_CACHE_LOCK = RLock()
+_FINAL_VIDEO_RESULT_CACHE: dict[str, tuple[float, tuple[str, str, int | None]]] = {}
+_FINAL_VIDEO_SIZE_CACHE: dict[str, tuple[float, int | None]] = {}
+_FINAL_X_GUEST_LOCK = RLock()
+_FINAL_X_GUEST_TOKEN: tuple[str, float] = ("", 0.0)
+
+# Public web-client bearer used by X's guest endpoint.  It is the same client
+# credential used by the maintained yt-dlp Twitter extractor; no user API key is
+# required.  Every call is a selected-post media lookup, never an RSS scan call.
+_FINAL_X_PUBLIC_BEARER = (
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
+    "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
+
+
+def _final_tweet_numeric_id(post: Any) -> str:
+    for raw in (
+        str(getattr(post, "post_id", "") or ""),
+        str(getattr(post, "link", "") or ""),
+        *(str(value or "") for value in (getattr(post, "dedupe_ids", []) or [])),
+    ):
+        match = re.search(r"(?:status(?:es)?[/:]|:status:)(\d{12,24})", raw, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        if raw.isdigit() and 12 <= len(raw) <= 24:
+            return raw
+    try:
+        value = str(_acceptance_tweet_id(post) or "")
+        if value.isdigit():
+            return value
+    except Exception:
+        pass
+    return ""
+
+
+def _final_tweet_snowflake_timestamp(post: Any) -> float:
+    tweet_id = _final_tweet_numeric_id(post)
+    if not tweet_id:
+        return 0.0
+    try:
+        timestamp = ((int(tweet_id) >> 22) + 1288834974657) / 1000.0
+    except Exception:
+        return 0.0
+    # Reject malformed values instead of accidentally treating them as old.
+    if timestamp < 1288834974 or timestamp > time.time() + 24 * 60 * 60:
+        return 0.0
+    return timestamp
+
+
+def _final_original_publish_timestamp(post: Any) -> float:
+    # The X snowflake is generated when the original post is created and cannot
+    # be changed by a mirror, cache or rediscovery.  Prefer it over discovery time.
+    snowflake_ts = _final_tweet_snowflake_timestamp(post)
+    if snowflake_ts:
+        return snowflake_ts
+    try:
+        published = float(getattr(post, "published_ts", 0.0) or 0.0)
+    except Exception:
+        published = 0.0
+    return published if published > 0 else 0.0
+
+
+def is_too_old_post(post: Post) -> bool:
+    published = _final_original_publish_timestamp(post)
+    if published:
+        try:
+            post.published_ts = published
+            post.original_published_ts = published
+        except Exception:
+            pass
+    return bool(published and time.time() - published > FINAL_ORIGINAL_AGE_LIMIT_SECONDS)
+
+
+def max_post_age_text() -> str:
+    if FINAL_ORIGINAL_AGE_LIMIT_SECONDS < 3600:
+        return f"{FINAL_ORIGINAL_AGE_LIMIT_SECONDS / 60:.0f} דקות"
+    return f"{FINAL_ORIGINAL_AGE_LIMIT_SECONDS / 3600:.1f} שעות"
+
+
+# Special sources used to be accepted before the generic age gate.  Put their
+# age check first so a three-day-old fact can never re-enter from cache/history.
+_PRE_FINAL_HARD_AGE_FACT_FILTER = football_factly_filter_issue
+
+
+def football_factly_filter_issue(*parts: Any, **kwargs: Any) -> str:
+    post = next((value for value in list(parts) + list(kwargs.values()) if isinstance(value, Post)), None)
+    if post is not None and is_too_old_post(post):
+        return "old_post"
+    return _PRE_FINAL_HARD_AGE_FACT_FILTER(*parts, **kwargs)
+
+
+def _final_video_url_key(url: str) -> str:
+    return html.unescape(str(url or "")).replace("\\/", "/").strip()
+
+
+def _final_video_quality(url: str, bitrate: int = 0) -> tuple[int, int, int]:
+    clean = _final_video_url_key(url)
+    match = re.search(r"/(\d{2,5})x(\d{2,5})/", clean)
+    width = int(match.group(1)) if match else 0
+    height = int(match.group(2)) if match else 0
+    return (width * height, int(bitrate or 0), len(clean))
+
+
+def _final_walk_video_variants(value: Any, out: dict[str, dict[str, Any]]) -> None:
+    if isinstance(value, list):
+        for item in value:
+            _final_walk_video_variants(item, out)
+        return
+    if not isinstance(value, dict):
+        if isinstance(value, str):
+            url = _final_video_url_key(value)
+            if _real_tweet_video_url(url) and ".m3u8" not in url.casefold():
+                out.setdefault(url, {"url": url, "bitrate": 0, "filesize": None})
+        return
+    content_type = str(value.get("content_type") or value.get("mime_type") or value.get("type") or "").casefold()
+    bitrate = 0
+    for key in ("bitrate", "bit_rate", "tbr"):
+        try:
+            bitrate = max(bitrate, int(float(value.get(key) or 0)))
+        except Exception:
+            pass
+    filesize: int | None = None
+    for key in ("filesize", "file_size", "content_length", "size"):
+        try:
+            candidate_size = int(value.get(key) or 0)
+            if candidate_size > 0:
+                filesize = candidate_size
+                break
+        except Exception:
+            pass
+    for key in ("url", "src", "playbackUrl", "playback_url", "video_url"):
+        raw = value.get(key)
+        if not isinstance(raw, str):
+            continue
+        url = _final_video_url_key(raw)
+        if not url or ".m3u8" in url.casefold():
+            continue
+        if "video/mp4" in content_type or _real_tweet_video_url(url) or is_video_url(url):
+            previous = out.get(url, {})
+            out[url] = {
+                "url": url,
+                "bitrate": max(int(previous.get("bitrate", 0) or 0), bitrate),
+                "filesize": filesize or previous.get("filesize"),
+            }
+    # Only recurse into media-oriented objects.  Profile/user artwork is not a
+    # video URL anyway, but this also keeps the traversal bounded.
+    for key, child in value.items():
+        if key.casefold() in {
+            "variants", "video_info", "media", "mediadetails", "media_details",
+            "extended_entities", "entities", "attachments", "includes", "data",
+            "tweet", "quoted_tweet", "quoted_status", "legacy", "card", "binding_values",
+            "result", "tweetresult", "formats", "entries",
+        }:
+            _final_walk_video_variants(child, out)
+
+
+def _final_http_json(url: str, headers: dict[str, str] | None = None, timeout: float | None = None, data: bytes | None = None) -> Any:
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers=headers or {"User-Agent": "Mozilla/5.0", "Accept": "application/json, text/plain, */*"},
+        method="POST" if data is not None else "GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout or FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
+def _final_x_guest_token() -> str:
+    global _FINAL_X_GUEST_TOKEN
+    with _FINAL_X_GUEST_LOCK:
+        token, created = _FINAL_X_GUEST_TOKEN
+        if token and time.time() - created < 20 * 60:
+            return token
+        headers = {
+            "Authorization": f"Bearer {_FINAL_X_PUBLIC_BEARER}",
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        }
+        for host in ("api.x.com", "api.twitter.com"):
+            try:
+                payload = _final_http_json(
+                    f"https://{host}/1.1/guest/activate.json",
+                    headers=headers,
+                    data=b"",
+                )
+                token = str((payload or {}).get("guest_token") or "")
+                if token:
+                    _FINAL_X_GUEST_TOKEN = (token, time.time())
+                    return token
+            except Exception as exc:
+                logging.debug("X guest-token lookup failed safely via %s: %s", host, short_error(exc, 220))
+        return ""
+
+
+def _final_x_guest_tweet_payload(tweet_id: str) -> Any:
+    token = _final_x_guest_token()
+    if not token:
+        return {}
+    query = urllib.parse.urlencode({
+        "id": tweet_id,
+        "cards_platform": "Web-12",
+        "include_cards": 1,
+        "include_reply_count": 1,
+        "include_user_entities": 0,
+        "tweet_mode": "extended",
+    })
+    headers = {
+        "Authorization": f"Bearer {_FINAL_X_PUBLIC_BEARER}",
+        "x-guest-token": token,
+        "x-twitter-active-user": "yes",
+        "x-twitter-client-language": "en",
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
+    for host in ("api.x.com", "api.twitter.com"):
+        for path in (f"statuses/show/{tweet_id}.json", "statuses/show.json"):
+            url = f"https://{host}/1.1/{path}?{query}"
+            try:
+                payload = _final_http_json(url, headers=headers)
+                if payload:
+                    return payload
+            except Exception as exc:
+                logging.debug("X guest tweet lookup failed safely via %s: %s", host, short_error(exc, 220))
+    return {}
+
+
+def _final_base36_float(value: float, places: int = 16) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if not math.isfinite(value):
+        return ""
+    integer = int(value)
+    fraction = value - integer
+    if integer == 0:
+        left = "0"
+    else:
+        pieces: list[str] = []
+        while integer:
+            integer, remainder = divmod(integer, 36)
+            pieces.append(digits[remainder])
+        left = "".join(reversed(pieces))
+    if fraction <= 0:
+        return left
+    right: list[str] = []
+    for _ in range(places):
+        fraction *= 36
+        number = int(fraction)
+        right.append(digits[number])
+        fraction -= number
+        if fraction <= 1e-15:
+            break
+    return left + "." + "".join(right).rstrip("0")
+
+
+def _final_syndication_payload(tweet_id: str) -> Any:
+    # yt-dlp's maintained Twitter extractor derives this token from the tweet id.
+    value = (int(tweet_id) / 1e15) * math.pi
+    token = _final_base36_float(value).replace("0", "").replace(".", "")
+    queries = [
+        {"id": tweet_id, "token": token},
+        {"id": tweet_id, "lang": "en", "token": token},
+        {"id": tweet_id, "lang": "en"},
+    ]
+    for params in queries:
+        try:
+            url = "https://cdn.syndication.twimg.com/tweet-result?" + urllib.parse.urlencode(params)
+            payload = _final_http_json(url, headers={"User-Agent": "Googlebot", "Accept": "application/json"})
+            if payload:
+                return payload
+        except Exception as exc:
+            logging.debug("X syndication video lookup failed safely: %s", short_error(exc, 220))
+    return {}
+
+
+def _final_video_urls_from_html(post: Post) -> list[dict[str, Any]]:
+    parts = tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+    username = (parts[0] if parts else str(getattr(post, "username", "") or "")).strip().lstrip("@")
+    tweet_id = _final_tweet_numeric_id(post)
+    if not tweet_id:
+        return []
+    urls = [
+        str(getattr(post, "link", "") or ""),
+        f"https://x.com/{urllib.parse.quote(username)}/status/{tweet_id}" if username else "",
+        f"https://nitter.net/{urllib.parse.quote(username)}/status/{tweet_id}" if username else "",
+    ]
+    out: dict[str, dict[str, Any]] = {}
+    pattern = re.compile(r"https?://video\.twimg\.com/[^\s\"'<>\\]+", re.IGNORECASE)
+    for url in urls:
+        if not url:
+            continue
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*"})
+            with urllib.request.urlopen(request, timeout=FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            raw = html.unescape(raw).replace("\\/", "/").replace("\\u002F", "/")
+            for found in pattern.findall(raw):
+                candidate = found.rstrip("\\,)}]>")
+                if ".m3u8" not in candidate.casefold() and _real_tweet_video_url(candidate):
+                    out[candidate] = {"url": candidate, "bitrate": 0, "filesize": None}
+        except Exception as exc:
+            logging.debug("X status HTML video lookup failed safely: %s", short_error(exc, 180))
+    return list(out.values())
+
+
+def _final_ytdlp_candidates(post: Post) -> list[dict[str, Any]]:
+    link = str(getattr(post, "link", "") or "")
+    if not link:
+        return []
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        import yt_dlp  # type: ignore
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": False,
+            "socket_timeout": FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS,
+            "extractor_args": {"twitter": {"api": ["syndication"]}},
+        }
+        with yt_dlp.YoutubeDL(options) as downloader:
+            info = downloader.extract_info(link, download=False)
+        _final_walk_video_variants(info, out)
+    except Exception as exc:
+        logging.debug("Optional yt-dlp module video lookup unavailable/failed safely: %s", short_error(exc, 180))
+    if out:
+        return list(out.values())
+    executable = shutil.which("yt-dlp")
+    if not executable:
+        return []
+    try:
+        import subprocess
+        completed = subprocess.run(
+            [executable, "-J", "--no-warnings", "--extractor-args", "twitter:api=syndication", link],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(15.0, FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS * 2),
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            _final_walk_video_variants(json.loads(completed.stdout), out)
+    except Exception as exc:
+        logging.debug("Optional yt-dlp command video lookup failed safely: %s", short_error(exc, 180))
+    return list(out.values())
+
+
+def _final_all_video_candidates(post: Post) -> list[dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+
+    def merge(value: Any) -> None:
+        if isinstance(value, str):
+            value = {"url": value}
+        if not isinstance(value, dict):
+            return
+        url = _final_video_url_key(str(value.get("url") or ""))
+        if not url or ".m3u8" in url.casefold():
+            return
+        if not (_real_tweet_video_url(url) or is_video_url(url)):
+            return
+        previous = out.get(url, {})
+        out[url] = {
+            "url": url,
+            "bitrate": max(int(previous.get("bitrate", 0) or 0), int(value.get("bitrate", 0) or 0)),
+            "filesize": value.get("filesize") or previous.get("filesize"),
+        }
+
+    for url in list(getattr(post, "video_urls", []) or []):
+        merge(url)
+    # Preserve the previous providers and then add independent recovery paths.
+    try:
+        for url in _PRE_FINAL_VIDEO_FETCH_EXTERNAL(post):
+            merge(url)
+    except Exception:
+        pass
+    tweet_id = _final_tweet_numeric_id(post)
+    if tweet_id:
+        for payload in (_final_x_guest_tweet_payload(tweet_id), _final_syndication_payload(tweet_id)):
+            values: dict[str, dict[str, Any]] = {}
+            _final_walk_video_variants(payload, values)
+            for row in values.values():
+                merge(row)
+    for row in _final_video_urls_from_html(post):
+        merge(row)
+    for row in _final_ytdlp_candidates(post):
+        merge(row)
+
+    candidates = list(out.values())
+    candidates.sort(key=lambda item: _final_video_quality(str(item.get("url") or ""), int(item.get("bitrate", 0) or 0)), reverse=True)
+    return candidates[:FINAL_VIDEO_MAX_CANDIDATES]
+
+
+def _final_actual_video_size(url: str, declared: Any = None) -> int | None:
+    key = _final_video_url_key(url)
+    with _FINAL_VIDEO_CACHE_LOCK:
+        cached = _FINAL_VIDEO_SIZE_CACHE.get(key)
+        if cached and time.time() - cached[0] < 6 * 60 * 60:
+            return cached[1]
+    try:
+        declared_size = int(declared or 0)
+    except Exception:
+        declared_size = 0
+    size = remote_file_size(key, timeout=max(4, int(FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS)))
+    if size is None and declared_size > 0:
+        size = declared_size
+    if size is None:
+        # Some twimg variants omit Content-Length/Range.  Read the selected file
+        # once, stopping immediately above 50 MB, to verify the real byte count.
+        request = urllib.request.Request(
+            key,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "video/mp4,application/octet-stream,*/*",
+                "Accept-Encoding": "identity",
+            },
+        )
+        total = 0
+        try:
+            with urllib.request.urlopen(request, timeout=FINAL_VIDEO_STREAM_PROBE_TIMEOUT_SECONDS) as response:
+                while total <= MAX_VIDEO_BYTES:
+                    chunk = response.read(min(1024 * 1024, MAX_VIDEO_BYTES + 1 - total))
+                    if not chunk:
+                        size = total
+                        break
+                    total += len(chunk)
+                if size is None and total > MAX_VIDEO_BYTES:
+                    size = total
+        except Exception as exc:
+            logging.debug("Actual video byte probe failed safely: %s", short_error(exc, 220))
+            size = None
+    with _FINAL_VIDEO_CACHE_LOCK:
+        _FINAL_VIDEO_SIZE_CACHE[key] = (time.time(), size)
+    return size
+
+
+# Keep the original routine available inside the new candidate merger.
+_PRE_FINAL_VIDEO_FETCH_EXTERNAL = fetch_external_video_urls
+
+
+def fetch_external_video_urls(post: Post) -> list[str]:
+    return [str(item.get("url") or "") for item in _final_all_video_candidates(post) if item.get("url")]
+
+
+_PRE_FINAL_VIDEO_HYDRATE = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    expected_video = bool(
+        getattr(post, "video_expected", False)
+        or getattr(post, "has_video", False)
+        or getattr(post, "primary_has_video", False)
+        or getattr(post, "quoted_has_video", False)
+        or list(getattr(post, "video_urls", []) or [])
+        or text_has_video_marker(str(getattr(post, "text", "") or ""))
+    )
+    if expected_video:
+        try:
+            post.video_expected = True
+        except Exception:
+            pass
+    result = _PRE_FINAL_VIDEO_HYDRATE(post, force=force)
+    if expected_video and isinstance(result, Post):
+        # A provider returning text but omitting media is not proof that the
+        # original video disappeared.  Preserve the all-or-nothing requirement
+        # and let the independent recovery chain locate the real MP4.
+        result.video_expected = True
+        result.has_video = True
+        result.primary_has_video = True
+    return result
+
+
+_PRE_FINAL_VIDEO_REQUIRED = _acceptance_post_requires_video
+
+
+def _acceptance_post_requires_video(post: Post) -> bool:
+    return bool(getattr(post, "video_expected", False) or _PRE_FINAL_VIDEO_REQUIRED(post))
+
+
+def _acceptance_video_status(post: Post) -> tuple[str, str, int | None]:
+    """Find the highest-quality real MP4 at or below Telegram's 50 MB limit."""
+    identity = _final_tweet_numeric_id(post) or str(getattr(post, "post_id", "") or getattr(post, "link", "") or "")
+    with _FINAL_VIDEO_CACHE_LOCK:
+        cached = _FINAL_VIDEO_RESULT_CACHE.get(identity)
+        if cached and time.time() - cached[0] < 30 * 60:
+            return cached[1]
+    _reliable_hydrate_exact_post(post, force=True)
+    if not _acceptance_post_requires_video(post):
+        result = ("", "not_required", None)
+        with _FINAL_VIDEO_CACHE_LOCK:
+            _FINAL_VIDEO_RESULT_CACHE[identity] = (time.time(), result)
+        return result
+    candidates = _final_all_video_candidates(post)
+    if not candidates:
+        result = ("", "video_missing", None)
+        with _FINAL_VIDEO_CACHE_LOCK:
+            _FINAL_VIDEO_RESULT_CACHE[identity] = (time.time(), result)
+        return result
+    oversized: list[int] = []
+    unknown = False
+    for item in candidates:
+        url = str(item.get("url") or "")
+        size = _final_actual_video_size(url, item.get("filesize"))
+        if size is None:
+            unknown = True
+            continue
+        if 0 < size <= MAX_VIDEO_BYTES:
+            post.video_urls = list(dict.fromkeys([url, *(getattr(post, "video_urls", []) or [])]))
+            post.acceptance_video_url = url
+            post.acceptance_video_size = size
+            result = (url, "ok", size)
+            with _FINAL_VIDEO_CACHE_LOCK:
+                _FINAL_VIDEO_RESULT_CACHE[identity] = (time.time(), result)
+            return result
+        if size > MAX_VIDEO_BYTES:
+            oversized.append(size)
+    if oversized and not unknown:
+        result = ("", "video_too_large", min(oversized))
+    else:
+        result = ("", "video_size_unknown", None)
+    with _FINAL_VIDEO_CACHE_LOCK:
+        _FINAL_VIDEO_RESULT_CACHE[identity] = (time.time(), result)
+    return result
+
+
+# ----- Durable duplicate memory, independent of Telegram message deletion -----
+
+def _final_repost_normalize(value: Any) -> str:
+    text = html.unescape(str(value or "")).casefold()
+    text = URL_RE.sub(" ", text)
+    text = BARE_EXTERNAL_DOMAIN_RE.sub(" ", text)
+    text = re.sub(r"(?<!\w)@[A-Za-z0-9_]{1,40}", " ", text)
+    text = re.sub(r"(?<!\w)#([\w]+)", r"\1", text, flags=re.UNICODE)
+    text = re.sub(r"(?:נטו\s+ספורט|neto\s+sport).*?$", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"[^a-z0-9א-ת]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _final_repost_source_text(post: Any) -> str:
+    try:
+        value = _final_source_text(post)
+    except Exception:
+        value = "\n".join(filter(None, [
+            str(getattr(post, "original_text", "") or ""),
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+        ]))
+    return str(value or "").strip()
+
+
+def _final_media_identity(url: Any) -> str:
+    value = _final_video_url_key(str(url or "")).split("?", 1)[0]
+    match = re.search(r"/(?:ext_tw_video|amplify_video|tweet_video)/(\d+)", value, re.IGNORECASE)
+    if match:
+        return "xvideo:" + match.group(1)
+    match = re.search(r"/media/([A-Za-z0-9_-]+)", value, re.IGNORECASE)
+    if match:
+        return "ximage:" + match.group(1)
+    return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else ""
+
+
+def _final_repost_media_keys(post: Any) -> list[str]:
+    values = [
+        *(getattr(post, "image_urls", []) or []),
+        *(getattr(post, "video_urls", []) or []),
+    ]
+    return sorted(set(filter(None, (_final_media_identity(value) for value in values))))
+
+
+def _final_repost_numbers(value: str) -> set[str]:
+    return set(re.findall(r"(?<!\w)\d+(?:[.,]\d+)?(?:%|m|bn|k)?(?!\w)", value.casefold()))
+
+
+def _final_repost_token_similarity(left: str, right: str) -> float:
+    a = set(token for token in left.split() if len(token) >= 3)
+    b = set(token for token in right.split() if len(token) >= 3)
+    return len(a & b) / max(1, len(a | b))
+
+
+def _final_signature_from_text(value: str, username: str = "memory") -> dict[str, Any]:
+    try:
+        dummy = Post(
+            post_id="", username=username, text=value, link="", image_urls=[], video_urls=[],
+            has_video=False, primary_has_video=False, quoted_has_video=False,
+            quoted_author="", quoted_text="", published_ts=0.0, dedupe_ids=[], source_name=username,
+        )
+        return news_event_signature(dummy)
+    except Exception:
+        return {}
+
+
+_PRE_FINAL_RICH_REMEMBER_SENT = remember_persistent_sent
+
+
+def remember_persistent_sent(post: Any, message: Any, sent_via: str = "auto") -> None:
+    _PRE_FINAL_RICH_REMEMBER_SENT(post, message, sent_via)
+    path = persistent_memory_path("football_sent_memory.json")
+    items = load_json_list_file(path)
+    if not items:
+        return
+    source_text = _final_repost_source_text(post)
+    normalized_source = _final_repost_normalize(source_text)
+    normalized_message = _final_repost_normalize(
+        html_message_to_plain_text(str(message or "")) if "html_message_to_plain_text" in globals() else str(message or "")
+    )
+    tweet_id = _final_tweet_numeric_id(post)
+    last = items[-1]
+    if isinstance(last, dict):
+        last.update({
+            "tweet_id": tweet_id,
+            "original_published_ts": _final_original_publish_timestamp(post),
+            "source_text": trim(source_text, 4000),
+            "source_fingerprint": hashlib.sha256(normalized_source.encode("utf-8")).hexdigest() if normalized_source else "",
+            "message_fingerprint": hashlib.sha256(normalized_message.encode("utf-8")).hexdigest() if normalized_message else "",
+            "normalized_source": trim(normalized_source, 4000),
+            "normalized_message": trim(normalized_message, 4000),
+            "media_keys": _final_repost_media_keys(post),
+            "event_signature": news_event_signature(post) if isinstance(post, Post) else {},
+        })
+    save_json_list_file(path, items, limit=FINAL_SENT_MEMORY_LIMIT)
+
+
+def _final_persistent_repost_duplicate(post: Post) -> dict[str, Any] | None:
+    try:
+        rows = load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-FINAL_SENT_MEMORY_LIMIT:]
+    except Exception:
+        rows = []
+    if not rows:
+        return None
+    now = time.time()
+    tweet_id = _final_tweet_numeric_id(post)
+    link = str(getattr(post, "link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+    post_id = str(getattr(post, "post_id", "") or "")
+    current_source = _final_repost_normalize(_final_repost_source_text(post))
+    current_source_hash = hashlib.sha256(current_source.encode("utf-8")).hexdigest() if current_source else ""
+    current_media = set(_final_repost_media_keys(post))
+    current_numbers = _final_repost_numbers(current_source)
+    current_signature = news_event_signature(post)
+    special = bool(_final_is_special_source(post)) if "_final_is_special_source" in globals() else bool(is_football_factly_context(post))
+
+    for item in reversed(rows):
+        if not isinstance(item, dict):
+            continue
+        ts = float(item.get("ts", 0.0) or 0.0)
+        age = now - ts if ts else 10**12
+        previous_link = str(item.get("link", "") or "").split("?", 1)[0].rstrip("/").casefold()
+        previous_id = str(item.get("post_id", "") or "")
+        previous_tweet_id = str(item.get("tweet_id", "") or "")
+        if age <= FINAL_EXACT_DUPLICATE_MEMORY_SECONDS:
+            if tweet_id and (tweet_id == previous_tweet_id or tweet_id == previous_id):
+                return item
+            if post_id and previous_id and post_id == previous_id:
+                return item
+            if link and previous_link and link == previous_link:
+                return item
+        if not special or age > FINAL_SPECIAL_REPOST_MEMORY_SECONDS:
+            continue
+        previous_source = _final_repost_normalize(
+            item.get("normalized_source") or item.get("source_text") or item.get("preview") or item.get("normalized_message") or ""
+        )
+        if not current_source or not previous_source:
+            continue
+        previous_hash = str(item.get("source_fingerprint", "") or "")
+        if current_source_hash and previous_hash and current_source_hash == previous_hash:
+            return item
+        sequence = SequenceMatcher(None, current_source, previous_source).ratio()
+        token_score = _final_repost_token_similarity(current_source, previous_source)
+        previous_media = set(str(value or "") for value in (item.get("media_keys") or []) if str(value or ""))
+        same_media = bool(current_media and previous_media and current_media & previous_media)
+        if sequence >= 0.93 or token_score >= 0.90:
+            return item
+        if same_media and (sequence >= 0.66 or token_score >= 0.62):
+            return item
+        previous_numbers = _final_repost_numbers(previous_source)
+        number_score = len(current_numbers & previous_numbers) / max(1, len(current_numbers | previous_numbers)) if (current_numbers or previous_numbers) else 0.0
+        previous_signature = item.get("event_signature") if isinstance(item.get("event_signature"), dict) else _final_signature_from_text(previous_source, str(item.get("username") or "memory"))
+        try:
+            event_score = _event_similarity(current_signature, previous_signature) if previous_signature else 0.0
+        except Exception:
+            event_score = 0.0
+        current_entities = set(current_signature.get("entities", []) or [])
+        previous_entities = set(previous_signature.get("entities", []) or []) if previous_signature else set()
+        current_actions = set(current_signature.get("actions", []) or [])
+        previous_actions = set(previous_signature.get("actions", []) or []) if previous_signature else set()
+        same_core = len(current_entities & previous_entities) >= 2 and bool(current_actions & previous_actions)
+        if same_core and number_score >= 0.72 and event_score >= 0.84 and max(sequence, token_score) >= 0.70:
+            return item
+    return None
+
+
+_PRE_FINAL_HARD_GATE_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    # Final non-bypassable automatic age gate.  Cache/history discovery time is
+    # irrelevant; only the original X creation timestamp is used.
+    if is_too_old_post(post):
+        return {
+            "sent": False,
+            "mode": "pre_send_blocked:old_post",
+            "total_seconds": 0.0,
+            "original_published_ts": _final_original_publish_timestamp(post),
+        }
+    recycled = _final_persistent_repost_duplicate(post)
+    if recycled:
+        return {
+            "sent": False,
+            "mode": "pre_send_blocked:persistent_recycled_duplicate",
+            "total_seconds": 0.0,
+            "duplicate_of": recycled,
+        }
+    return _PRE_FINAL_HARD_GATE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+
+
+# Turn Footballtweet back on exactly once now that old-post leakage is fixed.
+FOOTBALLTWEET_DEFAULT_ON_AFTER_AGE_FIX_KEY = "footballtweet_default_on_after_hard_age_2026_07_26_v1"
+
+
+def ensure_footballtweet_default_off_once() -> None:
+    if "FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME" not in globals():
+        return
+    state = load_control_state()
+    if bool(state.get(FOOTBALLTWEET_DEFAULT_ON_AFTER_AGE_FIX_KEY, False)):
+        return
+    disabled = state.get("default_active_disabled_accounts", [])
+    if isinstance(disabled, dict):
+        disabled = [name for name, flag in disabled.items() if flag]
+    if not isinstance(disabled, list):
+        disabled = []
+    disabled = [name for name in disabled if not value_contains_footballtweet(name)]
+    save_control_state(**{
+        FOOTBALLTWEET_DEFAULT_ON_AFTER_AGE_FIX_KEY: True,
+        "default_active_disabled_accounts": disabled,
+    })
+
+
+# Hebrew explanations for the new durable duplicate mode.
+_PRE_FINAL_HARD_AGE_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "persistent_recycled_duplicate" in raw:
+        return "התוכן כבר פורסם בעבר ונמצא בזיכרון הקבוע, גם אם הודעת Telegram נמחקה או שהמקור פרסם אותו מחדש"
+    if raw == "old_post":
+        return "הפוסט פורסם במקור לפני יותר משעתיים ולכן אינו נשלח כעת"
+    return _PRE_FINAL_HARD_AGE_HEBREW_REASON(reason)
+
+# ====== END FINAL VIDEO RECOVERY / LONG-MEMORY DEDUPE / HARD ORIGINAL-AGE PATCH ======
+
+
+
+# ====== FINAL TELEGRAM VIDEO UPLOAD FALLBACK (2026-07-26) ======
+# Telegram normally accepts a direct twimg MP4 URL.  If Telegram cannot fetch
+# that URL itself, download the already-verified <=50 MB file and upload it as
+# multipart/form-data.  The returned Telegram file_id is reused for later chats.
+
+_FINAL_LOCAL_VIDEO_LOCK = RLock()
+_FINAL_LOCAL_VIDEO_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _final_local_video_path(url: str) -> str:
+    key = hashlib.sha256(_final_video_url_key(url).encode("utf-8")).hexdigest()
+    with _FINAL_LOCAL_VIDEO_LOCK:
+        cached = _FINAL_LOCAL_VIDEO_CACHE.get(key)
+        if cached and time.time() - cached[0] < 60 * 60 and os.path.isfile(cached[1]):
+            return cached[1]
+    try:
+        base = Path(app_data_dir()) / "video_cache"
+    except Exception:
+        import tempfile
+        base = Path(tempfile.gettempdir()) / "neto_sport_video_cache"
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / f"{key}.mp4"
+    temporary = base / f"{key}.part"
+    if path.is_file() and 0 < path.stat().st_size <= MAX_VIDEO_BYTES:
+        with _FINAL_LOCAL_VIDEO_LOCK:
+            _FINAL_LOCAL_VIDEO_CACHE[key] = (time.time(), str(path))
+        return str(path)
+    request = urllib.request.Request(
+        _final_video_url_key(url),
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "video/mp4,application/octet-stream,*/*",
+            "Accept-Encoding": "identity",
+        },
+    )
+    total = 0
+    try:
+        with urllib.request.urlopen(request, timeout=max(30.0, FINAL_VIDEO_STREAM_PROBE_TIMEOUT_SECONDS)) as response, open(temporary, "wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_VIDEO_BYTES:
+                    raise RuntimeError("video_too_large")
+                handle.write(chunk)
+        if total <= 0:
+            raise RuntimeError("video_missing")
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            temporary.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    with _FINAL_LOCAL_VIDEO_LOCK:
+        _FINAL_LOCAL_VIDEO_CACHE[key] = (time.time(), str(path))
+    return str(path)
+
+
+def _final_multipart_telegram_api(method: str, fields: dict[str, Any], file_field: str, file_path: str) -> dict[str, Any]:
+    boundary = "----NetoSportBoundary" + hashlib.sha256(f"{time.time_ns()}:{file_path}".encode()).hexdigest()[:24]
+    body = bytearray()
+
+    def add(value: bytes) -> None:
+        body.extend(value)
+
+    for key, raw_value in fields.items():
+        if raw_value is None:
+            continue
+        if isinstance(raw_value, (dict, list)):
+            value = json.dumps(raw_value, ensure_ascii=False, separators=(",", ":"))
+        elif isinstance(raw_value, bool):
+            value = "true" if raw_value else "false"
+        else:
+            value = str(raw_value)
+        add(f"--{boundary}\r\n".encode())
+        add(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode())
+        add(value.encode("utf-8"))
+        add(b"\r\n")
+    filename = os.path.basename(file_path) or "video.mp4"
+    add(f"--{boundary}\r\n".encode())
+    add(f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'.encode())
+    add(b"Content-Type: video/mp4\r\n\r\n")
+    with open(file_path, "rb") as handle:
+        add(handle.read())
+    add(b"\r\n")
+    add(f"--{boundary}--\r\n".encode())
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}",
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    if not payload.get("ok"):
+        raise RuntimeError(f"Telegram error: {payload}")
+    return payload
+
+
+def _final_video_file_id(response: Any) -> str:
+    if not isinstance(response, dict):
+        return ""
+    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    for key in ("video", "animation", "document"):
+        node = result.get(key) if isinstance(result.get(key), dict) else {}
+        file_id = str(node.get("file_id") or "")
+        if file_id:
+            return file_id
+    return ""
+
+
+def _final_send_video_one_chat(post: Post, chat_id: str, caption: str, reply_markup: dict[str, Any] | None = None, reply_id: int | None = None) -> dict[str, Any]:
+    common: dict[str, Any] = {
+        "chat_id": chat_id,
+        "caption": caption,
+        "parse_mode": "HTML",
+        "supports_streaming": True,
+    }
+    if reply_markup:
+        common["reply_markup"] = reply_markup
+    if reply_id:
+        common["reply_to_message_id"] = int(reply_id)
+        common["allow_sending_without_reply"] = True
+    cached_file_id = str(getattr(post, "acceptance_video_file_id", "") or "")
+    if cached_file_id:
+        try:
+            return telegram_api("sendVideo", {**common, "video": cached_file_id}, max_attempts=1)
+        except Exception as exc:
+            logging.debug("Cached Telegram video file_id failed safely; retrying source: %s", short_error(exc, 220))
+            post.acceptance_video_file_id = ""
+    video_url = _acceptance_video_url_for_post(post)
+    try:
+        response = telegram_api("sendVideo", {**common, "video": video_url}, max_attempts=1)
+    except Exception as remote_exc:
+        logging.warning("Telegram could not fetch X video URL; uploading verified local MP4 instead: %s", short_error(remote_exc, 260))
+        file_path = _final_local_video_path(video_url)
+        response = _final_multipart_telegram_api("sendVideo", common, "video", file_path)
+    file_id = _final_video_file_id(response)
+    if file_id:
+        post.acceptance_video_file_id = file_id
+    return response
+
+
+_PRE_FINAL_UPLOAD_CONTROL_MEDIA = _control_candidate_media_payload
+
+
+def _control_candidate_media_payload(post: Post, message_html: str, reply_markup: dict[str, Any]) -> tuple[list[int], bool]:
+    if not CONTROL_CHAT_ID:
+        return [], False
+    _reliable_hydrate_exact_post(post, force=True)
+    if not _acceptance_post_requires_video(post):
+        return _PRE_FINAL_UPLOAD_CONTROL_MEDIA(post, message_html, reply_markup)
+    if not _acceptance_caption_fits(message_html):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+    response = _final_send_video_one_chat(
+        post,
+        str(CONTROL_CHAT_ID),
+        message_html,
+        reply_markup=ensure_delete_button_reply_markup(reply_markup),
+    )
+    return _telegram_result_message_ids(response), True
+
+
+_PRE_FINAL_UPLOAD_MAIN_SENDER = _acceptance_strict_main_sender
+
+
+def _acceptance_strict_main_sender(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    _reliable_hydrate_exact_post(post, force=True)
+    if not _acceptance_post_requires_video(post):
+        return _PRE_FINAL_UPLOAD_MAIN_SENDER(post, message, images, video_url=video_url, reply_message_ids=reply_message_ids)
+    if not _acceptance_caption_fits(message):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+    message_ids: dict[str, int] = {}
+    errors: list[str] = []
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            response = _final_send_video_one_chat(
+                post,
+                str(chat_id),
+                message,
+                reply_id=(reply_message_ids or {}).get(str(chat_id)),
+            )
+            message_id = _telegram_message_id_from_response(response)
+            if message_id:
+                message_ids[str(chat_id)] = message_id
+        except Exception as exc:
+            errors.append(f"{chat_id}: {exc}")
+            logging.error("Video send failed for Telegram chat %s: %s", chat_id, exc)
+    if not message_ids:
+        raise RuntimeError("Telegram video broadcast failed for all chats: " + " | ".join(errors))
+    return message_ids, "video_all_or_nothing_verified_upload"
+
+# Repoint the consolidated raw sender name used by older wrappers as well.
+_raw_main_sender_consolidated = _acceptance_strict_main_sender
+
+# Prepared sends should obey the two-hour rule.  The separate explicit
+# manual_force_send_prepared_message remains the deliberate administrator override.
+_PRE_FINAL_HARD_AGE_PREPARED_SEND = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    if is_too_old_post(post):
+        raise RuntimeError(hebrew_block_reason("old_post"))
+    return _PRE_FINAL_HARD_AGE_PREPARED_SEND(post, message, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+# ====== END FINAL TELEGRAM VIDEO UPLOAD FALLBACK ======
+
+
 if __name__ == "__main__":
     main()
