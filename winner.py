@@ -36526,5 +36526,364 @@ def main() -> None:
 
 # ====== END CONTINUOUS FORCED LIVE DISCOVERY ======
 
+
+
+# ====== FINAL FORCED PREVIEW / WRITER HEADER / FABRIZIO FULLNESS / WEDDING PATCH (2026-07-26) ======
+# This is an output/filter/control-layer patch only. RSS discovery, mirror order,
+# timeouts, continuous live discovery, Gemini key loading and persistent filenames
+# remain unchanged.
+BOT_BUILD_ID = "winner-forced-preview-writer-fabrizio-wedding-2026-07-26"
+
+
+def _final_account_username(post: Any) -> str:
+    return str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+
+
+def _final_is_fact_or_no_header_source(post: Any) -> bool:
+    try:
+        if callable(globals().get("_final_is_special_source")) and _final_is_special_source(post):
+            return True
+    except Exception:
+        pass
+    username = _final_account_username(post)
+    fact_names = {
+        "footballfactly", "optajoe", "footballtweet", "sofascore",
+    }
+    try:
+        for value in globals().get("EXTRA_FACT_SOURCE_USERNAMES", []) or []:
+            fact_names.add(str(value or "").strip().lstrip("@").casefold())
+    except Exception:
+        pass
+    return username in fact_names
+
+
+def _final_known_writer_username(post: Any) -> bool:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    if not username or _final_is_fact_or_no_header_source(post):
+        return False
+    folded = username.casefold()
+    known: set[str] = set()
+    for mapping_name in (
+        "ACCOUNT_DISPLAY_NAMES", "CONTROLLED_BASE_ACCOUNT_LABELS",
+        "OPTIONAL_CONTROLLED_ACCOUNT_LABELS",
+    ):
+        mapping = globals().get(mapping_name, {})
+        if isinstance(mapping, dict):
+            known.update(str(key or "").strip().lstrip("@").casefold() for key in mapping)
+    for sequence_name in ("X_ACCOUNTS", "OPTIONAL_CONTROLLED_ACCOUNTS", "PRIORITY_X_ACCOUNTS"):
+        values = globals().get(sequence_name, [])
+        try:
+            known.update(str(value or "").strip().lstrip("@").casefold() for value in values)
+        except Exception:
+            pass
+    return folded in known
+
+
+_FINAL_PREVIOUS_HIDE_WRITER_HEADER = should_hide_writer_header
+
+
+def should_hide_writer_header(post: Post, translated: str) -> bool:
+    """Every recognized reporter keeps their byline; fact/stat feeds remain headerless."""
+    if _final_is_fact_or_no_header_source(post):
+        return True
+    if _final_known_writer_username(post):
+        return False
+    return _FINAL_PREVIOUS_HIDE_WRITER_HEADER(post, translated)
+
+
+# Remove a duplicated reporter name only when it is a detached terminal credit.
+# It never removes an arbitrary 1-3 word ending.
+def _final_writer_aliases(post: Any) -> set[str]:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    aliases: set[str] = {username}
+    for mapping_name in (
+        "ACCOUNT_DISPLAY_NAMES", "CONTROLLED_BASE_ACCOUNT_LABELS",
+        "OPTIONAL_CONTROLLED_ACCOUNT_LABELS",
+    ):
+        mapping = globals().get(mapping_name, {})
+        if isinstance(mapping, dict):
+            label = mapping.get(username)
+            if label:
+                aliases.add(str(label))
+            for key, value in mapping.items():
+                if str(key or "").casefold() == username.casefold() and value:
+                    aliases.add(str(value))
+    self_aliases = globals().get("SELF_QUOTE_ALIASES", {})
+    if isinstance(self_aliases, dict):
+        for key, values in self_aliases.items():
+            if str(key or "").casefold() == username.casefold():
+                try:
+                    aliases.update(str(value) for value in values if str(value or "").strip())
+                except Exception:
+                    pass
+    return {re.sub(r"\s+", " ", alias).strip(" .,:;!?#@-–—\t\n") for alias in aliases if str(alias or "").strip()}
+
+
+def _final_credit_plain(value: str) -> str:
+    plain = html.unescape(re.sub(r"<[^>]+>", "", str(value or "")))
+    plain = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", plain)
+    plain = TAG_FLAG_RE.sub("", plain)
+    plain = EMOJI_RE.sub("", plain)
+    plain = re.sub(r"(?<!\w)[@#]", "", plain)
+    plain = re.sub(r"[^A-Za-zÀ-ÿא-ת'׳״\- ]+", " ", plain)
+    return re.sub(r"\s+", " ", plain).strip(" .,:;!?#@-–—")
+
+
+def _final_remove_detached_writer_credit(post: Any, value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return text
+    aliases = {_final_credit_plain(alias).casefold() for alias in _final_writer_aliases(post)}
+    aliases.discard("")
+    if not aliases:
+        return text
+
+    # 1) A standalone final line/paragraph containing only the reporter name.
+    lines = text.split("\n")
+    index = len(lines) - 1
+    while index >= 0 and not lines[index].strip():
+        index -= 1
+    if index >= 0:
+        candidate = _final_credit_plain(lines[index]).casefold()
+        if candidate in aliases and len(candidate.split()) <= 6:
+            del lines[index]
+            while lines and not lines[-1].strip():
+                lines.pop()
+            return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+    # 2) Same-line appended credit, but only after a completed sentence marker.
+    # Compare the short terminal fragment after the final punctuation against the
+    # reporter aliases; do not run arbitrary short-tail deletion.
+    same_line = re.match(
+        r"(?isu)^(?P<body>.*[.!?…][\"'״׳)\]]*)\s+(?P<tail>[^\n.!?…]{1,100})[.!?…]*\s*$",
+        text,
+    )
+    if same_line:
+        tail = _final_credit_plain(same_line.group("tail")).casefold()
+        if tail in aliases and len(tail.split()) <= 6:
+            return same_line.group("body").rstrip()
+    return text
+
+
+_FINAL_PREVIOUS_OUTGOING_BODY = _outgoing_body_text
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _FINAL_PREVIOUS_OUTGOING_BODY(post, translated, quoted=quoted)
+    if not quoted:
+        value = _final_remove_detached_writer_credit(post, value)
+    return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+# Weddings and marriages are personal-life content, not men's football news.
+_FINAL_WEDDING_RE = re.compile(
+    r"(?iu)(?:\b(?:wedding|married|marriage|marries|marry|ties?\s+the\s+knot|newlywed|"
+    r"se\s+cas[oó]|casamiento|boda|sposat[oa]|matrimonio|mari[eé]e?)\b|"
+    r"חתונ(?:ה|תו|ות)|התחתן|התחתנה|התחתנו|נישא|נישאה|נישאו|נישואין|טקס\s+נישואין|"
+    r"כלה|חתן)(?:\b|\s)|(?:💍|👰|🤵)"
+)
+
+
+def _final_wedding_post(post: Any) -> bool:
+    text = html.unescape("\n".join([
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "quoted_text", "") or ""),
+    ]))
+    return bool(_FINAL_WEDDING_RE.search(text))
+
+
+_FINAL_PREVIOUS_PRE_SEND_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _final_wedding_post(post):
+        return "wedding_or_marriage_non_football"
+    return _FINAL_PREVIOUS_PRE_SEND_BLOCK(post)
+
+
+_FINAL_PREVIOUS_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    base = str(reason or "").split(";", 1)[0].strip()
+    if base == "wedding_or_marriage_non_football":
+        return "הפוסט עוסק בחתונה או בחיים האישיים של שחקן ולא בדיווח כדורגל"
+    return _FINAL_PREVIOUS_HEBREW_REASON(reason)
+
+
+# Fabrizio posts must retain all substantive clauses and paragraphs. The existing
+# translator already asks for a full translation; this adds a reporter-specific
+# completeness gate so an abbreviated result is retried/fails rather than published.
+_FINAL_PREVIOUS_GEMINI_TRANSLATE_ONCE = gemini_translate_post_once
+
+
+def _final_fabrizio_translation_issues(post: Any, source: str, translated: str) -> list[str]:
+    if _final_account_username(post) != "fabrizioromano":
+        return []
+    src = clean_before_translation(str(source or "")).strip()
+    out = clean_before_translation(str(translated or "")).strip()
+    if not src or not out:
+        return ["התרגום של פבריציו ריק"]
+    issues: list[str] = []
+    # Hebrew can be somewhat shorter than English, but not a summary.
+    if len(src) >= 180 and len(out) < len(src) * 0.50:
+        issues.append("התרגום של פבריציו קצר מדי ביחס למקור")
+    src_sentences = len(re.findall(r"[.!?…](?:[\"'״׳)\]]+)?(?=\s|$)", src))
+    out_sentences = len(re.findall(r"[.!?…](?:[\"'״׳)\]]+)?(?=\s|$)", out))
+    if src_sentences >= 3 and out_sentences < src_sentences - 1:
+        issues.append("חסרים משפטים מדיווח פבריציו")
+    src_paragraphs = [part for part in re.split(r"\n\s*\n", src) if part.strip()]
+    out_paragraphs = [part for part in re.split(r"\n\s*\n", out) if part.strip()]
+    if len(src_paragraphs) >= 2 and len(out_paragraphs) < max(1, len(src_paragraphs) - 1):
+        issues.append("חסרות פסקאות מדיווח פבריציו")
+    src_numbers = material_number_values(src) if callable(globals().get("material_number_values")) else set()
+    out_numbers = material_number_values(out) if callable(globals().get("material_number_values")) else set()
+    if src_numbers and len(src_numbers - out_numbers) >= max(1, len(src_numbers) // 2):
+        issues.append("חסרים מספרים חשובים מדיווח פבריציו")
+    return list(dict.fromkeys(issues))
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    _reliable_hydrate_exact_post(post, force=True)
+    main, quote, author = _FINAL_PREVIOUS_GEMINI_TRANSLATE_ONCE(post, include_quote)
+    issues = _final_fabrizio_translation_issues(post, getattr(post, "text", ""), main)
+    if issues:
+        try:
+            _final_clear_translation_cache_for_post(post, include_quote)
+        except Exception:
+            pass
+        raise TranslationUnavailable("; ".join(issues))
+    return main, quote, author
+
+
+# Every forced/manual preparation uses the fully hydrated X body, the final
+# renderer and the same combined media+caption sender used for publication.
+_FINAL_PREVIOUS_PREPARE_HISTORY_AI = prepare_history_post_with_ai
+
+
+def prepare_history_post_with_ai(token: str) -> None:
+    item = _restore_prepared_send(token)
+    if not isinstance(item, dict):
+        send_control_text("הפוסט כבר לא נמצא בזיכרון. פתח שוב את 10 האחרונים של הכתב.")
+        return
+    post = item.get("post")
+    if not isinstance(post, Post):
+        post = post_from_control_payload(post)
+    if not isinstance(post, Post):
+        send_control_text("אין מספיק נתונים לשחזור הפוסט.")
+        return
+    try:
+        _ensure_post_original_structure(post)
+        _reliable_hydrate_exact_post(post, force=True)
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        # Remove only a proven duplicated writer credit before rendering.
+        translated = _final_remove_detached_writer_credit(post, translated)
+        item.update({
+            "post": post,
+            "translated": translated,
+            "quoted_translated": quoted_translated,
+            "quoted_author_translated": quoted_author_translated,
+        })
+        CONTROL_PREPARED_SENDS[token] = item
+        try:
+            _persist_prepared_send(token, item)
+        except Exception:
+            pass
+        try:
+            _persist_prepared_send_durable(token, item)
+        except Exception:
+            pass
+        message_html = _render_full_control_candidate(
+            post, translated, quoted_translated, quoted_author_translated
+        )
+        ids = _send_full_control_candidate(post, token, message_html)
+        if ids:
+            _save_prepared_media_ids(token, ids)
+    except Exception as exc:
+        logging.exception("Forced full preview preparation failed")
+        send_control_text(
+            "הכנת ההודעה המלאה נכשלה:\n" + short_error(exc, 900),
+            None,
+            control_delete_message_reply_markup(),
+        )
+
+
+# Final media guard for every quiet-channel preview. If the source has media,
+# the preview is sent through the combined media+caption route only.
+_FINAL_PREVIOUS_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    _ensure_post_original_structure(post)
+    _reliable_hydrate_exact_post(post, force=True)
+    return _FINAL_PREVIOUS_CONTROL_CANDIDATE(post, token, message_html)
+
+
+# Include the blocking reason when a forwarded/shared control message can be
+# matched exactly (or with very strong content certainty) to blocked history.
+def _final_block_item_text(item: dict[str, Any]) -> str:
+    return str(
+        item.get("rendered") or item.get("original_text") or item.get("preview")
+        or item.get("text") or ""
+    )
+
+
+def _final_find_block_reason_for_forward(row: dict[str, Any], body: str) -> str:
+    direct = str(row.get("raw_reason") or row.get("reason") or "").strip()
+    if direct:
+        return hebrew_block_reason(direct)
+    try:
+        state = load_control_state()
+    except Exception:
+        state = {}
+    values: list[dict[str, Any]] = []
+    for key in ("last_blocked_posts", "last_duplicate_posts", "last_borderline_posts"):
+        rows = state.get(key, []) if isinstance(state, dict) else []
+        if isinstance(rows, list):
+            values.extend(item for item in rows if isinstance(item, dict))
+    post_id = str(row.get("post_id") or "").strip()
+    link = str(row.get("link") or "").strip()
+    # Exact identifiers are authoritative.
+    for item in reversed(values):
+        if post_id and post_id == str(item.get("post_id") or "").strip():
+            return hebrew_block_reason(str(item.get("raw_reason") or item.get("reason") or ""))
+        if link and link == str(item.get("link") or "").strip():
+            return hebrew_block_reason(str(item.get("raw_reason") or item.get("reason") or ""))
+    # Very strong textual fallback, only for a substantial body.
+    normalized = html_message_to_plain_text(str(body or "")).strip()
+    if count_regular_words(normalized) >= 8:
+        best: tuple[float, dict[str, Any] | None] = (0.0, None)
+        for item in reversed(values[-1200:]):
+            previous = html_message_to_plain_text(_final_block_item_text(item)).strip()
+            if count_regular_words(previous) < 8:
+                continue
+            score = memory_similarity(normalized, previous)
+            if score > best[0]:
+                best = (score, item)
+        if best[1] is not None and best[0] >= 0.92:
+            item = best[1]
+            return hebrew_block_reason(str(item.get("raw_reason") or item.get("reason") or ""))
+    return ""
+
+
+_FINAL_PREVIOUS_FORWARDED_DETAILS = _forwarded_source_details_text
+
+
+def _forwarded_source_details_text(message: dict[str, Any]) -> str:
+    base = _FINAL_PREVIOUS_FORWARDED_DETAILS(message)
+    try:
+        row = _lookup_forwarded_source_v3(message)
+        context = row.get("context") if isinstance(row.get("context"), dict) else {}
+        body = str(context.get("body") or "")
+        reason = _final_find_block_reason_for_forward(row, body)
+        if reason and "סיבת החסימה:" not in base:
+            base = base.rstrip() + "\nסיבת החסימה: " + reason
+    except Exception as exc:
+        logging.debug("Forwarded block-reason lookup failed safely: %s", short_error(exc, 300))
+    return base
+
+
+# ====== END FINAL FORCED PREVIEW / WRITER HEADER / FABRIZIO FULLNESS / WEDDING PATCH ======
+
 if __name__ == "__main__":
     main()
