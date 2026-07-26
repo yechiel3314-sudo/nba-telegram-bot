@@ -35599,5 +35599,220 @@ def _recent_blocked_separate_report() -> str:
 # ====== END FINAL CONTEXT / MEDIA INTEGRITY / EXACT PHOTO DEDUPE PATCH ======
 
 
+
+# ====== FINAL HIDE ALL >2H BLOCKS FROM USER-FACING REPORTS (2026-07-26) ======
+# Posts older than two hours are operationally ignored. They must not occupy the
+# user-facing 30-block history or distort the real-delay report, even when another
+# filter (for example interview/opinion) happened to become the recorded reason.
+# RSS discovery, fetching, translation, media and duplicate logic are untouched.
+
+BOT_BUILD_ID = "winner-hide-old-blocks-everywhere-2026-07-26"
+_FINAL_USER_VISIBLE_BLOCK_MAX_AGE_SECONDS = 2 * 60 * 60
+
+
+def _final_record_published_ts(value: Any) -> float:
+    """Return the original X publication timestamp from a post/history/timing row."""
+    if isinstance(value, Post):
+        return float(getattr(value, "published_ts", 0.0) or 0.0)
+    if not isinstance(value, dict):
+        return 0.0
+    candidates: list[Any] = [
+        value.get("published_at"),
+        value.get("published_ts"),
+        value.get("post_published_at"),
+    ]
+    nested = value.get("post")
+    if isinstance(nested, dict):
+        candidates.extend([
+            nested.get("published_at"),
+            nested.get("published_ts"),
+        ])
+    for candidate in candidates:
+        try:
+            parsed = float(candidate or 0.0)
+        except (TypeError, ValueError):
+            parsed = 0.0
+        if parsed > 0:
+            return parsed
+    return 0.0
+
+
+def _final_record_is_older_than_two_hours(value: Any, now_ts: float | None = None) -> bool:
+    published = _final_record_published_ts(value)
+    if published <= 0:
+        return False
+    current = float(now_ts or time.time())
+    # Small future clock skew must not be interpreted as age.
+    return current >= published and (current - published) > _FINAL_USER_VISIBLE_BLOCK_MAX_AGE_SECONDS
+
+
+def _final_hide_from_block_reports(value: Any) -> bool:
+    if _final_record_is_older_than_two_hours(value):
+        return True
+    try:
+        if _smart_is_two_hour_age_block(value):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# Do not add old posts to the persistent user-facing blocked history, regardless
+# of which local filter happened to produce the final reason.
+_PRE_HIDE_OLD_REMEMBER_CONTROL_BLOCK_EVENT = remember_control_block_event
+
+
+def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
+    if _final_record_is_older_than_two_hours(post) or _final_hide_from_block_reports(reason):
+        return
+    return _PRE_HIDE_OLD_REMEMBER_CONTROL_BLOCK_EVENT(reason, post, rendered, duplicate=duplicate)
+
+
+# Do not add old blocked posts to delay telemetry either. This prevents stale
+# months-old posts returned by a public X fallback from dominating the averages.
+_PRE_HIDE_OLD_PIPELINE_RECORD_BLOCKED = _pipeline_record_blocked
+
+
+def _pipeline_record_blocked(post: Post, reason: str) -> None:
+    if _final_record_is_older_than_two_hours(post) or _final_hide_from_block_reports(reason):
+        return
+    return _PRE_HIDE_OLD_PIPELINE_RECORD_BLOCKED(post, reason)
+
+
+def _final_visible_recent_block_items(limit: int = 30) -> list[dict[str, Any]]:
+    state = load_control_state()
+    raw = state.get("last_blocked_posts", [])
+    items = [
+        item for item in (raw if isinstance(raw, list) else [])
+        if isinstance(item, dict) and not _final_hide_from_block_reports(item)
+    ]
+    return items[-max(1, int(limit)):]
+
+
+def _recent_blocked_separate_report() -> str:
+    items = _final_visible_recent_block_items(30)
+    return _control_list_text(
+        "📋 30 חסימות אחרונות",
+        items,
+        "אין חסימות שמורות כרגע.",
+        limit=30,
+    )
+
+
+# Rebuild the timing report with only fresh posts from this process. Both sent and
+# blocked rows older than two hours are excluded, so stale discoveries never
+# distort the average or appear in the detailed blocked list.
+def pipeline_timing_report_text(limit: int = 20) -> str:
+    state = load_control_state()
+    current_since = float(BOT_STARTED_AT or 0.0)
+    sent_rows = [
+        row for row in (state.get(PIPELINE_TIMING_STATE_KEY, []) or [])
+        if isinstance(row, dict)
+        and float(row.get("ts", 0.0) or 0.0) >= current_since
+        and not _final_record_is_older_than_two_hours(row)
+    ]
+    blocked_rows = [
+        row for row in (state.get(PIPELINE_BLOCKED_TIMING_STATE_KEY, []) or [])
+        if isinstance(row, dict)
+        and float(row.get("ts", 0.0) or 0.0) >= current_since
+        and not _final_hide_from_block_reports(row)
+    ]
+    combined = sorted(
+        [dict(row, status="sent") for row in sent_rows]
+        + [dict(row, status="blocked") for row in blocked_rows],
+        key=lambda row: float(row.get("ts", 0.0) or 0.0),
+    )[-max(1, int(limit)):]
+    if not combined:
+        return (
+            "⏱️ בדיקת עיכוב אמיתית\n\n"
+            "עדיין אין מדידות של פוסטים בני עד שעתיים מההפעלה הנוכחית."
+        )
+
+    delays = [
+        float(row.get("publish_to_first_seen_seconds", 0.0) or 0.0)
+        for row in combined
+        if row.get("published_at") and row.get("first_seen_at")
+    ]
+    processing = [
+        float(row.get("first_seen_to_processing_seconds", 0.0) or 0.0)
+        for row in combined
+        if row.get("first_seen_at")
+    ]
+    sent_sample = [row for row in combined if row.get("status") == "sent"]
+    blocked_sample = [row for row in combined if row.get("status") == "blocked"]
+
+    lines = [
+        "⏱️ בדיקת עיכוב אמיתית",
+        "",
+        f"נמדדו {len(combined)} פוסטים בני עד שעתיים: "
+        f"{len(sent_sample)} נשלחו ו־{len(blocked_sample)} נחסמו.",
+        (
+            f"• פרסום → גילוי ראשון: {sum(delays) / len(delays):.1f} שנ׳"
+            if delays else "• פרסום → גילוי ראשון: אין מספיק נתונים"
+        ),
+        (
+            f"• גילוי → תחילת עיבוד: {sum(processing) / len(processing):.1f} שנ׳"
+            if processing else "• גילוי → תחילת עיבוד: אין מספיק נתונים"
+        ),
+    ]
+    if sent_sample:
+        totals = [
+            float(row.get("publish_to_telegram_seconds", 0.0) or 0.0)
+            for row in sent_sample
+            if row.get("publish_to_telegram_seconds") is not None
+        ]
+        if totals:
+            lines.append(f"• פרסום → Telegram: {sum(totals) / len(totals):.1f} שנ׳")
+    if blocked_sample:
+        lines.extend(["", "פוסטים שנחסמו:"])
+        for row in blocked_sample[-10:]:
+            lines.extend([
+                "",
+                f"• {_hebrew_account_label(str(row.get('username', '') or ''))}",
+                f"  פורסם: {_pipeline_format_clock(row.get('published_at'))}",
+                f"  נמצא: {_pipeline_format_clock(row.get('first_seen_at'))} "
+                f"({row.get('first_seen_lane') or 'לא ידוע'})",
+                f"  פרסום → גילוי: "
+                f"{float(row.get('publish_to_first_seen_seconds', 0.0) or 0.0):.1f} שנ׳",
+                f"  סיבת חסימה: "
+                f"{row.get('block_reason_he') or hebrew_block_reason(str(row.get('block_reason') or ''))}",
+            ])
+    return "\n".join(lines)
+
+
+# The original callback branch reads last_blocked_posts directly. Intercept that
+# button so old records already persisted by earlier builds are filtered too.
+_PRE_HIDE_OLD_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if data != "football_last_blocked":
+        return _PRE_HIDE_OLD_PROCESS_CONTROL_UPDATE(update)
+
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    if callback_id:
+        answer_control_callback(callback_id, "מציג 30 חסימות")
+    blocked_posts = _final_visible_recent_block_items(30)
+    send_control_text(
+        _control_list_text(
+            "📋 30 חסימות אחרונות",
+            blocked_posts,
+            "אין חסימות שמורות כרגע.",
+            limit=30,
+        ),
+        message.get("message_id"),
+        control_history_reply_markup() if blocked_posts else monitor_menu_reply_markup(),
+    )
+
+# ====== END FINAL HIDE ALL >2H BLOCKS FROM USER-FACING REPORTS ======
+
 if __name__ == "__main__":
     main()
