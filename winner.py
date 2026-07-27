@@ -9826,6 +9826,7 @@ def gemini_translate(text: str, respect_global_cooldown: bool = True, max_real_r
         "- If the post is mostly a video caption, write one clean Hebrew sentence that explains the actual clip.\n"
         "- Use common Hebrew football names and terms. Prefer natural sports Hebrew over literal translation.\n"
         "- Do not exaggerate labels. Translate 'breaking' as 'דיווח' or omit the label; avoid 'דיווח דרמטי' unless the original facts are truly exceptional.\n"
+        "- Translate the headline 'JUST IN' only as 'דיווח:'. Never write 'זה עתה:', 'זה עתה נכנס:', 'רק נכנס:', 'רק פנימה:' or any similar literal machine translation.\n"
         "- Translate foreign-language headlines and outlet names into clean Hebrew. For example, L'Équipe/LEquipe should be written as לאקיפ, not as broken mixed text.\n"
         "- Keep useful numbers, fees, years, dates, emojis and line breaks.\n"
         "- For odds/probability lists such as '33% - France 19% - Argentina', put each percentage item on its own line.\n"
@@ -42698,8 +42699,8 @@ def _six_natural_headlines(value: str) -> str:
     # Only headline-like occurrences at the beginning of a real line are changed.
     replacements = (
         (r"(?m)^(\s*[^\wא-ת]*?)שבירה\s*[:：\-–—]", r"\1דיווח:"),
-        (r"(?m)^(\s*[^\wא-ת]*?)רק\s+פנימה\s*[:：\-–—]", r"\1זה עתה:"),
-        (r"(?m)^(\s*[^\wא-ת]*?)רק\s+נכנס\s*[:：\-–—]", r"\1זה עתה:"),
+        (r"(?m)^(\s*[^\wא-ת]*?)רק\s+פנימה\s*[:：\-–—]", r"\1דיווח:"),
+        (r"(?m)^(\s*[^\wא-ת]*?)רק\s+נכנס\s*[:：\-–—]", r"\1דיווח:"),
         (r"(?m)^(\s*[^\wא-ת]*?)הנה\s*[:：\-–—]", r"\1דיווח:"),
     )
     for pattern, replacement in replacements:
@@ -44261,8 +44262,6 @@ def _final_apply_gemini_failure_cooldown(model: str, key: str, exc: Exception) -
 # ====== END FINAL PREPARE/ALBUM/NUMBER/TROUBLESHOOTING PATCH ======
 
 
-if __name__ == "__main__":
-    main()
 
 # ====== RESTORE LAST KNOWN FAST RSS + FACTS MENU / COMPACT REPORT FIX (2026-07-28) ======
 # Scope requested by the user:
@@ -44797,3 +44796,244 @@ def rss_status_text() -> str:
 
 BOT_BUILD_ID = "winner-old-good-rss-plus-polymarket-sport-2026-07-28"
 # ====== END POLYMARKET SPORT PATCH ======
+
+# ====== GLOBAL NATURAL "JUST IN" HEADLINE NORMALIZATION (2026-07-28) ======
+# Scope: translation wording only. Do not change RSS, source toggles, filters,
+# duplicate detection, line spacing, persistent state or HERE WE GO handling.
+
+_JUST_IN_HEADLINE_PATTERNS = (
+    # Common Gemini/Google literal Hebrew renderings of the English headline.
+    r"זה\s+עתה\s+(?:נכנס(?:ה|ו)?|הגיע(?:ה|ו)?|התקבל(?:ה|ו)?|בפנים)",
+    r"נכנס(?:ה|ו)?\s+זה\s+עתה",
+    r"רק\s+(?:עכשיו\s+)?נכנס(?:ה|ו)?",
+    r"רק\s+פנימה",
+    r"זה\s+עתה\s+בפנים",
+    r"זה\s+עתה",
+    r"just\s+in",
+)
+_JUST_IN_HEADLINE_RE = re.compile(
+    r"(?im)^(\s*[^\wא-ת\n]*?)(?:" + "|".join(_JUST_IN_HEADLINE_PATTERNS) + r")\s*[:：\-–—]+\s*"
+)
+
+
+def normalize_just_in_headline(value: str) -> str:
+    """Normalize literal JUST IN-style headlines to the Hebrew label דיווח."""
+    text = str(value or "")
+    text = _JUST_IN_HEADLINE_RE.sub(r"\1דיווח: ", text)
+    text = re.sub(
+        r"(?im)^(\s*[^\wא-ת\n]*?)דיווח\s*:\s*(?:דיווח\s*:\s*)+",
+        r"\1דיווח: ",
+        text,
+    )
+    return text
+
+
+# Final publication path.
+_PRE_JUST_IN_FINAL_HEBREW_POLISH = final_hebrew_polish
+
+
+def final_hebrew_polish(text: str) -> str:
+    return normalize_just_in_headline(_PRE_JUST_IN_FINAL_HEBREW_POLISH(text))
+
+
+# Gemini/main translation path. HERE WE GO remains controlled by the existing
+# normalizer and is deliberately not changed here.
+_PRE_JUST_IN_TRANSLATE_TEXT = translate_text
+
+
+def translate_text(text: str) -> str:
+    return normalize_just_in_headline(_PRE_JUST_IN_TRANSLATE_TEXT(text))
+
+
+# Control-panel Google translations and short translated labels.
+def _install_just_in_output_wrapper(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(*args: Any, _previous=previous, **kwargs: Any):
+        result = _previous(*args, **kwargs)
+        return normalize_just_in_headline(result) if isinstance(result, str) else result
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _just_in_function_name in (
+    "google_translate",
+    "google_translate_full_hebrew",
+    "google_translate_full_hebrew_stronger",
+    "google_translate_hebrew_safe",
+    "translate_short_label",
+):
+    _install_just_in_output_wrapper(_just_in_function_name)
+
+BOT_BUILD_ID = "winner-global-just-in-to-report-2026-07-28"
+# ====== END GLOBAL NATURAL "JUST IN" HEADLINE NORMALIZATION ======
+
+
+# ====== GLOBAL HARD NON-FOOTBALL SPORTS BLOCK (2026-07-28) ======
+# Scope requested by the user: block basketball/NBA/WNBA, golf and other
+# non-football sports in every automatic source, including @PolymarketSport.
+# Full names and full team names are used to avoid false positives from generic
+# words such as Miami, Boston, United, City, Kings, Heat, Magic or Jordan.
+
+_GLOBAL_BASKETBALL_CORE_RE = re.compile(
+    r"\b(?:NBA|WNBA|NBA\s+G\s*League|G\s*League|NCAA\s+(?:men(?:'s)?|women(?:'s)?)?\s*basketball|"
+    r"EuroLeague|EuroCup|basketball|basketballer|hoops?|NBA\s+Draft|NBA\s+Finals?|"
+    r"triple[- ]double|double[- ]double|three[- ]pointer|3[- ]pointer|free\s+throw|slam\s+dunk|"
+    r"points?\s*,?\s+\d+\s+rebounds?|\d+\s+points?\s+and\s+\d+\s+(?:rebounds?|assists?))\b|"
+    r"כדורסל|ליגת\s+ה-NBA|ליגת\s+ה־NBA|דראפט\s+ה-NBA|דראפט\s+ה־NBA|גמר\s+ה-NBA|"
+    r"טריפל[- ]דאבל|דאבל[- ]דאבל|שלשה|שלשות|זריק(?:ת|ות)\s+עונשין|הטבעה|ריבאונד(?:ים)?",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_GLOBAL_NBA_TEAM_RE = re.compile(
+    r"\b(?:Atlanta\s+Hawks|Boston\s+Celtics|Brooklyn\s+Nets|Charlotte\s+Hornets|"
+    r"Chicago\s+Bulls|Cleveland\s+Cavaliers|Dallas\s+Mavericks|Denver\s+Nuggets|"
+    r"Detroit\s+Pistons|Golden\s+State\s+Warriors|Houston\s+Rockets|Indiana\s+Pacers|"
+    r"(?:Los\s+Angeles|LA|L\.A\.)\s+Clippers|(?:Los\s+Angeles|LA|L\.A\.)\s+Lakers|"
+    r"Memphis\s+Grizzlies|Miami\s+Heat|Milwaukee\s+Bucks|Minnesota\s+Timberwolves|"
+    r"New\s+Orleans\s+Pelicans|New\s+York\s+Knicks|Oklahoma\s+City\s+Thunder|"
+    r"Orlando\s+Magic|Philadelphia\s+(?:76ers|Sixers)|Phoenix\s+Suns|"
+    r"Portland\s+Trail\s+Blazers|Sacramento\s+Kings|San\s+Antonio\s+Spurs|"
+    r"Toronto\s+Raptors|Utah\s+Jazz|Washington\s+Wizards)\b|"
+    r"אטלנטה\s+הוקס|בוסטון\s+סלטיקס|ברוקלין\s+נטס|שארלוט\s+הורנטס|שיקגו\s+בולס|"
+    r"קליבלנד\s+קאבלירס|דאלאס\s+מאבריקס|דנבר\s+נאגטס|דטרויט\s+פיסטונס|"
+    r"גולדן\s+סטייט\s+ווריורס|יוסטון\s+רוקטס|אינדיאנה\s+פייסרס|לוס\s+אנג'לס\s+קליפרס|"
+    r"לוס\s+אנג'לס\s+לייקרס|ממפיס\s+גריזליס|מיאמי\s+היט|מילווקי\s+באקס|"
+    r"מינסוטה\s+טימברוולבס|ניו\s+אורלינס\s+פליקנס|ניו\s+יורק\s+ניקס|"
+    r"אוקלהומה\s+סיטי\s+ת'אנדר|אורלנדו\s+מג'יק|פילדלפיה\s+(?:76'רס|סיקסרס)|"
+    r"פיניקס\s+סאנס|פורטלנד\s+טרייל\s+בלייזרס|סקרמנטו\s+קינגס|סן\s+אנטוניו\s+ספרס|"
+    r"טורונטו\s+ראפטורס|יוטה\s+ג'אז|וושינגטון\s+וויזארדס",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_GLOBAL_NBA_STAR_RE = re.compile(
+    r"\b(?:LeBron\s+James|Stephen\s+Curry|Steph\s+Curry|Kevin\s+Durant|Nikola\s+Joki[cć]|"
+    r"Giannis\s+Antetokounmpo|Luka\s+Don[cč]i[cć]|Jayson\s+Tatum|Joel\s+Embiid|"
+    r"Shai\s+Gilgeous[- ]Alexander|Anthony\s+Edwards|Victor\s+Wembanyama|Ja\s+Morant|"
+    r"Devin\s+Booker|Donovan\s+Mitchell|Damian\s+Lillard|Kyrie\s+Irving|James\s+Harden|"
+    r"Kawhi\s+Leonard|Paul\s+George|Jimmy\s+Butler|Trae\s+Young|Zion\s+Williamson|"
+    r"Jaylen\s+Brown|Tyrese\s+Haliburton|Jalen\s+Brunson|Anthony\s+Davis|"
+    r"Karl[- ]Anthony\s+Towns|Bam\s+Adebayo|De['’]?Aaron\s+Fox|Domantas\s+Sabonis|"
+    r"LaMelo\s+Ball|Cade\s+Cunningham|Chet\s+Holmgren|Paolo\s+Banchero|Scottie\s+Barnes|"
+    r"Alperen\s+[ŞS]eng[uü]n|Michael\s+Jordan|Kobe\s+Bryant|Shaquille\s+O['’]?Neal|"
+    r"Magic\s+Johnson|Larry\s+Bird|Wilt\s+Chamberlain|Kareem\s+Abdul[- ]Jabbar)\b|"
+    r"לברון\s+ג'יימס|סט(?:ף|פן)\s+קרי|קווין\s+דוראנט|ניקולה\s+יוקיץ'|"
+    r"יאניס\s+אנטטוקומפו|לוקה\s+דונצ'יץ'|ג'ייסון\s+טייטום|ג'ואל\s+אמביד|"
+    r"שיי\s+גילג'ס[- ]אלכסנדר|אנתוני\s+אדוארדס|ויקטור\s+ומבניאמה|ג'ה\s+מוראנט|"
+    r"דווין\s+בוקר|דונובן\s+מיטשל|דמיאן\s+לילארד|קיירי\s+אירווינג|ג'יימס\s+הארדן|"
+    r"קוואי\s+לנארד|פול\s+ג'ורג'|ג'ימי\s+באטלר|טריי\s+יאנג|זאיון\s+וויליאמסון|"
+    r"ג'יילן\s+בראון|טייריס\s+הליברטון|ג'יילן\s+ברונסון|אנתוני\s+דייויס|"
+    r"קארל[- ]אנתוני\s+טאונס|באם\s+אדבאיו|דיארון\s+פוקס|דומנטאס\s+סאבוניס|"
+    r"לאמלו\s+בול|קייד\s+קנינגהאם|צ'ט\s+הולמגרן|פאולו\s+באנקרו|סקוטי\s+בארנס|"
+    r"אלפרן\s+שנגון|מייקל\s+ג'ורדן|קובי\s+בראיינט|שאקיל\s+אוניל|מג'יק\s+ג'ונסון|"
+    r"לארי\s+בירד|ווילט\s+צ'מברלין|כרים\s+עבדול[- ]ג'באר",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_GLOBAL_GOLF_RE = re.compile(
+    r"\b(?:golf|golfer|PGA(?:\s+Tour)?|LIV\s+Golf|DP\s+World\s+Tour|Ryder\s+Cup|"
+    r"The\s+Masters|Masters\s+Tournament|The\s+Open\s+Championship|US\s+Open\s+Golf|"
+    r"birdie|bogey|eagle\s+on\s+the|hole[- ]in[- ]one|tee\s+shot|fairway|putter|putting\s+green)\b|"
+    r"גולף|שחקן\s+גולף|טורניר\s+המאסטרס|גביע\s+ריידר|בירדי|בוגי|הול[- ]אין[- ]וואן|"
+    r"\b(?:Tiger\s+Woods|Rory\s+McIlroy|Scottie\s+Scheffler|Jon\s+Rahm|"
+    r"Bryson\s+DeChambeau|Brooks\s+Koepka|Xander\s+Schauffele|Collin\s+Morikawa|"
+    r"Jordan\s+Spieth|Justin\s+Thomas|Viktor\s+Hovland|Ludvig\s+[ÅA]berg|"
+    r"Hideki\s+Matsuyama|Dustin\s+Johnson|Phil\s+Mickelson)\b|"
+    r"טייגר\s+וודס|רורי\s+מקילרוי|סקוטי\s+שפלר|ג'ון\s+ראם|ברייסון\s+דשאמבו|"
+    r"ברוקס\s+קפקה|קסנדר\s+שאופלה|קולין\s+מוריקאווה|ג'ורדן\s+ספית'|ג'סטין\s+תומאס",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_GLOBAL_OTHER_SPORT_STAR_RE = re.compile(
+    r"\b(?:Patrick\s+Mahomes|Tom\s+Brady|Aaron\s+Rodgers|Shohei\s+Ohtani|Aaron\s+Judge|"
+    r"Connor\s+McDavid|Sidney\s+Crosby|Novak\s+Djokovic|Carlos\s+Alcaraz|Jannik\s+Sinner|"
+    r"Rafael\s+Nadal|Roger\s+Federer|Max\s+Verstappen|Lewis\s+Hamilton|Charles\s+Leclerc|"
+    r"Lando\s+Norris|Conor\s+McGregor|Jon\s+Jones)\b|"
+    r"פטריק\s+מהומס|טום\s+בריידי|אהרון\s+רוג'רס|שוהיי\s+אוטאני|אהרון\s+ג'אדג'|"
+    r"קונור\s+מקדיוויד|סידני\s+קרוסבי|נובאק\s+ג'וקוביץ'|קרלוס\s+אלקראס|יאניק\s+סינר|"
+    r"רפאל\s+נדאל|רוג'ר\s+פדרר|מקס\s+ורסטאפן|לואיס\s+המילטון|שארל\s+לקלר|"
+    r"לנדו\s+נוריס|קונור\s+מקגרגור|ג'ון\s+ג'ונס",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_GLOBAL_OTHER_SPORT_HARD_RE = re.compile(
+    r"\b(?:NFL|MLB|NHL|UFC|MMA|Formula\s*1|F1|MotoGP|tennis|baseball|ice\s+hockey|"
+    r"American\s+football|rugby|cricket|boxing|volleyball|handball|cycling|Olympics?)\b|"
+    r"פוטבול\s+אמריקאי|בייסבול|הוקי\s+קרח|טניס|פורמולה\s*1|מרוצי\s+מכוניות|"
+    r"UFC|MMA|אגרוף|רוגבי|קריקט|כדורעף|כדוריד|אופניים|אולימפיאדה|משחקים\s+אולימפיים",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _global_nonfootball_scan_text(post: Post) -> str:
+    if not isinstance(post, Post):
+        return ""
+    values = [
+        getattr(post, "text", ""),
+        getattr(post, "quoted_text", ""),
+        getattr(post, "quoted_author", ""),
+        getattr(post, "source_name", ""),
+    ]
+    text = html.unescape("\n".join(str(value or "") for value in values))
+    return unicodedata.normalize("NFKC", text)
+
+
+def _global_nonfootball_hard_reason(post: Post) -> str:
+    text = _global_nonfootball_scan_text(post)
+    if not text:
+        return ""
+    if _GLOBAL_BASKETBALL_CORE_RE.search(text) or _GLOBAL_NBA_TEAM_RE.search(text) or _GLOBAL_NBA_STAR_RE.search(text):
+        return "global_basketball_nba"
+    if _GLOBAL_GOLF_RE.search(text):
+        return "global_golf"
+    if _GLOBAL_OTHER_SPORT_HARD_RE.search(text) or _GLOBAL_OTHER_SPORT_STAR_RE.search(text):
+        return "global_other_sport"
+    return ""
+
+
+# Strengthen the existing early sport detector. Hard NBA/team/player/golf signals
+# are never released merely because an allowed football club also appears.
+_PRE_GLOBAL_HARD_OTHER_SPORT = is_other_sport_post
+
+
+def is_other_sport_post(post: Post) -> bool:
+    if _global_nonfootball_hard_reason(post):
+        return True
+    return bool(_PRE_GLOBAL_HARD_OTHER_SPORT(post))
+
+
+# Final safety net before any automatic publication, covering every source and
+# every later rescue/bypass path, including CentreGoals and PolymarketSport.
+_PRE_GLOBAL_HARD_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    hard_reason = _global_nonfootball_hard_reason(post)
+    if hard_reason:
+        return hard_reason
+    return _PRE_GLOBAL_HARD_PRE_SEND(post)
+
+
+_PRE_GLOBAL_HARD_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "").casefold()
+    if "global_basketball_nba" in raw:
+        return "הפוסט עוסק בכדורסל, NBA או WNBA ולא בכדורגל"
+    if "global_golf" in raw:
+        return "הפוסט עוסק בגולף ולא בכדורגל"
+    if "global_other_sport" in raw:
+        return "הפוסט עוסק בענף ספורט אחר ולא בכדורגל"
+    return _PRE_GLOBAL_HARD_HEBREW_REASON(reason)
+
+
+BOT_BUILD_ID = "winner-global-hard-nonfootball-sports-block-2026-07-28"
+# ====== END GLOBAL HARD NON-FOOTBALL SPORTS BLOCK ======
+
+
+if __name__ == "__main__":
+    main()
