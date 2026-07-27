@@ -44263,3 +44263,272 @@ def _final_apply_gemini_failure_cooldown(model: str, key: str, exc: Exception) -
 
 if __name__ == "__main__":
     main()
+
+# ====== RESTORE LAST KNOWN FAST RSS + FACTS MENU / COMPACT REPORT FIX (2026-07-28) ======
+# Scope requested by the user:
+# 1) Restore the earlier bounded RSS/live discovery orchestration that worked
+#    quickly, without adding, removing or reordering any feed source.
+# 2) Remove "הגדרות וסינון" from every menu inside the facts hub.
+# 3) Pack delay-report rows into the fewest Telegram messages possible instead
+#    of sending one Telegram message per measured post.
+
+BOT_BUILD_ID = "winner-old-good-fast-rss-compact-control-2026-07-28"
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Restore the earlier fast, bounded RSS/live route.
+
+    The existing RSS implementation and source list run unchanged in their
+    original background worker. The already-existing public live reader runs in
+    parallel. A slow RSS mirror cannot hold the account scan beyond the bounded
+    discovery budget, and completed background results are reused next cycle.
+    """
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    started = time.perf_counter()
+
+    rss_rows = _full_speed_rss_cache_get(canonical)
+    live_rows = _full_speed_cache_get(canonical)
+    rss_future = _full_speed_start_rss(canonical)
+    live_future = None if live_rows else _full_speed_start_live(canonical)
+
+    # Pick up futures that completed immediately.
+    for future, kind in ((rss_future, "rss"), (live_future, "live")):
+        if future is None or not future.done():
+            continue
+        try:
+            rows = list(future.result() or [])
+        except Exception:
+            rows = []
+        if kind == "live":
+            live_rows = rows or _full_speed_cache_get(canonical)
+        else:
+            rss_rows = rows or _full_speed_rss_cache_get(canonical)
+
+    pending = {
+        future
+        for future in (rss_future, live_future)
+        if future is not None and not future.done()
+    }
+    deadline = time.perf_counter() + FULL_SPEED_FETCH_BUDGET_SECONDS
+    while pending and time.perf_counter() < deadline:
+        remaining = max(0.0, deadline - time.perf_counter())
+        done, still_pending = _rss_wait(
+            pending,
+            timeout=remaining,
+            return_when=_RSS_FIRST_COMPLETED,
+        )
+        if not done:
+            break
+        for future in done:
+            try:
+                rows = list(future.result() or [])
+            except Exception:
+                rows = []
+            if future is live_future:
+                live_rows = rows or _full_speed_cache_get(canonical)
+            elif future is rss_future:
+                rss_rows = rows or _full_speed_rss_cache_get(canonical)
+        pending = set(still_pending)
+
+        # This is the old fast behavior: once the live freshness lane returned
+        # posts, do not wait for a slow RSS mirror. RSS keeps running in its
+        # background worker and is available on the following cycle.
+        if live_rows:
+            break
+
+    if not rss_rows:
+        rss_rows = _full_speed_rss_cache_get(canonical)
+    if not live_rows:
+        live_rows = _full_speed_cache_get(canonical)
+
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rss_rows, canonical)
+    _reliable_merge_posts(merged, live_rows, canonical)
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+
+    rss_latest = _full_speed_latest_ts(rss_rows)
+    live_latest = _full_speed_latest_ts(live_rows)
+    with _FULL_SPEED_LIVE_LOCK:
+        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
+        stats.update({
+            "last_bounded_fetch_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "last_rss_rows": len(rss_rows),
+            "last_live_rows_used": len(live_rows),
+            "last_merged_rows": len(ordered),
+            "rss_latest_ts": rss_latest,
+            "live_latest_ts": live_latest,
+            "live_was_newer": bool(live_latest and live_latest > rss_latest),
+            "checked_at": time.time(),
+            "active_route": "restored_old_good_bounded_parallel",
+        })
+        _FULL_SPEED_DISCOVERY_STATS[key] = stats
+
+    if live_latest and live_latest > rss_latest:
+        gap = max(0.0, live_latest - rss_latest) if rss_latest else 0.0
+        logging.info(
+            "⚡ @%s: נמצא פוסט חי חדש יותר מה-RSS%s והוא הועבר מיד למסלול האוטומטי.",
+            canonical,
+            f" בפער של {gap:.0f} שניות" if gap else "",
+        )
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+
+    # Preserve timing telemetry that later patches expect.
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        if isinstance(post, Post):
+            try:
+                _pipeline_mark_seen(post, "automatic:restored_fast_rss_live", observed, elapsed)
+            except Exception:
+                pass
+
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    started = time.perf_counter()
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows = fetch_posts(canonical)
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        return canonical, rows
+    except Exception as exc:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        logging.warning("⚠️ שליפת פוסטים נכשלה עבור @%s: %s", canonical, short_error(exc, 500))
+        cached: list[Post] = []
+        try:
+            cached = list(_stable_rss_cached_posts(canonical, limit=60) or [])
+        except Exception:
+            pass
+        return canonical, cached
+
+
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    """The RSS/status buttons use the same fast route as automatic discovery."""
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows = list(fetch_posts(canonical) or [])
+        if not rows:
+            # Reuse only existing local memory; do not start a second slow or
+            # exhaustive network pass and do not add any source.
+            for loader in (
+                lambda: _stable_rss_cached_posts(canonical, limit=60),
+                lambda: _ten_history_load(canonical),
+                lambda: _ten_history_collect_existing_state_posts(canonical),
+            ):
+                try:
+                    rows = _canonical_merge(rows, list(loader() or []), canonical)
+                except Exception:
+                    pass
+                if rows:
+                    break
+        return canonical, rows, None
+    except Exception as exc:
+        logging.warning("⚠️ בדיקת RSS ידנית נכשלה עבור @%s: %s", canonical, short_error(exc, 500))
+        return canonical, [], exc
+
+
+def fetch_control_posts_for_accounts(
+    accounts: list[str],
+) -> dict[str, tuple[list[Post], Exception | None]]:
+    """Start every requested writer immediately instead of four slow waves."""
+    ordered_accounts = [str(value or "").strip().lstrip("@") for value in accounts if str(value or "").strip()]
+    results: dict[str, tuple[list[Post], Exception | None]] = {
+        username: ([], None) for username in ordered_accounts
+    }
+    if not ordered_accounts:
+        return results
+
+    # This is a control-button-only pool. The actual RSS/live work still uses
+    # the existing bounded shared executors and unchanged source configuration.
+    workers = min(20, max(1, len(ordered_accounts)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="control-fast-rss") as executor:
+        future_map = {
+            executor.submit(fetch_control_posts, username): username
+            for username in ordered_accounts
+        }
+        for future in as_completed(future_map):
+            requested_username = future_map[future]
+            try:
+                canonical, posts, error = future.result()
+                results[requested_username] = (list(posts or []), error)
+                if canonical != requested_username and canonical in results:
+                    results[canonical] = (list(posts or []), error)
+            except Exception as exc:
+                results[requested_username] = ([], exc)
+    return results
+
+
+def _facts_markup_without_filter_button(markup: dict[str, Any]) -> dict[str, Any]:
+    rows: list[list[dict[str, Any]]] = []
+    source_rows = markup.get("inline_keyboard", []) if isinstance(markup, dict) else []
+    for row in source_rows:
+        cleaned = [
+            dict(button)
+            for button in row
+            if isinstance(button, dict)
+            and str(button.get("callback_data", "") or "") != "football_facts_rules"
+        ]
+        if cleaned:
+            rows.append(cleaned)
+    return stable_reply_markup(rows)
+
+
+_PRE_REMOVE_FACTS_FILTER_MAIN_MARKUP = facts_main_reply_markup
+_PRE_REMOVE_FACTS_FILTER_MONITOR_MARKUP = facts_monitor_reply_markup
+
+
+def facts_main_reply_markup() -> dict[str, Any]:
+    return _facts_markup_without_filter_button(_PRE_REMOVE_FACTS_FILTER_MAIN_MARKUP())
+
+
+def facts_monitor_reply_markup() -> dict[str, Any]:
+    return _facts_markup_without_filter_button(_PRE_REMOVE_FACTS_FILTER_MONITOR_MARKUP())
+
+
+# The existing report already knows how to split a long string at Telegram's
+# limit. Passing one combined string lets it pack several measured posts into
+# every message instead of treating each post as a separate logical message.
+_PRE_COMPACT_PIPELINE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if data not in {"football_pipeline_timings", "football_facts_pipeline_timings"}:
+        return _PRE_COMPACT_PIPELINE_PROCESS_CONTROL_UPDATE(update)
+
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    if not _final_control_authorized(message):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+
+    if data == "football_pipeline_timings":
+        _final_submit_control_result(
+            callback_id,
+            "מציג בדיקת עיכוב",
+            lambda: pipeline_timing_report_text(10),
+        )
+        return
+
+    _final_submit_control_result(
+        callback_id,
+        "מציג בדיקת עיכוב של העובדות",
+        lambda: facts_pipeline_timing_report_text(10),
+    )
+
+# ====== END RESTORE LAST KNOWN FAST RSS + FACTS MENU / COMPACT REPORT FIX ======
