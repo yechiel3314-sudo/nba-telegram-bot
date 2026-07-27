@@ -40406,5 +40406,595 @@ def facts_check_all_text() -> str:
 
 # ====== END FINAL EXACT WORKING RSS RESTORE ======
 
+
+# ====== FINAL NEW-RESULT / FRESH-TWO-HOUR / UNCLEAR-YOUTH / EVENT-DEDUPE PATCH (2026-07-27) ======
+# This layer is deliberately limited to control-message presentation, strict
+# two-hour reporting, the requested incomplete-young-player gate and high-
+# confidence cross-writer duplicate detection. RSS retrieval is not touched.
+
+BOT_BUILD_ID = "winner-new-results-fresh-two-hour-event-dedupe-2026-07-27"
+_FINAL_REPORT_MAX_AGE_SECONDS = 2 * 60 * 60
+_FINAL_REPORT_FUTURE_SKEW_SECONDS = 5 * 60
+
+
+def _final_strict_publication_ts(value: Any) -> float:
+    try:
+        published = float(_final_record_published_ts(value) or 0.0)
+    except Exception:
+        published = 0.0
+    return published
+
+
+def _final_is_strictly_recent_publication(value: Any, now_ts: float | None = None) -> bool:
+    published = _final_strict_publication_ts(value)
+    if published <= 0:
+        return False
+    current = float(now_ts or time.time())
+    return (current - _FINAL_REPORT_MAX_AGE_SECONDS) <= published <= (current + _FINAL_REPORT_FUTURE_SKEW_SECONDS)
+
+
+# Timing/statistical samples are selected only by the original publication time.
+# Unknown publication time is not converted to zero and is not allowed into the
+# averages. If fewer than the requested number exist, fewer are returned.
+def _final_recent_timing_rows(limit: int = 10) -> list[dict[str, Any]]:
+    state = load_control_state()
+    rows: list[dict[str, Any]] = []
+    for key, status in ((PIPELINE_TIMING_STATE_KEY, "sent"), (PIPELINE_BLOCKED_TIMING_STATE_KEY, "blocked")):
+        raw_rows = state.get(key, [])
+        if not isinstance(raw_rows, list):
+            continue
+        for row in raw_rows:
+            if not isinstance(row, dict):
+                continue
+            if int(row.get("telemetry_version", 0) or 0) != _FINAL_TELEMETRY_VERSION:
+                continue
+            if not _final_is_strictly_recent_publication(row):
+                continue
+            item = dict(row)
+            item["status"] = str(item.get("status") or status)
+            rows.append(item)
+    rows.sort(key=lambda item: float(item.get("ts", 0.0) or 0.0))
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        identity = _final_pipeline_row_identity(row)
+        if not identity:
+            identity = hashlib.sha1(
+                json.dumps(row, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8", errors="ignore")
+            ).hexdigest()
+        unique[identity] = row
+    return list(unique.values())[-max(1, int(limit)):]
+
+
+# User-facing block and duplicate histories follow the same strict publication
+# window. Records with no trustworthy publication timestamp are omitted instead
+# of being treated as fresh merely because they were stored recently.
+_PRE_FINAL_STRICT_TWENTY_BLOCKS = _twenty_recent_visible_blocks
+
+
+def _twenty_recent_visible_blocks(facts_only: bool = False) -> list[dict[str, Any]]:
+    rows = list(_PRE_FINAL_STRICT_TWENTY_BLOCKS(facts_only) or [])
+    return [row for row in rows if _final_is_strictly_recent_publication(row)][-RECENT_BLOCKS_VISIBLE_LIMIT:]
+
+
+_PRE_FINAL_STRICT_RECENT_DUPLICATES = recent_duplicate_control_items
+
+
+def recent_duplicate_control_items(state: dict[str, Any], limit: int = 10) -> list[dict[str, Any]]:
+    requested = max(1, int(limit))
+    try:
+        rows = list(_PRE_FINAL_STRICT_RECENT_DUPLICATES(state, limit=max(100, requested * 10)) or [])
+    except Exception:
+        rows = []
+    rows = [row for row in rows if isinstance(row, dict) and _final_is_strictly_recent_publication(row)]
+    return rows[-requested:]
+
+
+# ---------------------------------------------------------------------------
+# Incomplete/unclear young-player reports.
+# ---------------------------------------------------------------------------
+_FINAL_YOUNG_BIRTH_YEAR_RE = re.compile(
+    r"\b(?:born\s+(?:in\s+)?|class\s+of\s+)(20(?:0[6-9]|1\d))\b|"
+    r"(?:יליד|ילידת|שנתון)\s+(20(?:0[6-9]|1\d))",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_GENERIC_YOUNG_MONITOR_RE = re.compile(
+    r"\b(?:several|multiple|some|a\s+number\s+of)\s+(?:italian\s+)?clubs?\s+"
+    r"(?:are\s+)?(?:monitoring|tracking|following|scouting|watching)\b|"
+    r"(?:מספר|כמה|כמה\s+וכמה)\s+מועדונים(?:\s+איטלקיים)?\s+"
+    r"(?:עוקבים|בוחנים|צופים|מתעניינים)",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_CONCRETE_TRANSFER_ACTION_RE = re.compile(
+    r"\b(?:formal\s+bid|bid\s+submitted|offer\s+submitted|agreement\s+reached|deal\s+agreed|"
+    r"advanced\s+talks|negotiations|medical|sign(?:ed|ing)?|join(?:ing)?|loan|transfer\s+fee|"
+    r"personal\s+terms|contract)\b|"
+    r"הוגשה\s+הצעה|הצעה\s+רשמית|הושג\s+סיכום|העסקה\s+סוכמה|שיחות\s+מתקדמות|"
+    r"משא\s+ומתן|מו[\"״]?מ|בדיקות\s+רפואיות|יחתום|חתם|יצטרף|השאלה|דמי\s+העברה|תנאים\s+אישיים|חוזה",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_TRUNCATED_REPORT_END_RE = re.compile(
+    r"(?:[-–—]\s*$|\b(?:from|to|with|for|at|of)\s*$|(?:^|\s)[מבלכה]\s*[.\-–—]?\s*$|"
+    r"(?:^|\s)(?:מ|ל|ב|כ|ה|ו)-\s*$|\.{2,}\s*$)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_logical_team_ids(text: str) -> set[str]:
+    normalized = _duplicate_phrase_norm(str(text or ""))
+    found: set[str] = set()
+    aliases = sorted(TEAM_REPLACEMENTS.items(), key=lambda pair: len(str(pair[0] or "")), reverse=True)
+    for alias, target in aliases:
+        alias_norm = _duplicate_phrase_norm(str(alias or ""))
+        if alias_norm and _duplicate_phrase_present_in_normalized_text(alias_norm, normalized):
+            found.add(_duplicate_phrase_norm(str(target or alias)))
+    return {item for item in found if item}
+
+
+def _final_specific_canonical_teams(post: Post, text: str) -> set[str]:
+    return _final_logical_team_ids(text)
+
+
+def _final_partial_unclear_young_report(post: Post) -> bool:
+    source = clean_for_ai_translation(_requested_source_text(post))
+    if not source or not _FINAL_GENERIC_YOUNG_MONITOR_RE.search(source):
+        return False
+    years: list[int] = []
+    for match in _FINAL_YOUNG_BIRTH_YEAR_RE.finditer(source):
+        for group in match.groups():
+            if group:
+                try:
+                    years.append(int(group))
+                except ValueError:
+                    pass
+    if not years:
+        return False
+    current_year = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).year
+    if min(years) < current_year - 20:
+        return False
+    teams = _final_specific_canonical_teams(post, source)
+    truncated = bool(_FINAL_TRUNCATED_REPORT_END_RE.search(source.strip()))
+    concrete = bool(_FINAL_CONCRETE_TRANSFER_ACTION_RE.search(source))
+    # The requested example is blocked for both independent defects: a cut-off
+    # ending and no named club/real transaction detail. Either defect is enough
+    # once the report is a generic monitoring item about a very young player.
+    return bool(truncated or (not teams and not concrete))
+
+
+_PRE_FINAL_UNCLEAR_YOUTH_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _final_partial_unclear_young_report(post):
+        return "young_player_partial_unclear_report"
+    return _PRE_FINAL_UNCLEAR_YOUTH_BLOCK(post)
+
+
+_PRE_FINAL_UNCLEAR_YOUTH_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "young_player_partial_unclear_report" in raw:
+        return "דיווח חלקי ולא ברור על שחקן צעיר: הטקסט נחתך ואין קבוצה או התקדמות ממשית"
+    return _PRE_FINAL_UNCLEAR_YOUTH_REASON(reason)
+
+
+# ---------------------------------------------------------------------------
+# Same early transfer event across different reporters, even with new wording.
+# ---------------------------------------------------------------------------
+_FINAL_EARLY_TRANSFER_STAGE_RE = re.compile(
+    r"\b(?:interest|interested|considering|exploring|initial\s+(?:contact|approach|enquiry|inquiry)|"
+    r"early\s+stage|talks?\s+(?:over|regarding|about)|aware\s+of\s+(?:the\s+)?interest|"
+    r"monitoring|keen\s+on|move\s+for)\b|"
+    r"מעוניינ|שוקלת|בוחנת|פנייה\s+ראשונית|גישוש|שלב\s+מוקדם|שיחות\s+(?:בנוגע|לגבי)|"
+    r"מודעת\s+לעניין|עוקבת|עוקבים|מתעניין|מתעניינת",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_ADVANCED_TRANSFER_STAGE_RE = re.compile(
+    r"#?HERE(?:_|\s)+WE(?:_|\s)+GO|\b(?:official|deal\s+agreed|agreement\s+reached|"
+    r"bid\s+submitted|formal\s+bid|offer\s+accepted|bid\s+accepted|medical(?:s)?\s+(?:booked|scheduled)|"
+    r"signed|signs|completed|done\s+deal|personal\s+terms\s+agreed)\b|"
+    r"רשמי|העסקה\s+סוכמה|הושג\s+סיכום|הוגשה\s+הצעה|הצעה\s+רשמית|ההצעה\s+התקבלה|"
+    r"נקבעו\s+בדיקות|בדיקות\s+רפואיות|חתם|נחתם|הושלמה\s+העסקה|סוכמו\s+התנאים",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_EVENT_IDENTITY_STOPWORDS = {
+    "transfer", "move", "deal", "club", "clubs", "player", "striker", "forward", "winger",
+    "midfielder", "defender", "goalkeeper", "interest", "interested", "considering", "talks",
+    "talk", "initial", "contact", "approach", "early", "stage", "aware", "season", "contract",
+    "year", "current", "quality", "leadership", "strong", "character", "excellent", "optimism",
+    "could", "complete", "working", "departures", "football", "report", "reports", "reported",
+    "העברה", "מעבר", "עסקה", "מועדון", "מועדונים", "שחקן", "חלוץ", "קשר", "בלם", "שוער",
+    "עניין", "מעוניינת", "מעוניין", "שוקלת", "בוחנת", "שיחות", "פנייה", "ראשונית", "שלב",
+    "מוקדם", "מודעת", "עונה", "חוזה", "איכות", "מנהיגות", "אופי", "מצוין", "אופטימיות",
+    "להשלים", "עובדת", "עזיבות", "כפי", "שצוין", "לקראת", "הקרובה",
+}
+_FINAL_TEAM_TOKEN_CACHE: set[str] | None = None
+
+
+def _final_team_noise_tokens() -> set[str]:
+    global _FINAL_TEAM_TOKEN_CACHE
+    if _FINAL_TEAM_TOKEN_CACHE is not None:
+        return _FINAL_TEAM_TOKEN_CACHE
+    values: set[str] = set()
+    for source, target in TEAM_REPLACEMENTS.items():
+        for value in (source, target):
+            normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+            values.update(re.findall(r"[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת'׳״-]{1,}", normalized))
+    _FINAL_TEAM_TOKEN_CACHE = values
+    return values
+
+
+def _final_event_identity_tokens(text: str) -> set[str]:
+    value = unicodedata.normalize("NFKC", html.unescape(str(text or ""))).casefold()
+    value = URL_RE.sub(" ", value)
+    value = re.sub(r"@[A-Za-z0-9_]+", " ", value)
+    tokens = re.findall(r"[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת'׳״-]{2,}", value)
+    team_noise = _final_team_noise_tokens()
+    result: set[str] = set()
+    for token in tokens:
+        clean = token.strip("-'׳״")
+        if len(clean) < 5 or clean in _FINAL_EVENT_IDENTITY_STOPWORDS or clean in team_noise:
+            continue
+        result.add(clean)
+        if clean[0:1] in {"ו", "ב", "ל", "מ", "ה", "כ"} and len(clean) >= 6:
+            stripped = clean[1:]
+            if stripped not in _FINAL_EVENT_IDENTITY_STOPWORDS and stripped not in team_noise:
+                result.add(stripped)
+    return result
+
+
+def _final_item_event_text(item: dict[str, Any]) -> str:
+    try:
+        return _final_duplicate_item_text(item)
+    except Exception:
+        return "\n".join(
+            str(item.get(key) or "")
+            for key in ("original_text", "translated", "text", "preview", "rendered")
+            if str(item.get(key) or "").strip()
+        )
+
+
+def _final_same_early_transfer_event(post: Post, item: dict[str, Any]) -> bool:
+    if not isinstance(item, dict) or is_pending_memory_item(item):
+        return False
+    current_text = _final_source_text(post)
+    previous_text = _final_item_event_text(item)
+    if not current_text or not previous_text:
+        return False
+    if not _FINAL_EARLY_TRANSFER_STAGE_RE.search(current_text) or not _FINAL_EARLY_TRANSFER_STAGE_RE.search(previous_text):
+        return False
+    if _FINAL_ADVANCED_TRANSFER_STAGE_RE.search(current_text):
+        return False
+    current_teams = _final_logical_team_ids(current_text)
+    previous_teams = _final_logical_team_ids(previous_text)
+    if not current_teams or not previous_teams or not (current_teams & previous_teams):
+        return False
+    # A newly named destination is a different or materially advanced report.
+    # A later post may omit the selling club, so a subset of the earlier teams
+    # (for example Chelsea only after Chelsea+Brighton) remains the same event.
+    if current_teams - previous_teams:
+        return False
+    shared_identity = _final_event_identity_tokens(current_text) & _final_event_identity_tokens(previous_text)
+    return bool(shared_identity)
+
+
+def _final_recent_event_memory_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for getter in (cleanup_recent_news_events, cleanup_channel_recent_news_events, cleanup_bot_sent_reply_targets):
+        try:
+            values = getter(state)
+        except Exception:
+            values = []
+        for item in values or []:
+            if isinstance(item, dict):
+                rows.append(item)
+    for key in ("recent_news_events", "channel_recent_news_events", "last_sent_posts", "bot_sent_reply_targets"):
+        values = state.get(key, []) if isinstance(state, dict) else []
+        if isinstance(values, list):
+            rows.extend(item for item in values if isinstance(item, dict))
+    unique: dict[str, dict[str, Any]] = {}
+    now = time.time()
+    for item in rows:
+        ts = float(item.get("ts", 0.0) or item.get("created_at", 0.0) or 0.0)
+        if ts and now - ts > RECENT_NEWS_WINDOW_SECONDS:
+            continue
+        identity = str(item.get("post_id") or item.get("link") or item.get("id") or "").strip()
+        if not identity:
+            identity = hashlib.sha1(_final_item_event_text(item).encode("utf-8", errors="ignore")).hexdigest()
+        unique[identity] = item
+    return list(unique.values())
+
+
+def _final_cross_writer_early_transfer_duplicate(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    current_author = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    for item in reversed(_final_recent_event_memory_rows(state)[-1200:]):
+        previous_author = str(item.get("username") or item.get("source") or "").strip().lstrip("@").casefold()
+        if previous_author and current_author and previous_author == current_author:
+            continue
+        if _final_same_early_transfer_event(post, item):
+            result = dict(item)
+            result["duplicate_verdict"] = "אותו שחקן, אותן קבוצות ואותו שלב מוקדם בעסקה"
+            result["duplicate_source"] = previous_author or str(item.get("source") or "")
+            return result
+    return None
+
+
+_PRE_FINAL_EVENT_FIND_RECENT = find_recent_duplicate_event
+_PRE_FINAL_EVENT_FIND_CHANNEL = find_channel_duplicate_event
+_PRE_FINAL_EVENT_FIND_TRANSLATED = find_post_translation_duplicate_event
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = _final_cross_writer_early_transfer_duplicate(post, state)
+    if candidate:
+        return candidate
+    return _PRE_FINAL_EVENT_FIND_RECENT(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = _final_cross_writer_early_transfer_duplicate(post, state)
+    if candidate:
+        return candidate
+    return _PRE_FINAL_EVENT_FIND_CHANNEL(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = _final_cross_writer_early_transfer_duplicate(post, state)
+    if candidate:
+        return candidate
+    return _PRE_FINAL_EVENT_FIND_TRANSLATED(post, translated_message, state)
+
+
+if callable(globals().get("find_recent_duplicate_event_ai_aware")):
+    _PRE_FINAL_EVENT_FIND_AI = find_recent_duplicate_event_ai_aware
+
+    def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        candidate = _final_cross_writer_early_transfer_duplicate(post, state)
+        if candidate:
+            return candidate
+        return _PRE_FINAL_EVENT_FIND_AI(post, state, *args, **kwargs)
+
+
+
+# Statistics shown in the control panel also use original publication time and
+# the same strict two-hour window. This prevents a stale RSS item processed today
+# from entering "today" counters merely because it was discovered now.
+_PRE_FINAL_FRESH_SIMPLE_STAT_TEXT = simple_stat_text
+_PRE_FINAL_FRESH_FACTS_STATS_TEXT = facts_stats_text
+
+
+def _final_fresh_telemetry_rows() -> list[dict[str, Any]]:
+    return _final_recent_timing_rows(max(200, int(PIPELINE_TIMING_LIMIT) + int(PIPELINE_BLOCKED_TIMING_LIMIT)))
+
+
+def simple_stat_text(kind: str) -> str:
+    rows = _final_fresh_telemetry_rows()
+    sent = [row for row in rows if str(row.get("status") or "") == "sent"]
+    blocked = [row for row in rows if str(row.get("status") or "") == "blocked"]
+    if kind == "sent_today":
+        return f"✅ כמה נשלחו בשעתיים האחרונות\n\nנשלחו: {len(sent)}"
+    if kind == "blocked_today":
+        return f"🚫 כמה נחסמו בשעתיים האחרונות\n\nנחסמו: {len(blocked)}"
+    if kind == "success_rate":
+        total = len(sent) + len(blocked)
+        pct = (len(sent) / total * 100.0) if total else 0.0
+        return f"📊 אחוז הצלחה בשעתיים האחרונות\n\nנשלחו: {len(sent)}\nנחסמו: {len(blocked)}\nאחוז שליחה: {pct:.1f}%"
+    if kind in {"active_writer", "posts_by_writer"}:
+        counts: dict[str, int] = {}
+        for row in rows:
+            username = str(row.get("username") or "").strip()
+            if username:
+                counts[username] = counts.get(username, 0) + 1
+        ordered = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0].casefold()))
+        if not ordered:
+            return "🏆 פעילות כתבים בשעתיים האחרונות\n\nאין פוסטים טריים שנמדדו."
+        if kind == "active_writer":
+            username, count = ordered[0]
+            return f"🏆 הכתב הכי פעיל בשעתיים האחרונות\n\n{_hebrew_account_label(username)} — {count} פוסטים שנמדדו."
+        return "📋 פוסטים לפי כתב בשעתיים האחרונות\n\n" + "\n".join(
+            f"{index}. {_hebrew_account_label(username)} — {count}"
+            for index, (username, count) in enumerate(ordered, 1)
+        )
+    if kind == "top_blocks":
+        counts: dict[str, int] = {}
+        for row in blocked:
+            reason = str(row.get("block_reason_he") or hebrew_block_reason(str(row.get("block_reason") or ""))).strip()
+            if reason:
+                counts[reason] = counts.get(reason, 0) + 1
+        ordered = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[:10]
+        if not ordered:
+            return "🧱 טופ סיבות חסימה בשעתיים האחרונות\n\nאין חסימות טריות שנמדדו."
+        return "🧱 טופ סיבות חסימה בשעתיים האחרונות\n\n" + "\n".join(
+            f"{index}. {reason} — {count}" for index, (reason, count) in enumerate(ordered, 1)
+        )
+    if kind == "most_blocked_writer":
+        counts: dict[str, int] = {}
+        for row in blocked:
+            username = str(row.get("username") or "").strip()
+            if username:
+                counts[username] = counts.get(username, 0) + 1
+        if not counts:
+            return "😅 הכתב שנחסם הכי הרבה בשעתיים האחרונות\n\nאין חסימות טריות שנמדדו."
+        username, count = max(counts.items(), key=lambda pair: pair[1])
+        return f"😅 הכתב שנחסם הכי הרבה בשעתיים האחרונות\n\n{_hebrew_account_label(username)} — {count} חסימות"
+    if kind == "avg_scan":
+        values: list[float] = []
+        for row in rows:
+            for key in ("rss_fetch_seconds", "live_fetch_seconds"):
+                try:
+                    value = float(row.get(key, 0.0) or 0.0)
+                except Exception:
+                    value = 0.0
+                if value > 0:
+                    values.append(value)
+        if not values:
+            return "⚡ זמן סריקה ממוצע בשעתיים האחרונות\n\nלא נשמרו מדידות סריקה לפוסטים טריים."
+        return f"⚡ זמן סריקה ממוצע בשעתיים האחרונות\n\nממוצע: {sum(values) / len(values):.2f} שניות\nמדידות: {len(values)}\nהכי איטי: {max(values):.2f} שניות"
+    return _PRE_FINAL_FRESH_SIMPLE_STAT_TEXT(kind)
+
+
+def facts_stats_text() -> str:
+    sent_items = load_json_list_file(persistent_memory_path("football_sent_memory.json"))
+    state = load_control_state()
+    blocked_items: list[dict[str, Any]] = []
+    for key in ("last_blocked_posts", "last_duplicate_posts", "last_filtered_posts"):
+        rows = state.get(key, [])
+        if isinstance(rows, list):
+            blocked_items.extend(item for item in rows if isinstance(item, dict))
+    lines = ["📊 סטטיסטיקות מקורות העובדות — שעתיים אחרונות", ""]
+    total_sent = total_blocked = 0
+    for source in FACTS_SOURCE_ORDER:
+        sent = [
+            item for item in sent_items
+            if isinstance(item, dict)
+            and _facts_item_canonical(item) == source
+            and _final_is_strictly_recent_publication(item)
+        ]
+        blocked = [
+            item for item in blocked_items
+            if _facts_item_canonical(item) == source
+            and _final_is_strictly_recent_publication(item)
+        ]
+        total_sent += len(sent)
+        total_blocked += len(blocked)
+        lines.append(
+            f"• {_facts_source_label(source)} — {'פעיל' if not control_state_account_disabled(source) else 'כבוי'} | "
+            f"נשלחו: {len(sent)} | נחסמו: {len(blocked)}"
+        )
+    lines.extend(["", f"סה״כ בשעתיים האחרונות: {total_sent} נשלחו, {total_blocked} נחסמו."])
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Control actions: acknowledge immediately, compute off the polling thread, and
+# place every diagnostic/statistical result in a brand-new message.
+# ---------------------------------------------------------------------------
+_PRE_FINAL_NEW_RESULT_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def _final_control_authorized(message: dict[str, Any]) -> bool:
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    return not CONTROL_CHAT_ID or chat_id == str(CONTROL_CHAT_ID)
+
+
+def _final_submit_control_result(callback_id: str, acknowledgement: str, compute_fn) -> None:
+    if callback_id:
+        answer_control_callback(callback_id, acknowledgement)
+
+    def _worker() -> None:
+        try:
+            result = compute_fn()
+            if isinstance(result, (list, tuple)):
+                parts = [str(part) for part in result if str(part).strip()]
+            else:
+                parts = [str(result)] if str(result).strip() else []
+            if not parts:
+                parts = ["לא נמצאו נתונים להצגה."]
+            for part in parts:
+                send_control_text_full(part, control_delete_message_reply_markup())
+        except Exception as exc:
+            send_control_text(
+                "הפעולה נכשלה:\n" + short_error(exc, 900),
+                None,
+                control_delete_message_reply_markup(),
+            )
+
+    try:
+        _CONTROL_BUTTON_EXECUTOR.submit(_worker)
+    except Exception:
+        Thread(target=_worker, daemon=True).start()
+
+
+def _final_recent_duplicate_report() -> str:
+    state = load_control_state()
+    rows = recent_duplicate_control_items(state, limit=10)
+    return _control_list_text(
+        "🧠 10 כפילויות אחרונות",
+        rows,
+        "אין כפילויות של פוסטים מהשעתיים האחרונות.",
+        limit=10,
+    )
+
+
+def _final_recent_block_report() -> str:
+    rows = _twenty_recent_visible_blocks(False)
+    return _control_list_text(
+        "📋 20 חסימות אחרונות",
+        rows,
+        "אין חסימות של פוסטים מהשעתיים האחרונות.",
+        limit=RECENT_BLOCKS_VISIBLE_LIMIT,
+    )
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    if not callback:
+        return _PRE_FINAL_NEW_RESULT_PROCESS_CONTROL_UPDATE(update)
+    data = str(callback.get("data", "") or "")
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    if not _final_control_authorized(message):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+
+    if data == "football_last_blocked":
+        _final_submit_control_result(callback_id, "מציג 20 חסימות", _final_recent_block_report)
+        return
+    if data == "football_last_duplicate":
+        _final_submit_control_result(callback_id, "מציג 10 כפילויות", _final_recent_duplicate_report)
+        return
+    if data == "football_pipeline_timings":
+        _final_submit_control_result(callback_id, "מציג בדיקת עיכוב", lambda: pipeline_timing_report_parts(10))
+        return
+    if data == "football_facts_pipeline_timings":
+        _final_submit_control_result(callback_id, "מציג בדיקת עיכוב של העובדות", lambda: facts_pipeline_timing_report_text(10))
+        return
+    if data == "football_facts_blocks":
+        _final_submit_control_result(callback_id, "מציג חסימות של מקורות העובדות", lambda: facts_recent_blocks_text(RECENT_BLOCKS_VISIBLE_LIMIT))
+        return
+    if data == "football_facts_stats":
+        _final_submit_control_result(callback_id, "מציג סטטיסטיקות עובדות", facts_stats_text)
+        return
+    if data.startswith("football_stat_"):
+        kind = data.replace("football_stat_", "", 1)
+        _final_submit_control_result(callback_id, "מציג נתון", lambda: simple_stat_text(kind))
+        return
+
+    background_actions = {
+        "football_check_all_accounts_now": ("בודק את כל הכתבים", check_all_accounts_now_text),
+        "football_active_accounts_status": ("מציג כתבים פעילים", active_accounts_status_text),
+        "football_rss_status": ("בודק RSS", rss_status_text),
+        "football_gemini_status": ("בודק Gemini", gemini_status_text),
+        "football_system_health": ("בודק חיבורים", system_health_text),
+        "football_blocked_summary": ("מכין סיכום חסימות", last_blocked_summary_text),
+        "football_daily_report_now": ("מכין סיכום יום", build_daily_quality_report_text),
+        "football_facts_rules": ("מציג כללים וחסימות", special_sources_diagnostics_text),
+        "football_facts_rss": ("בודק RSS של מקורות העובדות", facts_rss_status_text),
+        "football_facts_check_all": ("בודק את כל מקורות העובדות", facts_check_all_text),
+        "football_special_sources_diagnostics": ("מכין אבחון מקורות עובדות", special_sources_diagnostics_text),
+    }
+    action = background_actions.get(data)
+    if action:
+        acknowledgement, compute_fn = action
+        _final_submit_control_result(callback_id, acknowledgement, compute_fn)
+        return
+
+    # Acknowledge every remaining button immediately, then remove the callback ID
+    # from the delegated copy so the older nested handlers do not answer it again.
+    # Menu edits/toggles retain their existing behavior, while the Telegram spinner
+    # disappears without waiting for the worker queue.
+    delegated_update = update
+    if callback_id:
+        answer_control_callback(callback_id, "")
+        delegated_update = dict(update)
+        delegated_callback = dict(callback)
+        delegated_callback["id"] = ""
+        delegated_update["callback_query"] = delegated_callback
+    return _PRE_FINAL_NEW_RESULT_PROCESS_CONTROL_UPDATE(delegated_update)
+
+# ====== END FINAL NEW-RESULT / FRESH-TWO-HOUR / UNCLEAR-YOUTH / EVENT-DEDUPE PATCH ======
+
 if __name__ == "__main__":
     main()
