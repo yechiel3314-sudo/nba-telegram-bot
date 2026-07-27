@@ -38860,5 +38860,799 @@ def hebrew_block_reason(reason: Any) -> str:
 
 # ====== END FOOTBALLTWEET CROSS-REPORTER SEMANTIC DUPLICATE PATCH ======
 
+
+# ====== FINAL FOUR-RETRY / FAST CONTROL / FULL QUIET PREVIEW PATCH (2026-07-27) ======
+# Scope: only the seven requested improvements. Existing RSS URLs/order, account
+# lists, filters, translation prompt/model selection and persistent filenames/keys
+# remain backward-compatible.
+
+BOT_BUILD_ID = "winner-four-retries-fast-controls-full-quiet-preview-2026-07-27"
+
+# ---------------------------------------------------------------------------
+# 1) Translation: one immediate attempt plus three retries, exactly 150 seconds
+#    apart. Intermediate failures stay pending and are not recorded as blocks.
+# ---------------------------------------------------------------------------
+TRANSLATION_TOTAL_ATTEMPTS = 4
+TRANSLATION_RETRY_INTERVAL_SECONDS = 150
+AUTO_GEMINI_RETRY_ATTEMPTS = TRANSLATION_TOTAL_ATTEMPTS
+AUTO_GEMINI_RETRY_WAIT_SECONDS = TRANSLATION_RETRY_INTERVAL_SECONDS
+
+_PRE_FOUR_RETRY_SCHEDULE = _gemini_retry_schedule
+
+
+def _gemini_retry_schedule(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Read the existing retry schedule and migrate old 3-attempt exhaustion.
+
+    No key/file is renamed. A post exhausted by the former three-attempt build is
+    reopened only for its newly requested fourth attempt.
+    """
+    schedule = dict(_PRE_FOUR_RETRY_SCHEDULE(state) or {})
+    changed = False
+    now = time.time()
+    for identity, raw_entry in list(schedule.items()):
+        if not isinstance(raw_entry, dict):
+            continue
+        entry = dict(raw_entry)
+        attempts_done = int(entry.get("attempts_done", 0) or 0)
+        if attempts_done < TRANSLATION_TOTAL_ATTEMPTS and bool(entry.get("exhausted", False)):
+            entry["exhausted"] = False
+            last_attempt_at = float(
+                entry.get("updated_at")
+                or entry.get("attempt_started_at")
+                or entry.get("created_at")
+                or now
+            )
+            entry["next_retry_at"] = max(0.0, last_attempt_at + TRANSLATION_RETRY_INTERVAL_SECONDS)
+            entry["migrated_to_four_attempts_at"] = now
+            schedule[str(identity)] = entry
+            changed = True
+    if changed:
+        try:
+            _store_gemini_retry_schedule(state, schedule)
+        except Exception as exc:
+            logging.debug("Four-attempt retry migration persistence failed safely: %s", short_error(exc, 240))
+    return schedule
+
+
+def _four_retry_translation_reason(reason: Any) -> bool:
+    value = str(reason or "").split(";", 1)[0].strip()
+    return value in {
+        "translation_unavailable",
+        "translation_quality_blocked",
+        "main_blocked_untranslated",
+    } or value.startswith("translation_unavailable")
+
+
+_PRE_FOUR_RETRY_LOG_SKIP = log_skip_once
+
+
+def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
+    """Do not expose attempts 1-3 as blocked posts.
+
+    The retry scheduler reserves the current attempt before the underlying send
+    path calls this function. Therefore attempts_done is the number completed
+    before the current call: 0/1/2 are intermediate, 3 is the fourth/final call.
+    """
+    if _four_retry_translation_reason(reason):
+        attempts_done = 0
+        try:
+            state = load_state()
+            identity = _acceptance_retry_identity(post)
+            entry = dict((_gemini_retry_schedule(state).get(identity) or {}))
+            attempts_done = int(entry.get("attempts_done", 0) or 0)
+        except Exception:
+            attempts_done = 0
+        if attempts_done < TRANSLATION_TOTAL_ATTEMPTS - 1:
+            logging.warning(
+                "Gemini translation attempt %s/%s failed for @%s; post remains pending and is not recorded as blocked.",
+                attempts_done + 1,
+                TRANSLATION_TOTAL_ATTEMPTS,
+                getattr(post, "username", ""),
+            )
+            return
+        reason = "translation_unavailable"
+    return _PRE_FOUR_RETRY_LOG_SKIP(reason, post, message, *args)
+
+
+_PRE_FOUR_RETRY_PIPELINE_UPSERT = _final_pipeline_upsert
+
+
+def _final_pipeline_upsert(
+    post: Post,
+    status: str,
+    snapshot: dict[str, Any],
+    result: dict[str, Any] | None = None,
+    reason: str = "",
+) -> None:
+    result = dict(result or {})
+    mode = str(result.get("mode") or reason or "")
+    pending_modes = {
+        "translation_unavailable_retry_scheduled",
+        "translation_unavailable_retry_waiting",
+        "translation_unavailable_retry_in_progress",
+        "translation_unavailable_retry_already_succeeded_no_duplicate",
+    }
+    if status == "blocked" and mode in pending_modes:
+        return
+    if status == "blocked" and (
+        "retries_exhausted" in mode or "retry_exhausted" in mode or "no_fourth_attempt" in mode
+    ):
+        reason = "translation_unavailable"
+        result["mode"] = "translation_unavailable"
+        result["translation_attempts"] = TRANSLATION_TOTAL_ATTEMPTS
+    return _PRE_FOUR_RETRY_PIPELINE_UPSERT(post, status, snapshot, result=result, reason=reason)
+
+
+_PRE_FOUR_RETRY_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = _PRE_FOUR_RETRY_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    if isinstance(result, dict):
+        mode = str(result.get("mode", "") or "")
+        if "retries_exhausted" in mode or "retry_exhausted" in mode or "no_fourth_attempt" in mode:
+            result["mode"] = "translation_unavailable"
+            result["translation_attempts"] = TRANSLATION_TOTAL_ATTEMPTS
+    return result
+
+
+# Manual preparation uses the same four-attempt rule. It runs in the already
+# existing background preparation thread, so the control listener remains free.
+_PRE_FOUR_RETRY_MANUAL_TRANSLATION = manual_force_translation
+
+
+def _manual_translation_retryable(exc: Exception) -> bool:
+    if isinstance(exc, TranslationUnavailable):
+        return True
+    value = str(exc or "").casefold()
+    return any(token in value for token in ("gemini", "translation", "תרגום", "429", "503", "quota", "overload"))
+
+
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    last_error: Exception | None = None
+    for attempt in range(1, TRANSLATION_TOTAL_ATTEMPTS + 1):
+        if attempt > 1:
+            time.sleep(TRANSLATION_RETRY_INTERVAL_SECONDS)
+            try:
+                _clear_bad_gemini_cache_for_retry(post)
+            except Exception:
+                pass
+        try:
+            return _PRE_FOUR_RETRY_MANUAL_TRANSLATION(post)
+        except Exception as exc:
+            last_error = exc
+            if not _manual_translation_retryable(exc) or attempt >= TRANSLATION_TOTAL_ATTEMPTS:
+                raise
+            logging.warning(
+                "Manual Gemini preparation attempt %s/%s failed for @%s; retrying in %s seconds: %s",
+                attempt,
+                TRANSLATION_TOTAL_ATTEMPTS,
+                getattr(post, "username", ""),
+                TRANSLATION_RETRY_INTERVAL_SECONDS,
+                short_error(exc, 360),
+            )
+    raise TranslationUnavailable(str(last_error or "Gemini translation unavailable"))
+
+
+# ---------------------------------------------------------------------------
+# 3) Add punctuation at the end of every real paragraph only when missing.
+#    Emoji/flag-only paragraphs and already punctuated sentences stay untouched.
+# ---------------------------------------------------------------------------
+_PARAGRAPH_TRAILING_VISUAL_RE = re.compile(
+    r"(?s)(?P<body>.*?)(?P<suffix>\s*(?:(?:[\U0001F1E6-\U0001F1FF]{2})|[\U0001F300-\U0001FAFF]|[\u2600-\u27BF]|[\"'״׳)\]])*)$"
+)
+
+
+def _ensure_real_paragraph_punctuation(value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return text
+    parts = re.split(r"(\n\s*\n)", text)
+    for index in range(0, len(parts), 2):
+        paragraph = parts[index]
+        if not paragraph.strip() or not re.search(r"[A-Za-zא-ת0-9]", paragraph):
+            continue
+        match = _PARAGRAPH_TRAILING_VISUAL_RE.match(paragraph.rstrip())
+        if not match:
+            continue
+        body = match.group("body").rstrip()
+        suffix = match.group("suffix") or ""
+        if not body or re.search(r"[.!?…:;][\"'״׳)\]]*$", body):
+            continue
+        # A trailing comma/dash is not a complete sentence terminator.
+        body = re.sub(r"[\s,\-–—]+$", "", body).rstrip()
+        if body:
+            parts[index] = body + "." + suffix + paragraph[len(paragraph.rstrip()):]
+    return "".join(parts)
+
+
+_PRE_PARAGRAPH_PUNCTUATION_BUILD = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _ensure_real_paragraph_punctuation(translated)
+    quoted_translated = _ensure_real_paragraph_punctuation(quoted_translated) if quoted_translated else ""
+    return _PRE_PARAGRAPH_PUNCTUATION_BUILD(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5) Facts hub: use the same wording, icons and navigation order as the regular
+#    control categories.
+# ---------------------------------------------------------------------------
+def facts_main_reply_markup() -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "👤 בדוק מקור ספציפי", "callback_data": "football_facts_latest"}],
+        [{"text": "🔎 בדיקה וניטור", "callback_data": "football_facts_monitor"}],
+        [{"text": "👥 ניהול מקורות", "callback_data": "football_facts_manage"}],
+        [{"text": "🛡️ הגדרות וסינון", "callback_data": "football_facts_rules"}],
+        [{"text": "📊 סטטיסטיקות", "callback_data": "football_facts_stats"}],
+        [{"text": "📚 10 פוסטים אחרונים", "callback_data": "football_facts_history"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ])
+
+
+def facts_monitor_reply_markup() -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "🔄 בדוק את כל המקורות עכשיו", "callback_data": "football_facts_check_all"}],
+        [{"text": "📡 בדיקת RSS", "callback_data": "football_facts_rss"}],
+        [{"text": "📋 30 חסימות אחרונות", "callback_data": "football_facts_blocks"}],
+        [{"text": "⏱️ בדיקת עיכוב אמיתית", "callback_data": "football_pipeline_timings"}],
+        [{"text": "🛡️ הגדרות וסינון", "callback_data": "football_facts_rules"}],
+        [{"text": "⬅️ חזרה לעובדות", "callback_data": "football_menu_facts"}],
+    ])
+
+
+_PRE_FACTS_ICON_QUICK_MENU = quick_control_reply_markup
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    markup = _PRE_FACTS_ICON_QUICK_MENU()
+    rows = [[dict(button) for button in row if isinstance(button, dict)] for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])]
+    for row in rows:
+        for button in row:
+            if str(button.get("callback_data", "")) == "football_menu_facts":
+                button["text"] = "📊 עובדות"
+    return stable_reply_markup(rows)
+
+
+# ---------------------------------------------------------------------------
+# 6) Quiet-channel preparation sends every media item the main channel would
+#    receive. Telegram albums cannot carry inline buttons, so multi-photo posts
+#    are sent as one captioned album followed only by a compact action row.
+# ---------------------------------------------------------------------------
+_PRE_ALL_MEDIA_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    _reliable_hydrate_exact_post(post, force=True)
+    if _acceptance_post_requires_video(post):
+        return _PRE_ALL_MEDIA_CONTROL_CANDIDATE(post, token, message_html)
+    images = selected_post_images(post)
+    if len(images) <= 1:
+        return _PRE_ALL_MEDIA_CONTROL_CANDIDATE(post, token, message_html)
+    if not CONTROL_CHAT_ID:
+        return []
+    if not _acceptance_caption_fits(message_html):
+        send_control_text(
+            "⛔ לא ניתן להכין את אלבום התמונות עם הכיתוב המלא בהודעה אחת.\n\n" +
+            hebrew_block_reason("caption_too_long_for_single_media_message"),
+            None,
+            control_delete_message_reply_markup(),
+        )
+        return []
+    media: list[dict[str, Any]] = []
+    for index, image_url in enumerate(images):
+        item: dict[str, Any] = {"type": "photo", "media": image_url}
+        if index == 0:
+            item["caption"] = message_html
+            item["parse_mode"] = "HTML"
+        media.append(item)
+    try:
+        response = telegram_api(
+            "sendMediaGroup",
+            {"chat_id": CONTROL_CHAT_ID, "media": media},
+            max_attempts=1,
+            timeout=max(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SECONDS),
+        )
+        ids = _telegram_result_message_ids(response)
+        if ids:
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, ids)
+            send_control_html(
+                "✅ הפוסט הוכן עם כל המדיה המקורית.",
+                control_send_to_main_reply_markup(token),
+            )
+        return ids
+    except Exception as exc:
+        logging.warning("Full quiet-channel album preparation failed: %s", short_error(exc, 500))
+        send_control_text(
+            "⛔ הכנת כל התמונות בערוץ השקט נכשלה; לא נשלחה תצוגה חלקית.\n\n" + short_error(exc, 800),
+            None,
+            control_delete_message_reply_markup(),
+        )
+        return []
+
+
+# ---------------------------------------------------------------------------
+# 7) Returning/forwarding a post to the quiet channel produces ONE details
+#    message containing the complete Google translation. It never copies the
+#    same post again as a separate message.
+# ---------------------------------------------------------------------------
+def _single_details_post_from_row(row: dict[str, Any]) -> Post | None:
+    value = row.get("post") if isinstance(row, dict) else None
+    if isinstance(value, Post):
+        return value
+    if isinstance(value, dict):
+        try:
+            return post_from_control_payload(value)
+        except Exception:
+            return None
+    return None
+
+
+def _single_details_original_text(row: dict[str, Any], message: dict[str, Any], post: Post | None) -> str:
+    candidates: list[str] = []
+    if isinstance(post, Post):
+        try:
+            candidates.append(_requested_source_text(post))
+        except Exception:
+            candidates.append(str(getattr(post, "text", "") or ""))
+        quoted = str(getattr(post, "quoted_text", "") or "").strip()
+        if quoted:
+            candidates.append(quoted)
+    for key in ("original_text", "text", "full_text", "rendered", "preview"):
+        value = row.get(key) if isinstance(row, dict) else ""
+        if value:
+            candidates.append(str(value))
+    target = _forward_target_message(message) if "_forward_target_message" in globals() else message
+    candidates.extend([
+        str(target.get("text") or ""),
+        str(target.get("caption") or ""),
+    ])
+    value = max((candidate.strip() for candidate in candidates if str(candidate).strip()), key=len, default="")
+    value = html_message_to_plain_text(value)
+    value = re.sub(
+        r"(?is)(?:\n\s*){1,3}נטו\s+ספורט\.?\s*📝(?:\s*\([^\n]*t\.me/neto_sport[^\n]*\))?\s*$",
+        "",
+        value,
+    ).strip()
+    return value
+
+
+def _google_translate_preserve_full_layout(value: str) -> str:
+    original = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not original:
+        return ""
+    parts = re.split(r"(\n\s*\n)", original)
+    output: list[str] = []
+    for part in parts:
+        if re.fullmatch(r"\n\s*\n", part or ""):
+            output.append("\n\n")
+            continue
+        paragraph = part.strip()
+        if not paragraph:
+            output.append(part)
+            continue
+        try:
+            translated = google_translate(paragraph)
+        except Exception:
+            translated = paragraph
+        translated = preserve_original_country_flags(paragraph, preserve_original_emojis(paragraph, translated))
+        translated = final_hebrew_polish(translated)
+        output.append(str(translated or paragraph).strip())
+    result = "".join(output)
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+    return _ensure_real_paragraph_punctuation(result)
+
+
+def _single_details_reason(row: dict[str, Any], post: Post | None) -> str:
+    for key in ("reason_he", "block_reason_he", "reason", "raw_reason", "block_reason"):
+        value = str(row.get(key) or "").strip() if isinstance(row, dict) else ""
+        if value:
+            return hebrew_block_reason(value)
+    if isinstance(post, Post):
+        try:
+            value = _requested_block_reason_for_post(post)
+            if value and value != "הפוסט הוכן או הוחזר לבדיקה ידנית":
+                return value
+        except Exception:
+            pass
+    return ""
+
+
+def _single_details_compact_header(row: dict[str, Any], message: dict[str, Any]) -> str:
+    username = str(row.get("username") or "").strip().lstrip("@")
+    source_label = str(row.get("source_label") or "").strip()
+    if not source_label and username:
+        source_label = _hebrew_account_label(username)
+    context = row.get("context") if isinstance(row.get("context"), dict) else {}
+    link = str(row.get("link") or "").strip()
+    lines = ["🔎 פרטי ההודעה", "", f"מקור הדיווח: {source_label or 'מקור לא מזוהה'}"]
+    if username:
+        lines.append(f"חשבון X: @{username}")
+    lines.append(f"תאריך ושעת הפוסט: {_format_local_datetime(row.get('published_ts'))}")
+    if link:
+        lines.append(f"קישור לפוסט המקורי: {link}")
+    telegram_link = _telegram_channel_link_from_context(context)
+    if telegram_link:
+        lines.append(f"קישור להודעה בערוץ: {telegram_link}")
+    return "\n".join(lines)
+
+
+def _send_single_control_details_message(text: str, message: dict[str, Any]) -> int | None:
+    if not CONTROL_CHAT_ID:
+        return None
+    payload: dict[str, Any] = {
+        "chat_id": CONTROL_CHAT_ID,
+        "text": rtl(text),
+        "disable_web_page_preview": True,
+        "reply_markup": control_delete_message_reply_markup(),
+    }
+    if message.get("message_id"):
+        payload["reply_to_message_id"] = int(message.get("message_id"))
+        payload["allow_sending_without_reply"] = True
+    if message.get("message_thread_id"):
+        payload["message_thread_id"] = int(message.get("message_thread_id"))
+    response = telegram_api(
+        "sendMessage",
+        payload,
+        max_attempts=max(1, HTTP_RETRIES),
+        timeout=max(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SECONDS),
+    )
+    return _control_sent_message_id(response)
+
+
+_PRE_SINGLE_DETAILS_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    message = update.get("message") or update.get("channel_post") or update.get("edited_channel_post") or {}
+    if isinstance(message, dict):
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        is_control = bool(CONTROL_CHAT_ID and chat_id == str(CONTROL_CHAT_ID))
+        prepared_match = None
+        if is_control:
+            try:
+                prepared_match = _requested_find_prepared_item(message)
+            except Exception:
+                prepared_match = None
+        if is_control and (_message_has_forward_source_context(message) or prepared_match):
+            try:
+                if prepared_match:
+                    _token, prepared_item = prepared_match
+                    post = prepared_item.get("post")
+                    if not isinstance(post, Post):
+                        post = post_from_control_payload(post)
+                    row = {
+                        "post": post,
+                        "username": str(getattr(post, "username", "") or "") if isinstance(post, Post) else "",
+                        "source_label": _hebrew_account_label(str(getattr(post, "username", "") or "")) if isinstance(post, Post) else "",
+                        "published_ts": float(getattr(post, "published_ts", 0.0) or 0.0) if isinstance(post, Post) else 0.0,
+                        "link": str(getattr(post, "link", "") or "") if isinstance(post, Post) else "",
+                        "context": _forward_context_v3(message) if "_forward_context_v3" in globals() else {},
+                    }
+                else:
+                    row = _lookup_forwarded_source_v3(message)
+                    post = _single_details_post_from_row(row)
+
+                details = _forwarded_source_details_text(message) if not prepared_match else _single_details_compact_header(row, message)
+                original = _single_details_original_text(row, message, post)
+                translated = _google_translate_preserve_full_layout(original)
+                source_label = str(row.get("source_label") or "").strip()
+                username = str(row.get("username") or "").strip().lstrip("@")
+                if not source_label and username:
+                    source_label = _hebrew_account_label(username)
+                if source_label and translated:
+                    first_line = next((line.strip() for line in translated.splitlines() if line.strip()), "")
+                    if first_line.rstrip(":：") != source_label.rstrip(":："):
+                        translated = f"{source_label}:\n\n{translated}"
+                reason = _single_details_reason(row, post)
+                sections = [details]
+                if reason:
+                    sections.append("סיבת החסימה: " + reason)
+                sections.append("📰 התוכן המקורי המלא בתרגום Google\n\n" + (translated or "לא נמצא תוכן מלא לשחזור"))
+                combined = "\n\n".join(section.strip() for section in sections if section.strip())
+
+                # Telegram permits one text message up to 4096 characters. Keep
+                # the full translation authoritative and compact only technical
+                # metadata when necessary; never send the post again separately.
+                if len(rtl(combined)) > 4096:
+                    compact_details = _single_details_compact_header(row, message)
+                    sections[0] = compact_details
+                    combined = "\n\n".join(section.strip() for section in sections if section.strip())
+                if len(rtl(combined)) > 4096:
+                    minimal = ["🔎 פרטי ההודעה", f"מקור הדיווח: {source_label or 'מקור לא מזוהה'}"]
+                    if reason:
+                        minimal.append("סיבת החסימה: " + reason)
+                    minimal.append("📰 התוכן המקורי המלא בתרגום Google\n\n" + (translated or "לא נמצא תוכן מלא לשחזור"))
+                    combined = "\n\n".join(minimal)
+                _send_single_control_details_message(combined, message)
+                return
+            except Exception as exc:
+                logging.exception("Single-message forwarded details reconstruction failed")
+                try:
+                    _send_single_control_details_message(
+                        "לא הצלחתי לשחזר את פרטי ההודעה והתרגום המלא:\n" + short_error(exc, 900),
+                        message,
+                    )
+                except Exception:
+                    pass
+                return
+    return _PRE_SINGLE_DETAILS_CONTROL_TEXT_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 2 + 4) Fast buttons and immediate NEW preparation status message.
+# All non-prepare callbacks run in a bounded executor so one slow operation never
+# blocks Telegram polling or another button click.
+# ---------------------------------------------------------------------------
+_CONTROL_BUTTON_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="control-button")
+_PREPARE_BUTTON_INFLIGHT: set[str] = set()
+_PREPARE_BUTTON_LOCK = RLock()
+_PRE_FAST_BUTTON_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def _run_prepare_button(token: str, status_message_id: int | None) -> None:
+    try:
+        prepare_history_post_with_ai(token)
+        if status_message_id:
+            send_control_text(
+                "✅ הכנת הדיווח הסתיימה. ההודעה המוכנה מוצגת בהודעה חדשה.",
+                status_message_id,
+                control_delete_message_reply_markup(),
+            )
+    except Exception as exc:
+        logging.exception("Prepare-report button task failed")
+        if status_message_id:
+            send_control_text(
+                "⛔ הכנת הדיווח נכשלה:\n" + short_error(exc, 900),
+                status_message_id,
+                control_delete_message_reply_markup(),
+            )
+    finally:
+        with _PREPARE_BUTTON_LOCK:
+            _PREPARE_BUTTON_INFLIGHT.discard(token)
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    if not callback:
+        return _PRE_FAST_BUTTON_PROCESS_CONTROL_UPDATE(update)
+    data = str(callback.get("data", "") or "")
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+
+    if data.startswith("football_prepare_history_ai:"):
+        token = data.split(":", 1)[1].strip()
+        with _PREPARE_BUTTON_LOCK:
+            already_running = token in _PREPARE_BUTTON_INFLIGHT
+            if not already_running:
+                _PREPARE_BUTTON_INFLIGHT.add(token)
+        if already_running:
+            if callback_id:
+                answer_control_callback(callback_id, "הדיווח כבר נמצא בהכנה")
+            return
+        if callback_id:
+            answer_control_callback(callback_id, "מתחיל להכין את הדיווח")
+        status_id = send_control_text(
+            "⏳ מתחיל להכין את הדיווח המלא באמצעות Gemini...",
+            None,
+            control_delete_message_reply_markup(),
+        )
+        Thread(target=_run_prepare_button, args=(token, status_id), daemon=True).start()
+        return
+
+    # Return immediately to getUpdates; the established callback handler keeps
+    # its exact behavior inside the bounded worker.
+    try:
+        _CONTROL_BUTTON_EXECUTOR.submit(_PRE_FAST_BUTTON_PROCESS_CONTROL_UPDATE, update)
+    except RuntimeError:
+        Thread(target=_PRE_FAST_BUTTON_PROCESS_CONTROL_UPDATE, args=(update,), daemon=True).start()
+
+# ====== END FINAL FOUR-RETRY / FAST CONTROL / FULL QUIET PREVIEW PATCH ======
+
+
+# ----- Runtime attempt-index correction + exact returned-layout correction -----
+_ACTIVE_TRANSLATION_ATTEMPT_LOCK = RLock()
+_ACTIVE_TRANSLATION_ATTEMPT_BY_ID: dict[str, int] = {}
+_PRE_ACTIVE_RETRY_SEND_POST = send_post
+_PRE_ACTIVE_RETRY_LOG_SKIP = log_skip_once
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    identity = _acceptance_retry_identity(post)
+    current_attempt = 0
+    try:
+        schedule = _gemini_retry_schedule(state)
+        entry = dict(schedule.get(identity, {}) or {}) if identity else {}
+        attempts_done = int(entry.get("attempts_done", 0) or 0)
+        next_retry_at = float(entry.get("next_retry_at", 0.0) or 0.0)
+        due = (
+            not bool(entry.get("sent", False))
+            and not bool(entry.get("exhausted", False))
+            and attempts_done < TRANSLATION_TOTAL_ATTEMPTS
+            and (attempts_done == 0 or time.time() >= next_retry_at)
+        )
+        if due:
+            current_attempt = attempts_done + 1
+            with _ACTIVE_TRANSLATION_ATTEMPT_LOCK:
+                _ACTIVE_TRANSLATION_ATTEMPT_BY_ID[identity] = current_attempt
+    except Exception:
+        current_attempt = 1
+        if identity:
+            with _ACTIVE_TRANSLATION_ATTEMPT_LOCK:
+                _ACTIVE_TRANSLATION_ATTEMPT_BY_ID[identity] = current_attempt
+    try:
+        return _PRE_ACTIVE_RETRY_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    finally:
+        if identity:
+            with _ACTIVE_TRANSLATION_ATTEMPT_LOCK:
+                _ACTIVE_TRANSLATION_ATTEMPT_BY_ID.pop(identity, None)
+
+
+def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
+    if _four_retry_translation_reason(reason):
+        identity = _acceptance_retry_identity(post)
+        with _ACTIVE_TRANSLATION_ATTEMPT_LOCK:
+            current_attempt = int(_ACTIVE_TRANSLATION_ATTEMPT_BY_ID.get(identity, 0) or 0)
+        if current_attempt and current_attempt < TRANSLATION_TOTAL_ATTEMPTS:
+            logging.warning(
+                "Gemini translation attempt %s/%s failed for @%s; post remains pending and is not recorded as blocked.",
+                current_attempt,
+                TRANSLATION_TOTAL_ATTEMPTS,
+                getattr(post, "username", ""),
+            )
+            return
+        if current_attempt >= TRANSLATION_TOTAL_ATTEMPTS:
+            return _PRE_FOUR_RETRY_LOG_SKIP("translation_unavailable", post, message, *args)
+    return _PRE_ACTIVE_RETRY_LOG_SKIP(reason, post, message, *args)
+
+
+# Combine main + quoted source instead of choosing only the longest fragment.
+def _single_details_original_text(row: dict[str, Any], message: dict[str, Any], post: Post | None) -> str:
+    candidates: list[str] = []
+    if isinstance(post, Post):
+        try:
+            main_text = _requested_source_text(post)
+        except Exception:
+            main_text = str(getattr(post, "text", "") or "")
+        quoted = str(getattr(post, "quoted_text", "") or "").strip()
+        combined_post = str(main_text or "").strip()
+        if quoted:
+            combined_post = (combined_post + "\n\n" + quoted).strip()
+        if combined_post:
+            candidates.append(combined_post)
+    for key in ("original_text", "text", "full_text", "rendered", "preview"):
+        value = row.get(key) if isinstance(row, dict) else ""
+        if value:
+            candidates.append(str(value))
+    target = _forward_target_message(message) if "_forward_target_message" in globals() else message
+    candidates.extend([str(target.get("text") or ""), str(target.get("caption") or "")])
+    value = max((candidate.strip() for candidate in candidates if str(candidate).strip()), key=len, default="")
+    value = html_message_to_plain_text(value)
+    value = re.sub(
+        r"(?is)(?:\n\s*){1,3}נטו\s+ספורט\.?\s*📝(?:\s*\([^\n]*t\.me/neto_sport[^\n]*\))?\s*$",
+        "",
+        value,
+    ).strip()
+    return value
+
+
+# Preserve every original line and every blank line in the Google translation.
+def _google_translate_preserve_full_layout(value: str) -> str:
+    original = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not original:
+        return ""
+    output: list[str] = []
+    for line in original.split("\n"):
+        if not line.strip():
+            output.append("")
+            continue
+        source_line = line.strip()
+        try:
+            translated = google_translate(source_line)
+        except Exception:
+            translated = source_line
+        translated = preserve_original_country_flags(source_line, preserve_original_emojis(source_line, translated))
+        translated = final_hebrew_polish(translated)
+        output.append(str(translated or source_line).strip())
+    result = "\n".join(output)
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+    return _ensure_real_paragraph_punctuation(result)
+
+# ====== END RUNTIME ATTEMPT-INDEX CORRECTION ======
+
+
+# ----- Prefer untouched source text and recover stored block reasons by identity -----
+def _single_details_original_text(row: dict[str, Any], message: dict[str, Any], post: Post | None) -> str:
+    ordered_candidates: list[str] = []
+    if isinstance(post, Post):
+        try:
+            main_text = _requested_source_text(post)
+        except Exception:
+            main_text = str(getattr(post, "text", "") or "")
+        quoted = str(getattr(post, "quoted_text", "") or "").strip()
+        combined_post = str(main_text or "").strip()
+        if quoted:
+            combined_post = (combined_post + "\n\n" + quoted).strip()
+        if combined_post:
+            ordered_candidates.append(combined_post)
+    if isinstance(row, dict):
+        for key in ("original_text", "text", "full_text"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                ordered_candidates.append(value)
+    target = _forward_target_message(message) if "_forward_target_message" in globals() else message
+    for value in (str(target.get("text") or "").strip(), str(target.get("caption") or "").strip()):
+        if value:
+            ordered_candidates.append(value)
+    if isinstance(row, dict):
+        for key in ("rendered", "preview"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                ordered_candidates.append(value)
+    value = next((candidate for candidate in ordered_candidates if candidate), "")
+    value = html_message_to_plain_text(value)
+    value = re.sub(
+        r"(?is)(?:\n\s*){1,3}נטו\s+ספורט\.?\s*📝(?:\s*\([^\n]*t\.me/neto_sport[^\n]*\))?\s*$",
+        "",
+        value,
+    ).strip()
+    return value
+
+
+def _single_details_reason(row: dict[str, Any], post: Post | None) -> str:
+    for key in ("reason_he", "block_reason_he", "reason", "raw_reason", "block_reason"):
+        value = str(row.get(key) or "").strip() if isinstance(row, dict) else ""
+        if value:
+            return hebrew_block_reason(value)
+    if isinstance(post, Post):
+        try:
+            value = _requested_block_reason_for_post(post)
+            if value and value != "הפוסט הוכן או הוחזר לבדיקה ידנית":
+                return value
+        except Exception:
+            pass
+    wanted_link = str(row.get("link") or "").split("?", 1)[0].rstrip("/") if isinstance(row, dict) else ""
+    wanted_id = str(row.get("post_id") or "").strip() if isinstance(row, dict) else ""
+    try:
+        state = load_control_state()
+    except Exception:
+        state = {}
+    if isinstance(state, dict):
+        for key in ("last_blocked_posts", "last_duplicate_posts", "last_borderline_posts", "last_filtered_posts"):
+            values = state.get(key, [])
+            if not isinstance(values, list):
+                continue
+            for item in reversed(values):
+                if not isinstance(item, dict):
+                    continue
+                item_link = str(item.get("link") or "").split("?", 1)[0].rstrip("/")
+                item_id = str(item.get("post_id") or "").strip()
+                if (wanted_link and item_link == wanted_link) or (wanted_id and item_id == wanted_id):
+                    raw = str(item.get("reason_he") or item.get("reason") or item.get("raw_reason") or item.get("block_reason") or "").strip()
+                    if raw:
+                        return hebrew_block_reason(raw)
+    return ""
+
+# ====== END SOURCE PRIORITY / REASON RECOVERY ======
+
 if __name__ == "__main__":
     main()
