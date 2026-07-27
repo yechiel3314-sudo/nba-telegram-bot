@@ -45035,5 +45035,237 @@ BOT_BUILD_ID = "winner-global-hard-nonfootball-sports-block-2026-07-28"
 # ====== END GLOBAL HARD NON-FOOTBALL SPORTS BLOCK ======
 
 
+
+# ====== POLYMARKET SPORT — FACTS / STATS / PREDICTIONS ONLY (2026-07-28) ======
+# Source-specific editorial rule requested by the user. @PolymarketSport stays
+# inside the Facts hub, but current transfer/contract/manager news is rejected.
+# The decision never relies on the generic headline "Report" alone: the body is
+# classified using combinations of concrete transaction mechanics, timing and
+# factual/statistical signals, so one innocent word cannot block a post.
+
+_POLYMARKET_GENERIC_HEADLINE_RE = re.compile(
+    r"(?iu)^\s*(?:[🚨⚠️🔴🟡🟢🆕⏳✅❗‼️]+\s*)?"
+    r"(?:report|reported|breaking|just\s+in|exclusive|new|update|"
+    r"דיווח|דיווח\s+חדש|חדש|בלעדי|עדכון|זה\s+עתה(?:\s+נכנס(?:ה|ו)?)?)"
+    r"\s*[:\-–—]+\s*"
+)
+
+_POLYMARKET_FACT_LABEL_RE = re.compile(
+    r"(?iu)^\s*(?:[🚨⚠️🔴🟡🟢🆕⏳✅❗‼️]+\s*)?"
+    r"(?:fact|facts|stat|stats|statistic|did\s+you\s+know|on\s+this\s+day|record|"
+    r"עובדה|עובדות|נתון|נתונים|סטטיסטיקה|הידעתם|הידעת|היום\s+לפני|שיא)"
+    r"\s*[:\-–—]+\s*"
+)
+
+_POLYMARKET_FACT_BODY_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:record|all[- ]time|most|fewest|only\s+player|only\s+team|first\s+player|first\s+team|"
+    r"youngest|oldest|fastest|longest|unbeaten|consecutive|career|history|historical|"
+    r"appearances?|goals?|assists?|clean\s+sheets?|wins?|defeats?|matches?|minutes?|troph(?:y|ies)|titles?)\b|"
+    r"שיא|בכל\s+הזמנים|הכי\s+הרבה|הכי\s+מעט|היחיד|היחידה|הראשון|הראשונה|הצעיר|המבוגר|"
+    r"המהיר|הרצף|ללא\s+הפסד|ברציפות|בקריירה|בהיסטוריה|היסטורי|הופעות|שערים|בישולים|"
+    r"שערים\s+נקיים|ניצחונות|הפסדים|משחקים|דקות|תארים|אליפויות"
+    r")"
+)
+
+_POLYMARKET_FINANCIAL_FACT_RE = re.compile(
+    r"(?iu)(?:\b(?:revenue|turnover|valuation|worth|earnings|wages?|salary\s+bill|spent|spending|"
+    r"prize\s+money|commercial\s+income|matchday\s+income)\b|"
+    r"הכנסות|מחזור|שווי|רווחים|שכר|תקציב\s+שכר|הוציאה|הוציא|הוצאות|כספי\s+זכייה|הכנסה\s+מסחרית)"
+)
+
+_POLYMARKET_HISTORICAL_CONTEXT_RE = re.compile(
+    r"(?iu)(?:\b(?:in|since|between|during|from)\s+(?:19|20)\d{2}\b|"
+    r"\b(?:career|history|historically|previously|formerly|at\s+the\s+time|back\s+in)\b|"
+    r"בשנת\s+(?:19|20)\d{2}|מאז\s+(?:19|20)\d{2}|בין\s+(?:19|20)\d{2}|"
+    r"בקריירה|בהיסטוריה|היסטורית|בעבר|בזמנו|באותה\s+תקופה|לאורך\s+הקריירה)"
+)
+
+_POLYMARKET_CURRENT_WINDOW_RE = re.compile(
+    r"(?iu)(?:\b(?:today|tonight|now|currently|this\s+week|next\s+week|this\s+summer|"
+    r"this\s+window|transfer\s+window|in\s+the\s+coming\s+days|soon|imminent|expected\s+to|set\s+to)\b|"
+    r"היום|הלילה|כעת|כרגע|השבוע|בשבוע\s+הבא|הקיץ|חלון\s+ההעברות|בימים\s+הקרובים|"
+    r"בקרוב|מיידי|צפוי(?:ה|ים|ות)?\s+ל|עומד(?:ת|ים|ות)?\s+ל)"
+)
+
+# High-confidence current transfer/contract mechanics. These are phrases, not
+# isolated words, and therefore remain safe against ordinary factual sentences.
+_POLYMARKET_ACTIVE_TRANSFER_HIGH_RE = re.compile(
+    r"(?iu)(?:"
+    r"#?HERE(?:_|\s)+WE(?:_|\s)+GO|"
+    r"\b(?:deal\s+agreed|agreement\s+reached|personal\s+terms(?:\s+agreed)?|medical(?:s)?\s+(?:booked|scheduled)|"
+    r"formal\s+bid|bid\s+submitted|offer\s+submitted|offer\s+accepted|bid\s+accepted|offer\s+rejected|"
+    r"advanced\s+talks|negotiations?\s+(?:ongoing|underway)|in\s+talks\s+(?:with|to)|working\s+on\s+(?:a\s+)?deal|"
+    r"set\s+to\s+(?:join|sign|leave)|close\s+to\s+(?:joining|signing)|expected\s+to\s+(?:join|sign|leave)|"
+    r"will\s+(?:join|sign|leave)|has\s+signed|signs\s+for|joins\s+(?:on|from)|loan\s+(?:deal|move)|"
+    r"free\s+transfer|release\s+clause|option\s+to\s+buy|obligation\s+to\s+buy|transfer\s+fee|"
+    r"contract\s+(?:extension|renewal)|new\s+contract|extends?\s+(?:his|her|their)\s+contract|"
+    r"interested\s+in\s+signing|leading\s+the\s+race\s+to\s+sign|transfer\s+target|asked\s+about\s+signing)\b|"
+    r"העסקה\s+סוכמה|הושג\s+סיכום|סיכום\s+(?:מלא|בעל\s+פה)|סוכמו\s+התנאים\s+האישיים|"
+    r"תנאים\s+אישיים|נקבעו\s+בדיקות\s+רפואיות|בדיקות\s+רפואיות|הוגשה\s+הצעה|הצעה\s+רשמית|"
+    r"ההצעה\s+התקבלה|ההצעה\s+נדחתה|שיחות\s+מתקדמות|המשא\s+ומתן\s+נמשך|משא\s+ומתן|מו[\"״']?מ|"
+    r"עובד(?:ת|ים|ות)?\s+על\s+עסקה|צפוי(?:ה|ים|ות)?\s+(?:להצטרף|לחתום|לעזוב)|"
+    r"קרוב(?:ה|ים|ות)?\s+(?:להצטרף|לחתימה)|יחתום|יחתמו|חתם\s+ב|חתמה\s+ב|מצטרף\s+ל|מצטרפת\s+ל|"
+    r"עסקת\s+השאלה|מעבר\s+בהשאלה|העברה\s+חופשית|סעיף\s+שחרור|אופציית\s+רכישה|חובת\s+רכישה|"
+    r"דמי\s+העברה|הארכת\s+חוזה|חידוש\s+חוזה|חוזה\s+חדש|האריך\s+את\s+חוזהו|האריכה\s+את\s+חוזה|"
+    r"מעוניינ(?:ת|ים|ות)?\s+להחתים|מוביל(?:ה|ים|ות)?\s+במרוץ\s+להחתמת|יעד\s+העברות"
+    r")"
+)
+
+_POLYMARKET_TRANSFER_SOFT_RE = re.compile(
+    r"(?iu)(?:\b(?:transfer|signing|sign|join|move|deal|offer|bid|talks?|negotiations?|interest|interested|"
+    r"target|contract|agent|representatives?|loan|leave|departure|future)\b|"
+    r"העברה|החתמה|להחתים|חתימה|להצטרף|מעבר|עסקה|הצעה|שיחות|מגעים|עניין|מעוניינ|"
+    r"יעד|חוזה|סוכן|נציגים|השאלה|עזיבה|יעזוב|עתידו)"
+)
+
+_POLYMARKET_MANAGEMENT_NEWS_RE = re.compile(
+    r"(?iu)(?:\b(?:appointed|appoints?|new\s+(?:head\s+)?coach|new\s+manager|sacked|fired|dismissed|"
+    r"resigned|steps?\s+down|leaves?\s+(?:the\s+)?role|front[- ]?runner\s+for\s+(?:the\s+)?job|"
+    r"candidate\s+for\s+(?:the\s+)?job)\b|"
+    r"מונה\s+למאמן|מינתה\s+מאמן|המאמן\s+החדש|מאמן\s+חדש|פוטר|פיטרה|פיטורים|התפטר|"
+    r"עזב\s+את\s+תפקידו|עוזב\s+את\s+תפקידו|מועמד\s+לתפקיד|פייבוריט\s+לתפקיד|פייבוריט\s+לספסל)"
+)
+
+_POLYMARKET_RUMOUR_RE = re.compile(
+    r"(?iu)(?:\b(?:rumou?r|linked\s+with|could\s+join|may\s+join|considering\s+a\s+move|"
+    r"monitoring|keeping\s+tabs|shortlist(?:ed)?)\b|"
+    r"שמועה|מקושר\s+ל|עשוי\s+להצטרף|יכול\s+להצטרף|שוקל\s+מעבר|עוקב(?:ת|ים|ות)?\s+אחר|ברשימת\s+המועמדים)"
+)
+
+
+def _polymarket_clean_classification_text(post: Post) -> tuple[str, bool]:
+    raw = _requested_raw_post_text(post)
+    # A generic "Report:" headline is intentionally removed before classifying.
+    # It neither approves nor blocks the post.
+    without_report = _POLYMARKET_GENERIC_HEADLINE_RE.sub("", raw, count=1).strip()
+    has_fact_label = bool(_POLYMARKET_FACT_LABEL_RE.search(without_report))
+    without_labels = _POLYMARKET_FACT_LABEL_RE.sub("", without_report, count=1).strip()
+    return without_labels or without_report or raw, has_fact_label
+
+
+def _polymarket_named_football_subject(text: str) -> bool:
+    try:
+        if _final_logical_team_ids(text):
+            return True
+        if _final_event_identity_tokens(text):
+            return True
+    except Exception:
+        pass
+    return bool(re.search(
+        r"(?iu)\b(?:player|club|team|manager|coach|goalkeeper|defender|midfielder|forward|winger|"
+        r"שחקן|מועדון|קבוצה|מאמן|שוער|בלם|מגן|קשר|חלוץ|כנף)\b",
+        text,
+    ))
+
+
+def _polymarket_allowed_fact_category(post: Post, text: str, fact_label: bool) -> bool:
+    if fact_label:
+        return True
+    if _REQUESTED_PREDICTION_RE.search(text):
+        return True
+    if _REQUESTED_FOOTBALL_RULE_RE.search(text):
+        return True
+    if re.search(r"\d", text) and (_REQUESTED_STATISTIC_RE.search(text) or _POLYMARKET_FACT_BODY_RE.search(text)):
+        return True
+    if _POLYMARKET_FACT_BODY_RE.search(text) and _polymarket_named_football_subject(text):
+        return True
+    if re.search(r"\d", text) and _POLYMARKET_FINANCIAL_FACT_RE.search(text):
+        return True
+    # Reuse already-established safe editorial categories, but deliberately do
+    # not accept transfer_interest, club ownership transactions or manager news.
+    try:
+        category = str(_PRE_POLYMARKET_EDITORIAL_CATEGORY(post) or "")
+    except Exception:
+        category = ""
+    return category in {"football_statistic", "football_rule_update", "centregoals_prediction"}
+
+
+def _polymarket_current_transfer_news(text: str, fact_label: bool) -> bool:
+    high = bool(_POLYMARKET_ACTIVE_TRANSFER_HIGH_RE.search(text))
+    management = bool(_POLYMARKET_MANAGEMENT_NEWS_RE.search(text))
+    rumour = bool(_POLYMARKET_RUMOUR_RE.search(text))
+    current = bool(_POLYMARKET_CURRENT_WINDOW_RE.search(text))
+    historical = bool(_POLYMARKET_HISTORICAL_CONTEXT_RE.search(text))
+    soft_hits = len({match.group(0).casefold() for match in _POLYMARKET_TRANSFER_SOFT_RE.finditer(text)})
+    named = _polymarket_named_football_subject(text)
+
+    # Concrete current transaction/manager phrases are always news, regardless
+    # of a generic "Report:" or even an incorrectly added "Fact:" label.
+    if management:
+        return True
+    if high:
+        # A genuinely historical/statistical fact may mention an old signing.
+        # It is released only when it is clearly historical and not current.
+        if fact_label and historical and not current and (
+            _POLYMARKET_FACT_BODY_RE.search(text) or _REQUESTED_STATISTIC_RE.search(text)
+        ):
+            return False
+        return True
+
+    # Soft vocabulary requires a combination of evidence. One word such as
+    # "contract", "offer" or "move" on its own cannot block a factual post.
+    score = 0
+    if soft_hits >= 2:
+        score += 2
+    elif soft_hits == 1:
+        score += 1
+    if current:
+        score += 1
+    if named:
+        score += 1
+    if rumour:
+        score += 2
+    if historical and not current:
+        score -= 2
+    if fact_label and (_POLYMARKET_FACT_BODY_RE.search(text) or _REQUESTED_STATISTIC_RE.search(text)):
+        score -= 2
+    return score >= 3
+
+
+def _polymarket_facts_only_block_reason(post: Post) -> str:
+    if not _polymarket_sport_post(post):
+        return ""
+    text, fact_label = _polymarket_clean_classification_text(post)
+    if not text:
+        return "polymarketsport_not_facts_content"
+    if _polymarket_current_transfer_news(text, fact_label):
+        return "polymarketsport_transfer_or_management_news"
+    if not _polymarket_allowed_fact_category(post, text, fact_label):
+        return "polymarketsport_not_facts_content"
+    return ""
+
+
+_PRE_POLYMARKET_FACTS_ONLY_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _polymarket_facts_only_block_reason(post)
+    if reason:
+        return reason
+    previous_reason = str(_PRE_POLYMARKET_FACTS_ONLY_PRE_SEND(post) or "")
+    if _polymarket_sport_post(post) and previous_reason == "special_source_not_meaningful_fact":
+        text, fact_label = _polymarket_clean_classification_text(post)
+        if _polymarket_allowed_fact_category(post, text, fact_label):
+            return ""
+    return previous_reason
+
+
+_PRE_POLYMARKET_FACTS_ONLY_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "").casefold()
+    if "polymarketsport_transfer_or_management_news" in raw:
+        return "פולימרקט ספורט: דיווח העברה, חוזה, משא ומתן, שמועה או שינוי מאמן נחסם — המקור מיועד לעובדות, נתונים ותחזיות"
+    if "polymarketsport_not_facts_content" in raw:
+        return "פולימרקט ספורט: הפוסט אינו עובדה, סטטיסטיקה, שיא, נתון או תחזית מתאימה"
+    return _PRE_POLYMARKET_FACTS_ONLY_HEBREW_REASON(reason)
+
+
+BOT_BUILD_ID = "winner-polymarket-facts-only-smart-filter-2026-07-28"
+# ====== END POLYMARKET SPORT FACTS-ONLY FILTER ======
+
+
 if __name__ == "__main__":
     main()
