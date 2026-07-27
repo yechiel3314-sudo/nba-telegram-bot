@@ -40996,5 +40996,1091 @@ def process_control_update(update: dict[str, Any]) -> None:
 
 # ====== END FINAL NEW-RESULT / FRESH-TWO-HOUR / UNCLEAR-YOUTH / EVENT-DEDUPE PATCH ======
 
+
+# ====== REQUESTED TEN-POINT SURGICAL FIX (2026-07-27) ======
+# Only the explicitly requested behavior is changed here. Persistent filenames,
+# JSON keys, saved histories, writer/source settings, RSS templates, Gemini
+# settings and all unrelated editorial rules remain untouched and compatible.
+
+BOT_BUILD_ID = "winner-requested-ten-point-fix-2026-07-27"
+
+
+# ---------------------------------------------------------------------------
+# 1 + 8) Rescue the requested legitimate football-news categories, enforce the
+# CentreGoals minimum, and reject explicit Instagram/social-network sourcing in
+# every source. A social-company name in a business report (for example a
+# Facebook co-founder) is not treated as social-network sourcing.
+# ---------------------------------------------------------------------------
+_REQUESTED_EXTERNAL_SOCIAL_RE = re.compile(
+    r"(?iu)(?:"
+    r"https?://(?:www\.)?(?:instagram\.com|instagr\.am|tiktok\.com|facebook\.com|fb\.watch|threads\.net|snapchat\.com)/|"
+    r"\b(?:via|from|on|posted\s+on|shared\s+on|uploaded\s+to|seen\s+on|according\s+to)\s+"
+    r"(?:an?\s+)?(?:instagram|tiktok|facebook|threads|snapchat)\b|"
+    r"\b(?:instagram|tiktok|facebook|threads|snapchat)\s+(?:post|story|stories|reel|reels|video|live|account|page)\b|"
+    r"(?:באינסטגרם|מאינסטגרם|מתוך\s+אינסטגרם|דרך\s+אינסטגרם|פורסם\s+באינסטגרם|"
+    r"פוסט\s+באינסטגרם|סטורי\s+באינסטגרם|רילס?\s+באינסטגרם|"
+    r"בטיקטוק|מטיקטוק|פורסם\s+בטיקטוק|פוסט\s+בטיקטוק|סרטון\s+בטיקטוק|"
+    r"בפייסבוק|מפייסבוק|פורסם\s+בפייסבוק|פוסט\s+בפייסבוק|"
+    r"בת[׳'’]?רדס|מת[׳'’]?רדס|בסנאפצ[׳'’]?ט)"
+    r")"
+)
+
+_REQUESTED_TRANSFER_INTEREST_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:interest(?:ed)?|consider(?:ing|ed)?|explor(?:e|ing)|view(?:ed|s)?\s+as|identified\s+as|"
+    r"backup\s+option|alternative|transfer\s+target|enquir(?:y|ed)|inquir(?:y|ed)|asked\s+about|"
+    r"contact(?:ed)?|monitor(?:ing|ed)?|keen\s+on|race\s+to\s+sign|lead(?:s|ing)?\s+the\s+race|"
+    r"working\s+on\s+(?:a\s+)?deal|talks?\s+with|no\s+plans?\s+to\s+sell)\b|"
+    r"מעוניינ|עניין\s+ב|שוקל(?:ת|ים|ות)?|בוחנ(?:ת|ים|ות)?|כאופצי(?:ה|ית)|אפשרות\s+גיבוי|"
+    r"חלופה|יעד\s+העברות|בירר(?:ה|ו|וּ)?|פנ(?:ה|ו|תה)|גישוש|עוקב(?:ת|ים|ות)?|"
+    r"מוביל(?:ה|ים)?\s+במרוץ|עובד(?:ת|ים|ות)?\s+על\s+עסקה|מנהלת?\s+שיחות|אין\s+תוכניות\s+למכור"
+    r")"
+)
+_REQUESTED_TRANSFER_CONTEXT_RE = re.compile(
+    r"(?iu)(?:\b(?:transfer|sign|signing|deal|move|club|player|agent|representatives?|free\s+transfer)\b|"
+    r"העברה|להחתים|החתמה|עסק(?:ה|ת)|מעבר|מועדון|שחקן|נציג(?:יו|ים)?|העברה\s+חופשית)"
+)
+_REQUESTED_STATISTIC_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:stat(?:istic)?s?|goals?|assists?|appearances?|matches?|minutes?|clean\s+sheets?|record|"
+    r"against|opponent|home|away|stadium|premier\s+league|la\s+liga|serie\s+a|bundesliga|ligue\s+1)\b|"
+    r"סטטיסטיק|שער(?:ים|י)?|בישול(?:ים|י)?|הופע(?:ה|ות)|משחק(?:ים|י)?|דקות|שער\s+נקי|שיא|"
+    r"נגד|יריבה|בבית|בחוץ|אצטדיון|פרמייר\s+ליג|לה\s+ליגה|סרייה|בונדסליגה"
+    r")"
+)
+_REQUESTED_NATIONAL_TEAM_MANAGEMENT_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:national\s+team|federation|football\s+association|technical\s+director|sporting\s+director|"
+    r"head\s+coach|manager|bench|resign(?:ed|s|ing)?|step(?:s|ped)?\s+down|leave(?:s|ing)?|"
+    r"favourite|favorite|front[- ]?runner|appointed?)\b|"
+    r"נבחרת|התאחדות|מנהל\s+טכני|מנהל\s+מקצועי|מאמן|הספסל|התפטר|עוזב(?:ים|ות)?|"
+    r"פייבוריט|מועמד\s+מוביל|צפוי\s+להתמנות|מונה"
+    r")"
+)
+_REQUESTED_NATIONAL_TEAM_NAME_RE = re.compile(
+    r"(?iu)(?:\b(?:Italy|England|Spain|France|Germany|Portugal|Netherlands|Belgium|Brazil|Argentina|"
+    r"Uruguay|Croatia|Morocco|Israel|USA|Mexico|Japan)\b|"
+    r"איטליה|אנגליה|ספרד|צרפת|גרמניה|פורטוגל|הולנד|בלגיה|ברזיל|ארגנטינה|"
+    r"אורוגוואי|קרואטיה|מרוקו|ישראל|ארצות\s+הברית|מקסיקו|יפן)"
+)
+_REQUESTED_FOOTBALL_RULE_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:PGMOL|IFAB|football\s+law|laws?\s+of\s+the\s+game|new\s+rule|rule\s+change|"
+    r"goalkeeper\s+injury\s+rule|concussion\s+rule|offside\s+rule|refereeing\s+rule)\b|"
+    r"חוקי?\s+הכדורגל|חוק\s+חדש|שינוי\s+בחוק|חוק\s+פציע(?:ה|ות)|חוק\s+שוער|"
+    r"חוק\s+נבדל|כלל\s+חדש|שינוי\s+כללים|איגוד\s+השופטים"
+    r")"
+)
+_REQUESTED_PREDICTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:polymarket|favourite|favorite|favou?rites?|odds|prediction|predicted|forecast|"
+    r"most\s+likely|probability|chance\s+to\s+win|title\s+race)\b|"
+    r"פולימרקט|פייבוריט|מועמד(?:ת)?\s+לזכייה|סיכוי(?:ים)?\s+לזכות|תחזית|הימור(?:ים)?|"
+    r"הסיכויים|הסתברות|מרוץ\s+האליפות"
+    r")"
+)
+_REQUESTED_CLUB_FINANCE_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:billionaire|investor|investment|consortium|ownership|owner|stake|shares?|equity|"
+    r"acquir(?:e|ing|ed)|takeover|buyout|purchase\s+(?:a\s+)?stake|sell\s+(?:a\s+)?stake|"
+    r"club\s+valuation|financing)\b|"
+    r"מיליארדר|משקיע|השקעה|קונסורציום|בעלות|בעלים|נתח|מניות|הון|רכיש(?:ה|ת)|"
+    r"השתלטות|לרכוש\s+נתח|למכור\s+נתח|שווי\s+המועדון|מימון"
+    r")"
+)
+_REQUESTED_REAL_NEWS_ACTION_RE = re.compile(
+    r"(?iu)(?:\b(?:confirm(?:s|ed)?|announce(?:s|d)?|report(?:s|ed)?|new|exclusive|leave(?:s|ing)?|"
+    r"resign(?:s|ed)?|appoint(?:s|ed)?|contact(?:s|ed)?|approach(?:es|ed)?|plan(?:s|ned)?|"
+    r"consider(?:s|ed|ing)?|explor(?:e|es|ed|ing)?|buy|purchase|acquire|join|sign)\b|"
+    r"מאשר|הודיע|דיווח|חדש|בלעדי|עוזב|התפטר|מונה|פנה|בירר|מתכנן|שוקל|בוחן|לרכוש|להצטרף|להחתים)"
+)
+
+
+def _requested_raw_post_text(post: Post) -> str:
+    try:
+        value = _requested_source_text(post)
+    except Exception:
+        try:
+            value = _final_source_text(post)
+        except Exception:
+            value = "\n".join([str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or "")])
+    return unicodedata.normalize("NFKC", html.unescape(str(value or ""))).strip()
+
+
+def _requested_external_social_source(post: Post) -> bool:
+    return bool(_REQUESTED_EXTERNAL_SOCIAL_RE.search(_requested_raw_post_text(post)))
+
+
+def _requested_regular_word_count(value: str) -> int:
+    try:
+        return int(count_regular_words(value))
+    except Exception:
+        return len(re.findall(r"[A-Za-zÀ-ÿא-ת0-9][A-Za-zÀ-ÿא-ת0-9'׳״-]*", str(value or "")))
+
+
+def _requested_editorial_category(post: Post) -> str:
+    text = _requested_raw_post_text(post)
+    if not text or _requested_external_social_source(post):
+        return ""
+    canonical = ""
+    try:
+        canonical = _facts_source_canonical(getattr(post, "username", ""))
+    except Exception:
+        canonical = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+
+    if canonical == CENTREGOALS_USERNAME and _REQUESTED_PREDICTION_RE.search(text):
+        return "centregoals_prediction"
+    if _REQUESTED_FOOTBALL_RULE_RE.search(text) and _REQUESTED_REAL_NEWS_ACTION_RE.search(text):
+        return "football_rule_update"
+    if (_REQUESTED_NATIONAL_TEAM_MANAGEMENT_RE.search(text)
+            and _REQUESTED_NATIONAL_TEAM_NAME_RE.search(text)
+            and _REQUESTED_REAL_NEWS_ACTION_RE.search(text)):
+        return "national_team_management"
+    if _REQUESTED_CLUB_FINANCE_RE.search(text) and _REQUESTED_REAL_NEWS_ACTION_RE.search(text):
+        teams = _final_logical_team_ids(text) if "_final_logical_team_ids" in globals() else set()
+        if teams or re.search(r"(?iu)\bfootball\s+club\b|מועדון\s+הכדורגל|מועדון", text):
+            return "club_finance_ownership"
+    if re.search(r"\d", text) and _REQUESTED_STATISTIC_RE.search(text):
+        # Do not turn a live score or moment into a historical/statistical rescue.
+        if not re.search(r"(?iu)\b(?:GOAL|HT|FT|half[- ]?time|full[- ]?time|live\s+now)\b|"
+                         r"עדכון\s+חי|לייב|שער!|מחצית|שריקת\s+הסיום", text):
+            return "football_statistic"
+    if _REQUESTED_TRANSFER_INTEREST_RE.search(text) and _REQUESTED_TRANSFER_CONTEXT_RE.search(text):
+        teams = _final_logical_team_ids(text) if "_final_logical_team_ids" in globals() else set()
+        if teams or len(_final_event_identity_tokens(text) if "_final_event_identity_tokens" in globals() else set()) >= 1:
+            return "transfer_interest"
+    return ""
+
+
+_REQUESTED_HARD_BLOCK_TOKENS = (
+    "old_post", "too_old", "women", "wnba", "other_sport", "non_football_sport",
+    "youth", "academy", "reserve", "under_", "podcast", "longform", "live_goal",
+    "live_match", "lineup", "teamsheet", "medical_staff", "wedding", "agency_non_football",
+    "duplicate", "burst_spam", "external_social", "instagram", "tiktok", "facebook_post",
+    "caption_too_long", "video_", "translation_", "malware", "spam", "account_mention",
+)
+
+
+def _requested_is_hard_block(reason: str) -> bool:
+    lowered = str(reason or "").casefold()
+    return any(token in lowered for token in _REQUESTED_HARD_BLOCK_TOKENS)
+
+
+# Install small wrappers only around the soft editorial gates that can wrongly
+# suppress one of the requested categories. Their previous behavior remains the
+# default for every other post.
+def _requested_install_soft_filter_bypass(name: str, allowed_categories: set[str] | None = None) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(post: Post, *args: Any, _previous=previous, _allowed=allowed_categories, **kwargs: Any):
+        category = _requested_editorial_category(post)
+        if category and (_allowed is None or category in _allowed):
+            return False
+        return _previous(post, *args, **kwargs)
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _requested_filter_name in (
+    "is_contextless_teaser_post", "is_unclear_subject_news_post",
+    "is_vague_status_without_primary_context", "is_match_result_or_engagement_post",
+    "is_match_context_noise_post", "is_media_without_report_post",
+    "is_too_short_without_strong_news_post", "is_name_without_news_action_post",
+    "is_unclear_main_club_context_post", "is_weak_copy_without_primary_value_post",
+    "is_writer_profile_noise_post", "is_link_only_or_details_post",
+):
+    _requested_install_soft_filter_bypass(_requested_filter_name)
+
+_requested_install_soft_filter_bypass("is_poll_or_audience_post", {"centregoals_prediction"})
+_requested_install_soft_filter_bypass("is_minor_destination_from_big_club_source", {"transfer_interest"})
+
+_REQUESTED_PREVIOUS_NON_NEWS_SOCIAL = is_non_news_social_post
+
+
+def is_non_news_social_post(post: Post) -> bool:
+    if _requested_external_social_source(post):
+        return True
+    if _requested_editorial_category(post):
+        return False
+    return _REQUESTED_PREVIOUS_NON_NEWS_SOCIAL(post)
+
+
+_REQUESTED_PREVIOUS_IMPORTANCE = football_importance_block_reason
+
+
+def football_importance_block_reason(post: Post) -> str:
+    if _requested_editorial_category(post):
+        return ""
+    return _REQUESTED_PREVIOUS_IMPORTANCE(post)
+
+
+_REQUESTED_PREVIOUS_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    text = _requested_raw_post_text(post)
+    if _requested_external_social_source(post):
+        return "external_social_network_content"
+    try:
+        is_centregoals = _facts_source_canonical(getattr(post, "username", "")) == CENTREGOALS_USERNAME
+    except Exception:
+        is_centregoals = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() == "centregoals"
+    if is_centregoals and _requested_regular_word_count(text) < 10:
+        return "centregoals_less_than_10_words"
+    reason = _REQUESTED_PREVIOUS_PRE_SEND(post)
+    category = _requested_editorial_category(post)
+    if category and reason and not _requested_is_hard_block(reason):
+        return ""
+    return reason
+
+
+_REQUESTED_PREVIOUS_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "external_social_network_content" in raw:
+        return "הפוסט מבוסס על אינסטגרם או רשת חברתית אחרת ולכן נחסם"
+    if "centregoals_less_than_10_words" in raw:
+        return "מטרות מרכזיות: הפוסט מכיל פחות מ-10 מילים"
+    return _REQUESTED_PREVIOUS_HEBREW_REASON(reason)
+
+
+# ---------------------------------------------------------------------------
+# 3 + 10) Never create a paragraph break in the middle of a sentence. Keep real
+# source paragraphs, but repair technical RSS wraps at a grammatical continuation
+# and remove a detached repeated team name after a completed sentence.
+# ---------------------------------------------------------------------------
+_REQUESTED_CONTINUATION_START_RE = re.compile(
+    r"(?iu)^(?:"
+    r"של|את|עם|על|אל|עבור|לגבי|בנוגע|כאופצי(?:ה|ית)|כאפשרות|כאשר|בעוד|אך|אבל|וגם|"
+    r"כדי|אם|כי|לאחר|לפני|מתוך|מול|בין|שבו|שבה|שהוא|שהיא|שהם|שהן|ש(?:ל|ה|ו|י)|"
+    r"and|or|but|with|for|to|as|if|while|when|after|before|against|regarding|about|whose|which|who"
+    r")\b"
+)
+_REQUESTED_INCOMPLETE_END_RE = re.compile(
+    r"(?iu)(?:\b(?:עם|של|את|על|אל|עבור|לגבי|בנוגע|כדי|אם|כי|בין|מול|ו|ב|ל|כ|מ|ה)\s*$|"
+    r"\b(?:with|of|the|a|an|to|for|as|and|or|but|if|while|about|regarding|between|against)\s*$|[,;–—-]\s*$)"
+)
+_REQUESTED_STRUCTURED_LINE_RE = re.compile(r"^\s*(?:[•▪◦‣*-]|\d+[.)]|[A-ZА-Яא-ת]\)|[🚨⚠️🔴🟡🟢✅❌⛔️📌])")
+_REQUESTED_TERMINAL_RE = re.compile(r"[.!?…:][\"'׳״)\]]*\s*(?:[\U0001F1E6-\U0001F1FF]{2}|[\U0001F300-\U0001FAFF]|[\u2600-\u27BF]|[\u200d\ufe0e\ufe0f])*\s*$")
+
+
+def _requested_should_join_layout_break(previous_line: str, next_line: str) -> bool:
+    prev = str(previous_line or "").strip()
+    nxt = str(next_line or "").strip()
+    if not prev or not nxt:
+        return False
+    if _REQUESTED_STRUCTURED_LINE_RE.match(nxt):
+        return False
+    if _REQUESTED_TERMINAL_RE.search(prev):
+        return False
+    if _REQUESTED_INCOMPLETE_END_RE.search(prev) or _REQUESTED_CONTINUATION_START_RE.search(nxt):
+        return True
+    # English lower-case continuation is a reliable technical line wrap.
+    if re.match(r"^[a-zà-ÿ]", nxt):
+        return True
+    return False
+
+
+def _requested_join_mid_sentence_breaks(value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    chunks = re.split(r"(\n+)", text)
+    index = 1
+    while index < len(chunks) - 1:
+        separator = chunks[index]
+        if separator.startswith("\n") and _requested_should_join_layout_break(chunks[index - 1], chunks[index + 1]):
+            chunks[index - 1:index + 2] = [chunks[index - 1].rstrip() + " " + chunks[index + 1].lstrip()]
+            index = max(1, index - 2)
+            continue
+        index += 2
+    return re.sub(r"\n{3,}", "\n\n", "".join(chunks)).strip()
+
+
+def _requested_team_aliases() -> list[str]:
+    aliases: set[str] = set()
+    for source, target in TEAM_REPLACEMENTS.items():
+        for value in (source, target):
+            clean = str(value or "").strip()
+            if len(clean) >= 3:
+                aliases.add(clean)
+    return sorted(aliases, key=len, reverse=True)
+
+
+_REQUESTED_TEAM_ALIASES = _requested_team_aliases()
+_REQUESTED_TEAM_ALT = "|".join(re.escape(value) for value in _REQUESTED_TEAM_ALIASES)
+_REQUESTED_TRAILING_TEAM_RE = re.compile(
+    rf"(?iu)(?P<prefix>[.!?…][\"'׳״)\]]*)\s+(?P<team>{_REQUESTED_TEAM_ALT})\s*$"
+) if _REQUESTED_TEAM_ALT else re.compile(r"$^")
+_REQUESTED_ONLY_TEAM_RE = re.compile(rf"(?iu)^\s*(?P<team>{_REQUESTED_TEAM_ALT})\s*[.!?]?\s*$") if _REQUESTED_TEAM_ALT else re.compile(r"$^")
+
+
+def _requested_remove_detached_team_tail(value: str) -> str:
+    paragraphs = [part.strip() for part in re.split(r"\n{2,}", str(value or "")) if part.strip()]
+    if not paragraphs:
+        return str(value or "").strip()
+    cleaned: list[str] = []
+    for index, paragraph in enumerate(paragraphs):
+        current = paragraph
+        match = _REQUESTED_TRAILING_TEAM_RE.search(current)
+        if match and index < len(paragraphs) - 1:
+            team = match.group("team")
+            earlier = current[:match.start("team")]
+            if re.search(rf"(?iu)(?<![A-Za-zÀ-ÿא-ת]){re.escape(team)}(?![A-Za-zÀ-ÿא-ת])", earlier):
+                current = current[:match.start("team")].rstrip()
+        only = _REQUESTED_ONLY_TEAM_RE.fullmatch(current)
+        if only and cleaned and index < len(paragraphs) - 1:
+            team = only.group("team")
+            if re.search(rf"(?iu)(?<![A-Za-zÀ-ÿא-ת]){re.escape(team)}(?![A-Za-zÀ-ÿא-ת])", cleaned[-1]):
+                continue
+        if current:
+            cleaned.append(current)
+    return "\n\n".join(cleaned).strip()
+
+
+_REQUESTED_PREVIOUS_RESTORE_LAYOUT = _restore_source_layout
+
+
+def _restore_source_layout(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _REQUESTED_PREVIOUS_RESTORE_LAYOUT(post, translated, quoted=quoted)
+    value = _requested_join_mid_sentence_breaks(value)
+    value = _requested_remove_detached_team_tail(value)
+    return value.strip()
+
+
+# ---------------------------------------------------------------------------
+# 6) The continuous automatic lane performs the same full forced canonical
+# discovery used by the manual 10-latest action. This restores the stronger
+# implementation that a later direct-X-only override had replaced.
+# ---------------------------------------------------------------------------
+def _continuous_force_probe_account(username: str) -> list[Post]:
+    canonical = _continuous_force_account_name(username)
+    started = time.perf_counter()
+    try:
+        future = _canonical_start_discovery(canonical, force=True)
+        rows: list[Post] = []
+        if future is not None:
+            timeout_value = max(
+                float(globals().get("CANONICAL_CONTROL_WAIT_SECONDS", 8.0)),
+                float(FEED_COLLECTION_TIMEOUT_SECONDS) + 3.0,
+            )
+            rows = list(future.result(timeout=timeout_value) or [])
+        if not rows:
+            with _CANONICAL_DISCOVERY_LOCK:
+                rows = list((_CANONICAL_DISCOVERY_CACHE.get(canonical.casefold()) or (0.0, []))[1])
+        elapsed = time.perf_counter() - started
+        stored = _continuous_force_store_rows(canonical, rows, elapsed)
+        observed = time.time()
+        marker = globals().get("_pipeline_mark_seen")
+        if callable(marker):
+            for post in stored:
+                if isinstance(post, Post):
+                    marker(post, "automatic_forced_full", observed, elapsed)
+        return stored
+    except Exception as exc:
+        logging.debug(
+            "Automatic full forced discovery failed safely for @%s: %s",
+            canonical,
+            short_error(exc, 300),
+        )
+        return []
+    finally:
+        with _CONTINUOUS_FORCE_LOCK:
+            _CONTINUOUS_FORCE_INFLIGHT.pop(canonical.casefold(), None)
+
+
+# ---------------------------------------------------------------------------
+# 7 + 8) Priority-aware cross-writer duplicate handling. A non-Fabrizio report
+# arriving within 30 minutes after Fabrizio is blocked when it is the same early
+# transfer event and adds no real progression. A later Fabrizio report is allowed
+# over a different writer. CentreGoals also receives a strict 24-hour semantic
+# duplicate check without suppressing materially new facts.
+# ---------------------------------------------------------------------------
+_REQUESTED_FABRIZIO_ALIASES = {
+    "fabrizioromano", "fabrizio romano", "פבריציו רומאנו", "פבריציו"
+}
+_REQUESTED_EARLY_TRANSFER_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:interest(?:ed)?|consider(?:ing|ed)?|monitor(?:ing|ed)?|contact(?:ed)?|approach(?:ed)?|"
+    r"talks?|working\s+on\s+(?:a\s+)?deal|lead(?:s|ing)?\s+the\s+race|race\s+to\s+sign|"
+    r"free\s+transfer|open\s+to\s+(?:a\s+)?move|keen\s+on|could\s+leave|possible\s+departure)\b|"
+    r"מעוניינ|שוקל|בוחן|עוקב|פנה|פנייה|גישוש|שיחות|עובד(?:ת|ים)?\s+על\s+עסקה|"
+    r"מוביל(?:ה)?\s+במרוץ|העברה\s+חופשית|פתוח\s+למעבר|עשוי\s+לעזוב|עזיבה\s+אפשרית"
+    r")"
+)
+_REQUESTED_MATERIAL_PROGRESS_RE = re.compile(
+    r"(?iu)(?:"
+    r"#?HERE(?:_|\s)+WE(?:_|\s)+GO|"
+    r"\b(?:official|deal\s+agreed|agreement\s+reached|full\s+agreement|bid\s+submitted|formal\s+bid|"
+    r"offer\s+accepted|bid\s+accepted|medical(?:s)?\s+(?:booked|scheduled|completed)|"
+    r"personal\s+terms\s+agreed|contract\s+signed|signed|completed\s+the\s+deal|done\s+deal|"
+    r"fee\s+agreed|club[- ]to[- ]club\s+agreement)\b|"
+    r"רשמי|העסקה\s+סוכמה|הושג\s+סיכום|סיכום\s+מלא|הוגשה\s+הצעה|הצעה\s+רשמית|"
+    r"ההצעה\s+התקבלה|נקבעו\s+בדיקות|השלים\s+בדיקות|סוכמו\s+התנאים|החוזה\s+נחתם|"
+    r"חתם|העסקה\s+הושלמה|סוכמו\s+דמי\s+ההעברה|סיכום\s+בין\s+המועדונים"
+    r")"
+)
+
+
+def _requested_author_name(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).strip().lstrip("@").casefold()
+
+
+def _requested_is_fabrizio_author(value: Any) -> bool:
+    normalized = _requested_author_name(value)
+    return normalized in _REQUESTED_FABRIZIO_ALIASES or normalized.replace("_", "") == "fabrizioromano"
+
+
+def _requested_item_author(item: dict[str, Any]) -> str:
+    for key in ("username", "source", "author", "writer", "account"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _requested_item_timestamp(item: dict[str, Any]) -> float:
+    for key in ("published_ts", "published_at", "original_published_ts", "post_published_ts", "ts", "created_at"):
+        value = item.get(key)
+        if isinstance(value, (int, float)) and float(value) > 0:
+            return float(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                return float(value)
+            except Exception:
+                try:
+                    parsed = parsedate_to_datetime(value)
+                    return float(parsed.timestamp())
+                except Exception:
+                    pass
+    try:
+        return float(_final_record_published_ts(item) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _requested_exact_same_post(post: Post, item: dict[str, Any]) -> bool:
+    current_ids = {str(getattr(post, "post_id", "") or ""), str(getattr(post, "link", "") or "")}
+    current_ids.update(str(value) for value in (getattr(post, "dedupe_ids", []) or []))
+    previous_ids = {str(item.get("post_id") or ""), str(item.get("link") or ""), str(item.get("id") or "")}
+    previous_ids.update(str(value) for value in (item.get("dedupe_ids", []) or []))
+    current_ids.discard("")
+    previous_ids.discard("")
+    return bool(current_ids & previous_ids)
+
+
+def _requested_same_early_transfer_event(post: Post, item: dict[str, Any]) -> bool:
+    if not isinstance(item, dict) or is_pending_memory_item(item):
+        return False
+    current = _final_source_text(post)
+    previous = _final_item_event_text(item)
+    if not current or not previous:
+        return False
+    if not _REQUESTED_EARLY_TRANSFER_RE.search(current) or not _REQUESTED_EARLY_TRANSFER_RE.search(previous):
+        return False
+    if _REQUESTED_MATERIAL_PROGRESS_RE.search(current):
+        return False
+    current_teams = _final_logical_team_ids(current)
+    previous_teams = _final_logical_team_ids(previous)
+    if not current_teams or not previous_teams or not (current_teams & previous_teams):
+        return False
+    # A genuinely new destination/team is a meaningful development.
+    if current_teams - previous_teams:
+        return False
+    current_identity = _final_event_identity_tokens(current)
+    previous_identity = _final_event_identity_tokens(previous)
+    return bool(current_identity & previous_identity)
+
+
+def _final_cross_writer_early_transfer_duplicate(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    current_author = _requested_author_name(getattr(post, "username", ""))
+    # Fabrizio is allowed after a different reporter; exact same-post memory is
+    # still handled by the normal ID/seen checks outside this semantic helper.
+    if _requested_is_fabrizio_author(current_author):
+        return None
+    current_ts = float(getattr(post, "published_ts", 0.0) or time.time())
+    for item in reversed(_final_recent_event_memory_rows(state)[-1200:]):
+        previous_author = _requested_item_author(item)
+        if not _requested_is_fabrizio_author(previous_author):
+            continue
+        previous_ts = _requested_item_timestamp(item)
+        if previous_ts and (current_ts < previous_ts or current_ts - previous_ts > 30 * 60):
+            continue
+        if _requested_same_early_transfer_event(post, item):
+            result = dict(item)
+            result["duplicate_verdict"] = "פבריציו פרסם ראשון; אותו שחקן, אותן קבוצות ואותו שלב בתוך חצי שעה"
+            result["duplicate_source"] = previous_author or "FabrizioRomano"
+            return result
+    return None
+
+
+def _requested_duplicate_norm(value: str) -> str:
+    text = unicodedata.normalize("NFKC", html.unescape(str(value or ""))).casefold()
+    text = URL_RE.sub(" ", text)
+    text = re.sub(r"@[A-Za-z0-9_]+", " ", text)
+    text = re.sub(r"[^0-9A-Za-zÀ-ÿא-ת'׳״]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _requested_duplicate_tokens(value: str) -> set[str]:
+    return {
+        token for token in _requested_duplicate_norm(value).split()
+        if len(token) >= 3 and token not in _FINAL_EVENT_IDENTITY_STOPWORDS
+    }
+
+
+def _requested_centregoals_duplicate(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        if _facts_source_canonical(getattr(post, "username", "")) != CENTREGOALS_USERNAME:
+            return None
+    except Exception:
+        return None
+    current = _final_source_text(post)
+    current_norm = _requested_duplicate_norm(current)
+    current_tokens = _requested_duplicate_tokens(current)
+    if not current_norm or len(current_tokens) < 5:
+        return None
+    current_numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", current_norm))
+    now_ts = float(getattr(post, "published_ts", 0.0) or time.time())
+    for item in reversed(_final_recent_event_memory_rows(state)[-1600:]):
+        if _requested_exact_same_post(post, item):
+            return dict(item)
+        previous_ts = _requested_item_timestamp(item)
+        if previous_ts and abs(now_ts - previous_ts) > 24 * 60 * 60:
+            continue
+        previous = _final_item_event_text(item)
+        previous_norm = _requested_duplicate_norm(previous)
+        previous_tokens = _requested_duplicate_tokens(previous)
+        if not previous_norm or len(previous_tokens) < 5:
+            continue
+        shared = current_tokens & previous_tokens
+        union = current_tokens | previous_tokens
+        jaccard = len(shared) / max(1, len(union))
+        ratio = SequenceMatcher(None, current_norm, previous_norm).ratio()
+        same_teams = bool(_final_logical_team_ids(current) & _final_logical_team_ids(previous))
+        identity_shared = len(_final_event_identity_tokens(current) & _final_event_identity_tokens(previous)) >= 1
+        if not (same_teams or identity_shared):
+            continue
+        # A clearly new numerical fact in a substantially expanded report is not
+        # a duplicate, nor is a real transfer/status progression.
+        previous_numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", previous_norm))
+        if (current_numbers - previous_numbers) and len(current_tokens) > len(previous_tokens) * 1.20:
+            continue
+        if _REQUESTED_MATERIAL_PROGRESS_RE.search(current) and not _REQUESTED_MATERIAL_PROGRESS_RE.search(previous):
+            continue
+        if ratio >= 0.88 or jaccard >= 0.72:
+            result = dict(item)
+            result["duplicate_verdict"] = "מטרות מרכזיות: דיווח זהה או כמעט זהה כבר נשלח"
+            result["duplicate_source"] = _requested_item_author(item)
+            return result
+    return None
+
+
+def _requested_post_from_duplicate_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Post | None:
+    return next((value for value in list(args) + list(kwargs.values()) if isinstance(value, Post)), None)
+
+
+def _requested_state_from_duplicate_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    for value in list(args) + list(kwargs.values()):
+        if isinstance(value, dict):
+            return value
+    try:
+        return load_state()
+    except Exception:
+        return {}
+
+
+def _requested_install_duplicate_wrapper(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(*args: Any, _previous=previous, **kwargs: Any):
+        post = _requested_post_from_duplicate_args(args, kwargs)
+        state = _requested_state_from_duplicate_args(args, kwargs)
+        if post is not None:
+            candidate = _final_cross_writer_early_transfer_duplicate(post, state)
+            if candidate:
+                return candidate
+            candidate = _requested_centregoals_duplicate(post, state)
+            if candidate:
+                return candidate
+        result = _previous(*args, **kwargs)
+        if post is not None and result and _requested_is_fabrizio_author(getattr(post, "username", "")):
+            # Preserve exact duplicate protection, but allow Fabrizio after a
+            # different writer as explicitly requested.
+            if isinstance(result, dict) and not _requested_exact_same_post(post, result):
+                prior_author = _requested_item_author(result)
+                if prior_author and not _requested_is_fabrizio_author(prior_author):
+                    return None
+        return result
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _requested_duplicate_name in (
+    "find_recent_burst_spam_event", "find_recent_duplicate_event", "find_channel_duplicate_event",
+    "find_post_translation_duplicate_event", "find_recent_duplicate_event_ai_aware",
+):
+    _requested_install_duplicate_wrapper(_requested_duplicate_name)
+
+
+# ---------------------------------------------------------------------------
+# 2) Every heavy control action gets an immediate NEW loading message. Each job
+# runs independently in the existing multi-worker executor and replaces that same
+# message with its result. Only overflow chunks need extra messages.
+# ---------------------------------------------------------------------------
+def _final_submit_control_result(callback_id: str, acknowledgement: str, compute_fn) -> None:
+    if callback_id:
+        answer_control_callback(callback_id, acknowledgement)
+    loading_id: int | None = None
+    try:
+        loading_id = send_control_text(
+            f"⏳ {acknowledgement}...",
+            None,
+            control_delete_message_reply_markup(),
+        )
+    except Exception as exc:
+        logging.debug("Control loading message failed safely: %s", short_error(exc, 300))
+
+    def _worker() -> None:
+        try:
+            result = compute_fn()
+            if isinstance(result, (list, tuple)):
+                logical_parts = [str(part) for part in result if str(part).strip()]
+            else:
+                logical_parts = [str(result)] if str(result).strip() else []
+            if not logical_parts:
+                logical_parts = ["לא נמצאו נתונים להצגה."]
+            chunks: list[str] = []
+            for logical in logical_parts:
+                chunks.extend(control_text_chunks(logical))
+            if not chunks:
+                chunks = ["לא נמצאו נתונים להצגה."]
+            total = len(chunks)
+            first_text = (f"חלק 1/{total}\n\n" if total > 1 else "") + chunks[0]
+            if loading_id:
+                send_control_text(first_text, loading_id, control_delete_message_reply_markup())
+            else:
+                send_control_text(first_text, None, control_delete_message_reply_markup())
+            for index, chunk in enumerate(chunks[1:], 2):
+                prefix = f"חלק {index}/{total}\n\n" if total > 1 else ""
+                send_control_text(prefix + chunk, None, control_delete_message_reply_markup())
+        except Exception as exc:
+            failure = "הפעולה נכשלה:\n" + short_error(exc, 900)
+            send_control_text(failure, loading_id, control_delete_message_reply_markup())
+
+    try:
+        _CONTROL_BUTTON_EXECUTOR.submit(_worker)
+    except Exception:
+        Thread(target=_worker, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# 5) Root menus are created only on startup/explicit force. Ordinary button
+# actions may edit an existing root menu but never recreate the full menu when an
+# edit fails or its saved message ID is absent.
+# ---------------------------------------------------------------------------
+_REQUESTED_PREVIOUS_SEND_CONTROL_PANEL = send_control_panel
+_REQUESTED_PREVIOUS_SEND_QUICK_PANEL = send_quick_control_panel
+
+
+def send_control_panel(paused: bool, action_done: str = "", force_new: bool = False) -> None:
+    if force_new:
+        return _REQUESTED_PREVIOUS_SEND_CONTROL_PANEL(paused, action_done, force_new=True)
+    if not CONTROL_CHAT_ID or not CONTROL_PANEL_MESSAGES_ENABLED:
+        return
+    state = load_control_state()
+    message_id = state.get("control_message_id")
+    if not message_id:
+        logging.debug("Root control panel was not recreated because this was not startup/explicit request.")
+        return
+    status = "כבוי" if paused else "פעיל"
+    payload = {
+        "chat_id": CONTROL_CHAT_ID,
+        "message_id": int(message_id),
+        "text": action_done or f"לוח שליטה בבוט הכדורגל. מצב נוכחי: {status}.",
+        "reply_markup": quick_control_reply_markup(),
+    }
+    try:
+        telegram_api("editMessageText", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
+    except Exception as exc:
+        if "message is not modified" not in str(exc).lower():
+            logging.warning("Control root edit failed; no duplicate menu was sent: %s", short_error(exc, 400))
+
+
+def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> None:
+    if force_new:
+        return _REQUESTED_PREVIOUS_SEND_QUICK_PANEL(action_done, force_new=True)
+    if not CONTROL_CHAT_ID or not CONTROL_PANEL_MESSAGES_ENABLED:
+        return
+    state = load_control_state()
+    message_id = state.get("quick_control_message_id")
+    if not message_id:
+        logging.debug("Quick root menu was not recreated because this was not startup/explicit request.")
+        return
+    payload = {
+        "chat_id": CONTROL_CHAT_ID,
+        "message_id": int(message_id),
+        "text": action_done or "כלים מהירים לבוט הכדורגל.",
+        "reply_markup": quick_control_reply_markup(),
+    }
+    try:
+        telegram_api("editMessageText", payload, max_attempts=1, timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)
+    except Exception as exc:
+        if "message is not modified" not in str(exc).lower():
+            logging.warning("Quick root menu edit failed; no duplicate menu was sent: %s", short_error(exc, 400))
+
+
+# ---------------------------------------------------------------------------
+# 9 + 4) Preparation is one Telegram message (or one album) containing the final
+# post and buttons. Cache the exact Telegram preview and media so the subsequent
+# quiet-to-main send can copy inside Telegram immediately without another X/RSS
+# media lookup or Gemini pass.
+# ---------------------------------------------------------------------------
+def _requested_store_prepared_payload(
+    token: str,
+    post: Post,
+    message_html: str,
+    image_urls: list[str],
+    video_url: str,
+    message_ids: list[int],
+) -> None:
+    item = _restore_prepared_send(token) or CONTROL_PREPARED_SENDS.get(token) or {}
+    if not isinstance(item, dict):
+        item = {}
+    item.update({
+        "post": post,
+        "prepared_final_message_html": message_html,
+        "prepared_image_urls": list(image_urls or []),
+        "prepared_video_url": str(video_url or ""),
+        "control_media_message_ids": [int(value) for value in message_ids if str(value).isdigit()],
+        "prepared_at": time.time(),
+    })
+    CONTROL_PREPARED_SENDS[token] = item
+    _persist_prepared_send(token, item)
+    try:
+        _persist_prepared_send_durable(token, item)
+    except Exception:
+        pass
+    if message_ids:
+        CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(message_ids)
+        _save_prepared_media_ids(token, list(message_ids))
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    if not CONTROL_CHAT_ID:
+        return []
+    _reliable_hydrate_exact_post(post, force=True)
+    markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+    images = list(selected_post_images(post) or [])
+    video_url = ""
+    if _acceptance_post_requires_video(post):
+        video_url = _acceptance_video_url_for_post(post)
+    if (images or video_url) and not _acceptance_caption_fits(message_html):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    if video_url:
+        response = telegram_api(
+            "sendVideo",
+            {
+                "chat_id": CONTROL_CHAT_ID,
+                "video": video_url,
+                "caption": message_html,
+                "parse_mode": "HTML",
+                "supports_streaming": True,
+                "reply_markup": markup,
+            },
+            max_attempts=1,
+        )
+        ids = _telegram_result_message_ids(response)
+    elif len(images) == 1:
+        response = telegram_api(
+            "sendPhoto",
+            {
+                "chat_id": CONTROL_CHAT_ID,
+                "photo": images[0],
+                "caption": message_html,
+                "parse_mode": "HTML",
+                "reply_markup": markup,
+            },
+            max_attempts=1,
+        )
+        ids = _telegram_result_message_ids(response)
+    elif len(images) > 1:
+        media: list[dict[str, Any]] = []
+        for index, image_url in enumerate(images):
+            payload: dict[str, Any] = {"type": "photo", "media": image_url}
+            if index == 0:
+                payload["caption"] = message_html
+                payload["parse_mode"] = "HTML"
+            media.append(payload)
+        response = telegram_api(
+            "sendMediaGroup",
+            {"chat_id": CONTROL_CHAT_ID, "media": media},
+            max_attempts=1,
+            timeout=max(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SECONDS),
+        )
+        ids = _telegram_result_message_ids(response)
+        if ids:
+            # sendMediaGroup has no reply_markup argument. Attach the keyboard to
+            # the first captioned media message immediately afterwards.
+            try:
+                telegram_api(
+                    "editMessageReplyMarkup",
+                    {
+                        "chat_id": CONTROL_CHAT_ID,
+                        "message_id": int(ids[0]),
+                        "reply_markup": markup,
+                    },
+                    max_attempts=1,
+                    timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                try:
+                    telegram_api(
+                        "editMessageCaption",
+                        {
+                            "chat_id": CONTROL_CHAT_ID,
+                            "message_id": int(ids[0]),
+                            "caption": message_html,
+                            "parse_mode": "HTML",
+                            "reply_markup": markup,
+                        },
+                        max_attempts=1,
+                        timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    for message_id in ids:
+                        try:
+                            telegram_api(
+                                "deleteMessage",
+                                {"chat_id": CONTROL_CHAT_ID, "message_id": int(message_id)},
+                                max_attempts=1,
+                                timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS,
+                            )
+                        except Exception:
+                            pass
+                    raise RuntimeError("לא ניתן היה להצמיד את כפתורי הפעולה לאלבום באותה הודעה")
+    else:
+        response = telegram_api(
+            "sendMessage",
+            {
+                "chat_id": CONTROL_CHAT_ID,
+                "text": trim(rtl(message_html), 4096),
+                "disable_web_page_preview": True,
+                "parse_mode": "HTML",
+                "reply_markup": markup,
+            },
+            max_attempts=1,
+        )
+        ids = _telegram_result_message_ids(response)
+
+    _requested_store_prepared_payload(token, post, message_html, images, video_url, ids)
+    return ids
+
+
+def prepare_history_post_with_ai(token: str) -> None:
+    item = _restore_prepared_send(token)
+    if not item:
+        raise RuntimeError("הפוסט כבר לא נמצא בזיכרון. פתח שוב את 10 האחרונים של הכתב.")
+    post = _ensure_post_original_structure(item.get("post"))
+    if not isinstance(post, Post):
+        raise RuntimeError("אין מספיק נתונים לשחזור הפוסט.")
+    _reliable_hydrate_exact_post(post, force=True)
+    translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+    final_message = _render_full_control_candidate(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+    )
+    item.update({
+        "post": post,
+        "translated": translated,
+        "quoted_translated": quoted_translated,
+        "quoted_author_translated": quoted_author_translated,
+        "prepared_final_message_html": final_message,
+    })
+    CONTROL_PREPARED_SENDS[token] = item
+    _persist_prepared_send(token, item)
+    try:
+        _persist_prepared_send_durable(token, item)
+    except Exception:
+        pass
+    ids = _send_full_control_candidate(post, token, final_message)
+    if not ids:
+        raise RuntimeError("ההודעה המוכנה לא נשלחה לערוץ השקט.")
+
+
+def _requested_delete_control_message(message_id: int | None) -> None:
+    if not message_id or not CONTROL_CHAT_ID:
+        return
+    try:
+        telegram_api(
+            "deleteMessage",
+            {"chat_id": CONTROL_CHAT_ID, "message_id": int(message_id)},
+            max_attempts=1,
+            timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logging.debug("Preparation loading message could not be deleted: %s", short_error(exc, 300))
+
+
+def _run_prepare_button(token: str, status_message_id: int | None) -> None:
+    try:
+        prepare_history_post_with_ai(token)
+        _requested_delete_control_message(status_message_id)
+    except Exception as exc:
+        logging.exception("Prepare-report button task failed")
+        send_control_text(
+            "⛔ הכנת הדיווח נכשלה:\n" + short_error(exc, 900),
+            status_message_id,
+            control_delete_message_reply_markup(),
+        )
+    finally:
+        with _PREPARE_BUTTON_LOCK:
+            _PREPARE_BUTTON_INFLIGHT.discard(token)
+
+
+def _requested_copy_prepared_inside_telegram(
+    message_ids: list[int],
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    if not message_ids or not CONTROL_CHAT_ID:
+        return {}, ""
+    normalized = [int(value) for value in message_ids if str(value).isdigit()]
+    if not normalized:
+        return {}, ""
+    sent: dict[str, int] = {}
+    mode = "telegram_cached_copy"
+    for chat_id in TELEGRAM_CHAT_IDS:
+        target = str(chat_id)
+        if len(normalized) > 1:
+            try:
+                response = telegram_api(
+                    "copyMessages",
+                    {
+                        "chat_id": target,
+                        "from_chat_id": CONTROL_CHAT_ID,
+                        "message_ids": normalized,
+                    },
+                    max_attempts=1,
+                )
+                copied = _telegram_result_message_ids(response)
+                if copied:
+                    sent[target] = int(copied[0])
+                    mode = f"{len(normalized)} images_telegram_cached_album"
+                    continue
+            except Exception as exc:
+                logging.debug("copyMessages unavailable; using fast copyMessage fallback: %s", short_error(exc, 250))
+        first_target_id = 0
+        for index, source_message_id in enumerate(normalized):
+            payload: dict[str, Any] = {
+                "chat_id": target,
+                "from_chat_id": CONTROL_CHAT_ID,
+                "message_id": int(source_message_id),
+            }
+            reply_id = (reply_message_ids or {}).get(target)
+            if index == 0 and reply_id:
+                payload["reply_to_message_id"] = int(reply_id)
+                payload["allow_sending_without_reply"] = True
+            response = telegram_api("copyMessage", payload, max_attempts=1)
+            copied = _telegram_result_message_ids(response)
+            if copied and not first_target_id:
+                first_target_id = int(copied[0])
+        if first_target_id:
+            sent[target] = first_target_id
+    return sent, mode
+
+
+def _requested_finalize_manual_delivery(
+    post: Post,
+    message: str,
+    message_ids: dict[str, int],
+    images: list[str],
+    mode: str,
+) -> None:
+    remember_persistent_sent(post, message, "manual_control_cached")
+    if not message_ids:
+        return
+    state = load_state()
+    remember_bot_sent_reply_target(post, state, message_ids)
+    remember_channel_news_text(message, state, message_id=post.link, source="manual_control_cached")
+    confirm_recent_news_event(post, state)
+    seen = set(state.get(post.username, []))
+    seen.update(post.dedupe_ids)
+    state[post.username] = list(seen)[-500:]
+    save_state(state)
+    try:
+        _remember_forwarded_source_delivery(post, message, message_ids, images, mode)
+    except Exception as exc:
+        logging.debug("Manual forwarded-source indexing failed safely: %s", short_error(exc, 300))
+    save_control_state(last_sent_post={"ts": time.time(), "username": post.username, "link": post.link})
+
+
+_REQUESTED_PREVIOUS_PREPARED_SEND = send_prepared_control_post_to_main
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    item = _restore_prepared_send(token)
+    if not item:
+        return "הפוסט הישן לא ניתן לשחזור. בצע בדיקת כתב חדשה."
+    post = _ensure_post_original_structure(item.get("post"))
+    if not isinstance(post, Post):
+        return "אין מספיק נתונים לשחזור הפוסט."
+
+    edited = _get_manual_edit(token) if "_get_manual_edit" in globals() else ""
+    if edited:
+        message = _fast_edit_exact_final_html(edited) if "_fast_edit_exact_final_html" in globals() else _finalize_outgoing_message_only(edited)
+    else:
+        message = str(item.get("prepared_final_message_html") or "").strip()
+        if not message:
+            translated = str(item.get("translated") or "")
+            quoted_translated = str(item.get("quoted_translated") or "")
+            quoted_author_translated = str(item.get("quoted_author_translated") or "")
+            if translated or quoted_translated:
+                message = build_message(post, translated, quoted_translated, quoted_author_translated, include_video_link=False)
+    if not message:
+        # Legacy items may predate the new cached final body. Preserve their old
+        # behavior rather than changing any historical compatibility path.
+        return _REQUESTED_PREVIOUS_PREPARED_SEND(token)
+    message = _finalize_outgoing_message_only(message)
+    images = list(item.get("prepared_image_urls") or [])
+    video_url = str(item.get("prepared_video_url") or "")
+    control_ids = [int(value) for value in (item.get("control_media_message_ids") or []) if str(value).isdigit()]
+    if not control_ids:
+        control_ids = [int(value) for value in CONTROL_TELEGRAM_MEDIA_CACHE.get(token, []) if str(value).isdigit()]
+
+    state = load_state()
+    reply_targets = find_bot_reply_target_for_post(post, state)
+    message_ids: dict[str, int] = {}
+    mode = ""
+    if control_ids:
+        message_ids, mode = _requested_copy_prepared_inside_telegram(control_ids, reply_targets)
+    if not message_ids:
+        # No second hydration: use media cached during preparation. The early raw
+        # sender does not re-enter the final forced-X media lookup wrappers.
+        raw_sender = globals().get("_base_send_prepared_message_to_main")
+        if not callable(raw_sender):
+            raw_sender = globals().get("_raw_main_sender_consolidated")
+        if not callable(raw_sender):
+            return _REQUESTED_PREVIOUS_PREPARED_SEND(token)
+        message_ids, mode = raw_sender(
+            post,
+            message,
+            images,
+            video_url=video_url,
+            reply_message_ids=reply_targets,
+        )
+    _requested_finalize_manual_delivery(post, message, message_ids, images, mode)
+    return "נשלח לערוץ נטו ספורט מיד מתוך ההודעה המוכנה."
+
+# ====== END REQUESTED TEN-POINT SURGICAL FIX ======
+
 if __name__ == "__main__":
     main()
