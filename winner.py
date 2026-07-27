@@ -43528,5 +43528,448 @@ def _six_cleanup_tag_artifacts(post: Post, value: str) -> str:
 
 # ====== END L'EQUIPE / HERE WE GO PATCH ======
 
+
+# ====== RAILWAY STORAGE + SHABBAT CACHE + GEMINI NUMBER RELIABILITY PATCH (2026-07-28) ======
+# Scope: fix only the warnings observed in Railway logs. Existing memory files,
+# editorial rules, feeds, writers, buttons and Telegram behavior remain unchanged.
+BOT_BUILD_ID = "winner-railway-storage-shabbat-gemini-number-fix-2026-07-28"
+
+# ---------------------------------------------------------------------------
+# 1) Persistent directory resolution: re-read Railway variables at runtime and
+# automatically use an attached /data volume when present. Never pretend that
+# an ordinary container directory is persistent: if no external mount exists,
+# the existing warning remains accurate and the operator must attach a Volume.
+# ---------------------------------------------------------------------------
+_LOGFIX_PRE_APP_DATA_DIR = app_data_dir
+_LOGFIX_STORAGE_WARNING_EMITTED = False
+
+
+def _logfix_live_data_dir_setting() -> str:
+    return str(
+        os.environ.get("FOOTBALL_BOT_DATA_DIR")
+        or os.environ.get("BOT_DATA_DIR")
+        or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+        or ""
+    ).strip()
+
+
+def app_data_dir() -> Path:
+    global APP_DATA_DIR_CACHE
+    configured = _logfix_live_data_dir_setting()
+
+    # A configured directory always wins. Re-evaluate the cache if Railway's
+    # environment points somewhere different from the value seen at import.
+    if configured:
+        configured_path = Path(configured)
+        if APP_DATA_DIR_CACHE is None or APP_DATA_DIR_CACHE != configured_path:
+            try:
+                configured_path.mkdir(parents=True, exist_ok=True)
+                probe = configured_path / f".football_bot_write_test.{os.getpid()}.{time.time_ns()}"
+                probe.write_text("ok", encoding="utf-8")
+                probe.unlink(missing_ok=True)
+                APP_DATA_DIR_CACHE = configured_path
+                return configured_path
+            except Exception as exc:
+                logging.warning("⚠️ תיקיית הזיכרון שהוגדרה אינה זמינה (%s): %s", configured_path, exc)
+
+    # When a Railway volume is mounted at /data, use it even if the variable was
+    # forgotten. Do not create /data merely to hide the persistence warning.
+    data_path = Path("/data")
+    if data_path.exists() and data_path.is_dir():
+        try:
+            probe = data_path / f".football_bot_write_test.{os.getpid()}.{time.time_ns()}"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            APP_DATA_DIR_CACHE = data_path
+            return data_path
+        except Exception:
+            pass
+
+    return _LOGFIX_PRE_APP_DATA_DIR()
+
+
+# ---------------------------------------------------------------------------
+# 2) Shabbat cache: the old fixed .tmp filename allowed two threads/processes to
+# race. Use the bot's existing unique atomic writer and backup recovery instead.
+# ---------------------------------------------------------------------------
+def save_shabbat_windows_to_cache(windows: list[tuple[datetime, datetime]], now: datetime) -> None:
+    try:
+        payload = {
+            "fetched_at": now.isoformat(),
+            "windows": [
+                {"start": start.isoformat(), "end": end.isoformat()}
+                for start, end in windows
+            ],
+        }
+        path = shabbat_cache_path()
+        _atomic_write_text_with_backup(
+            path,
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception as exc:
+        logging.warning("⚠️ מצב שבת: לא הצליח לשמור cache זמני שבת: %s", exc)
+
+
+def load_shabbat_windows_from_cache(now: datetime) -> list[tuple[datetime, datetime]]:
+    path = shabbat_cache_path()
+    if not path.exists() and not path.with_suffix(path.suffix + ".bak").exists():
+        return []
+    try:
+        data = _read_json_with_backup(path, {})
+        if not isinstance(data, dict):
+            return []
+        fetched_at = parse_hebcal_datetime(str(data.get("fetched_at", "")))
+        if not fetched_at or (now - fetched_at).total_seconds() > SHABBAT_HEBCAL_CACHE_SECONDS:
+            return []
+        windows: list[tuple[datetime, datetime]] = []
+        for item in data.get("windows", []):
+            if not isinstance(item, dict):
+                continue
+            start = parse_hebcal_datetime(str(item.get("start", "")))
+            end = parse_hebcal_datetime(str(item.get("end", "")))
+            if start and end:
+                windows.append((start, end))
+        return windows
+    except Exception as exc:
+        logging.debug("מצב שבת: קריאת cache נכשלה בבטחה: %s", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# 3) Gemini numbers: protect every standalone source number with an exact token
+# before translation, then restore it afterwards. This prevents correct posts
+# from remaining pending because every model omitted the same number (for
+# example 20). Numbers inside handles/words are deliberately not touched.
+# ---------------------------------------------------------------------------
+_LOGFIX_NUMBER_RE = re.compile(
+    r"(?<![A-Za-zא-ת0-9_])"
+    r"(?:\d{1,4}(?:[.,]\d+)?(?:\s*[+])?)"
+    r"(?![A-Za-zא-ת0-9_])"
+)
+_LOGFIX_NUMBER_TOKEN_RE = re.compile(r"⟪NUM(\d{4})⟫")
+
+
+def _logfix_encode_numbers(value: str) -> tuple[str, list[str]]:
+    numbers: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        numbers.append(match.group(0))
+        return f"⟪NUM{len(numbers):04d}⟫"
+
+    return _LOGFIX_NUMBER_RE.sub(replace, str(value or "")), numbers
+
+
+def _logfix_decode_numbers(value: str, numbers: list[str]) -> str:
+    text = str(value or "")
+
+    def replace(match: re.Match[str]) -> str:
+        index = int(match.group(1)) - 1
+        return numbers[index] if 0 <= index < len(numbers) else match.group(0)
+
+    # Gemini occasionally inserts harmless spaces inside protected brackets.
+    text = re.sub(r"⟪\s*NUM\s*(\d{4})\s*⟫", lambda m: f"⟪NUM{m.group(1)}⟫", text, flags=re.I)
+    return _LOGFIX_NUMBER_TOKEN_RE.sub(replace, text)
+
+
+_LOGFIX_PRE_TRANSLATION_PAYLOAD = _final_translation_payload
+
+
+def _final_translation_payload(main_source: str, quote_source: str, author_source: str, glossary: str) -> dict[str, Any]:
+    payload = _LOGFIX_PRE_TRANSLATION_PAYLOAD(main_source, quote_source, author_source, glossary)
+    try:
+        system_parts = payload["systemInstruction"]["parts"]
+        if system_parts and isinstance(system_parts[0], dict):
+            system_parts[0]["text"] = str(system_parts[0].get("text", "")) + (
+                " Preserve every token shaped like ⟪NUM0001⟫ exactly; it represents "
+                "a source number and must remain in the same sentence and position."
+            )
+        content_parts = payload["contents"][0]["parts"]
+        if content_parts and isinstance(content_parts[0], dict):
+            content_parts[0]["text"] = (
+                "Protected NUM tokens are mandatory and may not be omitted, translated, renumbered or moved.\n"
+                + str(content_parts[0].get("text", ""))
+            )
+    except Exception:
+        pass
+    return payload
+
+
+_LOGFIX_PRE_GEMINI_TRANSLATE_POST_ONCE = gemini_translate_post_once
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    original_main = str(getattr(post, "text", "") or "")
+    original_quote = str(getattr(post, "quoted_text", "") or "")
+    encoded_main, main_numbers = _logfix_encode_numbers(original_main)
+    encoded_quote, quote_numbers = _logfix_encode_numbers(original_quote)
+    post.text = encoded_main
+    post.quoted_text = encoded_quote
+    try:
+        main, quote, author = _LOGFIX_PRE_GEMINI_TRANSLATE_POST_ONCE(post, include_quote)
+    finally:
+        post.text = original_main
+        post.quoted_text = original_quote
+
+    main = _logfix_decode_numbers(main, main_numbers)
+    quote = _logfix_decode_numbers(quote, quote_numbers) if quote else ""
+
+    # Final safety check against the untouched source. It should normally be
+    # empty because the protected markers force all numbers to survive.
+    issues = _final_translation_completeness_issues(original_main, main)
+    if include_quote and original_quote and quote:
+        issues.extend(_final_translation_completeness_issues(original_quote, quote))
+    missing_only = [issue for issue in issues if issue.startswith("חסרים מספרים מהמקור:")]
+    if missing_only:
+        raise TranslationUnavailable("Gemini output validation failed after number restoration: " + "; ".join(missing_only))
+    return main, quote, author
+
+
+# High-demand 503 is model-wide, not key-specific. Keep that model out of the
+# next scheduled retry long enough to avoid repeating the same noisy failure.
+_LOGFIX_PRE_GEMINI_FAILURE_COOLDOWN = _final_apply_gemini_failure_cooldown
+
+
+def _final_apply_gemini_failure_cooldown(model: str, key: str, exc: Exception) -> tuple[bool, bool]:
+    code = int(getattr(exc, "code", 0) or 0)
+    lowered = str(exc or "").lower()
+    if code == 503 or "high demand" in lowered or "temporarily unavailable" in lowered:
+        GEMINI_MODEL_COOLDOWNS[model] = max(
+            GEMINI_MODEL_COOLDOWNS.get(model, 0.0),
+            time.time() + max(10 * 60, GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS),
+        )
+        return False, True
+    return _LOGFIX_PRE_GEMINI_FAILURE_COOLDOWN(model, key, exc)
+
+# ====== END RAILWAY / SHABBAT / GEMINI LOG FIX ======
+
+
+# ====== FINAL L'EQUIPE / DETACHED FLAG / BLANK-LINE NORMALIZATION PATCH (2026-07-28) ======
+# Scope is deliberately limited to the requested final-output cleanup:
+# 1) remove a trailing L'Équipe attribution/handle completely;
+# 2) attach a country flag left alone after source-credit removal;
+# 3) keep at most one empty line between logical blocks and before the signature.
+BOT_BUILD_ID = "winner-lequipe-flag-single-spacing-2026-07-28"
+
+_FINAL_LEQUIPE_NAME_RE = re.compile(
+    r"(?iu)(?:l\s*[’'`´]?\s*[ée]quipe|lequipe|l[’'`´]?equipe|לאקיפ|ל[׳']אקיפ|לקיפ(?:ה)?)"
+)
+_FINAL_LEQUIPE_HANDLE_RE = re.compile(
+    r"(?iu)@[\u200e\u200f\u202a-\u202e\u2066-\u2069]*lequipe(?:_[A-Za-z0-9_]+)?"
+)
+_FINAL_LEQUIPE_CREDIT_WORDS_RE = re.compile(
+    r"(?iu)\b(?:via|source|credit|credits|reported\s+by|according\s+to|h/t|"
+    r"מקור|קרדיט|לפי|באמצעות|דיווח)\b\s*[:\-–—]?\s*"
+)
+_FINAL_REGIONAL_FLAG_RE = re.compile(r"(?:[\U0001F1E6-\U0001F1FF]{2})")
+_FINAL_LAYOUT_INVISIBLES_RE = re.compile(r"[\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]")
+
+
+def _final_strip_lequipe_suffix(post: Any, value: str) -> str:
+    """Remove only a trailing L'Équipe source/handle block.
+
+    Handles parenthesised and plain forms, including combinations such as
+    ``(L'Équipe, @lequipe)``, ``L'Équipe (@lequipe)`` and ``via @lequipe``.
+    Outlet mentions inside an actual sentence remain untouched.
+    """
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    if not text:
+        return text
+
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    is_lequipe_account = "lequipe" in username or "l_equipe" in username
+
+    def bracket_is_credit(match: re.Match[str]) -> str:
+        inner = html.unescape(match.group("inner") or "")
+        has_lequipe = bool(_FINAL_LEQUIPE_NAME_RE.search(inner) or _FINAL_LEQUIPE_HANDLE_RE.search(inner))
+        has_only_handle_credit = bool(is_lequipe_account and re.fullmatch(
+            r"(?is)\s*(?:(?:via|source|credit|credits|h/t|מקור|קרדיט|לפי)\s*[:\-–—]?\s*)?"
+            r"@[A-Za-z0-9_]+\s*[.,;:!?]*\s*",
+            inner,
+        ))
+        return "" if has_lequipe or has_only_handle_credit else match.group(0)
+
+    # Remove one or more source brackets only when they are at the very end.
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(
+            r"(?is)\s*[\(\[\{]\s*(?P<inner>[^\)\]\}\n]{1,180})\s*[\)\]\}]\s*[.,;:!?]*\s*$",
+            bracket_is_credit,
+            text,
+        ).rstrip()
+
+        # Plain trailing source/handle, with or without a credit word.
+        tail = re.search(
+            r"(?is)(?P<body>.*?)"
+            r"(?P<tail>\s*(?:[-–—|,:;]\s*)?"
+            r"(?:(?:via|source|credit|credits|reported\s+by|according\s+to|h/t|"
+            r"מקור|קרדיט|לפי|באמצעות|דיווח)\s*[:\-–—]?\s*)?"
+            r"(?:l\s*[’'`´]?\s*[ée]quipe|lequipe|l[’'`´]?equipe|לאקיפ|ל[׳']אקיפ|לקיפ(?:ה)?|"
+            r"@[\u200e\u200f\u202a-\u202e\u2066-\u2069]*lequipe(?:_[A-Za-z0-9_]+)?)"
+            r"(?:\s*[/|,&+\-–—]\s*(?:"
+            r"l\s*[’'`´]?\s*[ée]quipe|lequipe|l[’'`´]?equipe|לאקיפ|ל[׳']אקיפ|לקיפ(?:ה)?|"
+            r"@[\u200e\u200f\u202a-\u202e\u2066-\u2069]*lequipe(?:_[A-Za-z0-9_]+)?))*"
+            r"\s*[.,;:!?]*\s*)$",
+            text,
+        )
+        if tail:
+            text = tail.group("body").rstrip()
+            continue
+
+        # For the L'Équipe account itself, a final bare @handle is also just the
+        # account credit even when the mirror used a slightly different handle.
+        if is_lequipe_account:
+            text = re.sub(
+                r"(?is)\s*(?:[-–—|,:;]\s*)?"
+                r"(?:(?:via|source|credit|credits|h/t|מקור|קרדיט|לפי)\s*[:\-–—]?\s*)?"
+                r"@[A-Za-z0-9_]+\s*[.,;:!?]*\s*$",
+                "",
+                text,
+            ).rstrip()
+
+    # Remove punctuation or empty brackets left only by the deleted suffix.
+    text = re.sub(r"\s*[\(\[\{]\s*[\)\]\}]\s*$", "", text).rstrip()
+    text = re.sub(r"\s+([,.;!?])", r"\1", text)
+    text = re.sub(r"(?:\s*[-–—|,:;])+\s*$", "", text).rstrip()
+    return text
+
+
+def _final_layout_plain(line: str) -> str:
+    try:
+        plain = html_message_to_plain_text(str(line or ""))
+    except Exception:
+        plain = html.unescape(re.sub(r"<[^>]+>", "", str(line or "")))
+    return _FINAL_LAYOUT_INVISIBLES_RE.sub("", plain).strip()
+
+
+def _final_is_blank_layout_line(line: str) -> bool:
+    return not _final_layout_plain(line)
+
+
+def _final_is_country_flag_only(line: str) -> bool:
+    plain = _final_layout_plain(line)
+    if not plain:
+        return False
+    found = bool(_FINAL_REGIONAL_FLAG_RE.search(plain) or TAG_FLAG_RE.search(plain))
+    if not found:
+        return False
+    rest = _FINAL_REGIONAL_FLAG_RE.sub("", plain)
+    rest = TAG_FLAG_RE.sub("", rest)
+    rest = re.sub(r"[\ufe0e\ufe0f\u200d\s,.;:!?\-–—]+", "", rest)
+    return not rest
+
+
+def _final_single_blank_line_layout(value: str) -> str:
+    """Normalize visual spacing without changing sentence or paragraph text."""
+    raw_lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    lines = [line.rstrip() for line in raw_lines]
+
+    # A flag left on its own after a source-credit line was removed belongs to
+    # the previous written line. Attach it before blank-line normalization.
+    index = 0
+    while index < len(lines):
+        if _final_is_country_flag_only(lines[index]):
+            previous = index - 1
+            while previous >= 0 and _final_is_blank_layout_line(lines[previous]):
+                previous -= 1
+            previous_plain = _final_layout_plain(lines[previous]) if previous >= 0 else ""
+            if previous >= 0 and "נטו ספורט" not in previous_plain and not previous_plain.endswith(":"):
+                flag = lines[index].strip()
+                lines[previous] = lines[previous].rstrip() + " " + flag
+                del lines[index]
+                continue
+        index += 1
+
+    # Lines containing only Telegram direction helpers are blank for layout.
+    normalized: list[str] = []
+    pending_blank = False
+    for line in lines:
+        if _final_is_blank_layout_line(line):
+            if normalized:
+                pending_blank = True
+            continue
+        if pending_blank and normalized and normalized[-1] != "":
+            normalized.append("")
+        normalized.append(line.strip() if not re.search(r"<[^>]+>", line) else line.strip())
+        pending_blank = False
+
+    while normalized and normalized[-1] == "":
+        normalized.pop()
+    while normalized and normalized[0] == "":
+        normalized.pop(0)
+
+    # Exactly one empty line before the Neto Sport footer, never two.
+    footer_index = next(
+        (i for i, line in enumerate(normalized) if "נטו ספורט" in _final_layout_plain(line)),
+        -1,
+    )
+    if footer_index >= 0:
+        while footer_index > 0 and normalized[footer_index - 1] == "":
+            del normalized[footer_index - 1]
+            footer_index -= 1
+        if footer_index > 0:
+            normalized.insert(footer_index, "")
+
+    # Keep the established single empty line after a writer heading as well.
+    if len(normalized) >= 2 and _final_layout_plain(normalized[0]).endswith(":"):
+        while len(normalized) > 1 and normalized[1] == "":
+            del normalized[1]
+        normalized.insert(1, "")
+
+    return "\n".join(normalized).strip()
+
+
+_FINAL_PRE_LEQUIPE_SPACING_TAG_CLEANUP = _six_cleanup_tag_artifacts
+
+
+def _six_cleanup_tag_artifacts(post: Post, value: str) -> str:
+    text = _FINAL_PRE_LEQUIPE_SPACING_TAG_CLEANUP(post, value)
+    text = _final_strip_lequipe_suffix(post, text)
+    return _final_single_blank_line_layout(text)
+
+
+_FINAL_PRE_LEQUIPE_SPACING_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    message = _FINAL_PRE_LEQUIPE_SPACING_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    message = _final_strip_lequipe_suffix(post, message)
+    return _final_single_blank_line_layout(message)
+
+
+_FINAL_PRE_LEQUIPE_SPACING_PREPARED_SEND = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    message = _final_strip_lequipe_suffix(post, message)
+    message = _final_single_blank_line_layout(message)
+    return _FINAL_PRE_LEQUIPE_SPACING_PREPARED_SEND(
+        post,
+        message,
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+
+# ====== END FINAL L'EQUIPE / FLAG / SPACING PATCH ======
+
 if __name__ == "__main__":
     main()
