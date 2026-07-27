@@ -36960,5 +36960,1905 @@ def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[st
                 return ids
     return _PRE_REQUESTED_REPLY_TARGET_CORRECTION(post, state)
 
+
+# ====== FINAL EXACT-AUTO / COMPLETE-TELEMETRY / EDITORIAL FIXES (2026-07-27) ======
+# This final layer is intentionally surgical. It does not change RSS URLs/order,
+# environment variables, account lists, scan settings, Gemini settings, team tiers,
+# persistent filenames or existing JSON keys.
+
+BOT_BUILD_ID = "winner-exact-auto-complete-telemetry-editorial-2026-07-27"
+_FINAL_TELEMETRY_VERSION = 3
+
+
+# ---------------------------------------------------------------------------
+# 1) Automatic live discovery uses the exact same full forced discovery job as
+#    the manual "10 latest" control route, not only the direct-X sub-reader.
+# ---------------------------------------------------------------------------
+def _continuous_force_probe_account(username: str) -> list[Post]:
+    canonical = _continuous_force_account_name(username)
+    started = time.perf_counter()
+    try:
+        future = _canonical_start_discovery(canonical, force=True)
+        rows: list[Post] = []
+        if future is not None:
+            rows = list(future.result(timeout=max(CANONICAL_CONTROL_WAIT_SECONDS, FEED_COLLECTION_TIMEOUT_SECONDS + 3.0)) or [])
+        if not rows:
+            with _CANONICAL_DISCOVERY_LOCK:
+                rows = list((_CANONICAL_DISCOVERY_CACHE.get(canonical.casefold()) or (0.0, []))[1])
+        elapsed = time.perf_counter() - started
+        stored = _continuous_force_store_rows(canonical, rows, elapsed)
+        observed = time.time()
+        for post in stored:
+            if isinstance(post, Post):
+                _pipeline_mark_seen(post, "automatic_forced_full", observed, elapsed)
+        return stored
+    except Exception as exc:
+        logging.debug(
+            "Automatic full forced discovery failed safely for @%s: %s",
+            canonical,
+            short_error(exc, 300),
+        )
+        return []
+    finally:
+        with _CONTINUOUS_FORCE_LOCK:
+            _CONTINUOUS_FORCE_INFLIGHT.pop(canonical.casefold(), None)
+
+
+# Every row returned to the automatic cycle gets a first-seen timestamp. Existing
+# earlier lane timestamps are preserved by _pipeline_mark_seen.
+_PRE_FINAL_EXACT_AUTO_FETCH_POSTS = fetch_posts
+
+
+def fetch_posts(username: str) -> list[Post]:
+    started = time.perf_counter()
+    rows = list(_PRE_FINAL_EXACT_AUTO_FETCH_POSTS(username) or [])
+    elapsed = time.perf_counter() - started
+    observed = time.time()
+    canonical = _continuous_force_account_name(username)
+    lane = "automatic_full_refresh"
+    try:
+        diagnostic = dict(_CANONICAL_DISCOVERY_DIAGNOSTICS.get(canonical.casefold()) or {})
+        path = diagnostic.get("path") or []
+        if path:
+            lane = "automatic:" + "+".join(str(item) for item in path[:3])
+    except Exception:
+        pass
+    for post in rows:
+        if isinstance(post, Post):
+            _pipeline_mark_seen(post, lane, observed, elapsed)
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# 2) Complete timing capture for sent and blocked posts.
+# ---------------------------------------------------------------------------
+def _final_pipeline_set_processing_started(post: Post, at: float | None = None) -> float:
+    key = _pipeline_post_key(post)
+    value = float(at or time.time())
+    if not key:
+        return value
+    with _PIPELINE_TIMING_LOCK:
+        previous = float(_PIPELINE_PROCESS_STARTED.get(key, 0.0) or 0.0)
+        if not previous or value < previous:
+            _PIPELINE_PROCESS_STARTED[key] = value
+            return value
+        return previous
+
+
+def _final_pipeline_capture(post: Post) -> dict[str, Any]:
+    now = time.time()
+    key = _pipeline_post_key(post)
+    if key:
+        with _PIPELINE_TIMING_LOCK:
+            has_seen = bool(float((_PIPELINE_FIRST_SEEN.get(key) or {}).get("first_seen_at", 0.0) or 0.0))
+        if not has_seen:
+            _pipeline_mark_seen(post, "automatic_processing", now, 0.0)
+    process_started = _final_pipeline_set_processing_started(post, now)
+    with _PIPELINE_TIMING_LOCK:
+        return {
+            "seen": dict(_PIPELINE_FIRST_SEEN.get(key, {})),
+            "stages": dict(_PIPELINE_STAGE_ACCUM.get(key, {})),
+            "processing_started_at": process_started,
+        }
+
+
+def _final_pipeline_row_identity(row: dict[str, Any]) -> str:
+    return str(row.get("post_id") or row.get("link") or "").strip()
+
+
+def _final_pipeline_post_identity(post: Post) -> str:
+    return str(getattr(post, "post_id", "") or getattr(post, "link", "") or _pipeline_post_key(post)).strip()
+
+
+def _final_pipeline_upsert(
+    post: Post,
+    status: str,
+    snapshot: dict[str, Any],
+    result: dict[str, Any] | None = None,
+    reason: str = "",
+) -> None:
+    result = dict(result or {})
+    seen = dict(snapshot.get("seen") or {})
+    stages = dict(snapshot.get("stages") or {})
+    finished_at = time.time()
+    published = 0.0
+    try:
+        published = float(_final_original_publish_timestamp(post) or 0.0)
+    except Exception:
+        published = float(getattr(post, "published_ts", 0.0) or 0.0)
+    first_seen = float(seen.get("first_seen_at", 0.0) or 0.0)
+    if not first_seen:
+        first_seen = finished_at
+    processing_started = float(snapshot.get("processing_started_at", 0.0) or first_seen)
+    if processing_started < first_seen:
+        processing_started = first_seen
+
+    filter_value = stages.get("filter_wall_seconds")
+    if filter_value is None:
+        filter_value = stages.get("filter_seconds")
+    duplicate_value = stages.get("duplicate_wall_seconds")
+    if duplicate_value is None:
+        duplicate_value = stages.get("duplicate_seconds")
+
+    translation_measured = "translation_seconds" in result
+    media_measured = any(key in result for key in ("media_lookup_seconds", "video_lookup_seconds"))
+    prepare_measured = "prepare_seconds" in result
+    send_measured = status == "sent" and "send_seconds" in result
+    processing_total_measured = "total_seconds" in result
+
+    media_seconds = 0.0
+    if media_measured:
+        media_seconds = float(result.get("media_lookup_seconds", 0.0) or 0.0) + float(result.get("video_lookup_seconds", 0.0) or 0.0)
+
+    row = {
+        "telemetry_version": _FINAL_TELEMETRY_VERSION,
+        "ts": finished_at,
+        "status": status,
+        "username": str(getattr(post, "username", "") or ""),
+        "post_id": str(getattr(post, "post_id", "") or ""),
+        "link": str(getattr(post, "link", "") or ""),
+        "source_name": str(result.get("source_name") or getattr(post, "source_name", "") or ""),
+        "published_at": published,
+        "first_seen_at": first_seen,
+        "first_seen_lane": str(seen.get("first_seen_lane") or "automatic_processing"),
+        "processing_started_at": processing_started,
+        "telegram_sent_at": finished_at if status == "sent" else None,
+        "blocked_at": finished_at if status == "blocked" else None,
+        "publish_to_first_seen_seconds": max(0.0, first_seen - published) if published else None,
+        "first_seen_to_processing_seconds": max(0.0, processing_started - first_seen),
+        "filter_seconds": float(filter_value or 0.0),
+        "duplicate_seconds": float(duplicate_value or 0.0),
+        "translation_seconds": float(result.get("translation_seconds", 0.0) or 0.0) if translation_measured else None,
+        "media_lookup_seconds": media_seconds if media_measured else None,
+        "prepare_seconds": float(result.get("prepare_seconds", 0.0) or 0.0) if prepare_measured else None,
+        "telegram_send_seconds": float(result.get("send_seconds", 0.0) or 0.0) if send_measured else None,
+        "processing_total_seconds": float(result.get("total_seconds", 0.0) or 0.0) if processing_total_measured else max(0.0, finished_at - processing_started),
+        "publish_to_telegram_seconds": max(0.0, finished_at - published) if status == "sent" and published else None,
+        "publish_to_blocked_seconds": max(0.0, finished_at - published) if status == "blocked" and published else None,
+        "block_reason": str(reason or "") if status == "blocked" else "",
+        "block_reason_he": hebrew_block_reason(str(reason or "")) if status == "blocked" else "",
+        "measured": {
+            "publish_to_first_seen_seconds": bool(published),
+            "first_seen_to_processing_seconds": True,
+            "filter_seconds": filter_value is not None,
+            "duplicate_seconds": duplicate_value is not None,
+            "translation_seconds": translation_measured,
+            "media_lookup_seconds": media_measured,
+            "prepare_seconds": prepare_measured,
+            "telegram_send_seconds": send_measured,
+            "processing_total_seconds": True,
+            "publish_to_telegram_seconds": status == "sent" and bool(published),
+            "publish_to_blocked_seconds": status == "blocked" and bool(published),
+        },
+    }
+
+    identity = _final_pipeline_post_identity(post)
+    with _PIPELINE_TIMING_LOCK:
+        state = load_control_state()
+        sent_rows = [item for item in (state.get(PIPELINE_TIMING_STATE_KEY, []) or []) if isinstance(item, dict)]
+        blocked_rows = [item for item in (state.get(PIPELINE_BLOCKED_TIMING_STATE_KEY, []) or []) if isinstance(item, dict)]
+        if identity:
+            sent_rows = [item for item in sent_rows if _final_pipeline_row_identity(item) != identity]
+            blocked_rows = [item for item in blocked_rows if _final_pipeline_row_identity(item) != identity]
+        if status == "sent":
+            sent_rows.append(row)
+        else:
+            blocked_rows.append(row)
+        save_control_state(**{
+            PIPELINE_TIMING_STATE_KEY: sent_rows[-PIPELINE_TIMING_LIMIT:],
+            PIPELINE_BLOCKED_TIMING_STATE_KEY: blocked_rows[-PIPELINE_BLOCKED_TIMING_LIMIT:],
+        })
+        key = _pipeline_post_key(post)
+        _PIPELINE_FIRST_SEEN.pop(key, None)
+        _PIPELINE_STAGE_ACCUM.pop(key, None)
+        _PIPELINE_PROCESS_STARTED.pop(key, None)
+
+
+# Measure the current final filter as one wall-clock stage without changing its verdict.
+_PRE_FINAL_COMPLETE_PRE_SEND_BLOCK = pre_send_final_local_block_reason
+_FINAL_AGENCY_SWITCH_RE = re.compile(
+    r"\b(?:chose|select(?:ed)?|appoint(?:ed)?|join(?:ed)?|sign(?:ed)?\s+with)\s+(?:a\s+)?(?:new\s+)?(?:agency|agent|representatives?|management)\b|"
+    r"\b(?:new\s+agency|new\s+representatives?|change(?:d)?\s+(?:his\s+)?agency|represented\s+by)\b|"
+    r"בחר\s+ב.{0,80}(?:כסוכנות|לייצג)|סוכנות\s+חדשה|נציגים\s+חדשים|מייצגים\s+חדשים|"
+    r"הצטרף\s+רשמית\s+למייצגים|עבר\s+לסוכנות|החליף\s+(?:סוכן|סוכנות|נציגים)",
+    re.IGNORECASE | re.UNICODE,
+)
+_FINAL_AGENCY_REAL_FOOTBALL_ACTION_RE = re.compile(
+    r"\b(?:transfer|bid|offer|fee|medical|club[- ]to[- ]club|loan|option\s+to\s+buy|here\s+we\s+go)\b|"
+    r"העברה|הצעה|דמי\s+העברה|בדיקות\s+רפואיות|משא\s+ומתן\s+בין\s+המועדונים|השאלה|אופציית\s+רכישה|HERE\s+WE\s+GO",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    _final_pipeline_set_processing_started(post)
+    started = time.perf_counter()
+    try:
+        source = clean_for_ai_translation(_requested_source_text(post))
+        if _FINAL_AGENCY_SWITCH_RE.search(source) and not _FINAL_AGENCY_REAL_FOOTBALL_ACTION_RE.search(source):
+            return "player_changed_agency_non_football"
+        return _PRE_FINAL_COMPLETE_PRE_SEND_BLOCK(post)
+    finally:
+        _pipeline_add_stage(post, "filter_wall_seconds", time.perf_counter() - started)
+
+
+_PRE_FINAL_COMPLETE_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "player_changed_agency_non_football" in raw:
+        return "דיווח על החלפת סוכנות או נציגים אינו דיווח כדורגל"
+    return _PRE_FINAL_COMPLETE_HEBREW_REASON(reason)
+
+
+# Measure final duplicate calls and make Fabrizio HERE WE GO immune to fuzzy/event
+# duplicate suppression. Exact post-ID/link state dedupe remains untouched.
+def _final_is_fabrizio_here_we_go(post: Any) -> bool:
+    return isinstance(post, Post) and _final_is_fabrizio(post) and _final_source_has_here_we_go(post)
+
+
+def _final_wrap_duplicate_finder(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+    def wrapper(*args: Any, _previous=previous, **kwargs: Any):
+        post = next((value for value in list(args) + list(kwargs.values()) if isinstance(value, Post)), None)
+        if post is not None:
+            _final_pipeline_set_processing_started(post)
+        started = time.perf_counter()
+        try:
+            if post is not None and _final_is_fabrizio_here_we_go(post):
+                return None
+            return _previous(*args, **kwargs)
+        finally:
+            if post is not None:
+                _pipeline_add_stage(post, "duplicate_wall_seconds", time.perf_counter() - started)
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _final_dup_name in (
+    "find_recent_burst_spam_event",
+    "find_channel_duplicate_event",
+    "find_recent_duplicate_event",
+    "find_recent_duplicate_event_ai_aware",
+    "find_post_translation_duplicate_event",
+    "_final_existing_strict_duplicate",
+    "persistent_duplicate_candidate",
+):
+    _final_wrap_duplicate_finder(_final_dup_name)
+
+
+_PRE_FINAL_COMPLETE_CLUSTER = cluster_parallel_candidates
+
+
+def cluster_parallel_candidates(candidates: list[tuple[str, Post, float]]) -> list[tuple[str, Post, float]]:
+    protected = [item for item in candidates if _final_is_fabrizio_here_we_go(item[1])]
+    ordinary = [item for item in candidates if item not in protected]
+    reduced = list(_PRE_FINAL_COMPLETE_CLUSTER(ordinary) or [])
+    original_order = {id(item[1]): index for index, item in enumerate(candidates)}
+    merged = reduced + protected
+    seen: set[str] = set()
+    unique: list[tuple[str, Post, float]] = []
+    for item in merged:
+        identity = _final_pipeline_post_identity(item[1])
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        unique.append(item)
+    return sorted(unique, key=lambda item: original_order.get(id(item[1]), len(candidates)))
+
+
+# Capture every skip with the snapshot that existed before older wrappers clear it.
+_PRE_FINAL_COMPLETE_LOG_SKIP = log_skip_once
+
+
+def log_skip_once(reason: str, post: "Post", message: str, *args: Any) -> None:
+    snapshot = _final_pipeline_capture(post)
+    try:
+        return _PRE_FINAL_COMPLETE_LOG_SKIP(reason, post, message, *args)
+    finally:
+        try:
+            _final_pipeline_upsert(post, "blocked", snapshot, reason=reason)
+        except Exception as exc:
+            logging.debug("Complete blocked telemetry failed safely: %s", short_error(exc, 240))
+
+
+_PRE_FINAL_COMPLETE_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    snapshot = _final_pipeline_capture(post)
+    result = _PRE_FINAL_COMPLETE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    if isinstance(result, dict):
+        status = "sent" if result.get("sent") else "blocked"
+        reason = "" if status == "sent" else str(result.get("mode") or "not_sent")
+        try:
+            _final_pipeline_upsert(post, status, snapshot, result=result, reason=reason)
+        except Exception as exc:
+            logging.debug("Complete send telemetry failed safely: %s", short_error(exc, 240))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 3) Final text cleanup: Plettenberg credit + adjacent flag, detached short tail,
+#    and a terminal period before the Neto Sport signature.
+# ---------------------------------------------------------------------------
+_FINAL_REGIONAL_FLAG_RE = r"[\U0001F1E6-\U0001F1FF]{2}"
+_FINAL_SKY_INLINE_RE = re.compile(
+    rf"(?iu)(?:\s*(?:{_FINAL_REGIONAL_FLAG_RE})\s*)?"
+    r"(?:sky\s*sports?\s*(?:germany|de)|sky\s*germany|skysportde|סקיי\s*ספורט(?:ס)?\s*גרמניה|סקיי\s*גרמניה)"
+    rf"(?:\s*(?:{_FINAL_REGIONAL_FLAG_RE})\s*)?"
+)
+_FINAL_SHORT_TAIL_PROTECTED_RE = re.compile(
+    r"(?iu)^(?:HERE\s+WE\s+GO|רשמי\s+בקרוב|פרטים\s+נוספים|בדיקות\s+רפואיות|"
+    r"חוזה\s+חדש|העסקה\s+סוכמה|המשך\s+יבוא|עוד\s+פרטים)$"
+)
+
+
+def _final_remove_detached_short_tail(text: str) -> str:
+    lines = str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    nonempty = [index for index, line in enumerate(lines) if line.strip()]
+    if len(nonempty) < 2:
+        return str(text or "").strip()
+    last_index = nonempty[-1]
+    tail_raw = html.unescape(re.sub(r"<[^>]+>", "", lines[last_index])).strip()
+    tail_clean = re.sub(r"^[\s•·:;,.!?…\-–—]+|[\s•·:;,.!?…\-–—]+$", "", tail_raw).strip()
+    tokens = re.findall(r"[A-Za-zא-ת0-9@_][A-Za-zא-ת0-9@_'׳״\-]*", tail_clean)
+    before = "\n".join(lines[:last_index]).rstrip()
+    if (
+        before
+        and 1 <= len(tokens) <= 2
+        and not re.search(r"\d|[€£$]", tail_clean)
+        and not _FINAL_SHORT_TAIL_PROTECTED_RE.fullmatch(tail_clean)
+        and re.search(r"[.!?…][\"'״׳)\]]*\s*$", html.unescape(re.sub(r"<[^>]+>", "", before)))
+    ):
+        return before
+    return str(text or "").strip()
+
+
+def _final_ensure_terminal_period(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return value
+    # Preserve trailing emoji/flags, but place the period after the last word.
+    trailing_match = re.search(r"(?s)(\s*(?:[\U0001F1E6-\U0001F1FF]{2}|[\U0001F300-\U0001FAFF]|[\u2600-\u27BF])*)$", value)
+    trailing = trailing_match.group(1) if trailing_match else ""
+    body = value[:len(value) - len(trailing)].rstrip() if trailing else value.rstrip()
+    if body and not re.search(r"[.!?…][\"'״׳)\]]*$", body):
+        body += "."
+    return (body + trailing).strip()
+
+
+def _final_editorial_clean_body(post: Post, value: str) -> str:
+    text = str(value or "").strip()
+    if _final_is_plettigoal(post):
+        text = _FINAL_SKY_INLINE_RE.sub(" ", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+    text = _requested_safe_tail_cleanup(text)
+    text = _final_remove_detached_short_tail(text)
+    text = _requested_safe_tail_cleanup(text)
+    return _final_ensure_terminal_period(text)
+
+
+_PRE_FINAL_COMPLETE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _final_editorial_clean_body(post, translated)
+    quoted_translated = _final_editorial_clean_body(post, quoted_translated) if quoted_translated else ""
+    return _PRE_FINAL_COMPLETE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4) Delay report: exactly the last ten measured posts, every stage, then real
+#    averages with an explicit sample count for every metric.
+# ---------------------------------------------------------------------------
+def _final_timing_clock(ts: Any) -> str:
+    value = float(ts or 0.0)
+    if value <= 0:
+        return "לא סופק על־ידי המקור"
+    return datetime.fromtimestamp(value, tz=ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m/%Y %H:%M:%S")
+
+
+def _final_metric_text(row: dict[str, Any], key: str, digits: int = 3) -> str:
+    measured = row.get("measured") if isinstance(row.get("measured"), dict) else {}
+    if not bool(measured.get(key, False)):
+        return "לא בוצע — הפוסט נעצר לפני השלב"
+    value = row.get(key)
+    if value is None:
+        return "לא בוצע — הפוסט נעצר לפני השלב"
+    return f"{float(value):.{digits}f} שנ׳"
+
+
+def _final_recent_timing_rows(limit: int = 10) -> list[dict[str, Any]]:
+    state = load_control_state()
+    rows: list[dict[str, Any]] = []
+    for key, status in ((PIPELINE_TIMING_STATE_KEY, "sent"), (PIPELINE_BLOCKED_TIMING_STATE_KEY, "blocked")):
+        for row in state.get(key, []) or []:
+            if not isinstance(row, dict) or int(row.get("telemetry_version", 0) or 0) != _FINAL_TELEMETRY_VERSION:
+                continue
+            item = dict(row)
+            item["status"] = str(item.get("status") or status)
+            rows.append(item)
+    rows.sort(key=lambda item: float(item.get("ts", 0.0) or 0.0))
+    unique: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        identity = _final_pipeline_row_identity(row) or hashlib.sha1(json.dumps(row, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        unique[identity] = row
+    return list(unique.values())[-max(1, int(limit)):]
+
+
+def _final_timing_detail_text(row: dict[str, Any], index: int, total: int) -> str:
+    status = str(row.get("status") or "blocked")
+    lines = [
+        f"⏱️ פוסט {index}/{total}",
+        "",
+        f"כתב/מקור: {_hebrew_account_label(str(row.get('username') or ''))}",
+        f"מצב: {'נשלח' if status == 'sent' else 'נחסם'}",
+        f"פורסם: {_final_timing_clock(row.get('published_at'))}",
+        f"גילוי ראשון: {_final_timing_clock(row.get('first_seen_at'))}",
+        f"נתיב גילוי: {row.get('first_seen_lane') or 'automatic_processing'}",
+        f"פרסום → גילוי: {_final_metric_text(row, 'publish_to_first_seen_seconds', 1)}",
+        f"תחילת עיבוד: {_final_timing_clock(row.get('processing_started_at'))}",
+        f"גילוי → תחילת עיבוד: {_final_metric_text(row, 'first_seen_to_processing_seconds', 3)}",
+        f"סינון מקומי: {_final_metric_text(row, 'filter_seconds', 3)}",
+        f"בדיקת כפילויות: {_final_metric_text(row, 'duplicate_seconds', 3)}",
+        f"תרגום: {_final_metric_text(row, 'translation_seconds', 2)}",
+        f"בדיקת מדיה: {_final_metric_text(row, 'media_lookup_seconds', 2)}",
+        f"הכנת הודעה: {_final_metric_text(row, 'prepare_seconds', 3)}",
+        f"שליחת Telegram: {_final_metric_text(row, 'telegram_send_seconds', 2)}",
+        f"זמן עיבוד כולל: {_final_metric_text(row, 'processing_total_seconds', 2)}",
+    ]
+    if status == "sent":
+        lines.extend([
+            f"נשלח: {_final_timing_clock(row.get('telegram_sent_at'))}",
+            f"פרסום → Telegram: {_final_metric_text(row, 'publish_to_telegram_seconds', 1)}",
+        ])
+    else:
+        lines.extend([
+            f"נחסם: {_final_timing_clock(row.get('blocked_at'))}",
+            f"פרסום → חסימה: {_final_metric_text(row, 'publish_to_blocked_seconds', 1)}",
+            f"סיבת חסימה: {row.get('block_reason_he') or hebrew_block_reason(str(row.get('block_reason') or ''))}",
+        ])
+    return "\n".join(lines)
+
+
+def _final_average_line(rows: list[dict[str, Any]], key: str, label: str, digits: int = 2) -> str:
+    values: list[float] = []
+    for row in rows:
+        measured = row.get("measured") if isinstance(row.get("measured"), dict) else {}
+        if bool(measured.get(key, False)) and row.get(key) is not None:
+            values.append(float(row.get(key) or 0.0))
+    if not values:
+        return f"• {label}: לא בוצע באף אחד מ־{len(rows)} הפוסטים"
+    return f"• {label}: {sum(values) / len(values):.{digits}f} שנ׳ (n={len(values)})"
+
+
+def pipeline_timing_report_parts(limit: int = 10) -> list[str]:
+    rows = _final_recent_timing_rows(limit)
+    if not rows:
+        return [
+            "⏱️ בדיקת עיכוב אמיתית\n\n"
+            "המדידה המלאה הופעלה כעת. עשרת הפוסטים החדשים הבאים — שנשלחו או נחסמו — יישמרו עם כל שלבי העיבוד."
+        ]
+    parts = [_final_timing_detail_text(row, index, len(rows)) for index, row in enumerate(rows, 1)]
+    sent = [row for row in rows if row.get("status") == "sent"]
+    blocked = [row for row in rows if row.get("status") == "blocked"]
+    summary = [
+        "📊 ממוצעי בדיקת העיכוב",
+        "",
+        f"נמדדו בפועל {len(rows)} מתוך 10 הפוסטים האחרונים: {len(sent)} נשלחו ו־{len(blocked)} נחסמו.",
+        _final_average_line(rows, "publish_to_first_seen_seconds", "פרסום → גילוי ראשון", 1),
+        _final_average_line(rows, "first_seen_to_processing_seconds", "גילוי → תחילת עיבוד", 3),
+        _final_average_line(rows, "filter_seconds", "סינון מקומי", 3),
+        _final_average_line(rows, "duplicate_seconds", "בדיקת כפילויות", 3),
+        _final_average_line(rows, "translation_seconds", "תרגום", 2),
+        _final_average_line(rows, "media_lookup_seconds", "בדיקת מדיה", 2),
+        _final_average_line(rows, "prepare_seconds", "הכנת הודעה", 3),
+        _final_average_line(rows, "telegram_send_seconds", "שליחת Telegram", 2),
+        _final_average_line(sent, "publish_to_telegram_seconds", "פרסום → Telegram בפוסטים שנשלחו", 1) if sent else "• פרסום → Telegram: לא היו פוסטים שנשלחו במדגם",
+        _final_average_line(blocked, "publish_to_blocked_seconds", "פרסום → חסימה בפוסטים שנחסמו", 1) if blocked else "• פרסום → חסימה: לא היו פוסטים שנחסמו במדגם",
+    ]
+    parts.append("\n".join(summary))
+    return parts
+
+
+def pipeline_timing_report_text(limit: int = 10) -> str:
+    return "\n\n———\n\n".join(pipeline_timing_report_parts(limit))
+
+
+_PRE_FINAL_COMPLETE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    if str(callback.get("data", "") or "") != "football_pipeline_timings":
+        return _PRE_FINAL_COMPLETE_PROCESS_CONTROL_UPDATE(update)
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    if callback_id:
+        answer_control_callback(callback_id, "מציג את עשרת הפוסטים והזמנים")
+    for part in pipeline_timing_report_parts(10):
+        send_control_text(part, None, control_delete_message_reply_markup())
+
+
+# ---------------------------------------------------------------------------
+# 5) A forwarded/replied channel message in the quiet channel always gets both
+#    the technical details and a separate exact full copy, including Telegram media.
+# ---------------------------------------------------------------------------
+_PRE_FINAL_COMPLETE_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
+def _final_copy_forwarded_message_to_control(message: dict[str, Any]) -> bool:
+    target = _forward_target_message(message)
+    source_message_id = target.get("message_id")
+    if not CONTROL_CHAT_ID or not source_message_id:
+        return False
+    payload: dict[str, Any] = {
+        "chat_id": CONTROL_CHAT_ID,
+        "from_chat_id": CONTROL_CHAT_ID,
+        "message_id": int(source_message_id),
+        "reply_markup": control_delete_message_reply_markup(),
+    }
+    try:
+        telegram_api("copyMessage", payload, max_attempts=max(2, HTTP_RETRIES), timeout=max(8, REQUEST_TIMEOUT_SECONDS))
+        return True
+    except Exception as exc:
+        logging.debug("Exact forwarded-message copy failed safely: %s", short_error(exc, 300))
+        return False
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    message = update.get("message") or update.get("channel_post") or update.get("edited_channel_post") or {}
+    if isinstance(message, dict):
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        is_control = bool(CONTROL_CHAT_ID and chat_id == str(CONTROL_CHAT_ID))
+        if is_control and _message_has_forward_source_context(message):
+            # Prepared/blocked candidates retain the richer existing renderer,
+            # original X media and stored reason.
+            try:
+                if _requested_find_prepared_item(message):
+                    return _PRE_FINAL_COMPLETE_CONTROL_TEXT_UPDATE(update)
+            except Exception:
+                pass
+            try:
+                details = _forwarded_source_details_text(message)
+                send_control_reply_text(
+                    details,
+                    reply_to_message_id=message.get("message_id"),
+                    message_thread_id=message.get("message_thread_id"),
+                )
+                if not _final_copy_forwarded_message_to_control(message):
+                    target = _forward_target_message(message)
+                    body = str(target.get("text") or target.get("caption") or "").strip()
+                    if body:
+                        send_control_reply_text(
+                            "📰 הפוסט המלא\n\n" + body,
+                            reply_to_message_id=message.get("message_id"),
+                            message_thread_id=message.get("message_thread_id"),
+                        )
+                return
+            except Exception as exc:
+                logging.exception("Full forwarded-message reconstruction failed")
+                try:
+                    send_control_reply_text(
+                        "לא הצלחתי לשחזר את ההודעה המלאה:\n" + short_error(exc, 900),
+                        reply_to_message_id=message.get("message_id"),
+                        message_thread_id=message.get("message_thread_id"),
+                    )
+                except Exception:
+                    pass
+                return
+    return _PRE_FINAL_COMPLETE_CONTROL_TEXT_UPDATE(update)
+
+
+
+# ---------------------------------------------------------------------------
+# 6) Keep the control-panel RSS diagnostic isolated and RSS-only. A temporary
+#    mirror outage may fall back to previously verified RSS rows, but never to
+#    direct-X or the continuous forced-discovery cache.
+# ---------------------------------------------------------------------------
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    canonical = _canonical_username(username)
+    try:
+        rows, _diagnostics = _stable_rss_network_fetch(
+            canonical,
+            limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+            exhaustive=True,
+        )
+        rows = list(rows or [])
+        if rows:
+            _stable_rss_remember(canonical, rows)
+            _remember_control_rss_posts(canonical, rows)
+            return canonical, rows, None
+        cached = list(_stable_rss_cached_posts(canonical, limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))) or [])
+        return canonical, cached, None
+    except Exception as exc:
+        cached = list(_stable_rss_cached_posts(canonical, limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))) or [])
+        if cached:
+            return canonical, cached, None
+        logging.warning("⚠️ בדיקת RSS ידנית נכשלה עבור @%s: %s", canonical, exc)
+        return canonical, [], exc
+
+
+# Media-file fallback for forwarded messages when copyMessage is unavailable.
+def _final_forwarded_body_for_control(target: dict[str, Any]) -> str:
+    body = str(target.get("text") or target.get("caption") or "").strip()
+    if body and not re.search(r"[א-ת]", body) and GOOGLE_TRANSLATE_CONTROL_PREVIEWS:
+        try:
+            translated = google_translate(body)
+            if translated:
+                body = translated
+        except Exception:
+            pass
+    return body
+
+
+def _final_resend_forwarded_payload(message: dict[str, Any]) -> bool:
+    target = _forward_target_message(message)
+    body = _final_forwarded_body_for_control(target)
+    method = ""
+    payload: dict[str, Any] = {"chat_id": CONTROL_CHAT_ID}
+    photos = target.get("photo") if isinstance(target.get("photo"), list) else []
+    if photos:
+        best = next((item for item in reversed(photos) if isinstance(item, dict) and item.get("file_id")), None)
+        if best:
+            method = "sendPhoto"
+            payload["photo"] = best.get("file_id")
+    elif isinstance(target.get("video"), dict) and target["video"].get("file_id"):
+        method = "sendVideo"
+        payload["video"] = target["video"].get("file_id")
+        payload["supports_streaming"] = True
+    elif isinstance(target.get("animation"), dict) and target["animation"].get("file_id"):
+        method = "sendAnimation"
+        payload["animation"] = target["animation"].get("file_id")
+    elif isinstance(target.get("document"), dict) and target["document"].get("file_id"):
+        method = "sendDocument"
+        payload["document"] = target["document"].get("file_id")
+
+    if method:
+        if body and len(body) <= 1000:
+            payload["caption"] = body
+        payload["reply_markup"] = control_delete_message_reply_markup()
+        try:
+            telegram_api(method, payload, max_attempts=max(2, HTTP_RETRIES), timeout=max(8, REQUEST_TIMEOUT_SECONDS))
+            if body and len(body) > 1000:
+                send_control_reply_text("📰 הפוסט המלא\n\n" + body)
+            return True
+        except Exception as exc:
+            logging.debug("Forwarded file_id resend failed safely: %s", short_error(exc, 300))
+    if body:
+        send_control_reply_text("📰 הפוסט המלא\n\n" + body)
+        return True
+    return False
+
+
+# Replace only the fallback branch of the final forward handler.
+_PRE_FINAL_MEDIA_FALLBACK_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    message = update.get("message") or update.get("channel_post") or update.get("edited_channel_post") or {}
+    if isinstance(message, dict):
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        is_control = bool(CONTROL_CHAT_ID and chat_id == str(CONTROL_CHAT_ID))
+        if is_control and _message_has_forward_source_context(message):
+            try:
+                if _requested_find_prepared_item(message):
+                    return _PRE_FINAL_MEDIA_FALLBACK_CONTROL_TEXT_UPDATE(update)
+            except Exception:
+                pass
+            try:
+                details = _forwarded_source_details_text(message)
+                send_control_reply_text(
+                    details,
+                    reply_to_message_id=message.get("message_id"),
+                    message_thread_id=message.get("message_thread_id"),
+                )
+                if not _final_copy_forwarded_message_to_control(message):
+                    _final_resend_forwarded_payload(message)
+                return
+            except Exception as exc:
+                logging.exception("Full forwarded-message reconstruction failed")
+                try:
+                    send_control_reply_text(
+                        "לא הצלחתי לשחזר את ההודעה המלאה:\n" + short_error(exc, 900),
+                        reply_to_message_id=message.get("message_id"),
+                        message_thread_id=message.get("message_thread_id"),
+                    )
+                except Exception:
+                    pass
+                return
+    return _PRE_FINAL_MEDIA_FALLBACK_CONTROL_TEXT_UPDATE(update)
+
+# ====== END FINAL EXACT-AUTO / COMPLETE-TELEMETRY / EDITORIAL FIXES ======
+
+# ====== FACTS HUB + CENTREGOALS SOURCE PATCH (2026-07-27) ======
+# Scope: add @centregoals as a dedicated facts source and move all facts-source
+# controls into one separate "עובדות" hub. Existing RSS templates/order,
+# scan cadence, filtering for ordinary reporters, Gemini settings and persistent
+# filenames/keys remain unchanged.
+
+BOT_BUILD_ID = "winner-facts-hub-centregoals-2026-07-27"
+
+CENTREGOALS_USERNAME = "centregoals"
+CENTREGOALS_DISPLAY_NAME = "מטרות מרכזיות"
+FACTS_DISABLED_SOURCES_STATE_KEY = "facts_disabled_sources_v1"
+
+FACTS_SOURCE_ORDER: tuple[str, ...] = (
+    FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
+    FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+    OPTAJOE_DEFAULT_ACTIVE_USERNAME,
+    CENTREGOALS_USERNAME,
+    "Sofascore",
+)
+
+FACTS_SOURCE_LABELS: dict[str, str] = {
+    FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME: "עובדות כדורגל",
+    FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME: "ציוצי כדורגל",
+    OPTAJOE_DEFAULT_ACTIVE_USERNAME: "אופטה",
+    CENTREGOALS_USERNAME: CENTREGOALS_DISPLAY_NAME,
+    "Sofascore": "סופסקור פוטבול",
+}
+
+_CENTREGOALS_ALIASES = {
+    "centregoals", "centre goals", "centergoals", "center goals",
+    "מטרות מרכזיות",
+}
+_SOFASCORE_FACT_ALIASES = {"sofascore", "sofascore football", "סופסקור", "סופסקור פוטבול"}
+
+
+def _facts_source_canonical(value: Any) -> str:
+    if isinstance(value, Post):
+        value = getattr(value, "username", "")
+    raw = str(value or "").strip().lstrip("@")
+    lowered = raw.casefold()
+    try:
+        if value_contains_football_factly(raw):
+            return FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME
+    except Exception:
+        pass
+    try:
+        if value_contains_footballtweet(raw):
+            return FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME
+    except Exception:
+        pass
+    try:
+        if value_contains_optajoe(raw):
+            return OPTAJOE_DEFAULT_ACTIVE_USERNAME
+    except Exception:
+        pass
+    if lowered in _CENTREGOALS_ALIASES:
+        return CENTREGOALS_USERNAME
+    if lowered in _SOFASCORE_FACT_ALIASES:
+        return "Sofascore"
+    return ""
+
+
+def _is_facts_source(value: Any) -> bool:
+    return bool(_facts_source_canonical(value))
+
+
+def _facts_source_label(value: Any) -> str:
+    canonical = _facts_source_canonical(value) or str(value or "").strip().lstrip("@")
+    return FACTS_SOURCE_LABELS.get(canonical, ACCOUNT_DISPLAY_NAMES.get(canonical, canonical))
+
+
+def _facts_append_sources(values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in list(values or []) + list(FACTS_SOURCE_ORDER):
+        canonical = _facts_source_canonical(value) or str(value or "").strip().lstrip("@")
+        key = canonical.casefold()
+        if canonical and key not in seen:
+            seen.add(key)
+            result.append(canonical)
+    return result
+
+
+# Register CentreGoals through the existing extra-fact infrastructure. This gives
+# it the same facts/statistics editorial route and no-writer output style.
+if not any(str(value or "").casefold() == CENTREGOALS_USERNAME.casefold() for value in EXTRA_FACT_SOURCE_USERNAMES):
+    EXTRA_FACT_SOURCE_USERNAMES.append(CENTREGOALS_USERNAME)
+if not any(str(value or "").casefold() == CENTREGOALS_USERNAME.casefold() for value in X_ACCOUNTS):
+    X_ACCOUNTS.append(CENTREGOALS_USERNAME)
+PRIORITY_X_ACCOUNTS.add(CENTREGOALS_USERNAME)
+ACCOUNT_DISPLAY_NAMES[CENTREGOALS_USERNAME] = CENTREGOALS_DISPLAY_NAME
+HANDLE_REPLACEMENTS[CENTREGOALS_USERNAME] = CENTREGOALS_DISPLAY_NAME
+SELF_QUOTE_ALIASES.setdefault(
+    CENTREGOALS_USERNAME,
+    ["CentreGoals", "Centre Goals", "CenterGoals", CENTREGOALS_DISPLAY_NAME],
+)
+if "SOURCE_PRIORITY" in globals() and isinstance(SOURCE_PRIORITY, dict):
+    SOURCE_PRIORITY[CENTREGOALS_USERNAME] = max(
+        int(SOURCE_PRIORITY.get(CENTREGOALS_USERNAME, 0) or 0),
+        int(SOURCE_PRIORITY.get(FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME, 0) or 0),
+    )
+
+
+# Preserve existing per-source saved states and add one backward-compatible state
+# key used only by the facts hub. Existing source toggles continue to work.
+_PRE_FACTS_HUB_ACCOUNT_DISABLED = control_state_account_disabled
+
+
+def control_state_account_disabled(username: str) -> bool:
+    canonical = _facts_source_canonical(username)
+    if canonical:
+        state = load_control_state()
+        disabled = state.get(FACTS_DISABLED_SOURCES_STATE_KEY, [])
+        if isinstance(disabled, dict):
+            disabled = [name for name, flag in disabled.items() if flag]
+        if isinstance(disabled, list) and any(_facts_source_canonical(name) == canonical for name in disabled):
+            return True
+    return _PRE_FACTS_HUB_ACCOUNT_DISABLED(username)
+
+
+def _facts_set_source_enabled(username: str, enabled: bool) -> None:
+    canonical = _facts_source_canonical(username)
+    if not canonical:
+        raise ValueError("מקור עובדות לא מוכר")
+
+    # Keep the established saved-state mechanism for the three existing dedicated
+    # sources, so older buttons and JSON remain fully compatible.
+    if canonical in {
+        FOOTBALL_FACTLY_DEFAULT_ACTIVE_USERNAME,
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+        OPTAJOE_DEFAULT_ACTIVE_USERNAME,
+    }:
+        set_default_active_writer_enabled(canonical, enabled)
+
+    state = load_control_state()
+    custom_disabled = state.get(FACTS_DISABLED_SOURCES_STATE_KEY, [])
+    if isinstance(custom_disabled, dict):
+        custom_disabled = [name for name, flag in custom_disabled.items() if flag]
+    if not isinstance(custom_disabled, list):
+        custom_disabled = []
+    custom_disabled = [name for name in custom_disabled if _facts_source_canonical(name) != canonical]
+    if not enabled:
+        custom_disabled.append(canonical)
+
+    updates: dict[str, Any] = {FACTS_DISABLED_SOURCES_STATE_KEY: custom_disabled}
+
+    # CentreGoals and Sofascore are ordinary X-account entries underneath their
+    # dedicated facts route. Mirror the setting into the old base-account list so
+    # old management code and a future rollback see the same state.
+    if canonical in {CENTREGOALS_USERNAME, "Sofascore"}:
+        disabled_base = set(disabled_base_accounts_from_state(state))
+        disabled_base = {name for name in disabled_base if _facts_source_canonical(name) != canonical}
+        if not enabled:
+            disabled_base.add(canonical)
+        updates["disabled_base_accounts"] = [
+            account for account in X_ACCOUNTS
+            if any(str(account).casefold() == str(name).casefold() for name in disabled_base)
+        ]
+        account_enabled_at = state.get("account_enabled_at", {})
+        if not isinstance(account_enabled_at, dict):
+            account_enabled_at = {}
+        if enabled:
+            account_enabled_at = mark_account_enabled_at(state, canonical)
+        else:
+            account_enabled_at = remove_account_enabled_at(state, canonical)
+        updates["account_enabled_at"] = account_enabled_at
+
+    save_control_state(**updates)
+
+
+# Automatic scanning includes every enabled facts source and excludes each source
+# immediately when its separate facts toggle is off.
+_PRE_FACTS_HUB_ACTIVE_X_ACCOUNTS = active_x_accounts
+
+
+def active_x_accounts() -> list[str]:
+    base = [value for value in list(_PRE_FACTS_HUB_ACTIVE_X_ACCOUNTS() or []) if not _is_facts_source(value)]
+    for source in FACTS_SOURCE_ORDER:
+        if not control_state_account_disabled(source):
+            base.append(source)
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in base:
+        key = str(value or "").strip().lstrip("@").casefold()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(str(value or "").strip().lstrip("@"))
+    return result
+
+
+_PRE_FACTS_HUB_ALL_TEST_ACCOUNTS = all_control_test_accounts
+
+
+def all_control_test_accounts() -> list[str]:
+    return _facts_append_sources(_PRE_FACTS_HUB_ALL_TEST_ACCOUNTS())
+
+
+_PRE_FACTS_HUB_ALL_X_ACCOUNTS = all_x_accounts
+
+
+def all_x_accounts() -> list[str]:
+    return _facts_append_sources(_PRE_FACTS_HUB_ALL_X_ACCOUNTS())
+
+
+_PRE_FACTS_HUB_HEBREW_LABEL = _hebrew_account_label
+
+
+def _hebrew_account_label(username: str) -> str:
+    canonical = _facts_source_canonical(username)
+    if canonical:
+        return FACTS_SOURCE_LABELS.get(canonical, canonical)
+    return _PRE_FACTS_HUB_HEBREW_LABEL(username)
+
+
+# CentreGoals absolute source-only blocks. They run on untouched original source
+# text, before attribution cleanup or translation can remove an @mention.
+_CENTREGOALS_ACCOUNT_MENTION_RE = re.compile(
+    r"@[A-Za-z0-9_א-ת][A-Za-z0-9_א-ת.'׳״\-]{0,63}",
+    re.IGNORECASE | re.UNICODE,
+)
+_CENTREGOALS_LIVE_MATCH_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bGOAL\b\s*[!⚽]*|\bscores?\b|\bequali[sz](?:er|es|ed|ing)?\b|"
+    r"\btakes?\s+the\s+lead\b|\b(?:half|full)[- ]?time\b|\bHT\b|\bFT\b|"
+    r"\bkick[- ]?off\b|\bfinal\s+whistle\b|\bmatch\s+(?:starts?|ends?|finished)\b|"
+    r"\bred\s+card\b|\byellow\s+card\b|\bsubstitution\b|\bpenalt(?:y|ies)\b|"
+    r"שער(?:!|\s|ים|ו|ה)|כובש(?:ת|ים)?|כבש(?:ה|ו)?|השווה|שוויון|עלה\s+ליתרון|"
+    r"תוצאה(?:\s+סופית)?|שינוי\s+בתוצאה|עדכון\s+חי|לייב|תחילת\s+המשחק|"
+    r"המשחק\s+(?:התחיל|הסתיים|נגמר)|סיום\s+המשחק|מחצית|שריקת\s+הסיום|"
+    r"פנדל|דו[-־ ]?קרב\s+פנדלים|כרטיס\s+(?:אדום|צהוב)|חילוף"
+    r")"
+)
+
+_PRE_FACTS_HUB_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _facts_source_canonical(getattr(post, "username", "")) == CENTREGOALS_USERNAME:
+        source_text = _requested_source_text(post) if "_requested_source_text" in globals() else _final_source_text(post)
+        source_text = html.unescape(str(source_text or ""))
+        if _CENTREGOALS_ACCOUNT_MENTION_RE.search(source_text):
+            return "centregoals_account_mention"
+        if _CENTREGOALS_LIVE_MATCH_RE.search(source_text):
+            return "centregoals_live_match_update"
+    return _PRE_FACTS_HUB_LOCAL_BLOCK(post)
+
+
+_PRE_FACTS_HUB_HEBREW_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "centregoals_account_mention" in raw:
+        return "הפוסט מכיל תיוג של חשבון אחר (@)"
+    if "centregoals_live_match_update" in raw:
+        return "מטרות מרכזיות: עדכון שער, תוצאה או אירוע חי ממשחק נחסם"
+    return _PRE_FACTS_HUB_HEBREW_REASON(reason)
+
+
+# ------------------------- Facts control hub -------------------------
+def facts_main_reply_markup() -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "בדיקת מקור", "callback_data": "football_facts_latest"}],
+        [{"text": "ניהול כתבים ומקורות", "callback_data": "football_facts_manage"}],
+        [{"text": "עשרת הפוסטים האחרונים", "callback_data": "football_facts_history"}],
+        [{"text": "סטטיסטיקות", "callback_data": "football_facts_stats"}],
+        [{"text": "בדיקות וניטור", "callback_data": "football_facts_monitor"}],
+        [{"text": "כללי סינון וחסימות", "callback_data": "football_facts_rules"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ])
+
+
+def facts_management_reply_markup() -> dict[str, Any]:
+    keyboard: list[list[dict[str, str]]] = []
+    for source in FACTS_SOURCE_ORDER:
+        enabled = not control_state_account_disabled(source)
+        keyboard.append([{
+            "text": f"{_facts_source_label(source)}: {'פעיל' if enabled else 'כבוי'}",
+            "callback_data": f"football_facts_toggle:{source}:{'off' if enabled else 'on'}",
+        }])
+    keyboard.append([{"text": "⬅️ חזרה לעובדות", "callback_data": "football_menu_facts"}])
+    return stable_reply_markup(keyboard)
+
+
+def facts_latest_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [[{
+        "text": _facts_source_label(source),
+        "callback_data": f"football_test_latest_account:{source}",
+    }] for source in FACTS_SOURCE_ORDER]
+    keyboard.append([{"text": "⬅️ חזרה לעובדות", "callback_data": "football_menu_facts"}])
+    return stable_reply_markup(keyboard)
+
+
+def facts_history_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [[{
+        "text": _facts_source_label(source),
+        "callback_data": f"football_test_last_ten_account:{source}",
+    }] for source in FACTS_SOURCE_ORDER]
+    keyboard.append([{"text": "⬅️ חזרה לעובדות", "callback_data": "football_menu_facts"}])
+    return stable_reply_markup(keyboard)
+
+
+def facts_monitor_reply_markup() -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "בדוק את כל מקורות העובדות עכשיו", "callback_data": "football_facts_check_all"}],
+        [{"text": "בדיקת RSS למקורות העובדות", "callback_data": "football_facts_rss"}],
+        [{"text": "חסימות אחרונות של מקורות העובדות", "callback_data": "football_facts_blocks"}],
+        [{"text": "בדיקת עיכוב אמיתית", "callback_data": "football_pipeline_timings"}],
+        [{"text": "כללי סינון וחסימות", "callback_data": "football_facts_rules"}],
+        [{"text": "⬅️ חזרה לעובדות", "callback_data": "football_menu_facts"}],
+    ])
+
+
+def _facts_item_canonical(item: dict[str, Any]) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("username", "source", "source_name", "writer", "account"):
+        canonical = _facts_source_canonical(item.get(key))
+        if canonical:
+            return canonical
+    post_value = item.get("post")
+    if isinstance(post_value, Post):
+        return _facts_source_canonical(post_value)
+    if isinstance(post_value, dict):
+        return _facts_source_canonical(post_value.get("username") or post_value.get("source"))
+    return ""
+
+
+def _facts_item_timestamp(item: dict[str, Any]) -> float:
+    for key in ("ts", "sent_at", "blocked_at", "created_at", "published_ts", "timestamp"):
+        try:
+            value = float(item.get(key, 0.0) or 0.0)
+            if value > 0:
+                return value
+        except Exception:
+            continue
+    return 0.0
+
+
+def facts_stats_text() -> str:
+    sent_items = load_json_list_file(persistent_memory_path("football_sent_memory.json"))
+    state = load_control_state()
+    blocked_items: list[dict[str, Any]] = []
+    for key in ("last_blocked_posts", "last_duplicate_posts", "last_filtered_posts"):
+        rows = state.get(key, [])
+        if isinstance(rows, list):
+            blocked_items.extend(item for item in rows if isinstance(item, dict))
+    now = time.time()
+    lines = ["📊 סטטיסטיקות מקורות העובדות", ""]
+    total_sent_24h = total_blocked_24h = 0
+    for source in FACTS_SOURCE_ORDER:
+        sent_all = [item for item in sent_items if isinstance(item, dict) and _facts_item_canonical(item) == source]
+        blocked_all = [item for item in blocked_items if _facts_item_canonical(item) == source]
+        sent_24h = sum(1 for item in sent_all if (ts := _facts_item_timestamp(item)) and now - ts <= 24 * 60 * 60)
+        blocked_24h = sum(1 for item in blocked_all if (ts := _facts_item_timestamp(item)) and now - ts <= 24 * 60 * 60)
+        total_sent_24h += sent_24h
+        total_blocked_24h += blocked_24h
+        lines.append(
+            f"• {_facts_source_label(source)} — {'פעיל' if not control_state_account_disabled(source) else 'כבוי'} | "
+            f"נשלחו ב־24 שעות: {sent_24h} | נחסמו ב־24 שעות: {blocked_24h} | "
+            f"נשלחו בזיכרון: {len(sent_all)}"
+        )
+    lines.extend(["", f"סה״כ ב־24 שעות: {total_sent_24h} נשלחו, {total_blocked_24h} נחסמו."])
+    return "\n".join(lines)
+
+
+def facts_recent_blocks_text(limit: int = 30) -> str:
+    state = load_control_state()
+    rows: list[dict[str, Any]] = []
+    for key in ("last_blocked_posts", "last_duplicate_posts", "last_filtered_posts"):
+        value = state.get(key, [])
+        if isinstance(value, list):
+            rows.extend(item for item in value if isinstance(item, dict) and _facts_item_canonical(item))
+    rows.sort(key=_facts_item_timestamp)
+    rows = rows[-max(1, int(limit)):]
+    if not rows:
+        return "📋 חסימות אחרונות של מקורות העובדות\n\nאין חסימות שמורות כרגע."
+    lines = ["📋 חסימות אחרונות של מקורות העובדות", ""]
+    for item in reversed(rows):
+        source = _facts_item_canonical(item)
+        reason = hebrew_block_reason(str(item.get("reason_he") or item.get("raw_reason") or item.get("reason") or item.get("block_reason") or ""))
+        preview = re.sub(r"\s+", " ", str(item.get("preview") or item.get("text") or item.get("original_text") or "")).strip()
+        lines.append(f"• {_facts_source_label(source)}: {reason}" + (f" — {trim(preview, 100)}" if preview else ""))
+    return "\n".join(lines)
+
+
+def facts_rss_status_text() -> str:
+    def probe(source: str) -> tuple[str, list[Post], Exception | None]:
+        try:
+            return fetch_control_posts(source)
+        except Exception as exc:
+            return source, [], exc
+
+    results: dict[str, tuple[list[Post], Exception | None]] = {}
+    with ThreadPoolExecutor(max_workers=len(FACTS_SOURCE_ORDER)) as pool:
+        futures = {pool.submit(probe, source): source for source in FACTS_SOURCE_ORDER}
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                _canonical, posts, error = future.result()
+                results[source] = (list(posts or []), error)
+            except Exception as exc:
+                results[source] = ([], exc)
+
+    lines = ["📡 בדיקת RSS למקורות העובדות", ""]
+    working = 0
+    for source in FACTS_SOURCE_ORDER:
+        posts, error = results.get(source, ([], RuntimeError("לא נבדק")))
+        if posts:
+            working += 1
+            latest_ts = max((float(getattr(post, "published_ts", 0.0) or 0.0) for post in posts), default=0.0)
+            latest = _pipeline_format_clock(latest_ts) if latest_ts else "זמן לא ידוע"
+            lines.append(f"✅ {_facts_source_label(source)}: נמצאו {len(posts)} פוסטים; האחרון: {latest}")
+        elif error:
+            lines.append(f"❌ {_facts_source_label(source)}: {short_error(error, 180)}")
+        else:
+            lines.append(f"⚠️ {_facts_source_label(source)}: RSS נבדק אך לא החזיר פוסטים כרגע")
+    lines.extend(["", f"תוצאה: {working}/{len(FACTS_SOURCE_ORDER)} מקורות החזירו פוסטים."])
+    return "\n".join(lines)
+
+
+def facts_check_all_text() -> str:
+    started: dict[str, Any] = {}
+    for source in FACTS_SOURCE_ORDER:
+        try:
+            started[source] = _canonical_start_discovery(source, force=True)
+        except Exception as exc:
+            started[source] = exc
+    lines = ["🔄 בדיקה מלאה של מקורות העובדות", ""]
+    found_total = 0
+    for source in FACTS_SOURCE_ORDER:
+        value = started.get(source)
+        if isinstance(value, Exception):
+            lines.append(f"❌ {_facts_source_label(source)}: {short_error(value, 180)}")
+            continue
+        try:
+            posts = list(value.result(timeout=max(CANONICAL_CONTROL_WAIT_SECONDS, FEED_COLLECTION_TIMEOUT_SECONDS + 3.0)) or []) if value is not None else []
+        except Exception as exc:
+            lines.append(f"❌ {_facts_source_label(source)}: {short_error(exc, 180)}")
+            continue
+        found_total += len(posts)
+        if posts:
+            latest_ts = max((float(getattr(post, "published_ts", 0.0) or 0.0) for post in posts), default=0.0)
+            lines.append(f"✅ {_facts_source_label(source)}: נמצאו {len(posts)} פוסטים; האחרון: {_pipeline_format_clock(latest_ts)}")
+        else:
+            lines.append(f"⚠️ {_facts_source_label(source)}: לא נמצאו פוסטים כרגע")
+    lines.extend(["", f"סה״כ נמצאו {found_total} פוסטים בחמשת מקורות העובדות."])
+    return "\n".join(lines)
+
+
+_PRE_FACTS_HUB_SPECIAL_DIAGNOSTICS = special_sources_diagnostics_text
+
+
+def special_sources_diagnostics_text() -> str:
+    text = _PRE_FACTS_HUB_SPECIAL_DIAGNOSTICS()
+    additions: list[str] = []
+    if CENTREGOALS_DISPLAY_NAME not in text:
+        additions.extend([
+            f"• {CENTREGOALS_DISPLAY_NAME} (@{CENTREGOALS_USERNAME}): "
+            f"{'כבוי' if control_state_account_disabled(CENTREGOALS_USERNAME) else 'פעיל'}.",
+            "  כל פוסט שמכיל תיוג @ נחסם תמיד.",
+            "  שערים, תוצאות, עדכונים חיים, מחציות, כרטיסים, חילופים ופנדלים במהלך משחק נחסמים.",
+        ])
+    if "סופסקור פוטבול" not in text:
+        additions.append(
+            f"• סופסקור פוטבול (@Sofascore): {'כבוי' if control_state_account_disabled('Sofascore') else 'פעיל'}."
+        )
+    if additions:
+        text = text.rstrip() + "\n\n🎯 מקורות נוספים\n" + "\n".join(additions)
+    return text
+
+
+# Main control panel: add one top-level "עובדות" button. Existing fact rows are
+# removed from generic writer/latest/history screens so their controls live only
+# inside this hub, as requested.
+_PRE_FACTS_HUB_QUICK_MENU = quick_control_reply_markup
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    markup = _PRE_FACTS_HUB_QUICK_MENU()
+    rows = [[dict(button) for button in row if isinstance(button, dict)] for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])]
+    rows = [row for row in rows if not any(str(button.get("callback_data", "")) == "football_menu_facts" for button in row)]
+    insert_at = 1 if rows and any(str(button.get("callback_data", "")) in {"football_bot_on", "football_bot_off"} for button in rows[0]) else 0
+    rows.insert(insert_at, [{"text": "עובדות", "callback_data": "football_menu_facts"}])
+    return stable_reply_markup(rows)
+
+
+def _facts_row_source(row: Any) -> str:
+    if not isinstance(row, list):
+        return ""
+    for button in row:
+        if not isinstance(button, dict):
+            continue
+        callback = str(button.get("callback_data", ""))
+        for prefix in (
+            "football_default_writer_toggle:", "football_base_account:",
+            "football_account:", "football_test_latest_account:",
+            "football_test_last_ten_account:",
+        ):
+            if callback.startswith(prefix):
+                value = callback[len(prefix):].split(":", 1)[0]
+                canonical = _facts_source_canonical(value)
+                if canonical:
+                    return canonical
+    return ""
+
+
+_PRE_FACTS_HUB_WRITERS_MANAGEMENT = writers_management_reply_markup
+
+
+def writers_management_reply_markup(paused: bool) -> dict[str, Any]:
+    markup = _PRE_FACTS_HUB_WRITERS_MANAGEMENT(paused)
+    rows = [list(row) for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])]
+    rows = [row for row in rows if not _facts_row_source(row)]
+    return stable_reply_markup(rows)
+
+
+def writers_menu_reply_markup() -> dict[str, Any]:
+    return writers_management_reply_markup(control_state_is_paused())
+
+
+def account_latest_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [[{
+        "text": _hebrew_account_label(username),
+        "callback_data": f"football_test_latest_account:{username}",
+    }] for username in all_control_test_accounts() if not _is_facts_source(username)]
+    keyboard.append([{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}])
+    return stable_reply_markup(keyboard)
+
+
+def account_history_menu_reply_markup() -> dict[str, Any]:
+    keyboard = [[{
+        "text": _hebrew_account_label(username),
+        "callback_data": f"football_test_last_ten_account:{username}",
+    }] for username in all_control_test_accounts() if not _is_facts_source(username)]
+    keyboard.append([{"text": "⬅️ חזרה לבדיקה וניטור", "callback_data": "football_menu_monitor"}])
+    return stable_reply_markup(keyboard)
+
+
+_PRE_FACTS_HUB_MONITOR_MENU = monitor_menu_reply_markup
+
+
+def monitor_menu_reply_markup() -> dict[str, Any]:
+    markup = _PRE_FACTS_HUB_MONITOR_MENU()
+    rows = [list(row) for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])]
+    rows = [
+        row for row in rows
+        if not any(str(button.get("callback_data", "")) == "football_special_sources_diagnostics" for button in row if isinstance(button, dict))
+    ]
+    return stable_reply_markup(rows)
+
+
+_PRE_FACTS_HUB_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    facts_callbacks = {
+        "football_menu_facts", "football_facts_latest", "football_facts_manage",
+        "football_facts_history", "football_facts_stats", "football_facts_monitor",
+        "football_facts_rules", "football_facts_rss", "football_facts_check_all",
+        "football_facts_blocks",
+    }
+    if data not in facts_callbacks and not data.startswith("football_facts_toggle:"):
+        return _PRE_FACTS_HUB_PROCESS_CONTROL_UPDATE(update)
+
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+
+    message_id = message.get("message_id")
+    if data == "football_menu_facts":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח עובדות")
+        send_control_menu("עובדות\nכל ניהול מקורות העובדות והסטטיסטיקות נמצא כאן.", facts_main_reply_markup(), message_id)
+        return
+    if data == "football_facts_latest":
+        if callback_id:
+            answer_control_callback(callback_id, "בחר מקור לבדיקה")
+        send_control_menu("בדיקת מקור עובדות\nבחר מקור להצגת הפוסט האחרון.", facts_latest_menu_reply_markup(), message_id)
+        return
+    if data == "football_facts_manage":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח ניהול מקורות")
+        send_control_menu("ניהול מקורות העובדות\nכל מקור ניתן להפעלה ולכיבוי בנפרד.", facts_management_reply_markup(), message_id)
+        return
+    if data == "football_facts_history":
+        if callback_id:
+            answer_control_callback(callback_id, "בחר מקור לעשרת האחרונים")
+        send_control_menu("עשרת הפוסטים האחרונים\nבחר מקור עובדות.", facts_history_menu_reply_markup(), message_id)
+        return
+    if data == "football_facts_stats":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג סטטיסטיקות עובדות")
+        send_control_text(facts_stats_text(), message_id, facts_main_reply_markup())
+        return
+    if data == "football_facts_monitor":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח בדיקות וניטור")
+        send_control_menu("בדיקות וניטור למקורות העובדות", facts_monitor_reply_markup(), message_id)
+        return
+    if data == "football_facts_rules":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג כללים וחסימות")
+        send_control_text_async(
+            "מכין את כללי מקורות העובדות...",
+            special_sources_diagnostics_text,
+            message_id,
+            facts_monitor_reply_markup(),
+            result_reply_markup=control_delete_message_reply_markup(),
+            full_result=True,
+            loading_new_message=True,
+        )
+        return
+    if data == "football_facts_rss":
+        if callback_id:
+            answer_control_callback(callback_id, "בודק RSS של מקורות העובדות")
+        send_control_text_async(
+            "בודק RSS של מקורות העובדות...",
+            facts_rss_status_text,
+            message_id,
+            facts_monitor_reply_markup(),
+            result_reply_markup=control_delete_message_reply_markup(),
+            full_result=True,
+            loading_new_message=True,
+        )
+        return
+    if data == "football_facts_check_all":
+        if callback_id:
+            answer_control_callback(callback_id, "בודק את כל מקורות העובדות")
+        send_control_text_async(
+            "בודק את כל מקורות העובדות...",
+            facts_check_all_text,
+            message_id,
+            facts_monitor_reply_markup(),
+            result_reply_markup=control_delete_message_reply_markup(),
+            full_result=True,
+            loading_new_message=True,
+        )
+        return
+    if data == "football_facts_blocks":
+        if callback_id:
+            answer_control_callback(callback_id, "מציג חסימות של מקורות העובדות")
+        send_control_text(facts_recent_blocks_text(30), message_id, facts_monitor_reply_markup())
+        return
+    if data.startswith("football_facts_toggle:"):
+        try:
+            _prefix, username, action = data.split(":", 2)
+            enabled = action == "on"
+            _facts_set_source_enabled(username, enabled)
+            label = _facts_source_label(username)
+            if callback_id:
+                answer_control_callback(callback_id, f"{label}: {'פעיל' if enabled else 'כבוי'}")
+            send_control_menu(
+                f"ניהול מקורות העובדות\n{label} {'הופעל' if enabled else 'כובה'}.",
+                facts_management_reply_markup(),
+                message_id,
+            )
+        except Exception as exc:
+            if callback_id:
+                answer_control_callback(callback_id, "עדכון המקור נכשל")
+            send_control_text(
+                "עדכון מקור העובדות נכשל:\n" + short_error(exc, 500),
+                None,
+                control_delete_message_reply_markup(),
+            )
+        return
+
+# Keep the ordinary monitoring buttons reporter-only. Facts sources have their
+# own RSS and full-check actions inside the dedicated facts hub.
+def _general_reporter_control_accounts() -> list[str]:
+    return [username for username in all_control_test_accounts() if not _is_facts_source(username)]
+
+
+def check_all_accounts_now_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"🔄 בדיקת כל {len(accounts)} הכתבים עכשיו",
+        "",
+        "הבדיקה הזו עושה RSS בלבד לכתבים הרגילים. מקורות העובדות נבדקים בכפתור ‘עובדות’.",
+        "המספרים כאן הם רק פוסטים שפורסמו ב-24 השעות האחרונות לפי זמן הפרסום של הפוסט.",
+        "",
+    ]
+    total_recent_posts = 0
+    ok_count = 0
+    recent_snapshot: dict[str, int] = {}
+    fetched_by_account = fetch_control_posts_for_accounts(accounts)
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched_by_account.get(username, ([], None))
+        if error:
+            recent_snapshot[username] = 0
+            lines.append(f"❌ {label}: תקלה בשליפה - {short_error(error, 160)}")
+            continue
+        recent = recent_24h_posts(posts)
+        recent_snapshot[username] = len(recent)
+        total_recent_posts += len(recent)
+        ok_count += 1
+        if recent:
+            latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+            latest = f"{latest_dt} | {recent[0].link}"
+        elif posts:
+            source = posts[0].source_name or "לא ידוע"
+            age_hours = max(0.0, (time.time() - float(posts[0].published_ts or 0.0)) / 3600) if posts[0].published_ts else 0.0
+            latest = f"מקור RSS עובד אבל ישן/תקוע: אחרון לפני {age_hours:.1f} שעות | מקור: {source}"
+        else:
+            latest = "אין פוסטים כרגע"
+        lines.append(f"✅ {label}: {len(recent)} פוסטים ביממה האחרונה | אחרון: {latest}")
+    daily_stat_replace_table("fetched_recent_24h_snapshot", recent_snapshot)
+    lines.extend(["", f"סיכום: {ok_count}/{len(accounts)} כתבים נבדקו. נמצאו יחד {total_recent_posts} פוסטים מהיממה האחרונה."])
+    return "\n".join(lines)
+
+
+def rss_status_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "הבדיקה הזו בודקת RSS של כתבים רגילים בלבד.",
+        "מקורות העובדות, אופטה, ציוצי כדורגל, מטרות מרכזיות וסופסקור נמצאים בתפריט ‘עובדות’.",
+        "",
+    ]
+    ok_count = 0
+    recent_total = 0
+    fetched_by_account = fetch_control_posts_for_accounts(accounts)
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched_by_account.get(username, ([], None))
+        if error:
+            lines.append(f"❌ {label}: תקלה במקורות RSS - {short_error(error, 140)}")
+            continue
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        if posts:
+            ok_count += 1
+            source = posts[0].source_name or "לא ידוע"
+            if recent:
+                latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+                lines.append(f"✅ {label}: RSS תקין | {len(recent)} פוסטים ביממה | מקור אחרון: {source} | אחרון: {latest_dt}")
+            else:
+                age_hours = max(0.0, (time.time() - float(posts[0].published_ts or 0.0)) / 3600) if posts[0].published_ts else 0.0
+                lines.append(f"⚠️ {label}: מקור RSS עובד אבל ישן/תקוע | אחרון לפני {age_hours:.1f} שעות | מקור: {source}")
+        else:
+            lines.append(f"⚠️ {label}: RSS עובד/נבדק, אבל לא החזיר פוסטים כרגע")
+    lines.extend(["", f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים. פוסטים מהיממה האחרונה: {recent_total}."])
+    return "\n".join(lines)
+
+# ====== END FACTS HUB + CENTREGOALS SOURCE PATCH ======
+
+
+# ====== FOOTBALLTWEET CROSS-REPORTER SEMANTIC DUPLICATE PATCH (2026-07-27) ======
+# Keep every existing source/filter setting intact. This patch only closes one
+# duplicate-memory gap: Footballtweet previously compared mainly with the other
+# fact feeds, so a paraphrase of a report already sent by Fabrizio/another known
+# reporter could pass even though it described the exact same event.
+BOT_BUILD_ID = "winner-footballtweet-cross-reporter-semantic-duplicate-2026-07-27"
+FOOTBALLTWEET_REPORTER_DUPLICATE_WINDOW_SECONDS = 24 * 60 * 60
+
+_FOOTBALLTWEET_CROSS_EVENT_CONCEPT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "coach_role": (
+        r"\b(?:coach|manager|head\s+coach|national\s+team\s+coach)\b",
+        r"מאמן|מאמנה|מאמנת|מאמנים|מאמן\s+הנבחרת",
+    ),
+    "appointment": (
+        r"\b(?:appoint(?:ed|ment)?|named\s+as|new\s+(?:coach|manager)|take\s+over)\b",
+        r"מינוי|מונה|ימונה|לתפקיד|המאמן\s+החדש|מאמנה\s+החדש",
+    ),
+    "cancellation": (
+        r"\b(?:cancel(?:led|ed|lation)?|withdraw(?:n|s|ing)?|withdrew|pulled|called\s+off|deal\s+off|will\s+not\s+be|won['’]?t\s+be|not\s+proceed)\b",
+        r"בוטל|בוטלה|ביטול|משכה|משך|לא\s+יהיה|לא\s+תהיה|לא\s+ימונה|לא\s+להמשיך|ירד\s+מהפרק|לא\s+ייצא\s+לפועל",
+    ),
+    "betting_issue": (
+        r"\b(?:betting|gambling|bookmaker|sportsbook)\b",
+        r"הימורים|חברת\s+הימורים|מותג\s+הימורים",
+    ),
+    "transfer_move": (
+        r"\b(?:transfer|move|join|joining|sign|signing|deal)\b",
+        r"העברה|מעבר|מצטרף|יצטרף|חתימה|יחתום|עסקה",
+    ),
+    "talks": (
+        r"\b(?:talks?|negotiations?|contacts?|discussions?)\b",
+        r"שיחות|מגעים|משא\s+ומתן|מו[\"״]?מ",
+    ),
+    "active_bid": (
+        r"\b(?:submitted|submit|made|make|preparing|prepare|new|formal|official)\s+(?:a\s+)?(?:bid|offer|proposal)\b|\b(?:bid|offer|proposal)\s+(?:submitted|made|received|rejected|accepted)\b",
+        r"הוגשה\s+הצעה|הגיש[הו]?\s+הצעה|הצעה\s+חדשה|הצעה\s+רשמית|הצעה\s+נדחתה|הצעה\s+התקבלה",
+    ),
+    "agreement": (
+        r"\b(?:agreement|agreed|terms\s+agreed|deal\s+agreed)\b",
+        r"סיכום|סוכם|הסכם|הושג\s+סיכום|תנאים\s+אישיים",
+    ),
+    "official_final": (
+        r"\b(?:official|here\s+we\s+go|signed|completed|done\s+deal)\b",
+        r"רשמי|הנה\s+זה\s+קורה|נחתם|הושלם|עסקה\s+סגורה",
+    ),
+    "price_value": (
+        r"\b(?:price|valu(?:e|ed|ation)|worth|fee|million|billion)\b|[€£$]\s*\d|\d\s*(?:m|million|bn|billion)\b",
+        r"מחיר|שווי|דמי\s+העברה|מיליון|מיליארד|אירו|יורו|ליש[\"״]?ט",
+    ),
+    "sale_willingness": (
+        r"\b(?:willing|ready|open)\s+to\s+sell\b|\bavailable\s+for\s+sale\b",
+        r"מוכנה\s+למכור|מוכן\s+למכור|פתוחה\s+למכירה|פתוח\s+למכירה|ניתן\s+למכירה",
+    ),
+    "medical": (
+        r"\b(?:medical|medical\s+tests?)\b",
+        r"בדיקות\s+רפואיות|בדיקה\s+רפואית",
+    ),
+    "contract": (
+        r"\b(?:contract|extension|renewal|until\s+20\d{2})\b",
+        r"חוזה|הארכת\s+חוזה|חידוש\s+חוזה|עד\s+יוני\s+20\d{2}",
+    ),
+    "injury": (
+        r"\b(?:injury|injured|ruled\s+out|will\s+miss)\b",
+        r"פציעה|נפצע|פצוע|ייעדר|יחמיץ",
+    ),
+}
+
+_FOOTBALLTWEET_CROSS_SUBJECT_GENERIC = {
+    "official", "breaking", "report", "reports", "reported", "source", "sources",
+    "football", "federation", "president", "company", "brand", "concerns",
+    "cooperation", "collaboration", "decision", "signatures", "appointment",
+    "manager", "coach", "team", "club", "player", "transfer", "deal", "offer",
+    "new", "will", "not", "over", "regarding", "after", "with", "from",
+    "רשמי", "דיווח", "דיווחים", "מקור", "מקורות", "כדורגל", "התאחדות",
+    "נשיא", "חברה", "מותג", "חששות", "שיתוף", "פעולה", "החלטה", "חתימות",
+    "מינוי", "מאמן", "מאמנה", "נבחרת", "קבוצה", "מועדון", "שחקן", "עסקה",
+    "הצעה", "חדש", "החדש", "בעקבות", "בנוגע", "באופן", "להמשיך",
+}
+
+_FOOTBALLTWEET_MATERIAL_PROGRESS_CONCEPTS = {
+    "active_bid", "agreement", "official_final", "price_value", "sale_willingness",
+    "medical", "contract", "injury", "cancellation",
+}
+
+
+def _footballtweet_cross_event_concepts(value: Any) -> set[str]:
+    raw = html.unescape(str(value or ""))
+    found: set[str] = set()
+    for label, patterns in _FOOTBALLTWEET_CROSS_EVENT_CONCEPT_PATTERNS.items():
+        if any(re.search(pattern, raw, re.IGNORECASE | re.UNICODE) for pattern in patterns):
+            found.add(label)
+    # A withdrawn/cancelled offer is a cancellation, not a fresh active bid.
+    if "cancellation" in found and not any(
+        re.search(pattern, raw, re.IGNORECASE | re.UNICODE)
+        for pattern in _FOOTBALLTWEET_CROSS_EVENT_CONCEPT_PATTERNS["active_bid"]
+    ):
+        found.discard("active_bid")
+    return found
+
+
+def _footballtweet_cross_subject_tokens(value: Any) -> set[str]:
+    raw = html.unescape(str(value or ""))
+    try:
+        probe = Post(
+            post_id="cross-duplicate-probe",
+            username=FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+            text=raw,
+            link="",
+            image_urls=[],
+            video_urls=[],
+            has_video=False,
+            primary_has_video=False,
+            quoted_has_video=False,
+            quoted_author="",
+            quoted_text="",
+            published_ts=0.0,
+            dedupe_ids=[],
+            source_name="",
+        )
+        normalized = _news_duplicate_clean_text(probe)
+        tokens = _news_duplicate_tokens(normalized)
+    except Exception:
+        tokens = {
+            _normalize_news_duplicate_token(token)
+            for token in re.findall(r"[A-Za-zא-ת][A-Za-zא-ת'׳״’\-]{3,}", raw)
+        }
+    concepts = _footballtweet_cross_event_concepts(raw)
+    concept_words: set[str] = set()
+    for label in concepts:
+        concept_words.update(_news_duplicate_tokens(label.replace("_", " ")))
+    return {
+        token for token in tokens
+        if len(token) >= 4
+        and token not in NEWS_DUP_STOPWORDS
+        and token not in NEWS_DUP_ACTION_WORDS
+        and token not in _FOOTBALLTWEET_DUPLICATE_GENERIC_TOKENS
+        and token not in _FOOTBALLTWEET_CROSS_SUBJECT_GENERIC
+        and token not in concept_words
+        and not token.isdigit()
+    }
+
+
+def _footballtweet_cross_numbers(value: Any) -> set[str]:
+    raw = html.unescape(str(value or ""))
+    return set(re.findall(r"(?<!\w)(?:\d{1,4}(?:[.,]\d{1,2})?|20\d{2})(?!\w)", raw))
+
+
+def _footballtweet_cross_proper_phrases(value: Any) -> set[str]:
+    raw = html.unescape(str(value or ""))
+    phrases: set[str] = set()
+    for match in re.finditer(r"(?<![A-Za-z])(?:[A-Z][A-Za-z'’.-]{2,})(?:\s+[A-Z][A-Za-z'’.-]{2,}){1,3}", raw):
+        phrase = re.sub(r"\s+", " ", match.group(0)).strip().casefold()
+        phrase = re.sub(r"^(?:official|breaking|exclusive)\s+", "", phrase)
+        phrase = re.sub(r"['’]s\b", "", phrase)
+        phrase = re.sub(r"\s+", " ", phrase).strip(" .-'’")
+        if phrase.startswith("the "):
+            continue
+        if phrase and not any(word in _FOOTBALLTWEET_CROSS_SUBJECT_GENERIC for word in phrase.split()):
+            phrases.add(phrase)
+    return phrases
+
+
+def _footballtweet_previous_text_candidates(item: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in (
+        "source_text", "original_text", "original_preview", "preview",
+        "normalized_source", "normalized_message", "text",
+    ):
+        value = html.unescape(str(item.get(key, "") or "")).strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def _footballtweet_regular_reporter_source(item: dict[str, Any]) -> str:
+    value = str(item.get("username") or item.get("source") or "").strip().lstrip("@").casefold()
+    if not value:
+        return ""
+    if _footballtweet_source_group(value):
+        return ""
+    known = {str(name or "").strip().lstrip("@").casefold() for name in PRIORITY_X_ACCOUNTS}
+    known.update(str(name or "").strip().lstrip("@").casefold() for name in X_ACCOUNTS)
+    known.update(str(name or "").strip().lstrip("@").casefold() for name in OPTIONAL_CONTROLLED_ACCOUNTS)
+    if value in known or value == "fabrizioromano":
+        return value
+    return ""
+
+
+def _footballtweet_cross_reporter_material_progress(
+    current_post: Post,
+    current_text: str,
+    previous_text: str,
+    current_signature: dict[str, Any],
+    previous_signature: dict[str, Any],
+) -> bool:
+    current_stage = int(current_signature.get("stage_rank", 0) or 0)
+    previous_stage = int(previous_signature.get("stage_rank", 0) or 0)
+    if current_stage >= previous_stage + 10 and current_stage >= 40:
+        return True
+
+    current_numbers = _footballtweet_cross_numbers(current_text)
+    previous_numbers = _footballtweet_cross_numbers(previous_text)
+    if current_numbers - previous_numbers:
+        return True
+
+    current_concepts = _footballtweet_cross_event_concepts(current_text)
+    previous_concepts = _footballtweet_cross_event_concepts(previous_text)
+    new_material = (current_concepts - previous_concepts) & _FOOTBALLTWEET_MATERIAL_PROGRESS_CONCEPTS
+    if new_material:
+        return True
+
+    current_players, current_teams = _canonical_sets_from_signature(current_signature)
+    previous_players, previous_teams = _canonical_sets_from_signature(previous_signature)
+    if current_players - previous_players:
+        return True
+    if current_teams - previous_teams:
+        return True
+
+    # For English originals, a genuinely new multi-word proper name usually means
+    # a new player/club/decision-maker and therefore a useful update, not a repost.
+    # Compare English proper-name phrases only when both memory texts still use
+    # Latin originals. Old memory rows may contain only the Hebrew channel text;
+    # in that case an English name is not a new subject, merely the untranslated
+    # form of the same name.
+    if re.search(r"[A-Za-z]", current_text) and re.search(r"[A-Za-z]", previous_text):
+        current_phrases = _footballtweet_cross_proper_phrases(current_text)
+        previous_phrases = _footballtweet_cross_proper_phrases(previous_text)
+        new_phrases = {
+            phrase for phrase in current_phrases
+            if not any(phrase == previous or phrase in previous or previous in phrase for previous in previous_phrases)
+            and not any(country in phrase for country in ("italian football", "russian betting"))
+        }
+        if new_phrases:
+            return True
+    return False
+
+
+def _footballtweet_same_reporter_event(post: Post, previous_text: str, previous_source: str) -> bool:
+    current_text = _footballtweet_original_text(post)
+    if not current_text or not previous_text:
+        return False
+    try:
+        current_probe = clone_post_with_text(post, current_text)
+        previous_probe = clone_post_with_text(post, previous_text)
+        previous_probe.username = previous_source or "previous_reporter"
+        current_signature = news_event_signature(current_probe)
+        previous_signature = news_event_signature(previous_probe)
+    except Exception:
+        return False
+
+    current_concepts = _footballtweet_cross_event_concepts(current_text)
+    previous_concepts = _footballtweet_cross_event_concepts(previous_text)
+    concept_overlap = current_concepts & previous_concepts
+    current_subjects = _footballtweet_cross_subject_tokens(current_text)
+    previous_subjects = _footballtweet_cross_subject_tokens(previous_text)
+    shared_subjects = current_subjects & previous_subjects
+
+    current_players, current_teams = _canonical_sets_from_signature(current_signature)
+    previous_players, previous_teams = _canonical_sets_from_signature(previous_signature)
+    canonical_subject_match = bool(current_players & previous_players) or bool(current_teams & previous_teams)
+    family_overlap = _duplicate_family_overlap(
+        set(current_signature.get("actions", [])),
+        set(previous_signature.get("actions", [])),
+    )
+    try:
+        event_score = _event_similarity(current_signature, previous_signature)
+    except Exception:
+        event_score = 0.0
+
+    # Require a concrete subject plus the same event type. This is deliberately
+    # stricter than fuzzy text similarity and therefore does not merge unrelated
+    # transfer templates that merely use similar wording.
+    same_core = bool(
+        (len(shared_subjects) >= 3 and len(concept_overlap) >= 2)
+        or (len(shared_subjects) >= 2 and len(concept_overlap) >= 3)
+        or (canonical_subject_match and len(concept_overlap) >= 2 and bool(family_overlap))
+        or (len(shared_subjects) >= 3 and bool(family_overlap) and event_score >= 0.74)
+        # Backward-compatible fallback for old memory rows that contain only the
+        # Hebrew channel message while the new source post is still in English.
+        # One distinctive shared subject is sufficient only with this rare,
+        # highly specific combination of event concepts.
+        or (
+            len(shared_subjects) >= 1
+            and {"coach_role", "cancellation"}.issubset(concept_overlap)
+            and "betting_issue" in concept_overlap
+        )
+    )
+    if not same_core:
+        return False
+
+    if _footballtweet_cross_reporter_material_progress(
+        post,
+        current_text,
+        previous_text,
+        current_signature,
+        previous_signature,
+    ):
+        return False
+
+    # Fabrizio is the strongest cross-source priority. For other known reporters,
+    # demand an additional confidence signal before suppressing Footballtweet.
+    if previous_source.casefold() == "fabrizioromano":
+        return True
+    return bool(event_score >= 0.80 or (len(shared_subjects) >= 4 and len(concept_overlap) >= 2))
+
+
+_PRE_CROSS_REPORTER_FOOTBALLTWEET_DUPLICATE_MEMORY_CANDIDATE = _footballtweet_duplicate_memory_candidate
+
+
+def _footballtweet_duplicate_memory_candidate(post: Post) -> dict[str, Any] | None:
+    existing = _PRE_CROSS_REPORTER_FOOTBALLTWEET_DUPLICATE_MEMORY_CANDIDATE(post)
+    if existing:
+        return existing
+    if not _is_footballtweet_post(post):
+        return None
+
+    now = time.time()
+    try:
+        rows = load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-1200:]
+    except Exception:
+        rows = []
+    for raw_item in reversed(rows):
+        if not isinstance(raw_item, dict):
+            continue
+        previous_source = _footballtweet_regular_reporter_source(raw_item)
+        if not previous_source:
+            continue
+        ts = float(raw_item.get("ts", 0.0) or 0.0)
+        age = now - ts if ts else 10**12
+        if age < 0 or age > FOOTBALLTWEET_REPORTER_DUPLICATE_WINDOW_SECONDS:
+            continue
+
+        current_id = str(getattr(post, "post_id", "") or "")
+        current_link = str(getattr(post, "link", "") or "").split("?", 1)[0].rstrip("/")
+        previous_id = str(raw_item.get("post_id", "") or raw_item.get("tweet_id", "") or "")
+        previous_link = str(raw_item.get("link", "") or "").split("?", 1)[0].rstrip("/")
+        if current_id and previous_id and current_id == previous_id:
+            candidate = dict(raw_item)
+            candidate["footballtweet_cross_reporter_duplicate"] = True
+            return candidate
+        if current_link and previous_link and current_link == previous_link:
+            candidate = dict(raw_item)
+            candidate["footballtweet_cross_reporter_duplicate"] = True
+            return candidate
+
+        for previous_text in _footballtweet_previous_text_candidates(raw_item):
+            if _footballtweet_same_reporter_event(post, previous_text, previous_source):
+                candidate = dict(raw_item)
+                candidate["footballtweet_cross_reporter_duplicate"] = True
+                candidate["duplicate_source"] = previous_source
+                candidate["duplicate_verdict"] = "same_event_different_wording"
+                return candidate
+    return None
+
+
+def footballtweet_filter_issue(post: Post, reserve_rate_slot: bool = True) -> str:
+    if not _is_footballtweet_post(post):
+        return ""
+    original = _footballtweet_original_text(post)
+    if is_women_or_wnba_post(post):
+        return "footballtweet_women"
+    if is_other_sport_post(post):
+        return "footballtweet_other_sport"
+    quote_reason = footballtweet_quote_or_opinion_reason(post)
+    if quote_reason:
+        return quote_reason
+    if _FOOTBALLTWEET_LIVE_RE.search(original):
+        return "footballtweet_live"
+    if count_content_words(original) < FOOTBALLTWEET_MIN_WORDS:
+        return "footballtweet_too_short"
+    if not _special_fact_has_media(post):
+        return "footballtweet_no_media"
+    duplicate = _footballtweet_duplicate_memory_candidate(post)
+    if duplicate:
+        if duplicate.get("footballtweet_cross_reporter_duplicate"):
+            return "footballtweet_duplicate_reporter"
+        return "footballtweet_duplicate_24h"
+    if reserve_rate_slot and not _footballtweet_reserve_rate_slot(post):
+        return "footballtweet_hourly_limit"
+    return ""
+
+
+_PRE_CROSS_REPORTER_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: Any) -> str:
+    if str(reason or "") == "footballtweet_duplicate_reporter":
+        return "ציוצי כדורגל: אותו אירוע כבר נשלח קודם מכתב מוכר, גם אם הניסוח שונה"
+    return _PRE_CROSS_REPORTER_HEBREW_BLOCK_REASON(reason)
+
+# ====== END FOOTBALLTWEET CROSS-REPORTER SEMANTIC DUPLICATE PATCH ======
+
 if __name__ == "__main__":
     main()
