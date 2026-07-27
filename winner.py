@@ -44532,3 +44532,268 @@ def process_control_update(update: dict[str, Any]) -> None:
     )
 
 # ====== END RESTORE LAST KNOWN FAST RSS + FACTS MENU / COMPACT REPORT FIX ======
+
+# ====== POLYMARKET SPORT — SAME ROUTE AS CENTREGOALS (2026-07-28) ======
+# Adds @PolymarketSport to the existing facts hub without changing RSS sources,
+# scan cadence, Gemini settings, persistent filenames or any ordinary-writer rule.
+
+POLYMARKET_SPORT_USERNAME = "PolymarketSport"
+POLYMARKET_SPORT_DISPLAY_NAME = "פולימרקט ספורט"
+_POLYMARKET_SPORT_ALIASES = {
+    "polymarketsport", "polymarket sport", "polymarket sports",
+    "פולימרקט ספורט", "פולימרקט",
+}
+
+# Teach the existing facts-source resolver about the new account. Every later
+# facts menu, status, toggle and automatic-scan function calls this resolver.
+_PRE_POLYMARKET_FACTS_SOURCE_CANONICAL = _facts_source_canonical
+
+
+def _facts_source_canonical(value: Any) -> str:
+    if isinstance(value, Post):
+        value = getattr(value, "username", "")
+    raw = str(value or "").strip().lstrip("@")
+    if raw.casefold() in _POLYMARKET_SPORT_ALIASES:
+        return POLYMARKET_SPORT_USERNAME
+    return _PRE_POLYMARKET_FACTS_SOURCE_CANONICAL(value)
+
+
+# Keep the same facts-hub position/settings as CentreGoals and enable it by
+# default. No RSS template or external source is added here.
+if POLYMARKET_SPORT_USERNAME not in FACTS_SOURCE_ORDER:
+    _facts_order = list(FACTS_SOURCE_ORDER)
+    try:
+        _insert_at = _facts_order.index(CENTREGOALS_USERNAME) + 1
+    except ValueError:
+        _insert_at = len(_facts_order)
+    _facts_order.insert(_insert_at, POLYMARKET_SPORT_USERNAME)
+    FACTS_SOURCE_ORDER = tuple(_facts_order)
+
+FACTS_SOURCE_LABELS[POLYMARKET_SPORT_USERNAME] = POLYMARKET_SPORT_DISPLAY_NAME
+
+if not any(str(value or "").casefold() == POLYMARKET_SPORT_USERNAME.casefold() for value in EXTRA_FACT_SOURCE_USERNAMES):
+    EXTRA_FACT_SOURCE_USERNAMES.append(POLYMARKET_SPORT_USERNAME)
+if not any(str(value or "").casefold() == POLYMARKET_SPORT_USERNAME.casefold() for value in X_ACCOUNTS):
+    X_ACCOUNTS.append(POLYMARKET_SPORT_USERNAME)
+PRIORITY_X_ACCOUNTS.add(POLYMARKET_SPORT_USERNAME)
+ACCOUNT_DISPLAY_NAMES[POLYMARKET_SPORT_USERNAME] = POLYMARKET_SPORT_DISPLAY_NAME
+HANDLE_REPLACEMENTS[POLYMARKET_SPORT_USERNAME] = POLYMARKET_SPORT_DISPLAY_NAME
+SELF_QUOTE_ALIASES.setdefault(
+    POLYMARKET_SPORT_USERNAME,
+    ["Polymarket Sports", "Polymarket Sport", POLYMARKET_SPORT_DISPLAY_NAME],
+)
+if "SOURCE_PRIORITY" in globals() and isinstance(SOURCE_PRIORITY, dict):
+    SOURCE_PRIORITY[POLYMARKET_SPORT_USERNAME] = max(
+        int(SOURCE_PRIORITY.get(POLYMARKET_SPORT_USERNAME, 0) or 0),
+        int(SOURCE_PRIORITY.get(CENTREGOALS_USERNAME, 0) or 0),
+    )
+
+
+def _polymarket_sport_post(post: Post) -> bool:
+    try:
+        return _facts_source_canonical(getattr(post, "username", "")) == POLYMARKET_SPORT_USERNAME
+    except Exception:
+        return str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() == "polymarketsport"
+
+
+# Predictions, favourites, probabilities and Polymarket percentages use the
+# same explicit editorial rescue already used by CentreGoals predictions.
+_PRE_POLYMARKET_EDITORIAL_CATEGORY = _requested_editorial_category
+
+
+def _requested_editorial_category(post: Post) -> str:
+    if _polymarket_sport_post(post):
+        text = _requested_raw_post_text(post)
+        if text and not _requested_external_social_source(post) and _REQUESTED_PREDICTION_RE.search(text):
+            # Reuse the exact CentreGoals prediction category so the existing
+            # poll/audience soft-gate bypass remains identical.
+            return "centregoals_prediction"
+    return _PRE_POLYMARKET_EDITORIAL_CATEGORY(post)
+
+
+# Exact-source verification for a Polymarket post containing @ metadata. This is
+# deliberately the same complete-report test used for CentreGoals: at least ten
+# words, no live-match update, no Instagram/social repost, and a concrete football
+# report/prediction with a named entity.
+def _polymarket_sport_full_report(post: Post) -> bool:
+    if not _polymarket_sport_post(post):
+        return False
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("PolymarketSport exact-X hydration failed safely: %s", short_error(exc, 260))
+    source = _requested_raw_post_text(post)
+    if not source or _requested_external_social_source(post):
+        return False
+    if "_CENTREGOALS_LIVE_MATCH_RE" in globals() and _CENTREGOALS_LIVE_MATCH_RE.search(source):
+        return False
+    evaluable = _SIX_LITERAL_MENTION_RE.sub(" ", source)
+    evaluable = URL_RE.sub(" ", evaluable)
+    evaluable = re.sub(
+        r"(?im)^\s*(?:source|credit|via|h/t|מקור|קרדיט)\b.*$",
+        " ", evaluable,
+    )
+    evaluable = re.sub(r"\s+", " ", evaluable).strip()
+    if _requested_regular_word_count(evaluable) < 10:
+        return False
+    if _requested_editorial_category(post):
+        return True
+    action = bool(_REQUESTED_REAL_NEWS_ACTION_RE.search(evaluable))
+    football_context = bool(
+        _REQUESTED_TRANSFER_CONTEXT_RE.search(evaluable)
+        or _REQUESTED_STATISTIC_RE.search(evaluable)
+        or _REQUESTED_NATIONAL_TEAM_MANAGEMENT_RE.search(evaluable)
+        or _REQUESTED_FOOTBALL_RULE_RE.search(evaluable)
+        or _REQUESTED_PREDICTION_RE.search(evaluable)
+        or _REQUESTED_CLUB_FINANCE_RE.search(evaluable)
+    )
+    try:
+        named = bool(_final_logical_team_ids(evaluable) or _final_event_identity_tokens(evaluable))
+    except Exception:
+        named = bool(re.search(r"\b[A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{2,}(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'’.-]{2,})+\b", evaluable))
+    return bool(action and football_context and named)
+
+
+# Apply CentreGoals' hard source rules to PolymarketSport too: minimum ten words,
+# live-match updates blocked, external-social content blocked globally, while an
+# @ handle alone is not allowed to kill an otherwise complete report.
+_PRE_POLYMARKET_PRE_SEND = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if not _polymarket_sport_post(post):
+        return _PRE_POLYMARKET_PRE_SEND(post)
+
+    source = _requested_raw_post_text(post)
+    if _requested_external_social_source(post):
+        return "external_social_network_content"
+    if _requested_regular_word_count(source) < 10:
+        return "polymarketsport_less_than_10_words"
+    if "_CENTREGOALS_LIVE_MATCH_RE" in globals() and _CENTREGOALS_LIVE_MATCH_RE.search(source):
+        return "polymarketsport_live_match_update"
+
+    reason = str(_PRE_POLYMARKET_PRE_SEND(post) or "")
+    if reason:
+        lowered = reason.casefold()
+        mention_only = any(token in lowered for token in (
+            "account_mention", "contains_mention", "social_handle", "at_sign", "תיוג", "שטרודל",
+        ))
+        if mention_only and _polymarket_sport_full_report(post):
+            logging.info(
+                "PolymarketSport full report released after exact-source @ verification: %s",
+                getattr(post, "link", ""),
+            )
+            return ""
+    return reason
+
+
+_PRE_POLYMARKET_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "polymarketsport_less_than_10_words" in raw:
+        return "פולימרקט ספורט: הפוסט מכיל פחות מ־10 מילים"
+    if "polymarketsport_live_match_update" in raw:
+        return "פולימרקט ספורט: עדכון שער, תוצאה או אירוע חי ממשחק נחסם"
+    return _PRE_POLYMARKET_HEBREW_BLOCK_REASON(reason)
+
+
+# Hydrate the exact X source before Gemini when PolymarketSport contains a handle
+# or looks truncated, matching the CentreGoals preparation route.
+_PRE_POLYMARKET_GEMINI_TRANSLATE_ONCE = gemini_translate_post_once
+
+
+def gemini_translate_post_once(post: Post, include_quote: bool) -> tuple[str, str, str]:
+    if _polymarket_sport_post(post):
+        source = _requested_raw_post_text(post)
+        if "@" in source or _final_text_cut_signal(source):
+            try:
+                _reliable_hydrate_exact_post(post, force=True)
+            except Exception as exc:
+                logging.debug("PolymarketSport hydration before Gemini failed safely: %s", short_error(exc, 260))
+    return _PRE_POLYMARKET_GEMINI_TRANSLATE_ONCE(post, include_quote)
+
+
+# Strong 24-hour semantic dedupe against all sent/blocked event memory, using the
+# same thresholds and material-progress escape used by CentreGoals.
+def _polymarket_sport_duplicate(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    if not _polymarket_sport_post(post):
+        return None
+    current = _final_source_text(post)
+    current_norm = _requested_duplicate_norm(current)
+    current_tokens = _requested_duplicate_tokens(current)
+    if not current_norm or len(current_tokens) < 5:
+        return None
+    current_numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", current_norm))
+    now_ts = float(getattr(post, "published_ts", 0.0) or time.time())
+    for item in reversed(_final_recent_event_memory_rows(state)[-1600:]):
+        if _requested_exact_same_post(post, item):
+            return dict(item)
+        previous_ts = _requested_item_timestamp(item)
+        if previous_ts and abs(now_ts - previous_ts) > 24 * 60 * 60:
+            continue
+        previous = _final_item_event_text(item)
+        previous_norm = _requested_duplicate_norm(previous)
+        previous_tokens = _requested_duplicate_tokens(previous)
+        if not previous_norm or len(previous_tokens) < 5:
+            continue
+        shared = current_tokens & previous_tokens
+        union = current_tokens | previous_tokens
+        jaccard = len(shared) / max(1, len(union))
+        ratio = SequenceMatcher(None, current_norm, previous_norm).ratio()
+        same_teams = bool(_final_logical_team_ids(current) & _final_logical_team_ids(previous))
+        identity_shared = len(_final_event_identity_tokens(current) & _final_event_identity_tokens(previous)) >= 1
+        if not (same_teams or identity_shared):
+            continue
+        previous_numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", previous_norm))
+        if (current_numbers - previous_numbers) and len(current_tokens) > len(previous_tokens) * 1.20:
+            continue
+        if _REQUESTED_MATERIAL_PROGRESS_RE.search(current) and not _REQUESTED_MATERIAL_PROGRESS_RE.search(previous):
+            continue
+        if ratio >= 0.88 or jaccard >= 0.72:
+            result = dict(item)
+            result["duplicate_verdict"] = "פולימרקט ספורט: דיווח זהה או כמעט זהה כבר נשלח"
+            result["duplicate_source"] = _requested_item_author(item)
+            return result
+    return None
+
+
+def _install_polymarket_duplicate_wrapper(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(*args: Any, _previous=previous, **kwargs: Any):
+        post = _requested_post_from_duplicate_args(args, kwargs)
+        if post is not None and _polymarket_sport_post(post):
+            state = _requested_state_from_duplicate_args(args, kwargs)
+            candidate = _polymarket_sport_duplicate(post, state)
+            if candidate:
+                return candidate
+        return _previous(*args, **kwargs)
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _polymarket_duplicate_name in (
+    "find_recent_burst_spam_event", "find_recent_duplicate_event", "find_channel_duplicate_event",
+    "find_post_translation_duplicate_event", "find_recent_duplicate_event_ai_aware",
+):
+    _install_polymarket_duplicate_wrapper(_polymarket_duplicate_name)
+
+
+# Keep the explanatory RSS text accurate. This changes only the displayed source
+# list; the actual RSS templates and order remain untouched.
+_PRE_POLYMARKET_RSS_STATUS_TEXT = rss_status_text
+
+
+def rss_status_text() -> str:
+    return _PRE_POLYMARKET_RSS_STATUS_TEXT().replace(
+        "מטרות מרכזיות וסופסקור",
+        "מטרות מרכזיות, פולימרקט ספורט וסופסקור",
+    )
+
+BOT_BUILD_ID = "winner-old-good-rss-plus-polymarket-sport-2026-07-28"
+# ====== END POLYMARKET SPORT PATCH ======
