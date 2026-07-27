@@ -43971,5 +43971,639 @@ def send_prepared_message_to_main(
 
 # ====== END FINAL L'EQUIPE / FLAG / SPACING PATCH ======
 
+
+# ====== FINAL PREPARE/ALBUM/NUMBER/TROUBLESHOOTING PATCH (2026-07-28) ======
+# Scope is limited to the issues reported after deployment:
+# - trailing L'Équipe credits / empty parentheses and attached punctuation;
+# - prepare buttons that survive restart even when an old random token is missing;
+# - no separate "actions" message: buttons stay on the prepared post itself;
+# - protected numbers reach Gemini even when exact-source hydration replaces post.text;
+# - 429/503 cooldowns avoid immediately repeating an unavailable key/model.
+BOT_BUILD_ID = "winner-prepare-album-number-parentheses-2026-07-28"
+
+# ---------------------------------------------------------------------------
+# 1) Final source-tail cleanup. Earlier layers remove the source/handle itself.
+# This layer also removes every empty pair of brackets left behind (including
+# invisible RTL characters or empty HTML tags) and keeps the sentence-ending
+# punctuation attached to the final word.
+# ---------------------------------------------------------------------------
+_FINAL_EMPTY_BRACKET_CONTENT = (
+    r"(?:\s|&nbsp;|&#160;|"
+    r"[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]|"
+    r"<[^>]{1,120}>)*"
+)
+_FINAL_EMPTY_BRACKET_PAIR_RE = re.compile(
+    rf"(?is)\s*[\(\[\{{（]\s*{_FINAL_EMPTY_BRACKET_CONTENT}\s*[\)\]\}}）]"
+    rf"\s*(?P<punct>[.!?…])?\s*$"
+)
+_FINAL_DANGLING_SOURCE_PUNCT_RE = re.compile(r"(?:\s*[,;:|\-–—])+\s*(?P<punct>[.!?…])\s*$")
+
+
+def _final_remove_empty_terminal_brackets(value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    previous = None
+    while text and previous != text:
+        previous = text
+        match = _FINAL_EMPTY_BRACKET_PAIR_RE.search(text)
+        if match:
+            punctuation = str(match.group("punct") or "")
+            text = text[:match.start()].rstrip()
+            if punctuation and not re.search(r"[.!?…]\s*$", text):
+                text += punctuation
+            continue
+        # Also cover an empty pair followed by a closing quote and punctuation.
+        text = re.sub(
+            rf"(?is)\s*[\(\[\{{（]\s*{_FINAL_EMPTY_BRACKET_CONTENT}\s*[\)\]\}}）]"
+            r"\s*([\"'׳״])\s*([.!?…])\s*$",
+            lambda m: m.group(1) + m.group(2),
+            text,
+        ).rstrip()
+    text = _FINAL_DANGLING_SOURCE_PUNCT_RE.sub(lambda m: m.group("punct"), text)
+    text = re.sub(r"\s+([,.;:!?…])", r"\1", text)
+    text = re.sub(r"([.!?…])(?:\s*\1)+\s*$", r"\1", text)
+    return text.strip()
+
+
+_PRE_FINAL_EMPTY_BRACKETS_LEQUIPE = _final_strip_lequipe_suffix
+
+
+def _final_strip_lequipe_suffix(post: Any, value: str) -> str:
+    original = str(value or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    terminal = re.search(r"([.!?…])\s*$", original)
+    text = _PRE_FINAL_EMPTY_BRACKETS_LEQUIPE(post, original)
+    text = _final_remove_empty_terminal_brackets(text)
+    # Some earlier source-tail cleaners consumed the punctuation together with
+    # the deleted attribution. Restore only punctuation that truly existed at
+    # the end of the incoming text, and only when a suffix was actually removed.
+    if text != original and terminal and not re.search(r"[.!?…]\s*$", text):
+        text = text.rstrip() + terminal.group(1)
+    return text
+
+
+# Apply the terminal empty-bracket cleanup at the final rendering boundary too,
+# because a prior source-credit cleanup can run after the body cleanup.
+_PRE_FINAL_EMPTY_BRACKETS_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    message = _PRE_FINAL_EMPTY_BRACKETS_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    message = _final_strip_lequipe_suffix(post, message)
+    return _final_single_blank_line_layout(message)
+
+
+# ---------------------------------------------------------------------------
+# 2) Restart-safe prepare tokens and exact-link recovery.
+# New X posts use a recoverable token "username~tweet_id" (max 35 chars, so it
+# still fits Telegram's 64-byte callback_data limit). Old random tokens are
+# recovered from the adjacent source URL in the 10-post keyboard.
+# ---------------------------------------------------------------------------
+_PREPARE_RECOVERY_LINKS: dict[str, str] = {}
+_PREPARE_RECOVERY_LINKS_LOCK = RLock()
+_PRE_RECOVERABLE_REMEMBER_PREPARED = remember_control_prepared_send
+
+
+def _recoverable_prepare_token(post: Post) -> str:
+    try:
+        parts = _reliable_tweet_parts(post)
+    except Exception:
+        parts = None
+    if not parts:
+        return ""
+    username, tweet_id = parts
+    username = re.sub(r"[^A-Za-z0-9_]", "", str(username or "").lstrip("@"))[:15]
+    tweet_id = re.sub(r"\D", "", str(tweet_id or ""))[-20:]
+    if not username or not tweet_id:
+        return ""
+    token = f"{username}~{tweet_id}"
+    return token if len("football_prepare_history_ai:" + token) <= 64 else ""
+
+
+def remember_control_prepared_send(
+    post: Post,
+    translated: str,
+    quoted_translated: str,
+    quoted_author_translated: str,
+) -> str:
+    old_token = _PRE_RECOVERABLE_REMEMBER_PREPARED(
+        post, translated, quoted_translated, quoted_author_translated
+    )
+    token = _recoverable_prepare_token(post) or old_token
+    if token == old_token:
+        return token
+
+    item = CONTROL_PREPARED_SENDS.pop(old_token, None)
+    if not isinstance(item, dict):
+        item = {
+            "created_at": time.time(),
+            "post": post,
+            "translated": translated,
+            "quoted_translated": quoted_translated,
+            "quoted_author_translated": quoted_author_translated,
+        }
+    CONTROL_PREPARED_SENDS[token] = item
+    try:
+        _persist_prepared_send(token, item)
+    except Exception:
+        pass
+    try:
+        _persist_prepared_send_durable(token, item)
+    except Exception:
+        pass
+    return token
+
+
+def _prepare_link_from_callback_message(message: dict[str, Any], token: str) -> str:
+    keyboard = ((message.get("reply_markup") or {}).get("inline_keyboard") or [])
+    wanted = f"football_prepare_history_ai:{token}"
+    for row in keyboard:
+        if not isinstance(row, list):
+            continue
+        has_wanted = any(
+            isinstance(button, dict) and str(button.get("callback_data", "")) == wanted
+            for button in row
+        )
+        if not has_wanted:
+            continue
+        for button in row:
+            if not isinstance(button, dict):
+                continue
+            url = str(button.get("url", "") or "").strip()
+            try:
+                parts = tweet_parts_from_link(url)
+            except Exception:
+                parts = None
+            if parts:
+                return url
+    return ""
+
+
+def _post_from_exact_prepare_link(link: str) -> Post | None:
+    try:
+        parts = tweet_parts_from_link(str(link or ""))
+    except Exception:
+        parts = None
+    if not parts:
+        return None
+    username, tweet_id = parts
+    username = str(username or "").lstrip("@")
+    tweet_id = str(tweet_id or "")
+
+    # Prefer the normal RSS object because it already contains exact media and
+    # quote metadata. A direct X/fx/vx hydration remains the fallback.
+    try:
+        for candidate in list(fetch_posts(username) or []):
+            candidate_parts = _reliable_tweet_parts(candidate)
+            if candidate_parts and str(candidate_parts[1]) == tweet_id:
+                _reliable_hydrate_exact_post(candidate, force=True)
+                return candidate
+            candidate_ids = {
+                str(getattr(candidate, "post_id", "") or ""),
+                str(getattr(candidate, "link", "") or ""),
+                *(str(value or "") for value in (getattr(candidate, "dedupe_ids", []) or [])),
+            }
+            if any(tweet_id in value for value in candidate_ids):
+                _reliable_hydrate_exact_post(candidate, force=True)
+                return candidate
+    except Exception as exc:
+        logging.debug("Prepare-link RSS recovery failed safely for %s: %s", link, short_error(exc, 300))
+
+    canonical_link = f"https://x.com/{username}/status/{tweet_id}"
+    post = Post(
+        post_id=f"{username}:status:{tweet_id}",
+        username=username,
+        text="",
+        link=canonical_link,
+        image_urls=[],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[f"{username}:status:{tweet_id}", canonical_link, tweet_id],
+        source_name="exact_prepare_recovery",
+    )
+    _ensure_post_original_structure(post)
+    _reliable_hydrate_exact_post(post, force=True)
+    return post if _requested_source_text(post).strip() else None
+
+
+def _recover_prepared_item(token: str, source_link: str = "") -> dict[str, Any] | None:
+    item = _restore_prepared_send(token)
+    if isinstance(item, dict):
+        return item
+
+    link = str(source_link or "").strip()
+    if not link and "~" in str(token):
+        username, tweet_id = str(token).split("~", 1)
+        if username and tweet_id.isdigit():
+            link = f"https://x.com/{username}/status/{tweet_id}"
+    if not link:
+        with _PREPARE_RECOVERY_LINKS_LOCK:
+            link = str(_PREPARE_RECOVERY_LINKS.get(str(token), "") or "")
+    if not link:
+        return None
+
+    post = _post_from_exact_prepare_link(link)
+    if not isinstance(post, Post):
+        return None
+    item = {
+        "created_at": time.time(),
+        "post": post,
+        "translated": "",
+        "quoted_translated": "",
+        "quoted_author_translated": "",
+        "control_media_message_ids": [],
+    }
+    CONTROL_PREPARED_SENDS[str(token)] = item
+    try:
+        _persist_prepared_send(str(token), item)
+    except Exception:
+        pass
+    try:
+        _persist_prepared_send_durable(str(token), item)
+    except Exception:
+        pass
+    return item
+
+
+# The latest prepare routine previously raised immediately when a token was lost.
+# Recover it from the X link/token first, then use the exact same established
+# translation/render/media pipeline.
+def prepare_history_post_with_ai(token: str) -> None:
+    item = _recover_prepared_item(str(token))
+    if not item:
+        raise RuntimeError(
+            "הפוסט לא נמצא בזיכרון וגם לא ניתן היה לשחזר אותו מקישור המקור. "
+            "פתח שוב את 10 האחרונים של הכתב."
+        )
+    post = _ensure_post_original_structure(item.get("post"))
+    if not isinstance(post, Post):
+        raise RuntimeError("אין מספיק נתונים לשחזור הפוסט.")
+    _reliable_hydrate_exact_post(post, force=True)
+    translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+    final_message = _render_full_control_candidate(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+    )
+    item.update({
+        "post": post,
+        "translated": translated,
+        "quoted_translated": quoted_translated,
+        "quoted_author_translated": quoted_author_translated,
+        "prepared_final_message_html": final_message,
+    })
+    CONTROL_PREPARED_SENDS[str(token)] = item
+    try:
+        _persist_prepared_send(str(token), item)
+    except Exception:
+        pass
+    try:
+        _persist_prepared_send_durable(str(token), item)
+    except Exception:
+        pass
+    ids = _send_full_control_candidate(post, str(token), final_message)
+    if not ids:
+        raise RuntimeError("ההודעה המוכנה לא נשלחה לערוץ השקט.")
+
+
+# A prepared send button created with the new recoverable token also survives a
+# restart without the in-memory preview item. Rebuild the exact X post first,
+# then let the established manual-send routine recreate/translate as needed.
+_PRE_RECOVERABLE_SEND_TO_MAIN = send_prepared_control_post_to_main
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    if not _restore_prepared_send(str(token)):
+        _recover_prepared_item(str(token))
+    return _PRE_RECOVERABLE_SEND_TO_MAIN(str(token))
+
+
+# ---------------------------------------------------------------------------
+# 3) Prepared album + buttons in the same first message. Telegram does not
+# accept reply_markup in sendMediaGroup itself, so first try a robust markup edit.
+# If Telegram rejects it, replace the album with a captioned first photo carrying
+# the buttons and send the remaining original photos without a second action text.
+# ---------------------------------------------------------------------------
+_PRE_ONE_MESSAGE_PREPARED_CANDIDATE = _send_full_control_candidate
+
+
+def _delete_control_messages_quietly(message_ids: list[int]) -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    for message_id in message_ids:
+        try:
+            telegram_api(
+                "deleteMessage",
+                {"chat_id": CONTROL_CHAT_ID, "message_id": int(message_id)},
+                max_attempts=2,
+                timeout=max(2.5, TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS),
+            )
+        except Exception:
+            pass
+
+
+def _send_remaining_prepared_photos(image_urls: list[str]) -> list[int]:
+    urls = [str(url or "").strip() for url in image_urls if str(url or "").strip()]
+    if not urls or not CONTROL_CHAT_ID:
+        return []
+    if len(urls) == 1:
+        response = telegram_api(
+            "sendPhoto",
+            {"chat_id": CONTROL_CHAT_ID, "photo": urls[0]},
+            max_attempts=2,
+            timeout=max(REQUEST_TIMEOUT_SECONDS, 5.0),
+        )
+        return _telegram_result_message_ids(response)
+    response = telegram_api(
+        "sendMediaGroup",
+        {"chat_id": CONTROL_CHAT_ID, "media": [{"type": "photo", "media": url} for url in urls]},
+        max_attempts=2,
+        timeout=max(REQUEST_TIMEOUT_SECONDS, 5.0),
+    )
+    return _telegram_result_message_ids(response)
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    _reliable_hydrate_exact_post(post, force=True)
+    if _acceptance_post_requires_video(post):
+        return _PRE_ONE_MESSAGE_PREPARED_CANDIDATE(post, token, message_html)
+
+    images = list(selected_post_images(post) or [])
+    if len(images) <= 1:
+        return _PRE_ONE_MESSAGE_PREPARED_CANDIDATE(post, token, message_html)
+
+    markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+
+    # A full caption over 1024 characters cannot legally sit on a Telegram photo.
+    # Keep all text in the first message with its buttons, then send the media.
+    if not _acceptance_caption_fits(message_html):
+        ids = _six_send_full_text_with_actions(token, message_html)
+        try:
+            ids.extend(_send_remaining_prepared_photos(images))
+        except Exception as exc:
+            logging.warning("Prepared long-text media continuation failed: %s", short_error(exc, 450))
+        _requested_store_prepared_payload(token, post, message_html, images, "", ids)
+        return ids
+
+    media: list[dict[str, Any]] = []
+    for index, image_url in enumerate(images):
+        entry: dict[str, Any] = {"type": "photo", "media": image_url}
+        if index == 0:
+            entry["caption"] = message_html
+            entry["parse_mode"] = "HTML"
+        media.append(entry)
+
+    album_ids: list[int] = []
+    try:
+        response = telegram_api(
+            "sendMediaGroup",
+            {"chat_id": CONTROL_CHAT_ID, "media": media},
+            max_attempts=2,
+            timeout=max(REQUEST_TIMEOUT_SECONDS, 5.0),
+        )
+        album_ids = _telegram_result_message_ids(response)
+    except Exception as exc:
+        logging.warning("Prepared album send failed; switching to first-photo keyboard mode: %s", short_error(exc, 450))
+
+    if album_ids:
+        for method, payload in (
+            (
+                "editMessageReplyMarkup",
+                {"chat_id": CONTROL_CHAT_ID, "message_id": int(album_ids[0]), "reply_markup": markup},
+            ),
+            (
+                "editMessageCaption",
+                {
+                    "chat_id": CONTROL_CHAT_ID,
+                    "message_id": int(album_ids[0]),
+                    "caption": message_html,
+                    "parse_mode": "HTML",
+                    "reply_markup": markup,
+                },
+            ),
+        ):
+            try:
+                telegram_api(
+                    method,
+                    payload,
+                    max_attempts=3,
+                    timeout=max(REQUEST_TIMEOUT_SECONDS, 5.0),
+                )
+                _requested_store_prepared_payload(token, post, message_html, images, "", album_ids)
+                return album_ids
+            except Exception as exc:
+                logging.debug("Robust album keyboard attachment via %s failed: %s", method, short_error(exc, 350))
+
+        # Do not create a second "פעולות לדיווח" message. Remove the temporary
+        # album and rebuild the first prepared post with its keyboard attached.
+        _delete_control_messages_quietly(album_ids)
+
+    ids: list[int] = []
+    try:
+        first = telegram_api(
+            "sendPhoto",
+            {
+                "chat_id": CONTROL_CHAT_ID,
+                "photo": images[0],
+                "caption": message_html,
+                "parse_mode": "HTML",
+                "reply_markup": markup,
+            },
+            max_attempts=2,
+            timeout=max(REQUEST_TIMEOUT_SECONDS, 5.0),
+        )
+        ids.extend(_telegram_result_message_ids(first))
+    except Exception as exc:
+        logging.warning("Prepared first-photo keyboard fallback failed; using full text with buttons: %s", short_error(exc, 450))
+        ids.extend(_six_send_full_text_with_actions(token, message_html))
+
+    try:
+        ids.extend(_send_remaining_prepared_photos(images[1:]))
+    except Exception as exc:
+        logging.warning("Remaining prepared photos failed after first-photo send: %s", short_error(exc, 450))
+
+    _requested_store_prepared_payload(token, post, message_html, images, "", ids)
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# 4) Prepare-button UX: callback acknowledgement is immediate, then only the
+# prepared post is sent. No loading/success message and no separate actions text.
+# An error message is sent only when preparation genuinely fails.
+# ---------------------------------------------------------------------------
+def _run_prepare_button_final(token: str) -> None:
+    try:
+        prepare_history_post_with_ai(token)
+    except Exception as exc:
+        logging.exception("Prepare-report button task failed")
+        try:
+            send_control_text(
+                "⛔ הכנת הדיווח נכשלה:\n" + short_error(exc, 900),
+                None,
+                control_delete_message_reply_markup(),
+            )
+        except Exception:
+            pass
+    finally:
+        with _PREPARE_BUTTON_LOCK:
+            _PREPARE_BUTTON_INFLIGHT.discard(token)
+        with _PREPARE_RECOVERY_LINKS_LOCK:
+            _PREPARE_RECOVERY_LINKS.pop(token, None)
+
+
+_PRE_FINAL_PREPARE_CALLBACK_PROCESS = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if not data.startswith("football_prepare_history_ai:"):
+        return _PRE_FINAL_PREPARE_CALLBACK_PROCESS(update)
+
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+
+    token = data.split(":", 1)[1].strip()
+    source_link = _prepare_link_from_callback_message(message, token)
+    if source_link:
+        with _PREPARE_RECOVERY_LINKS_LOCK:
+            _PREPARE_RECOVERY_LINKS[token] = source_link
+
+    with _PREPARE_BUTTON_LOCK:
+        already_running = token in _PREPARE_BUTTON_INFLIGHT
+        if not already_running:
+            _PREPARE_BUTTON_INFLIGHT.add(token)
+    if already_running:
+        if callback_id:
+            answer_control_callback(callback_id, "הדיווח כבר נמצא בהכנה")
+        return
+    if callback_id:
+        answer_control_callback(callback_id, "מכין את הדיווח")
+    try:
+        _CONTROL_BUTTON_EXECUTOR.submit(_run_prepare_button_final, token)
+    except RuntimeError:
+        Thread(target=_run_prepare_button_final, args=(token,), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# 5) Number-preserving Gemini payload. The previous wrapper changed post.text,
+# but exact-source hydration could restore original_text immediately afterwards.
+# Encode numbers at the actual payload boundary with self-decoding HEX tokens;
+# decode them as soon as Gemini JSON is parsed, before all validators run.
+# ---------------------------------------------------------------------------
+_FINAL_PAYLOAD_NUMBER_RE = re.compile(
+    r"(?<![A-Za-zא-ת0-9_⟪])"
+    r"(?:\d{1,6}(?:[.,]\d+)?(?:\s*\+)?)"
+    r"(?!\d)"
+)
+_FINAL_PAYLOAD_NUMBER_TOKEN_RE = re.compile(
+    r"⟪\s*NHEX\s*([0-9A-Fa-f\s]{2,80})\s*⟫",
+    re.IGNORECASE,
+)
+
+
+def _encode_payload_numbers(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        encoded = match.group(0).encode("utf-8").hex().upper()
+        return f"⟪NHEX{encoded}⟫"
+    return _FINAL_PAYLOAD_NUMBER_RE.sub(replace, str(value or ""))
+
+
+def _decode_payload_numbers(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        raw_hex = re.sub(r"\s+", "", match.group(1))
+        try:
+            return bytes.fromhex(raw_hex).decode("utf-8")
+        except Exception:
+            return match.group(0)
+    return _FINAL_PAYLOAD_NUMBER_TOKEN_RE.sub(replace, str(value or ""))
+
+
+_PRE_NUMBER_PAYLOAD_BUILDER = _final_translation_payload
+
+
+def _final_translation_payload(main_source: str, quote_source: str, author_source: str, glossary: str) -> dict[str, Any]:
+    payload = _PRE_NUMBER_PAYLOAD_BUILDER(
+        _encode_payload_numbers(main_source),
+        _encode_payload_numbers(quote_source),
+        _encode_payload_numbers(author_source),
+        glossary,
+    )
+    try:
+        payload["systemInstruction"]["parts"][0]["text"] += (
+            " Preserve every token shaped like ⟪NHEX3230⟫ exactly, including "
+            "all letters and digits; it is a reversible source number marker."
+        )
+        payload["contents"][0]["parts"][0]["text"] = (
+            "NHEX tokens are mandatory: never omit, translate, split, renumber or move them.\n"
+            + str(payload["contents"][0]["parts"][0].get("text", ""))
+        )
+    except Exception:
+        pass
+    return payload
+
+
+_PRE_NUMBER_TRANSLATION_JSON_PARSER = _final_parse_translation_json
+
+
+def _final_parse_translation_json(raw: str) -> dict[str, str]:
+    parsed = _PRE_NUMBER_TRANSLATION_JSON_PARSER(raw)
+    return {
+        "main": _decode_payload_numbers(parsed.get("main", "")),
+        "quote": _decode_payload_numbers(parsed.get("quote", "")),
+        "quote_author": _decode_payload_numbers(parsed.get("quote_author", "")),
+    }
+
+
+# Respect the retry duration reported by Gemini for 429 and keep high-demand
+# models out of the same automatic retry cycle for ten minutes.
+_PRE_FINAL_GEMINI_COOLDOWN = _final_apply_gemini_failure_cooldown
+
+
+def _final_apply_gemini_failure_cooldown(model: str, key: str, exc: Exception) -> tuple[bool, bool]:
+    now = time.time()
+    code = int(getattr(exc, "code", 0) or 0)
+    lowered = str(exc or "").lower()
+    if code == 429 or "resource_exhausted" in lowered or "quota exceeded" in lowered:
+        retry_after = int(getattr(exc, "retry_after", 0) or 0)
+        if not retry_after:
+            match = re.search(r"retry\s+in\s+([0-9]+(?:\.[0-9]+)?)s", lowered)
+            if match:
+                retry_after = int(math.ceil(float(match.group(1))))
+        cooldown = max(75, min(60 * 60, retry_after + 15 if retry_after else 5 * 60))
+        GEMINI_KEY_COOLDOWNS[key] = max(GEMINI_KEY_COOLDOWNS.get(key, 0.0), now + cooldown)
+        return True, False
+    if code == 503 or "high demand" in lowered or "temporarily unavailable" in lowered:
+        GEMINI_MODEL_COOLDOWNS[model] = max(
+            GEMINI_MODEL_COOLDOWNS.get(model, 0.0),
+            now + max(10 * 60, GEMINI_TEMPORARY_OVERLOAD_COOLDOWN_SECONDS),
+        )
+        return False, True
+    return _PRE_FINAL_GEMINI_COOLDOWN(model, key, exc)
+
+# ====== END FINAL PREPARE/ALBUM/NUMBER/TROUBLESHOOTING PATCH ======
+
+
 if __name__ == "__main__":
     main()
