@@ -45267,5 +45267,206 @@ BOT_BUILD_ID = "winner-polymarket-facts-only-smart-filter-2026-07-28"
 # ====== END POLYMARKET SPORT FACTS-ONLY FILTER ======
 
 
+
+# ====== FINAL CLEAN ATTRIBUTION / HISTORICAL TAG / LIST LAYOUT PATCH (2026-07-28) ======
+# Requested scope only:
+# - keep a real attribution sentence, but remove the stray @ before פבריציו רומאנו;
+# - normalize every "כמו היום, לפני"-style heading to the clickable #היום_לפני tag;
+# - format dense football achievement/stat lists one item per line, with no blank
+#   lines and no duplicated list row.
+BOT_BUILD_ID = "winner-clean-attribution-hayom-lists-2026-07-28"
+
+_FINAL_FABRIZIO_HEBREW_AT_RE = re.compile(
+    r"(?iu)(?<![A-Za-zא-ת0-9_])@(?=\s*פבריצ(?:י|יא)ו\s+רומאנו\b)"
+)
+_FINAL_HAYOM_BEFORE_VARIANT_RE = re.compile(
+    r"(?iu)(?<![A-Za-zא-ת0-9_#])"
+    r"(?:כמו\s+היום|היום|ביום\s+(?:זה|הזה))"
+    r"\s*[,.:;!?–—\-]*\s*לפני\b"
+)
+_FINAL_HAYOM_ALREADY_VARIANT_RE = re.compile(
+    r"(?iu)#(?:ביום_זה|היום_לפני)(?:\s*[,.:;!?–—\-]*\s*(?:לפני\b)?)?"
+)
+_FINAL_MAZAL_TOV_HEADING_RE = re.compile(
+    r"(?ium)^(?P<prefix>(?:[^A-Za-zא-ת0-9#\n]{0,12})?)"
+    r"(?:#?מזל(?:_|\s)+טוב)\b"
+)
+_FINAL_DENSE_LIST_MARKER_RE = re.compile(
+    r"(?:🏆\ufe0f?[\u200e\u200f\u2066-\u2069]*)+"
+    r"|(?:✅|☑️?|✔️?|❌|⚽️?|🎩|⏱️?|🥇|🥈|🥉|📊|📈|🔝)"
+)
+_FINAL_LIST_LINE_START_RE = re.compile(
+    r"^(?:(?:🏆\ufe0f?[\u200e\u200f\u2066-\u2069]*)+|✅|☑️?|✔️?|❌|⚽️?|🎩|⏱️?|🥇|🥈|🥉|📊|📈|🔝)"
+)
+_FINAL_LAYOUT_INVISIBLE_CHARS_RE = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+
+
+def _final_clean_fabrizio_attribution(value: str) -> str:
+    text = _FINAL_FABRIZIO_HEBREW_AT_RE.sub("", str(value or ""))
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    return text.strip()
+
+
+def _final_normalize_hayom_before_tag(value: str) -> str:
+    text = str(value or "")
+    # Existing #ביום_זה output from an older layer is the same historical feature;
+    # the requested public spelling is always #היום_לפני.
+    text = re.sub(r"(?iu)#ביום_זה\b", "#היום_לפני", text)
+    text = _FINAL_HAYOM_BEFORE_VARIANT_RE.sub("#היום_לפני", text)
+    text = re.sub(
+        r"(?iu)#היום_לפני(?:\s*[,.:;!?–—\-]*\s*#היום_לפני)+",
+        "#היום_לפני",
+        text,
+    )
+    # Never leave a duplicated literal "לפני" after the tag.
+    text = re.sub(r"(?iu)#היום_לפני\s*[,.:;!?–—\-]*\s*לפני\b", "#היום_לפני", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
+def _final_normalize_mazal_tov_tag(value: str) -> str:
+    text = str(value or "")
+    text = _FINAL_MAZAL_TOV_HEADING_RE.sub(
+        lambda match: f"{match.group('prefix')}#מזל_טוב",
+        text,
+    )
+    text = re.sub(r"(?iu)#מזל_טוב(?:\s*[,.:;!?–—\-]*\s*#מזל_טוב)+", "#מזל_טוב", text)
+    return text.strip()
+
+
+def _final_list_row_key(value: str) -> str:
+    text = html.unescape(str(value or ""))
+    text = _FINAL_LAYOUT_INVISIBLE_CHARS_RE.sub("", text)
+    text = re.sub(r"\ufe0f", "", text)
+    text = re.sub(r"\s+", " ", text).strip().casefold()
+    return text
+
+
+def _final_dedupe_list_rows(rows: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        clean = re.sub(r"[ \t]+", " ", str(row or "")).strip()
+        if not clean:
+            continue
+        key = _final_list_row_key(clean)
+        if _FINAL_LIST_LINE_START_RE.match(clean) and key in seen:
+            continue
+        if _FINAL_LIST_LINE_START_RE.match(clean):
+            seen.add(key)
+        result.append(clean)
+    return result
+
+
+def _final_split_dense_list_block(block: str) -> list[str]:
+    raw = str(block or "").strip()
+    if not raw:
+        return []
+    matches = list(_FINAL_DENSE_LIST_MARKER_RE.finditer(raw))
+    # Three separate markers are a real list. One or two emojis can still be
+    # ordinary prose, so they remain untouched.
+    if len(matches) < 3:
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        return ["\n".join(_final_dedupe_list_rows(lines))] if lines else []
+
+    prefix = raw[:matches[0].start()].strip()
+    rows: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+        row = raw[match.start():end]
+        row = re.sub(r"[\r\n\t ]+", " ", row).strip()
+        row = _FINAL_LAYOUT_INVISIBLE_CHARS_RE.sub("", row).strip()
+        if row:
+            rows.append(row)
+    rows = _final_dedupe_list_rows(rows)
+    if len(rows) < 3:
+        return [raw]
+
+    result: list[str] = []
+    if prefix:
+        prefix = re.sub(r"[ \t]*\n[ \t]*", " ", prefix)
+        prefix = re.sub(r"[ \t]{2,}", " ", prefix).strip()
+        if prefix:
+            result.append(prefix)
+    result.append("\n".join(rows))
+    return result
+
+
+def _final_format_dense_football_lists(value: str) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return text
+    blocks = [block.strip() for block in re.split(r"\n{2,}", text) if block.strip()]
+    output_blocks: list[str] = []
+    for block in blocks:
+        output_blocks.extend(_final_split_dense_list_block(block))
+    # Exact duplicate list rows are removed above. One blank line remains only
+    # between prose/list blocks; list rows themselves stay consecutive.
+    result = "\n\n".join(part for part in output_blocks if part.strip())
+    result = re.sub(r"[ \t]+\n", "\n", result)
+    result = re.sub(r"\n[ \t]+", "\n", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def _final_requested_body_layout(value: str) -> str:
+    text = _final_clean_fabrizio_attribution(value)
+    text = _final_normalize_hayom_before_tag(text)
+    text = _final_normalize_mazal_tov_tag(text)
+    text = _final_format_dense_football_lists(text)
+    return text.strip()
+
+
+def _final_rtl_mark_list_rows(value: str) -> str:
+    lines: list[str] = []
+    for line in str(value or "").splitlines():
+        visible = _FINAL_LAYOUT_INVISIBLE_CHARS_RE.sub("", html.unescape(re.sub(r"<[^>]+>", "", line))).strip()
+        if visible and _FINAL_LIST_LINE_START_RE.match(visible) and re.search(r"[א-ת]", visible):
+            line = line.lstrip(RTL_MARK)
+            line = RTL_MARK + line
+        lines.append(line)
+    return "\n".join(lines)
+
+
+_PRE_FINAL_REQUESTED_LIST_OUTGOING_BODY = _outgoing_body_text
+
+
+def _outgoing_body_text(post: Post, translated: str, quoted: bool = False) -> str:
+    value = _PRE_FINAL_REQUESTED_LIST_OUTGOING_BODY(post, translated, quoted=quoted)
+    value = _final_requested_body_layout(value)
+    return value.strip()
+
+
+# Also apply the same deterministic cleanup to Google/control previews and any
+# older prepared payload that reaches the final message renderer directly.
+_PRE_FINAL_REQUESTED_LIST_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _final_requested_body_layout(translated)
+    quoted_translated = _final_requested_body_layout(quoted_translated) if quoted_translated else ""
+    message = _PRE_FINAL_REQUESTED_LIST_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    # Several older render layers intentionally repair RSS sentence breaks and
+    # can flatten single list newlines. Re-apply the deterministic list layout
+    # at the final HTML boundary so Telegram receives the rows exactly as shown.
+    message = _final_requested_body_layout(message)
+    message = _final_rtl_mark_list_rows(message)
+    return _final_single_blank_line_layout(message)
+
+# ====== END FINAL CLEAN ATTRIBUTION / HISTORICAL TAG / LIST LAYOUT PATCH ======
+
 if __name__ == "__main__":
     main()
