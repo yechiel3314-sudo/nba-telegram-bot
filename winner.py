@@ -45633,5 +45633,310 @@ def _send_full_control_candidate(post: Post, token: str, message_html: str) -> l
 # ====== END FINAL STABLE SINGLE-PASS HERE-WE-GO / QUIET PHOTO GUARANTEE ======
 
 
+
+
+# ====== FINAL AUTHORITATIVE QUIET PREVIEW / EXACT COPY / FRESH LOGO PATCH (2026-08-02) ======
+# Fixes one concrete failure mode only:
+# - a fresh manual preparation could fall back to text while old Telegram media IDs
+#   remained in persistent memory;
+# - the subsequent Send button copied the stale photo/caption to Neto Sport;
+# - this produced a malformed caption, duplicate footer fragments and no current logo.
+# Every new preparation now clears stale media IDs first, creates one fresh branded
+# Telegram preview with the exact final caption, stores only those fresh IDs, and the
+# main-channel button copies exactly that prepared Telegram media message.
+
+_QUIET_FINAL_INVISIBLE = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
+_QUIET_FINAL_SIGNATURE_HTML_RE = re.compile(
+    r"(?im)^\s*<a\b[^>]*href=[\"']https?://t\.me/neto_sport[\"'][^>]*>\s*נטו\s+ספורט\s*</a>\s*\.?\s*📝?\s*$"
+)
+_QUIET_FINAL_SIGNATURE_PLAIN_RE = re.compile(
+    r"(?im)^\s*נטו\s+ספורט\s*(?:\(https?://t\.me/neto_sport\)|https?://t\.me/neto_sport)?\s*\.?\s*📝?\s*$"
+)
+_QUIET_FINAL_ORPHAN_PENCIL_RE = re.compile(
+    rf"(?im)^\s*{_QUIET_FINAL_INVISIBLE}\.?\s*📝\s*{_QUIET_FINAL_INVISIBLE}$"
+)
+_QUIET_FINAL_HWG_JOIN_RE = re.compile(
+    rf"(#HERE_WE_GO)(?={_QUIET_FINAL_INVISIBLE}[A-Za-zא-ת0-9])",
+    re.IGNORECASE,
+)
+
+
+def _quiet_exact_final_caption(message: Any) -> str:
+    """Keep the prepared body unchanged, remove only corrupted footer remnants.
+
+    The source-derived line/paragraph layout is preserved.  The only structural
+    repair inserts the missing blank line when an invisible RTL mark glued the next
+    paragraph directly to ``#HERE_WE_GO``.
+    """
+    value = str(message or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not value:
+        return value
+    # Remove every old footer line and the observed orphan ``.📝`` line.  One clean
+    # clickable signature is appended below.
+    value = _QUIET_FINAL_SIGNATURE_HTML_RE.sub("", value)
+    value = _QUIET_FINAL_SIGNATURE_PLAIN_RE.sub("", value)
+    value = _QUIET_FINAL_ORPHAN_PENCIL_RE.sub("", value)
+    # A hidden RTL mark sometimes caused ``#HERE_WE_GO‏העסקה``.  Repair only that
+    # exact adjacency; do not reflow or independently decide paragraph boundaries.
+    value = _QUIET_FINAL_HWG_JOIN_RE.sub(r"\1\n\n", value)
+    # If a late formatter somehow left two hashtags on one line, keep the complete
+    # first clause and one hashtag, never reconstruct the player/club phrase.
+    if "_stable_clean_duplicate_hwg_line" in globals():
+        value = "\n".join(
+            _stable_clean_duplicate_hwg_line(line, source_terminal=True)
+            for line in value.split("\n")
+        )
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n[ \t]+", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value).strip()
+    signature = f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">נטו ספורט</a>.📝'
+    return value + "\n\n" + signature
+
+
+def _quiet_clear_stale_prepared_media(token: str, item: dict[str, Any] | None = None) -> None:
+    CONTROL_TELEGRAM_MEDIA_CACHE.pop(str(token), None)
+    target = item if isinstance(item, dict) else _restore_prepared_send(token)
+    if not isinstance(target, dict):
+        return
+    target["control_media_message_ids"] = []
+    CONTROL_PREPARED_SENDS[str(token)] = target
+    try:
+        _persist_prepared_send(str(token), target)
+    except Exception:
+        pass
+    try:
+        _persist_prepared_send_durable(str(token), target)
+    except Exception:
+        pass
+
+
+def _quiet_current_photo_sources(post: Post) -> list[str]:
+    values = list(dict.fromkeys(list(getattr(post, "image_urls", []) or [])))
+    if not values:
+        try:
+            values = list(dict.fromkeys(selected_post_images(post)))
+        except Exception:
+            values = []
+    if "_final_dedupe_exact_photos" in globals():
+        try:
+            values = list(_final_dedupe_exact_photos(values))
+        except Exception:
+            pass
+    return values[:MAX_IMAGES_PER_POST]
+
+
+# Slightly larger than the previous badge while remaining a corner watermark.
+# A new cache key forces already-watermarked cached files to be regenerated.
+def _channel_brand_image(source: str) -> str:
+    if not _channel_logo_enabled():
+        raise RuntimeError("Neto Sport logo/Pillow is unavailable")
+    key = hashlib.sha256(("neto-logo-final-v7|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
+    with _CHANNEL_LOGO_CACHE_LOCK:
+        cached = _CHANNEL_BRANDED_IMAGE_CACHE.get(key)
+        if cached and time.time() - cached[0] < 24 * 60 * 60 and os.path.isfile(cached[1]):
+            return cached[1]
+    folder = _channel_logo_cache_dir() / "photos"
+    folder.mkdir(parents=True, exist_ok=True)
+    output = folder / f"{key}.jpg"
+    if output.is_file() and output.stat().st_size > 0:
+        with _CHANNEL_LOGO_CACHE_LOCK:
+            _CHANNEL_BRANDED_IMAGE_CACHE[key] = (time.time(), str(output))
+        return str(output)
+    raw = _channel_read_image_bytes(source)
+    base = Image.open(io.BytesIO(raw)).convert("RGBA")
+    width, height = base.size
+    if width < 80 or height < 80:
+        raise RuntimeError("image_too_small_for_logo")
+    if height > width * 1.10:
+        logo_size = max(145, min(330, round(min(width, height) * 0.235)))
+    else:
+        logo_size = max(112, min(245, round(min(width, height) * 0.170)))
+    badge_path = _channel_logo_badge(logo_size)
+    if not badge_path:
+        raise RuntimeError("logo_badge_unavailable")
+    badge = Image.open(badge_path).convert("RGBA")
+    margin = max(12, min(30, round(min(width, height) * 0.018)))
+    base.alpha_composite(badge, (margin, margin))
+    base.convert("RGB").save(output, "JPEG", quality=95, optimize=True)
+    with _CHANNEL_LOGO_CACHE_LOCK:
+        _CHANNEL_BRANDED_IMAGE_CACHE[key] = (time.time(), str(output))
+    return str(output)
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    """Create the authoritative quiet preview.
+
+    Photo posts must arrive in the quiet channel as a fresh branded Telegram photo
+    with the exact final caption.  We do not fall back to text-only for a photo post,
+    because that would leave stale media available to the Send button.
+    """
+    _quiet_clear_stale_prepared_media(token)
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("Exact quiet-preview hydration failed; checking stored media: %s", exc)
+
+    final_caption = _quiet_exact_final_caption(message_html)
+    if _acceptance_post_requires_video(post):
+        # Video remains on the established path; it is not re-encoded with a logo.
+        ids = _STABLE_QUIET_MEDIA_FALLBACK(post, token, final_caption)
+        if ids:
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, list(ids))
+        return list(ids or [])
+
+    images = _quiet_current_photo_sources(post)
+    if not images:
+        # Truly text-only post: use the established sender.  There is no stale photo
+        # because it was cleared at function entry.
+        ids = _STABLE_QUIET_MEDIA_FALLBACK(post, token, final_caption)
+        if ids:
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, list(ids))
+        return list(ids or [])
+    if not CONTROL_CHAT_ID:
+        raise RuntimeError("CONTROL_CHAT_ID is missing")
+    if not _acceptance_caption_fits(final_caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    branded = _channel_brand_images(images)
+    markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        branded,
+        final_caption,
+        reply_markup=markup if len(branded) == 1 else None,
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if int(value) > 0]
+    if not ids:
+        raise RuntimeError("Telegram did not return prepared photo message IDs")
+    CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+    _save_prepared_media_ids(token, list(ids))
+    if len(branded) > 1:
+        send_control_html("שלח את ההודעה המוכנה:", control_send_to_main_reply_markup(token))
+    return list(ids)
+
+
+def prepare_history_post_with_ai(token: str) -> None:
+    item = _restore_prepared_send(token)
+    if not item:
+        send_control_text("הפוסט כבר לא נמצא בזיכרון. פתח שוב את 10 האחרונים של הכתב.")
+        return
+    post = _ensure_post_original_structure(item.get("post"))
+    if not isinstance(post, Post):
+        send_control_text("אין מספיק נתונים לשחזור הפוסט.")
+        return
+    # Critical: old media IDs must not survive a new preparation attempt.
+    _quiet_clear_stale_prepared_media(token, item)
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+        translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+        final_message = _quiet_exact_final_caption(
+            _render_full_control_candidate(
+                post,
+                translated,
+                quoted_translated,
+                quoted_author_translated,
+            )
+        )
+        item.update({
+            "post": post,
+            "translated": translated,
+            "quoted_translated": quoted_translated,
+            "quoted_author_translated": quoted_author_translated,
+            "prepared_final_message_html": final_message,
+            "control_media_message_ids": [],
+        })
+        CONTROL_PREPARED_SENDS[token] = item
+        _persist_prepared_send(token, item)
+        try:
+            _persist_prepared_send_durable(token, item)
+        except Exception:
+            pass
+        ids = _send_full_control_candidate(post, token, final_message)
+        # A post that has source photos must never silently finish as text-only.
+        if _quiet_current_photo_sources(post) and not ids:
+            raise RuntimeError("הכנת התמונה עם הלוגו לא הושלמה")
+    except Exception as exc:
+        logging.exception("Authoritative quiet preparation failed")
+        _quiet_clear_stale_prepared_media(token, item)
+        send_control_text(
+            "⛔ הכנת ההודעה עם התמונה והלוגו נכשלה:\n" + short_error(exc, 900),
+            None,
+            control_delete_message_reply_markup(),
+        )
+
+
+def _quiet_prepared_message_ids(token: str, item: dict[str, Any] | None = None) -> list[int]:
+    """Return only IDs produced by the current preparation, never stale cache union."""
+    current = item if isinstance(item, dict) else _restore_prepared_send(token)
+    values = list((current or {}).get("control_media_message_ids", []) or [])
+    if not values and isinstance(current, dict):
+        # Same-process fallback is safe only when durable item has no conflicting IDs.
+        values = list(CONTROL_TELEGRAM_MEDIA_CACHE.get(token, []) or [])
+    result: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        try:
+            message_id = int(value)
+        except Exception:
+            continue
+        if message_id > 0 and message_id not in seen:
+            seen.add(message_id)
+            result.append(message_id)
+    return result
+
+
+_PRE_FINAL_EXACT_COPY_SEND = send_prepared_control_post_to_main
+
+
+def send_prepared_control_post_to_main(token: str) -> str:
+    item = _restore_prepared_send(token)
+    if not isinstance(item, dict):
+        return _PRE_FINAL_EXACT_COPY_SEND(token)
+    edited = _get_manual_edit(token) if "_get_manual_edit" in globals() else ""
+    if edited:
+        return _PRE_FINAL_EXACT_COPY_SEND(token)
+
+    current_ids = _quiet_prepared_message_ids(token, item)
+    if current_ids:
+        copied_ids = _quiet_copy_prepared_preview_immediately(token, item)
+        if copied_ids:
+            post = item.get("post")
+            message = _quiet_exact_final_caption(item.get("prepared_final_message_html") or "")
+            if isinstance(post, Post):
+                try:
+                    remember_persistent_sent(post, message, "manual_exact_quiet_copy")
+                    state = load_state()
+                    remember_bot_sent_reply_target(post, state, copied_ids)
+                    remember_channel_news_text(
+                        message,
+                        state,
+                        message_id=post.link,
+                        source="manual_exact_quiet_copy",
+                    )
+                    confirm_recent_news_event(post, state)
+                    seen = set(state.get(post.username, []))
+                    seen.update(post.dedupe_ids)
+                    state[post.username] = list(seen)[-500:]
+                    save_state(state)
+                except Exception as exc:
+                    logging.debug("Exact quiet-copy memory update failed: %s", exc)
+            return "נשלח לערוץ נטו ספורט."
+
+    # Do not use an old Telegram media message. Recreate one fresh from the current
+    # post and exact prepared caption, then copy it.
+    post = item.get("post")
+    if isinstance(post, Post):
+        caption = _quiet_exact_final_caption(item.get("prepared_final_message_html") or "")
+        fresh_ids = _send_full_control_candidate(post, token, caption)
+        if fresh_ids:
+            copied_ids = _quiet_copy_prepared_preview_immediately(token, item)
+            if copied_ids:
+                return "נשלח לערוץ נטו ספורט."
+    return "השליחה נכשלה: לא נמצאה הודעה מוכנה ועדכנית עם המדיה."
+
+# ====== END FINAL AUTHORITATIVE QUIET PREVIEW / EXACT COPY / FRESH LOGO PATCH ======
+
 if __name__ == "__main__":
     main()
