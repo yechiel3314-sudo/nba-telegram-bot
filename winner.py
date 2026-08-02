@@ -47250,5 +47250,290 @@ def pre_send_final_local_block_reason(post: Post) -> str:
 
 # ====== END USER CLARIFICATION FIX V5 ======
 
+
+# ====== USER ALBUM-IN-PLACE / GROUPED COPY / TRAILING CREDIT FIX V6 (2026-08-03) ======
+# Requested narrow scope:
+# - Prepared multi-photo previews keep Send/Delete buttons on the captioned album
+#   item itself; no separate "actions" message is created.
+# - Button delivery to Neto Sport uses one copyMessages request, preserving the
+#   source media-group identity instead of copying each photo independently.
+# - A final standalone square-bracket source credit (for example
+#   "[Mundo Deportivo].") is removed before the Neto Sport footer, with no
+#   leftover blank paragraph.
+# Persistent files, JSON keys, RSS sources, filters and historical state remain
+# unchanged and backward-compatible.
+
+BOT_BUILD_ID = "winner-album-buttons-in-place-grouped-copy-trailing-credit-2026-08-03-v6"
+
+_USER_V6_BRACKET_CREDIT_RE = re.compile(
+    r"(?isu)^\[\s*(?=[^\[\]\n]*[A-Za-zא-ת])[^\[\]\n]{1,180}\s*\]\s*[.!?…]?$"
+)
+
+
+def _user_v6_visible_line(value: Any) -> str:
+    probe = html.unescape(str(value or ""))
+    probe = re.sub(r"(?is)<[^>]+>", "", probe)
+    probe = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", probe)
+    return re.sub(r"[ \t\u00a0]+", " ", probe).strip()
+
+
+def _user_v6_remove_trailing_bracket_credit(value: Any) -> str:
+    """Remove only a standalone final [source] line before the channel footer."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove existing footer rows temporarily. The established footer helper
+    # restores exactly one canonical footer after the source-credit cleanup.
+    body_lines = [line for line in text.split("\n") if not _user_v2_is_footer_line(line)]
+    while body_lines and not body_lines[-1].strip():
+        body_lines.pop()
+
+    if body_lines:
+        last_visible = _user_v6_visible_line(body_lines[-1])
+        if _USER_V6_BRACKET_CREDIT_RE.fullmatch(last_visible):
+            body_lines.pop()
+            while body_lines and not body_lines[-1].strip():
+                body_lines.pop()
+
+    body = "\n".join(body_lines)
+    body = re.sub(r"[ \t]+\n", "\n", body)
+    body = re.sub(r"\n[ \t]+", "\n", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return _user_v2_single_neto_footer(body)
+
+
+_USER_V6_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _USER_V6_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _user_v6_remove_trailing_bracket_credit(rendered)
+
+
+_USER_V6_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    rendered = _USER_V6_PRE_FINALIZE_OUTGOING(message)
+    return _user_v6_remove_trailing_bracket_credit(rendered)
+
+
+def _user_v6_album_markup(token: str) -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}],
+        [{"text": "🗑️ מחק הודעה", "callback_data": f"football_delete_prepared:{token}"}],
+    ])
+
+
+def _user_v6_delete_old_action_message(token: str) -> None:
+    """Remove a separate v4 action row if this token was prepared previously."""
+    old_id = CONTROL_PREPARED_ACTION_CACHE.pop(token, None)
+    if not old_id or not CONTROL_CHAT_ID:
+        return
+    try:
+        telegram_api(
+            "deleteMessage",
+            {"chat_id": CONTROL_CHAT_ID, "message_id": int(old_id)},
+            max_attempts=1,
+            timeout=max(2.0, TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS),
+        )
+    except Exception:
+        pass
+
+
+def _user_v6_attach_album_markup(
+    token: str,
+    message_id: int,
+    caption: str,
+) -> bool:
+    """Attach both buttons to the captioned album item, idempotently."""
+    markup = _user_v6_album_markup(token)
+    # A very short settle period avoids racing the media-group commit while still
+    # keeping the controls effectively immediate.
+    time.sleep(0.12)
+    for attempt in range(3):
+        if _user_v3_attach_album_keyboard(
+            str(CONTROL_CHAT_ID),
+            int(message_id),
+            caption,
+            markup,
+        ):
+            return True
+        if attempt < 2:
+            time.sleep(0.25 * (attempt + 1))
+    return False
+
+
+def _user_v2_send_prepared_album_with_buttons(
+    token: str,
+    branded: list[str],
+    message_html: str,
+) -> list[int]:
+    """Send one true album and place Send/Delete directly on its caption item."""
+    if not CONTROL_CHAT_ID or not branded:
+        return []
+    caption = _finalize_outgoing_message_only(message_html)
+    if not _acceptance_caption_fits(caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    markup = _user_v6_album_markup(token)
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        branded,
+        caption,
+        reply_markup=markup if len(branded) == 1 else None,
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+    if len(ids) != len(branded):
+        _user_followup_delete_partial_control_messages(ids)
+        raise RuntimeError(f"telegram_album_count_mismatch:{len(ids)}/{len(branded)}")
+
+    _user_v6_delete_old_action_message(token)
+    if len(ids) > 1 and not _user_v6_attach_album_markup(token, ids[0], caption):
+        # Keep the complete usable album, but surface a precise keyboard failure.
+        # Never create the unwanted separate action-message fallback.
+        logging.error(
+            "Prepared album exists but its inline controls could not be attached. "
+            "token=%s message_ids=%s",
+            token,
+            ids,
+        )
+        raise RuntimeError("album_inline_buttons_attachment_failed")
+    return ids
+
+
+def _quiet_copy_prepared_preview_immediately(token: str, item: dict[str, Any]) -> dict[str, int]:
+    """Copy the complete prepared media group in one request per target chat."""
+    if not CONTROL_CHAT_ID:
+        return {}
+    message_ids = sorted(set(_quiet_prepared_message_ids(token, item)))
+    if not message_ids:
+        return {}
+
+    copied: dict[str, int] = {}
+    for target_chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            if len(message_ids) == 1:
+                response = telegram_api(
+                    "copyMessage",
+                    {
+                        "chat_id": target_chat_id,
+                        "from_chat_id": CONTROL_CHAT_ID,
+                        "message_id": int(message_ids[0]),
+                    },
+                    max_attempts=2,
+                    timeout=max(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS, 6.0),
+                )
+            else:
+                response = telegram_api(
+                    "copyMessages",
+                    {
+                        "chat_id": target_chat_id,
+                        "from_chat_id": CONTROL_CHAT_ID,
+                        "message_ids": [int(value) for value in message_ids],
+                    },
+                    max_attempts=2,
+                    timeout=max(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS, 8.0),
+                )
+            new_ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+            if not new_ids:
+                raise RuntimeError("telegram_copy_returned_no_message_ids")
+            if len(message_ids) > 1 and len(new_ids) != len(message_ids):
+                raise RuntimeError(f"copied_album_count_mismatch:{len(new_ids)}/{len(message_ids)}")
+            copied[str(target_chat_id)] = int(new_ids[0])
+        except Exception as exc:
+            logging.warning(
+                "Grouped prepared-album copy failed from %s to %s: %s",
+                message_ids,
+                target_chat_id,
+                exc,
+            )
+    return copied
+
+
+def _user_v6_delete_only_markup(token: str) -> dict[str, Any]:
+    return stable_reply_markup([[
+        {"text": "🗑️ מחק הודעה", "callback_data": f"football_delete_prepared:{token}"}
+    ]])
+
+
+_USER_V6_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    if not callback:
+        return _USER_V6_PRE_PROCESS_CONTROL_UPDATE(update)
+
+    data = str(callback.get("data", "") or "")
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", CONTROL_CHAT_ID))
+
+    if data.startswith("football_delete_prepared:"):
+        token = data.split(":", 1)[1].strip()
+        if callback_id:
+            answer_control_callback(callback_id, "מוחק את הדיווח והאלבום")
+        _user_v4_delete_prepared_album(token, message)
+        return
+
+    if data.startswith("football_send_test:"):
+        token = data.split(":", 1)[1].strip()
+        if _user_v4_message_has_album_actions(message, token):
+            if callback_id:
+                answer_control_callback(callback_id, "שולח את כל האלבום לערוץ נטו ספורט")
+
+            def _send_grouped_album_now() -> None:
+                try:
+                    result_text = send_prepared_control_post_to_main(token)
+                    failed = _quiet_send_failed_text(result_text) if "_quiet_send_failed_text" in globals() else (
+                        "נכשל" in str(result_text or "") or "לא ניתן" in str(result_text or "")
+                    )
+                    if failed:
+                        raise RuntimeError(str(result_text or "השליחה נכשלה"))
+
+                    # A media message cannot be updated with editMessageText.
+                    # Update only its inline keyboard, leaving the album/caption intact.
+                    telegram_api(
+                        "editMessageReplyMarkup",
+                        {
+                            "chat_id": chat_id,
+                            "message_id": int(message.get("message_id")),
+                            "reply_markup": _user_v6_delete_only_markup(token),
+                        },
+                        max_attempts=2,
+                        timeout=max(4.0, TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS),
+                    )
+                except Exception as exc:
+                    if _user_v3_message_not_modified(exc):
+                        return
+                    logging.exception("Grouped prepared-album button send failed")
+                    try:
+                        send_control_text(
+                            "⛔ השליחה לערוץ נטו ספורט נכשלה:\n" + short_error(exc, 900),
+                            None,
+                            control_delete_message_reply_markup(),
+                        )
+                    except Exception:
+                        pass
+
+            Thread(target=_send_grouped_album_now, daemon=True).start()
+            return
+
+    return _USER_V6_PRE_PROCESS_CONTROL_UPDATE(update)
+
+# ====== END USER ALBUM-IN-PLACE / GROUPED COPY / TRAILING CREDIT FIX V6 ======
+
 if __name__ == "__main__":
     main()
