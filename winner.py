@@ -44666,7 +44666,7 @@ def _channel_brand_image(source: str) -> str:
         raise RuntimeError(
             "Neto Sport logo is unavailable. Ensure neto_sport_logo.jpg and Pillow are installed."
         )
-    key = hashlib.sha256(("neto-logo-portrait-v2|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
+    key = hashlib.sha256(("neto-logo-portrait-v3|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
     with _CHANNEL_LOGO_CACHE_LOCK:
         cached = _CHANNEL_BRANDED_IMAGE_CACHE.get(key)
         if cached and time.time() - cached[0] < 24 * 60 * 60 and os.path.isfile(cached[1]):
@@ -44684,8 +44684,8 @@ def _channel_brand_image(source: str) -> str:
     if width < 80 or height < 80:
         raise RuntimeError("image_too_small_for_logo")
     if height > width * 1.10:
-        # Portrait images get a slightly larger badge so the detailed logo stays readable.
-        logo_size = max(66, min(142, round(min(width, height) * 0.105)))
+        # Portrait images get a clearer badge while remaining relatively small.
+        logo_size = max(76, min(170, round(min(width, height) * 0.125)))
     else:
         logo_size = max(58, min(124, round(min(width, height) * 0.09)))
     badge_path = _channel_logo_badge(logo_size)
@@ -45086,6 +45086,321 @@ def build_message(
     return _final_relocate_hwg_in_rendered_message(post, rendered)
 
 # ====== END FINAL FABRIZIO / €8 / EXACT HERE-WE-GO POSITION PATCH ======
+
+
+
+# ====== FINAL HWG DESTINATION / GREEN-LIGHT PARAGRAPH / BLUE SIGNATURE PATCH (2026-08-02) ======
+# Requested narrow scope only. RSS, filters and all other source-layout rules stay unchanged.
+
+_PRE_USER_HWG_INSERT_ON_SOURCE_LINE = _final_insert_hwg_on_source_line
+
+
+def _final_destination_aliases_before_hwg(source_before: str) -> list[str]:
+    """Return destination-club aliases immediately before HERE WE GO.
+
+    This avoids ratio-based insertion in RTL Hebrew.  For a source such as
+    ``Juanlu to Bournemouth, here we go!`` the token must follow Bournemouth,
+    not the player's name.
+    """
+    before = str(source_before or "").strip()
+    match = re.search(
+        r"(?iu)\b(?:to|for|joins?|signs?(?:\s+for)?)\s+([^,;!?\n]+?)\s*,?\s*$",
+        before,
+    )
+    if not match:
+        return []
+    raw_destination = re.sub(r"\s+", " ", match.group(1)).strip(" .,:;!?")
+    aliases: list[str] = [raw_destination]
+    normalized_destination = unicodedata.normalize("NFKC", raw_destination).casefold()
+    for source_name, hebrew_name in sorted(TEAM_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
+        normalized_source = unicodedata.normalize("NFKC", str(source_name)).casefold()
+        if normalized_source == normalized_destination or normalized_source in normalized_destination or normalized_destination in normalized_source:
+            aliases.append(str(hebrew_name))
+    # Useful canonical fallback for the reported case even if a legacy dictionary
+    # entry is missing in an older persistent deployment.
+    if "bournemouth" in normalized_destination:
+        aliases.extend(["בורנמות'", "בורנמות׳", "בורנמות"])
+    return list(dict.fromkeys(alias for alias in aliases if alias))
+
+
+def _final_insert_hwg_on_source_line(line: str, source_segment: str, match: re.Match[str]) -> str:
+    clean = _final_remove_hwg_from_line(line, remove_placeholder=True)
+    token = _final_hwg_token_from_source(source_segment, match)
+    before = source_segment[:match.start()].rstrip()
+
+    # Prefer a real destination-club anchor.  Word-ratio placement is unreliable
+    # when English LTR source order is translated into Hebrew RTL order.
+    for alias in _final_destination_aliases_before_hwg(before):
+        alias_match = re.search(re.escape(alias), clean, flags=re.IGNORECASE)
+        if not alias_match:
+            continue
+        left = clean[:alias_match.end()].rstrip()
+        right = clean[alias_match.end():].lstrip()
+        left = re.sub(r"[!?…\.]+$", "", left).rstrip()
+        if before.endswith(",") and not left.endswith(","):
+            left = left.rstrip(";:") + ","
+        result = left + " " + token
+        if right:
+            result += " " + right
+        result = re.sub(r"[ \t]+([,.;:!?])", r"\1", result)
+        result = re.sub(r"([,;:])\s*([!?])", r"\2", result)
+        return result.strip()
+
+    return _PRE_USER_HWG_INSERT_ON_SOURCE_LINE(line, source_segment, match)
+
+
+def _final_split_green_light_like_source(post: Post, rendered: str) -> str:
+    """Keep the source's Green-light update as its own paragraph.
+
+    RSS mirrors occasionally collapse this one source break while retaining all
+    text.  The repair is activated only when the original post itself contains a
+    Green-light/medical-green-light clause and the Hebrew output contains the
+    corresponding ``אור ירוק`` clause.
+    """
+    source = _final_corresponding_source_text(post, quoted=False)
+    raw_html = html.unescape(str(getattr(post, "raw_source_html", "") or ""))
+    source_probe = source + "\n" + re.sub(r"(?iu)<br\s*/?>|</(?:p|div|li)>", "\n", raw_html)
+    if not re.search(r"(?iu)\b(?:medical\s+)?green\s+light\b", source_probe):
+        return rendered
+
+    message = str(rendered or "")
+    signature_match = re.search(r"\n\n(?=<a\s+href=)", message)
+    if signature_match:
+        content = message[:signature_match.start()]
+        signature = message[signature_match.start():]
+    else:
+        content, signature = message, ""
+
+    # Do not alter wording or punctuation; only restore the missing paragraph
+    # boundary before the Green-light clause.
+    content = re.sub(r"(?<!\n)[ \t]+(?=אור\s+ירוק\b)", "\n\n", content, count=1)
+    content = re.sub(r"\n[ \t]+", "\n", content)
+    content = re.sub(r"\n{3,}", "\n\n", content)
+    return content.rstrip() + signature
+
+
+def _final_force_blue_channel_signature(message: str) -> str:
+    """End every outgoing report with a real Telegram HTML link.
+
+    Only the words ``נטו ספורט`` are linked; the period and pencil remain outside
+    the anchor.  This is the most reliable visible-blue format in Telegram HTML.
+    """
+    value = str(message or "").strip()
+    value = re.sub(
+        r"(?is)\n*<a\b[^>]*href=[\"']https?://t\.me/neto_sport[\"'][^>]*>.*?</a>\s*\.?\s*📝?\s*$",
+        "",
+        value,
+    ).rstrip()
+    value = re.sub(
+        r"(?im)\n*\s*נטו\s+ספורט\s*(?:\(https?://t\.me/neto_sport\)|https?://t\.me/neto_sport)?\s*\.?\s*📝?\s*$",
+        "",
+        value,
+    ).rstrip()
+    signature = f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">נטו ספורט</a>.📝'
+    return (value + "\n\n" + signature).strip() if value else signature
+
+
+_PRE_USER_FINAL_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _PRE_USER_FINAL_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _final_split_green_light_like_source(post, rendered)
+    return _final_force_blue_channel_signature(rendered)
+
+
+_PRE_USER_FINALIZE_OUTGOING_MESSAGE_ONLY = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    return _final_force_blue_channel_signature(_PRE_USER_FINALIZE_OUTGOING_MESSAGE_ONLY(message))
+
+# ====== END FINAL HWG DESTINATION / GREEN-LIGHT PARAGRAPH / BLUE SIGNATURE PATCH ======
+
+
+
+# ====== FINAL RTL HERE-WE-GO CROSS-LINE REPAIR (2026-08-02) ======
+# Source-layout allocation can occasionally put the destination club at the
+# beginning of the next Hebrew line.  Repair only the explicit "to CLUB, HERE WE
+# GO" construction, preserving every existing paragraph separator.
+
+
+def _final_destination_pattern(alias: str) -> re.Pattern[str]:
+    escaped = re.escape(str(alias or ""))
+    # Include a normal Hebrew preposition (for example ל+בורנמות') as part of the
+    # destination that moves with the club name.
+    return re.compile(rf"(?iu)(?<![א-ת])(?:[בלכמשהו][־-]?)?{escaped}(?![א-ת])")
+
+
+def _final_repair_hwg_destination_across_lines(post: Post, rendered: str) -> str:
+    source_segments, target_segment_index, source_match = _final_hwg_source_parts(post)
+    if target_segment_index < 0 or source_match is None:
+        return rendered
+    source_segment = source_segments[target_segment_index]
+    source_before = source_segment[:source_match.start()].rstrip()
+    aliases = _final_destination_aliases_before_hwg(source_before)
+    if not aliases:
+        return rendered
+
+    message = str(rendered or "")
+    signature_match = re.search(r"\n\n(?=<a\s+href=)", message)
+    if signature_match:
+        before_signature = message[:signature_match.start()]
+        signature = message[signature_match.start():]
+    else:
+        before_signature, signature = message, ""
+
+    header = ""
+    body = before_signature
+    header_split = before_signature.find("\n\n")
+    if before_signature.lstrip().startswith("<b>") and header_split >= 0:
+        header = before_signature[:header_split + 2]
+        body = before_signature[header_split + 2:]
+
+    lines = body.split("\n")
+    hwg_index = next((idx for idx, line in enumerate(lines) if _FINAL_HWG_ANY_OUTPUT_RE.search(line)), -1)
+    if hwg_index < 0:
+        return message
+
+    destination_index = -1
+    destination_match: re.Match[str] | None = None
+    # Search the HERE WE GO line and the next two non-empty content lines only.
+    checked_nonempty = 0
+    for idx in range(hwg_index, len(lines)):
+        if not lines[idx].strip():
+            continue
+        checked_nonempty += 1
+        for alias in aliases:
+            candidate = _final_destination_pattern(alias).search(lines[idx])
+            if candidate:
+                destination_index = idx
+                destination_match = candidate
+                break
+        if destination_match or checked_nonempty >= 3:
+            break
+    if destination_match is None or destination_index < 0:
+        return message
+
+    destination_text = destination_match.group(0).strip()
+    token = _final_hwg_token_from_source(source_segment, source_match)
+
+    # Remove the destination from wherever source-layout allocation placed it.
+    destination_line = lines[destination_index]
+    destination_remainder = (
+        destination_line[:destination_match.start()] + destination_line[destination_match.end():]
+    )
+    destination_remainder = re.sub(r"^[\s\u200e\u200f]*[,;:]\s*", "", destination_remainder)
+    destination_remainder = re.sub(r"[ \t]{2,}", " ", destination_remainder).strip()
+
+    # Rebuild the source's first clause in correct Hebrew order: player +
+    # destination club + HERE WE GO.  Do not change the following report text.
+    hwg_core = _final_remove_hwg_from_line(lines[hwg_index], remove_placeholder=True)
+    if destination_index == hwg_index:
+        # Remove the old destination occurrence from the same line as well.
+        same_match = _final_destination_pattern(destination_text).search(hwg_core)
+        if same_match:
+            hwg_core = (hwg_core[:same_match.start()] + hwg_core[same_match.end():]).strip()
+    hwg_core = re.sub(r"[,;:!?…\.\s]+$", "", hwg_core).rstrip()
+    comma = "," if source_before.endswith(",") else ""
+    lines[hwg_index] = f"{hwg_core} {destination_text.rstrip(',;:')}" + comma + f" {token}"
+    lines[hwg_index] = re.sub(r"[ \t]{2,}", " ", lines[hwg_index]).strip()
+
+    if destination_index != hwg_index:
+        lines[destination_index] = destination_remainder
+    else:
+        # Preserve any text that followed the destination on the same translated
+        # line by placing it after the repaired first clause.
+        if destination_remainder:
+            lines[hwg_index] = lines[hwg_index] + " " + destination_remainder
+
+    # Remove empty content lines created only by moving the destination, but keep
+    # existing blank paragraph rows between genuine content lines.
+    body = "\n".join(lines)
+    body = re.sub(r"\n[ \t\u200e\u200f]+\n", "\n\n", body)
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return header + body.rstrip() + signature
+
+
+_PRE_RTL_HWG_FINAL_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _PRE_RTL_HWG_FINAL_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _final_repair_hwg_destination_across_lines(post, rendered)
+    rendered = _final_split_green_light_like_source(post, rendered)
+    return _final_force_blue_channel_signature(rendered)
+
+# ====== END FINAL RTL HERE-WE-GO CROSS-LINE REPAIR ======
+
+
+# ====== FINAL BLUE HERE-WE-GO HASHTAG PATCH (2026-08-02) ======
+# Telegram highlights hashtags in blue. Keep all existing source-position and
+# paragraph logic, and only normalize the final visible token to exactly:
+# #HERE_WE_GO
+
+_BLUE_HWG_VISIBLE_RE = re.compile(
+    r"(?iu)(?:#HERE_WE_GO?|#?HERE(?:_|\s)+WE(?:_|\s)+GO)\s*[!?.…]?"
+)
+
+
+def _final_blue_hwg_hashtag(message: Any) -> str:
+    value = str(message or "")
+    # Existing authorization logic already removes unauthorized HERE WE GO.
+    # This function changes only the surviving, genuine visible token.
+    return _BLUE_HWG_VISIBLE_RE.sub("#HERE_WE_GO", value)
+
+
+_PRE_BLUE_HWG_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _PRE_BLUE_HWG_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _final_blue_hwg_hashtag(rendered)
+
+
+_PRE_BLUE_HWG_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    return _final_blue_hwg_hashtag(_PRE_BLUE_HWG_FINALIZE_OUTGOING(message))
+
+# ====== END FINAL BLUE HERE-WE-GO HASHTAG PATCH ======
 
 if __name__ == "__main__":
     main()
