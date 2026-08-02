@@ -48022,5 +48022,372 @@ def facts_check_all_text() -> str:
 
 # ====== END USER POLYMARKET + OLD-GOOD FAST RSS RESTORE V7 ======
 
+
+# ====== USER FACTS CLEANUP / VISIBLE ALBUM BUTTONS / CROSS-SOURCE DUPLICATES V8 (2026-08-03) ======
+# Narrow requested scope:
+# - Keep the restored v7 RSS/live discovery route exactly unchanged.
+# - In every Facts source, remove square-bracket source credits when they appear
+#   as a standalone row or at the end of a sentence/paragraph.
+# - Normalize teaser openings such as "גם בפנים:" to one clean "דיווח:" label.
+# - Put Send/Delete directly under a multi-photo album by attaching the keyboard
+#   to the final media-group item (the item Telegram clients render at the bottom).
+# - Keep CentreGoals and Polymarket in the broad Facts route and enforce duplicate
+#   detection in both directions against each other and every other source.
+# Persistent files, JSON keys, RSS sources/order, feed timeouts and Gemini settings
+# are intentionally untouched.
+
+BOT_BUILD_ID = "winner-facts-cleanup-visible-album-buttons-cross-source-duplicates-2026-08-03-v8"
+
+
+def _user_v8_fact_username(value: Any) -> str:
+    raw = str(value or "").strip().lstrip("@")
+    try:
+        canonical = _facts_source_canonical(raw)
+    except Exception:
+        canonical = raw
+    return str(canonical or "").strip().lstrip("@").casefold()
+
+
+def _user_v8_fact_source_keys() -> set[str]:
+    return {
+        _user_v8_fact_username(source)
+        for source in tuple(FACTS_SOURCE_ORDER)
+        if str(source or "").strip()
+    }
+
+
+def _user_v8_is_fact_post(post: Any) -> bool:
+    return isinstance(post, Post) and _user_v8_fact_username(getattr(post, "username", "")) in _user_v8_fact_source_keys()
+
+
+_USER_V8_INVISIBLE_RE = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+_USER_V8_HTML_TAG_RE = re.compile(r"(?is)<[^>]+>")
+_USER_V8_FACT_STANDALONE_BRACKET_RE = re.compile(
+    r"(?isu)^\s*\[[^\[\]\n]{1,220}\](?:\([^\)\n]{1,500}\))?\s*[.!?…]*\s*$"
+)
+_USER_V8_FACT_INLINE_BRACKET_RE = re.compile(
+    r"(?isu)(?P<before>[.!?…])?[ \t]*\[[^\[\]\n]{1,220}\](?:\([^\)\n]{1,500}\))?[ \t]*(?P<after>[.!?…]+)"
+    r"(?=(?:[ \t]+(?:[A-Zא-ת0-9]|[🚨⚠️✅🔴🔵🟢🟡⚪]))|[ \t]*$)"
+)
+_USER_V8_FACT_LINE_END_BRACKET_RE = re.compile(
+    r"(?isu)(?P<before>[.!?…])?[ \t]*\[[^\[\]\n]{1,220}\](?:\([^\)\n]{1,500}\))?[ \t]*(?P<after>[.!?…]*)[ \t]*$"
+)
+
+
+def _user_v8_credit_replacement(match: re.Match[str]) -> str:
+    before = str(match.groupdict().get("before") or "")
+    after = str(match.groupdict().get("after") or "")
+    if before:
+        return before
+    return after[:1] if after else ""
+
+
+def _user_v8_remove_fact_square_bracket_credits(value: Any) -> str:
+    """Remove trailing [source] credits only from Facts-source output.
+
+    Handles both a standalone final row and a credit appended to the end of a
+    sentence, while preserving one sentence-ending punctuation mark and removing
+    the blank row that the deleted credit would otherwise leave behind.
+    """
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned_lines: list[str] = []
+    for raw_line in text.split("\n"):
+        visible = html.unescape(_USER_V8_HTML_TAG_RE.sub("", raw_line))
+        visible = _USER_V8_INVISIBLE_RE.sub("", visible).strip()
+        if _USER_V8_FACT_STANDALONE_BRACKET_RE.fullmatch(visible):
+            continue
+
+        line = raw_line
+        # Remove credits that finish a sentence even when another sentence follows
+        # later on the same physical line.
+        line = _USER_V8_FACT_INLINE_BRACKET_RE.sub(_user_v8_credit_replacement, line)
+        # Remove a final credit at the end of the physical line/paragraph.
+        line = _USER_V8_FACT_LINE_END_BRACKET_RE.sub(_user_v8_credit_replacement, line)
+        cleaned_lines.append(line.rstrip())
+
+    text = "\n".join(cleaned_lines)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return _user_v2_single_neto_footer(text)
+
+
+_USER_V8_TEASER_LABEL_VISUAL = r"(?:[\U0001F1E6-\U0001F1FF]{2}|[\U0001F300-\U0001FAFF]|[\u2600-\u27BF]|[\ufe0e\ufe0f\u200d])"
+_USER_V8_TEASER_OPENING_RE = re.compile(
+    rf"(?imu)^(?P<prefix>[ \t\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*(?:{_USER_V8_TEASER_LABEL_VISUAL}[ \t]*)*)"
+    r"(?:(?:דיווח|חדשות)\s*[:：\-–—]\s*)?"
+    r"(?:ו?גם\s+בפנים|עוד\s+בפנים|בפנים|ו?גם\s+בהמשך|עוד\s+בהמשך|"
+    r"בתוך\s+הדיווח|עוד\s+בדיווח|מה\s+עוד\s+בדיווח|"
+    r"also\s+inside|more\s+inside|inside|also\s+in|in\s+this\s+report|coming\s+up)"
+    r"\s*[:：\-–—]\s*"
+)
+
+
+def _user_v8_normalize_teaser_openings(value: Any) -> str:
+    text = str(value or "")
+    # Run twice so forms like "דיווח: גם בפנים:" and translated combinations
+    # collapse fully without touching words inside an ordinary sentence.
+    for _ in range(2):
+        text = _USER_V8_TEASER_OPENING_RE.sub(lambda m: m.group("prefix") + "דיווח: ", text)
+        text = _user_v4_normalize_opening_labels(text)
+    return text
+
+
+_USER_V8_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _user_v8_normalize_teaser_openings(translated)
+    quoted_translated = _user_v8_normalize_teaser_openings(quoted_translated)
+    rendered = _USER_V8_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _user_v8_normalize_teaser_openings(rendered)
+    if _user_v8_is_fact_post(post):
+        rendered = _user_v8_remove_fact_square_bracket_credits(rendered)
+    return _user_v2_single_neto_footer(rendered)
+
+
+_USER_V8_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    rendered = _USER_V8_PRE_FINALIZE_OUTGOING(message)
+    rendered = _user_v8_normalize_teaser_openings(rendered)
+    return _user_v2_single_neto_footer(rendered)
+
+
+# ---------------------------------------------------------------------------
+# Multi-photo preview buttons: attach to the last media-group item. Telegram
+# desktop/mobile render that item's reply markup below the visual album. The
+# caption remains on the first photo; only the keyboard lives on the last one.
+# ---------------------------------------------------------------------------
+def _user_v8_album_markup(token: str) -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}],
+        [{"text": "🗑️ מחק הודעה", "callback_data": f"football_delete_prepared:{token}"}],
+    ])
+
+
+def _user_v8_attach_album_buttons_once(token: str, message_id: int) -> bool:
+    markup = _user_v8_album_markup(token)
+    try:
+        response = telegram_api(
+            "editMessageReplyMarkup",
+            {
+                "chat_id": CONTROL_CHAT_ID,
+                "message_id": int(message_id),
+                "reply_markup": markup,
+            },
+            max_attempts=1,
+            timeout=max(5.0, float(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS)),
+        )
+        result = response.get("result") if isinstance(response, dict) else None
+        # A successful Bot API response is sufficient. When a Message object is
+        # returned, additionally accept the explicit markup confirmation.
+        if isinstance(result, dict):
+            returned_markup = result.get("reply_markup")
+            if returned_markup is None or returned_markup == markup:
+                return True
+        return bool(response.get("ok")) if isinstance(response, dict) else True
+    except Exception as exc:
+        if _user_v3_message_not_modified(exc):
+            return True
+        logging.debug(
+            "Album bottom-button attachment attempt failed. token=%s message_id=%s error=%s",
+            token,
+            message_id,
+            short_error(exc, 350),
+        )
+        return False
+
+
+def _user_v8_attach_album_buttons(token: str, message_ids: list[int], *, background: bool = False) -> bool:
+    ids = sorted({int(value) for value in message_ids if str(value).isdigit()})
+    if not ids or not CONTROL_CHAT_ID:
+        return False
+
+    # The final album item is the one rendered at the bottom of the group.
+    target_id = ids[-1]
+    delays = (0.22, 0.38, 0.65, 1.0) if not background else (1.0, 2.0, 4.0, 7.0)
+    for delay in delays:
+        time.sleep(delay)
+        if _user_v8_attach_album_buttons_once(token, target_id):
+            logging.info(
+                "Prepared album buttons attached to bottom media item. token=%s message_id=%s",
+                token,
+                target_id,
+            )
+            return True
+    return False
+
+
+def _user_v8_background_album_button_retry(token: str, message_ids: list[int]) -> None:
+    if _user_v8_attach_album_buttons(token, message_ids, background=True):
+        return
+    logging.error(
+        "Prepared album remained without inline buttons after all retries. token=%s message_ids=%s",
+        token,
+        message_ids,
+    )
+
+
+def _user_v2_send_prepared_album_with_buttons(
+    token: str,
+    branded: list[str],
+    message_html: str,
+) -> list[int]:
+    """Send one true album and show both controls directly below that album."""
+    if not CONTROL_CHAT_ID or not branded:
+        return []
+    caption = _finalize_outgoing_message_only(message_html)
+    if not _acceptance_caption_fits(caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    markup = _user_v8_album_markup(token)
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        branded,
+        caption,
+        reply_markup=markup if len(branded) == 1 else None,
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+    if len(ids) != len(branded):
+        _user_followup_delete_partial_control_messages(ids)
+        raise RuntimeError(f"telegram_album_count_mismatch:{len(ids)}/{len(branded)}")
+
+    _user_v6_delete_old_action_message(token)
+    if len(ids) > 1 and not _user_v8_attach_album_buttons(token, ids):
+        # Keep the complete album and continue retrying without creating a separate
+        # action message or reporting a false album-upload failure.
+        Thread(
+            target=_user_v8_background_album_button_retry,
+            args=(token, list(ids)),
+            daemon=True,
+        ).start()
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# Explicit bidirectional duplicate protection for Facts sources. This runs for:
+# 1) CentreGoals/Polymarket -> any previously sent source,
+# 2) any current source -> a previous CentreGoals/Polymarket report,
+# 3) duplicates between the Facts sources themselves.
+# Existing material-update and false-positive protections remain active.
+# ---------------------------------------------------------------------------
+def _user_v8_fact_cross_source_duplicate(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    if is_duplicate_false_positive_post(post):
+        return None
+
+    current_is_fact = _user_v8_is_fact_post(post)
+    current_signature = news_event_signature(post)
+    try:
+        recent_items = list(cleanup_recent_news_events(state))
+    except Exception:
+        recent_items = []
+
+    for item in reversed(recent_items):
+        if not isinstance(item, dict) or is_pending_memory_item(item):
+            continue
+        previous_is_fact = _user_v8_fact_username(item.get("username", "")) in _user_v8_fact_source_keys()
+        if not (current_is_fact or previous_is_fact):
+            continue
+
+        previous_signature = item.get("signature", {})
+        if not isinstance(previous_signature, dict) or not previous_signature:
+            continue
+        if current_post_has_new_named_subject(post, item):
+            continue
+
+        score = _event_similarity(current_signature, previous_signature)
+        local = local_duplicate_verdict(post, item, score) if "local_duplicate_verdict" in globals() else "BORDERLINE"
+
+        current_text = _final_source_text(post)
+        previous_text = _final_duplicate_item_text(item) if "_final_duplicate_item_text" in globals() else str(item.get("ai_text") or item.get("text") or "")
+        current_facts = _requested_material_facts(current_text) if "_requested_material_facts" in globals() else set()
+        previous_facts = _requested_material_facts(previous_text) if "_requested_material_facts" in globals() else set()
+        # A genuinely new fee, contract duration, official stage, medical or other
+        # structured fact must remain publishable even when the subject is the same.
+        if current_facts - previous_facts:
+            continue
+
+        current_entities = set(current_signature.get("entities", []))
+        previous_entities = set(previous_signature.get("entities", []))
+        current_actions = set(current_signature.get("actions", []))
+        previous_actions = set(previous_signature.get("actions", []))
+        current_tokens = set(current_signature.get("tokens", []))
+        previous_tokens = set(previous_signature.get("tokens", []))
+        entity_overlap = len(current_entities & previous_entities)
+        action_overlap = len(current_actions & previous_actions)
+        token_overlap = len(current_tokens & previous_tokens)
+        current_players, current_teams = _canonical_sets_from_signature(current_signature)
+        previous_players, previous_teams = _canonical_sets_from_signature(previous_signature)
+        canonical_overlap = len(current_players & previous_players) + len(current_teams & previous_teams)
+        family_overlap = bool(_duplicate_family_overlap(current_actions, previous_actions))
+        normalized_current = _final_duplicate_normalized_text(current_text) if "_final_duplicate_normalized_text" in globals() else current_text.casefold()
+        normalized_previous = _final_duplicate_normalized_text(previous_text) if "_final_duplicate_normalized_text" in globals() else previous_text.casefold()
+        text_ratio = SequenceMatcher(None, normalized_current, normalized_previous).ratio() if normalized_current and normalized_previous else 0.0
+
+        same_event = strict_duplicate_match(current_signature, previous_signature, score, local)
+        if not same_event:
+            same_event = bool(
+                (score >= 0.78 and entity_overlap >= 6 and action_overlap >= 2 and token_overlap >= 8)
+                or (score >= 0.72 and canonical_overlap >= 1 and family_overlap and entity_overlap >= 5 and token_overlap >= 8)
+                or (text_ratio >= 0.86 and entity_overlap >= 4 and (action_overlap >= 1 or family_overlap))
+            )
+        if not same_event:
+            continue
+
+        duplicate = dict(item)
+        duplicate.update({
+            "duplicate": True,
+            "is_duplicate": True,
+            "duplicate_score": float(score),
+            "duplicate_verdict": local,
+            "duplicate_source": str(item.get("username") or item.get("source") or "דיווח קודם"),
+            "reason": "facts_bidirectional_cross_source_duplicate",
+            "raw_reason": "facts_bidirectional_cross_source_duplicate",
+        })
+        return duplicate
+    return None
+
+
+_USER_V8_PRE_FIND_RECENT_DUPLICATE = find_recent_duplicate_event
+_USER_V8_PRE_FIND_CHANNEL_DUPLICATE = find_channel_duplicate_event
+_USER_V8_PRE_FIND_TRANSLATED_DUPLICATE = find_post_translation_duplicate_event
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = _user_v8_fact_cross_source_duplicate(post, state)
+    if candidate:
+        return candidate
+    return _USER_V8_PRE_FIND_RECENT_DUPLICATE(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = _user_v8_fact_cross_source_duplicate(post, state)
+    if candidate:
+        return candidate
+    return _USER_V8_PRE_FIND_CHANNEL_DUPLICATE(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    candidate = _user_v8_fact_cross_source_duplicate(post, state)
+    if candidate:
+        return candidate
+    return _USER_V8_PRE_FIND_TRANSLATED_DUPLICATE(post, translated_message, state)
+
+# ====== END USER FACTS CLEANUP / VISIBLE ALBUM BUTTONS / CROSS-SOURCE DUPLICATES V8 ======
+
 if __name__ == "__main__":
     main()
