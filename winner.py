@@ -46663,5 +46663,592 @@ def _user_v2_send_prepared_album_with_buttons(
 
 # ====== END USER HOTFIX V3 ======
 
+
+# ====== USER ROOT FIX V4: RELIABLE ALBUM ACTIONS / STRUCTURAL LAYOUT / CENTREGOALS NEWS (2026-08-03) ======
+# This final override fixes the root causes without changing RSS endpoints,
+# persistent filenames/keys, translation models, account state, or sent history.
+
+BOT_BUILD_ID = "winner-reliable-album-actions-structural-layout-centregoals-news-2026-08-03-v4"
+
+# ---------------------------------------------------------------------------
+# 1) RSS mirrors may insert physical line rows for visual wrapping. A physical
+#    row is not automatically an X paragraph. Collapse single prose rows and
+#    merge a blank boundary only when the preceding clause is visibly unfinished.
+#    Genuine completed paragraphs, headings and lists remain separate.
+# ---------------------------------------------------------------------------
+_USER_V4_HTML_TAG_RE = re.compile(r"(?is)<[^>]+>")
+_USER_V4_INVISIBLE_RE = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+_USER_V4_TRAILING_VISUAL_RE = re.compile(
+    r"(?s)(?:(?:[\U0001F1E6-\U0001F1FF]{2})|[\U0001F300-\U0001FAFF]|[\u2600-\u27BF]|"
+    r"[\u200d\ufe0e\ufe0f\s])+$"
+)
+
+
+def _user_v4_plain_for_boundary(value: Any) -> str:
+    probe = html.unescape(_USER_V4_HTML_TAG_RE.sub("", str(value or "")))
+    probe = _USER_V4_INVISIBLE_RE.sub("", probe).strip()
+    # Remove only trailing visual emoji/variation characters. Punctuation before
+    # an emoji remains available for the completed-sentence check.
+    probe = _USER_V4_TRAILING_VISUAL_RE.sub("", probe).rstrip()
+    return probe
+
+
+def _user_v4_is_list_line(value: Any) -> bool:
+    line = _user_v4_plain_for_boundary(value).strip()
+    if not line:
+        return False
+    try:
+        if _LIST_LINE_RE.match(line):
+            return True
+    except Exception:
+        pass
+    return bool(re.match(r"^(?:[•▪▫◦‣⁃*+-]|\d+[.)]|[A-Za-zא-ת][.)])\s+", line))
+
+
+def _user_v4_paragraph_is_complete(value: Any) -> bool:
+    probe = _user_v4_plain_for_boundary(value)
+    return bool(re.search(r"[.!?…][\"'”’״׳)\]]*$", probe))
+
+
+def _user_v4_collapse_physical_rows(block: Any) -> str:
+    lines = [line.strip() for line in str(block or "").splitlines() if line.strip()]
+    if len(lines) <= 1:
+        return lines[0] if lines else ""
+    result: list[str] = []
+    for line in lines:
+        if not result:
+            result.append(line)
+            continue
+        previous = result[-1]
+        current_is_list = _user_v4_is_list_line(line)
+        previous_is_list = _user_v4_is_list_line(previous)
+        if current_is_list or previous_is_list:
+            result.append(line)
+        else:
+            result[-1] = previous.rstrip() + " " + line.lstrip()
+    return "\n".join(result)
+
+
+def _user_v4_repair_prose_layout(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw_blocks = [part.strip() for part in re.split(r"\n{2,}", text) if part.strip()]
+    if not raw_blocks:
+        return ""
+    blocks = [_user_v4_collapse_physical_rows(block) for block in raw_blocks]
+    result: list[str] = []
+    for block in blocks:
+        if not result:
+            result.append(block)
+            continue
+        previous = result[-1].rstrip()
+        next_block = block.lstrip()
+        previous_last = previous.splitlines()[-1] if previous else ""
+        next_first = next_block.splitlines()[0] if next_block else ""
+        heading_to_list = _user_v4_plain_for_boundary(previous_last).endswith(":") and _user_v4_is_list_line(next_first)
+        keep_boundary = (
+            _user_v4_paragraph_is_complete(previous)
+            or (_user_v4_is_list_line(previous_last) and _user_v4_is_list_line(next_first))
+            or heading_to_list
+        )
+        if keep_boundary:
+            result.append(next_block)
+        else:
+            # This is a structural repair, not a word list: an unfinished clause
+            # cannot become a new paragraph merely because an RSS mirror wrapped it.
+            result[-1] = previous + " " + next_block
+    repaired = "\n\n".join(result)
+    repaired = re.sub(r"[ \t]+\n", "\n", repaired)
+    repaired = re.sub(r"\n[ \t]+", "\n", repaired)
+    repaired = re.sub(r"[ \t]{2,}", " ", repaired)
+    return re.sub(r"\n{3,}", "\n\n", repaired).strip()
+
+
+_USER_V4_PRE_RESTORE_SOURCE_LAYOUT = _restore_source_layout
+
+
+def _restore_source_layout(post: Post, translated: str, quoted: bool = False) -> str:
+    # Keep all established source allocation/HERE-WE-GO behavior, then remove
+    # only mirror-created physical wrapping and incomplete paragraph boundaries.
+    value = _USER_V4_PRE_RESTORE_SOURCE_LAYOUT(post, translated, quoted=quoted)
+    return _user_v4_repair_prose_layout(value)
+
+
+# Neutralize the previous connector-word hotfix. Every caller now uses the same
+# structural punctuation/list logic instead of an expanding hand-written word list.
+def _user_v2_join_impossible_sentence_breaks(value: Any) -> str:
+    return _user_v4_repair_prose_layout(value)
+
+
+# ---------------------------------------------------------------------------
+# 2) Normalize duplicated opening labels such as "דיווח: חדשות:" and the bad
+#    literal translation "שבירה:". This changes only a paragraph-opening label.
+# ---------------------------------------------------------------------------
+_USER_V4_LABEL_VISUAL = r"(?:[\U0001F1E6-\U0001F1FF]{2}|[\U0001F300-\U0001FAFF]|[\u2600-\u27BF]|[\ufe0e\ufe0f\u200d])"
+_USER_V4_DUPLICATE_NEWS_LABEL_RE = re.compile(
+    rf"(?imu)^(?P<prefix>[ \t\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*(?:{_USER_V4_LABEL_VISUAL}[ \t]*)*)"
+    r"(?:(?:דיווח|חדשות|שבירה|ברייקינג|BREAKING|NEWS)\s*[:：\-–—]\s*){2,}"
+)
+_USER_V4_BAD_BREAKING_LABEL_RE = re.compile(
+    rf"(?imu)^(?P<prefix>[ \t\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*(?:{_USER_V4_LABEL_VISUAL}[ \t]*)*)"
+    r"(?:שבירה|ברייקינג|BREAKING)\s*[:：\-–—]\s*"
+)
+
+
+def _user_v4_normalize_opening_labels(value: Any) -> str:
+    text = str(value or "")
+    text = _USER_V4_DUPLICATE_NEWS_LABEL_RE.sub(lambda m: m.group("prefix") + "דיווח: ", text)
+    text = _USER_V4_BAD_BREAKING_LABEL_RE.sub(lambda m: m.group("prefix") + "דיווח: ", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 3) CentreGoals never prints its source name as a writer header. Concrete FIFA,
+#    UEFA, IFAB and CAS governance news is allowed through the ordinary editorial
+#    route, while live-score, other-sport, women, promo and stale/duplicate gates
+#    remain untouched.
+# ---------------------------------------------------------------------------
+_USER_V4_CENTRE_ORG_RE = re.compile(
+    r"(?iu)(?:\bUEFA\b|\bFIFA\b|\bIFAB\b|\bCAS\b|אופ[\"״׳']?א|פיפ[\"״׳']?א|"
+    r"איפא[\"״׳']?ב|בית\s+הדין\s+לבוררות\s+בספורט|התאחדות\s+הכדורגל\s+(?:האירופית|העולמית))"
+)
+_USER_V4_CENTRE_ACTION_RE = re.compile(
+    r"(?iu)(?:threaten|lawsuit|legal\s+action|sue|court|investigat|sanction|ban|suspend|approve|reject|"
+    r"announce|decid|vote|rule|regulation|disciplin|appeal|fine|sell|stake|tournament|world\s+cup|"
+    r"מאיימ|תביע|הליך\s+משפטי|בית\s+משפט|חקיר|סנקצי|עונש|הרחק|השע|אישר|דחה|הודיע|החליט|"
+    r"הצבע|תקנון|חוק|משמעתי|ערעור|קנס|למכור|אחזק|נתחים|מונדיאל|טורניר|שינוי)"
+)
+_USER_V4_HARD_BLOCK_REASON_RE = re.compile(
+    r"(?iu)(?:duplicate|כפיל|old_post|too_old|ישן|שעתיים|women|wnba|נשים|other_sport|nba|golf|גולף|"
+    r"podcast|פודקאסט|interview|ראיון|live_match|match_update|עדכון\s+שער|תוצאה|אירוע\s+חי|"
+    r"nonfootball|finance|פיננס|translation|תרגום|caption_too_long|video|media_error)"
+)
+
+
+def _user_v4_is_centregoals_post(post: Any) -> bool:
+    return isinstance(post, Post) and str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() == CENTREGOALS_USERNAME.casefold()
+
+
+def _user_v4_centregoals_source_text(post: Post) -> str:
+    try:
+        value = _requested_source_text(post)
+    except Exception:
+        value = _post_original_text(post)
+    return html.unescape(str(value or ""))
+
+
+def _user_v4_is_centre_org_news(post: Post) -> bool:
+    text = _user_v4_centregoals_source_text(post)
+    if not (_USER_V4_CENTRE_ORG_RE.search(text) and _USER_V4_CENTRE_ACTION_RE.search(text)):
+        return False
+    if _CENTREGOALS_LIVE_MATCH_RE.search(text):
+        return False
+    for pattern_name in ("_SPECIAL_OTHER_SPORT_RE", "_SPECIAL_WOMEN_RE", "_SPECIAL_LIVE_RE"):
+        pattern = globals().get(pattern_name)
+        if pattern is not None and pattern.search(text):
+            return False
+    if any(re.search(pattern, text, re.IGNORECASE | re.UNICODE) for pattern in PODCAST_BLOCK_PATTERNS):
+        return False
+    return True
+
+
+_USER_V4_PRE_HIDE_WRITER_HEADER = should_hide_writer_header
+
+
+def should_hide_writer_header(post: Post, body: str) -> bool:
+    if _user_v4_is_centregoals_post(post):
+        return True
+    return _USER_V4_PRE_HIDE_WRITER_HEADER(post, body)
+
+
+_USER_V4_PRE_LOCAL_BLOCK_REASON = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _USER_V4_PRE_LOCAL_BLOCK_REASON(post)
+    if not reason or not _user_v4_is_centregoals_post(post) or not _user_v4_is_centre_org_news(post):
+        return reason
+    # Organization news may lack a club/player entity, so release only soft
+    # relevance/entity gates. Safety, live, duplicate, age and other hard gates stay.
+    if _USER_V4_HARD_BLOCK_REASON_RE.search(str(reason or "")):
+        return reason
+    return ""
+
+
+def _user_v4_remove_centregoals_header(value: Any) -> str:
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    first_nonempty = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if first_nonempty is None:
+        return ""
+    probe = html.unescape(_USER_V4_HTML_TAG_RE.sub("", lines[first_nonempty]))
+    probe = _USER_V4_INVISIBLE_RE.sub("", probe)
+    probe = re.sub(r"\s+", " ", probe).strip()
+    if re.fullmatch(r"(?iu)מטרות\s+מרכזיות\s*:", probe):
+        del lines[first_nonempty]
+        while first_nonempty < len(lines) and not lines[first_nonempty].strip():
+            del lines[first_nonempty]
+    return "\n".join(lines).strip()
+
+
+# ---------------------------------------------------------------------------
+# 4) Telegram's sendMediaGroup method has no reply_markup parameter. Editing an
+#    album item's markup is client/server dependent and proved invisible here.
+#    The reliable route is one real album plus one compact action message directly
+#    replying to it, containing both Send and Delete. Deleting removes the album
+#    and the action message together; sending copies only the album to main.
+# ---------------------------------------------------------------------------
+CONTROL_PREPARED_ACTION_CACHE: dict[str, int] = {}
+
+
+def _user_v4_album_action_markup(token: str) -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}],
+        [{"text": "🗑️ מחק הודעה", "callback_data": f"football_delete_prepared:{token}"}],
+    ])
+
+
+def _user_v4_send_album_action_message(token: str, album_message_id: int) -> int:
+    old_id = CONTROL_PREPARED_ACTION_CACHE.get(token)
+    if old_id:
+        try:
+            telegram_api(
+                "deleteMessage",
+                {"chat_id": CONTROL_CHAT_ID, "message_id": int(old_id)},
+                max_attempts=1,
+                timeout=max(2.0, TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS),
+            )
+        except Exception:
+            pass
+    response = telegram_api(
+        "sendMessage",
+        {
+            "chat_id": CONTROL_CHAT_ID,
+            "text": "פעולות לדיווח:",
+            "reply_to_message_id": int(album_message_id),
+            "allow_sending_without_reply": True,
+            "reply_markup": _user_v4_album_action_markup(token),
+            "disable_web_page_preview": True,
+        },
+        max_attempts=max(3, HTTP_RETRIES),
+        timeout=max(8.0, REQUEST_TIMEOUT_SECONDS),
+    )
+    ids = _telegram_result_message_ids(response)
+    if not ids:
+        raise RuntimeError("Telegram returned no action-message ID for prepared album")
+    action_id = int(ids[0])
+    CONTROL_PREPARED_ACTION_CACHE[token] = action_id
+    return action_id
+
+
+def _user_v2_send_prepared_album_with_buttons(token: str, branded: list[str], message_html: str) -> list[int]:
+    if not CONTROL_CHAT_ID or not branded:
+        return []
+    caption = _finalize_outgoing_message_only(message_html)
+    if not _acceptance_caption_fits(caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    # One true Telegram album. Do not attempt the unreliable post-upload markup edit.
+    response = _channel_send_photo_set_to_chat(str(CONTROL_CHAT_ID), branded, caption, reply_markup=None)
+    ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+    if len(ids) != len(branded):
+        _user_followup_delete_partial_control_messages(ids)
+        raise RuntimeError(f"telegram_album_count_mismatch:{len(ids)}/{len(branded)}")
+
+    try:
+        _user_v4_send_album_action_message(token, ids[0])
+    except Exception:
+        # A prepared album without its required actions is not left orphaned.
+        _user_followup_delete_partial_control_messages(ids)
+        raise
+    return ids
+
+
+def _user_v4_message_has_album_actions(message: Any, token: str) -> bool:
+    markup = message.get("reply_markup", {}) if isinstance(message, dict) else {}
+    rows = markup.get("inline_keyboard", []) if isinstance(markup, dict) else []
+    callbacks = {
+        str(button.get("callback_data") or "")
+        for row in rows if isinstance(row, list)
+        for button in row if isinstance(button, dict)
+    }
+    return f"football_delete_prepared:{token}" in callbacks
+
+
+def _user_v4_prepared_media_ids(token: str) -> list[int]:
+    values: list[Any] = list(CONTROL_TELEGRAM_MEDIA_CACHE.get(token, []) or [])
+    try:
+        item = _restore_prepared_send(token)
+    except Exception:
+        item = None
+    if isinstance(item, dict):
+        values.extend(list(item.get("control_media_message_ids", []) or []))
+    return sorted({int(value) for value in values if str(value).isdigit()})
+
+
+def _user_v4_delete_prepared_album(token: str, action_message: dict[str, Any]) -> None:
+    chat_id = str((action_message.get("chat", {}) or {}).get("id", CONTROL_CHAT_ID))
+    ids = _user_v4_prepared_media_ids(token)
+    try:
+        action_id = int(action_message.get("message_id"))
+    except Exception:
+        action_id = 0
+    if action_id:
+        ids.append(action_id)
+    cached_action = CONTROL_PREPARED_ACTION_CACHE.pop(token, None)
+    if cached_action:
+        ids.append(int(cached_action))
+    for message_id in sorted(set(ids), reverse=True):
+        try:
+            telegram_api(
+                "deleteMessage",
+                {"chat_id": chat_id, "message_id": int(message_id)},
+                max_attempts=1,
+                timeout=max(2.0, TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS),
+            )
+        except Exception as exc:
+            logging.debug("Prepared album delete failed for message %s: %s", message_id, exc)
+    CONTROL_TELEGRAM_MEDIA_CACHE.pop(token, None)
+    try:
+        _save_prepared_media_ids(token, [])
+    except Exception:
+        pass
+
+
+_USER_V4_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "") if callback else ""
+    message = callback.get("message", {}) or {}
+    callback_id = str(callback.get("id", "") or "")
+
+    if data.startswith("football_delete_prepared:"):
+        token = data.split(":", 1)[1].strip()
+        if callback_id:
+            answer_control_callback(callback_id, "מוחק את הדיווח והאלבום")
+        _user_v4_delete_prepared_album(token, message)
+        return
+
+    if data.startswith("football_send_test:"):
+        token = data.split(":", 1)[1].strip()
+        if _user_v4_message_has_album_actions(message, token):
+            if callback_id:
+                answer_control_callback(callback_id, "שולח לערוץ נטו ספורט")
+
+            def _send_album_and_update_action() -> None:
+                try:
+                    result_text = send_prepared_control_post_to_main(token)
+                    success = "נכשל" not in str(result_text or "") and "לא ניתן" not in str(result_text or "")
+                except Exception as exc:
+                    logging.warning("Prepared album send button failed: %s", exc)
+                    result_text = "⛔ השליחה לערוץ נטו ספורט נכשלה:\n" + short_error(exc, 700)
+                    success = False
+                try:
+                    telegram_api(
+                        "editMessageText",
+                        {
+                            "chat_id": (message.get("chat", {}) or {}).get("id", CONTROL_CHAT_ID),
+                            "message_id": int(message.get("message_id")),
+                            "text": "✅ הדיווח נשלח לערוץ נטו ספורט." if success else str(result_text or "השליחה נכשלה"),
+                            "reply_markup": stable_reply_markup([[
+                                {"text": "🗑️ מחק הודעה", "callback_data": f"football_delete_prepared:{token}"}
+                            ]]),
+                            "disable_web_page_preview": True,
+                        },
+                        max_attempts=2,
+                        timeout=max(5.0, REQUEST_TIMEOUT_SECONDS),
+                    )
+                except Exception as exc:
+                    if not _user_v3_message_not_modified(exc):
+                        logging.debug("Updating prepared album action message failed: %s", exc)
+
+            Thread(target=_send_album_and_update_action, daemon=True).start()
+            return
+
+    return _USER_V4_PRE_PROCESS_CONTROL_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 5) Final visible cleanup: no CentreGoals header, one clean news label, all
+#    Bayer 04 forms normalized, and exactly one Neto Sport footer.
+# ---------------------------------------------------------------------------
+_USER_V4_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _user_v4_normalize_opening_labels(_user_v2_normalize_bayer(translated))
+    quoted_translated = _user_v4_normalize_opening_labels(_user_v2_normalize_bayer(quoted_translated))
+    rendered = _USER_V4_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _user_v4_remove_centregoals_header(rendered)
+    rendered = _user_v4_normalize_opening_labels(rendered)
+    rendered = _user_v2_normalize_bayer(rendered)
+    return _user_v2_single_neto_footer(rendered)
+
+
+_USER_V4_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    value = _USER_V4_PRE_FINALIZE_OUTGOING(message)
+    value = _user_v4_remove_centregoals_header(value)
+    value = _user_v4_normalize_opening_labels(value)
+    value = _user_v2_normalize_bayer(value)
+    return _user_v2_single_neto_footer(value)
+
+# ====== END USER ROOT FIX V4 ======
+
+
+# ====== USER CLARIFICATION FIX V5: CENTREGOALS GENERAL FOOTBALL STORIES (2026-08-03) ======
+# CentreGoals must not be limited to the transfer-heavy writer filter. It gets a
+# dedicated broad football-news rescue for concrete stories, while the existing
+# hard blocks (live score/match moments, polls, podcasts, other sports, women,
+# stale posts and duplicates) remain active.
+
+BOT_BUILD_ID = "winner-centregoals-general-football-stories-2026-08-03-v5"
+
+_USER_V5_CENTRE_FOOTBALL_CONTEXT_RE = re.compile(
+    r"(?iu)(?:\bfootball\b|\bsoccer\b|\bplayer\b|\bplayers\b|\bclub\b|\bclubs\b|"
+    r"\bcoach\b|\bmanager\b|\bteam\b|\bleague\b|\bchampions\s+league\b|\bworld\s+cup\b|"
+    r"\bUEFA\b|\bFIFA\b|\bIFAB\b|\bCAS\b|כדורגל|שחקן|שחקנים|מועדון|מועדונים|מאמן|"
+    r"קבוצה|ליגה|ליגת\s+האלופות|מונדיאל|אופ[\"״׳']?א|פיפ[\"״׳']?א|איפא[\"״׳']?ב)"
+)
+
+_USER_V5_CENTRE_STORY_ACTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"announce|confirm|decid|agree|reject|refus|threaten|sue|lawsuit|legal\s+action|court|"
+    r"investigat|charge|accus|ban|suspend|fine|sanction|appeal|disciplin|rule|regulation|vote|"
+    r"appoint|sack|dismiss|resign|retire|leave|depart|return|extend|renew|contract|transfer|"
+    r"bid|offer|proposal|talks|negotiat|medical|injur|surgery|operation|takeover|ownership|"
+    r"sell|buy|stake|debt|dispute|conflict|claim|complaint|agent|record|milestone|award|honou?r|"
+    r"tribute|ceremony|statue|monument|plan|project|change|launch|approve|block|delay|collapse|"
+    r"close\s+to|set\s+to|expected\s+to|will\s+sign|has\s+signed|deal|agreement|"
+    r"הודיע|אישר|החליט|הסכימ|דחה|סירב|מאיימ|תביע|הליך\s+משפטי|בית\s+משפט|חקיר|"
+    r"הואשמ|טענה|תלונה|סנקצי|עונש|הרחק|השע|קנס|ערעור|משמעתי|תקנון|חוק|הצבע|"
+    r"מונה|מינוי|פוטר|פיטור|התפטר|פרש|עזב|עוזב|יחזור|חוזר|האריך|חידש|חוזה|העברה|"
+    r"הצעה|משא\s+ומתן|שיחות|בדיקות\s+רפואיות|פציע|ניתוח|רכישה|בעלות|אחזק|חוב|"
+    r"סכסוך|מחלוקת|סוכן|שיא|ציון\s+דרך|פרס|מחווה|טקס|פסל|אנדרטה|תוכנית|פרויקט|"
+    r"שינוי|השיק|חסם|עיכוב|מתעכב|קרס|קרוב\s+ל|צפוי|יחתום|חתם|עסקה|סיכום"
+    r")"
+)
+
+_USER_V5_CENTRE_HARD_TEXT_RE = re.compile(
+    r"(?iu)(?:\blive\b|live\s+score|goal\s*!|half[- ]?time|full[- ]?time|kick[- ]?off|"
+    r"watch\s+live|stream|podcast|full\s+episode|poll|vote\s+now|who\s+wins|"
+    r"לייב|שידור\s+חי|תוצאה\s+חיה|מחצית|שריקת\s+פתיחה|צפו\s+בשידור|פודקאסט|פרק\s+מלא|"
+    r"סקר|הצביעו|מי\s+ינצח)"
+)
+
+
+def _user_v5_centregoals_general_story(post: Any) -> bool:
+    if not _user_v4_is_centregoals_post(post):
+        return False
+    text = _user_v4_centregoals_source_text(post)
+    plain = clean_for_ai_translation(html.unescape(str(text or ""))).strip()
+    if len(plain) < 55:
+        return False
+
+    # Preserve all established hard editorial exclusions.
+    if _USER_V5_CENTRE_HARD_TEXT_RE.search(plain):
+        return False
+    if _CENTREGOALS_LIVE_MATCH_RE.search(plain):
+        return False
+    if is_other_sport_post(post) or is_women_or_wnba_post(post):
+        return False
+    if is_lineup_or_teamsheet_post(post) or is_poll_or_audience_post(post):
+        return False
+    if is_live_goal_or_match_moment_post(post) or is_match_result_or_engagement_post(post):
+        return False
+    if is_match_context_noise_post(post):
+        return False
+    if is_podcast_or_longform_post(post):
+        return False
+    if _FINAL_OPINION_HYPOTHETICAL_RE.search(plain) or _FINAL_SOCIAL_TRIVIA_RE.search(plain):
+        return False
+
+    football_context = bool(
+        _USER_V5_CENTRE_FOOTBALL_CONTEXT_RE.search(plain)
+        or matches_managed_team_tier("tier1", plain)
+        or matches_managed_team_tier("tier2", plain)
+        or matches_managed_team_tier("tier3", plain)
+        or matches_managed_team_tier("national", plain)
+        or _user_v4_is_centre_org_news(post)
+    )
+    concrete_action = bool(
+        has_news_action_signal(post)
+        or _USER_V5_CENTRE_STORY_ACTION_RE.search(plain)
+        or _final_interesting_football_story(post)
+    )
+    return bool(football_context and concrete_action)
+
+
+def _user_v5_wrap_centregoals_soft_filter(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(post: Post, _previous=previous):
+        if _user_v5_centregoals_general_story(post):
+            return False
+        return _previous(post)
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+# These are relevance/quality gates, not safety gates. For a concrete CentreGoals
+# football story they must not force the post into the transfer-only writer path.
+for _user_v5_filter_name in (
+    "is_unclear_subject_news_post",
+    "is_vague_status_without_primary_context",
+    "is_media_without_report_post",
+    "is_too_short_without_strong_news_post",
+    "is_name_without_news_action_post",
+    "is_unclear_main_club_context_post",
+    "is_weak_copy_without_primary_value_post",
+    "is_writer_profile_noise_post",
+    "is_non_news_social_post",
+):
+    _user_v5_wrap_centregoals_soft_filter(_user_v5_filter_name)
+
+
+_USER_V5_PRE_IMPORTANCE_REASON = football_importance_block_reason
+
+
+def football_importance_block_reason(post: Post) -> str:
+    if _user_v5_centregoals_general_story(post):
+        return ""
+    return _USER_V5_PRE_IMPORTANCE_REASON(post)
+
+
+_USER_V5_PRE_LOCAL_BLOCK_REASON = pre_send_final_local_block_reason
+_USER_V5_HARD_REASON_RE = re.compile(
+    r"(?iu)(?:duplicate|כפיל|old_post|too_old|ישן|women|wnba|נשים|other_sport|nba|golf|גולף|"
+    r"podcast|פודקאסט|interview|ראיון|live|match_result|match_update|lineup|poll|youth|academy|"
+    r"translation|תרגום|video|media_error|medical_staff|nonfootball)"
+)
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _USER_V5_PRE_LOCAL_BLOCK_REASON(post)
+    if not reason or not _user_v5_centregoals_general_story(post):
+        return reason
+    if _USER_V5_HARD_REASON_RE.search(str(reason or "")):
+        return reason
+    return ""
+
+# ====== END USER CLARIFICATION FIX V5 ======
+
 if __name__ == "__main__":
     main()
