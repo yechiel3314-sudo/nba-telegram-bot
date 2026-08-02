@@ -44666,7 +44666,7 @@ def _channel_brand_image(source: str) -> str:
         raise RuntimeError(
             "Neto Sport logo is unavailable. Ensure neto_sport_logo.jpg and Pillow are installed."
         )
-    key = hashlib.sha256(("neto-logo-portrait-v3|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
+    key = hashlib.sha256(("neto-logo-175-v4|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
     with _CHANNEL_LOGO_CACHE_LOCK:
         cached = _CHANNEL_BRANDED_IMAGE_CACHE.get(key)
         if cached and time.time() - cached[0] < 24 * 60 * 60 and os.path.isfile(cached[1]):
@@ -44684,10 +44684,11 @@ def _channel_brand_image(source: str) -> str:
     if width < 80 or height < 80:
         raise RuntimeError("image_too_small_for_logo")
     if height > width * 1.10:
-        # Portrait images get a clearer badge while remaining relatively small.
-        logo_size = max(76, min(170, round(min(width, height) * 0.125)))
+        # Requested enlargement: at least 1.75x the previous portrait badge.
+        logo_size = max(133, min(300, round(min(width, height) * 0.219)))
     else:
-        logo_size = max(58, min(124, round(min(width, height) * 0.09)))
+        # Keep the same proportional enlargement on landscape/square images.
+        logo_size = max(102, min(220, round(min(width, height) * 0.158)))
     badge_path = _channel_logo_badge(logo_size)
     badge = Image.open(badge_path).convert("RGBA")
     margin = max(12, min(30, round(min(width, height) * 0.018)))
@@ -45401,6 +45402,236 @@ def _finalize_outgoing_message_only(message: Any) -> str:
     return _final_blue_hwg_hashtag(_PRE_BLUE_HWG_FINALIZE_OUTGOING(message))
 
 # ====== END FINAL BLUE HERE-WE-GO HASHTAG PATCH ======
+
+
+# ====== FINAL DUPLICATE HERE-WE-GO CLAUSE GUARD / LOGO 1.75X (2026-08-02) ======
+# A late layout repair could accidentally repeat the entire first clause while also
+# repeating #HERE_WE_GO.  The source authorizes only one token, so when two or more
+# appear on the same rendered line, preserve the first complete clause and any text
+# that genuinely follows the final token, while removing the duplicated middle copy.
+
+_FINAL_DUPLICATE_HWG_TOKEN_RE = re.compile(r"(?iu)#HERE_WE_GO")
+
+
+def _final_remove_duplicate_hwg_clause(message: Any) -> str:
+    value = str(message or "")
+    fixed_lines: list[str] = []
+    for line in value.split("\n"):
+        matches = list(_FINAL_DUPLICATE_HWG_TOKEN_RE.finditer(line))
+        if len(matches) < 2:
+            fixed_lines.append(line)
+            continue
+        first = matches[0]
+        last = matches[-1]
+        prefix = line[:first.start()].rstrip(" \t,;:!?.…")
+        suffix = line[last.end():]
+        # Keep exactly one blue Telegram hashtag.  Punctuation surrounding the
+        # duplicate copy is normalized without touching paragraph separators.
+        suffix = re.sub(r"^[ \t,;:!?.…]+", "", suffix)
+        rebuilt = prefix.rstrip()
+        if rebuilt:
+            rebuilt += ", " if not rebuilt.endswith((",", "-", "–", "—")) else " "
+        rebuilt += "#HERE_WE_GO"
+        if suffix:
+            rebuilt += " " + suffix.lstrip()
+        fixed_lines.append(re.sub(r"[ \t]{2,}", " ", rebuilt).strip())
+    return "\n".join(fixed_lines)
+
+
+_PRE_FINAL_HWG_DUPLICATE_GUARD_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _PRE_FINAL_HWG_DUPLICATE_GUARD_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _final_remove_duplicate_hwg_clause(rendered)
+
+
+_PRE_FINAL_HWG_DUPLICATE_GUARD_FINALIZE = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    return _final_remove_duplicate_hwg_clause(
+        _PRE_FINAL_HWG_DUPLICATE_GUARD_FINALIZE(message)
+    )
+
+# ====== END FINAL DUPLICATE HERE-WE-GO CLAUSE GUARD / LOGO 1.75X ======
+
+
+
+# ====== FINAL STABLE SINGLE-PASS HERE-WE-GO / QUIET PHOTO GUARANTEE (2026-08-02) ======
+# Restore the last stable behavior: HERE WE GO is normalized in place exactly once.
+# Do not reconstruct, move or append a second copy of the first sentence.  The quiet
+# channel must receive the original photo(s), branded when possible, together with
+# the exact final caption. RSS, filters, translation retries and persistent memory
+# are intentionally untouched.
+
+_STABLE_HWG_INVISIBLE = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*"
+_STABLE_HWG_TOKEN_RE = re.compile(
+    rf"(?iu)#?{_STABLE_HWG_INVISIBLE}HERE{_STABLE_HWG_INVISIBLE}(?:_|\s)+"
+    rf"WE{_STABLE_HWG_INVISIBLE}(?:_|\s)+GO\b{_STABLE_HWG_INVISIBLE}[!?.…]?"
+)
+
+
+def _stable_source_hwg_is_terminal(post: Post) -> bool:
+    try:
+        source_segments, index, match = _final_hwg_source_parts(post)
+        if index < 0 or match is None:
+            return False
+        tail = source_segments[index][match.end():]
+        return not bool(re.sub(r"[\s!?.…,:;\-–—]+", "", tail))
+    except Exception:
+        return False
+
+
+def _stable_clean_duplicate_hwg_line(line: str, *, source_terminal: bool) -> str:
+    value = str(line or "")
+    matches = list(_STABLE_HWG_TOKEN_RE.finditer(value))
+    if len(matches) < 2:
+        return value
+
+    # Keep the complete first clause and one hashtag.  The duplicated material
+    # between the first and last token is the late formatter's repeated clause.
+    prefix = value[:matches[0].start()].rstrip(" \t,;:!?.…")
+    suffix = value[matches[-1].end():].strip()
+    rebuilt = prefix
+    if rebuilt and not rebuilt.endswith((",", "-", "–", "—")):
+        rebuilt += ","
+    if rebuilt:
+        rebuilt += " "
+    rebuilt += "#HERE_WE_GO"
+
+    # In the common Fabrizio form the source token closes the line.  Do not keep
+    # any copied suffix.  In a rare middle-of-line source form, preserve only a
+    # genuinely informative suffix, never a repeated emoji/name fragment.
+    if not source_terminal and suffix:
+        words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", suffix)
+        if len(words) >= 4 and not re.match(r"^[\s\u200e\u200f]*[🚨🍒🔴⚪️🟡🟢🔵]", suffix):
+            rebuilt += " " + suffix
+    return re.sub(r"[ \t]{2,}", " ", rebuilt).strip()
+
+
+def _stable_preclean_hwg_translation(post: Post, translated: str) -> str:
+    terminal = _stable_source_hwg_is_terminal(post)
+    return "\n".join(
+        _stable_clean_duplicate_hwg_line(line, source_terminal=terminal)
+        for line in str(translated or "").split("\n")
+    )
+
+
+def _stable_postclean_hwg_message(post: Post, rendered: str) -> str:
+    terminal = _stable_source_hwg_is_terminal(post)
+    value = "\n".join(
+        _stable_clean_duplicate_hwg_line(line, source_terminal=terminal)
+        for line in str(rendered or "").split("\n")
+    )
+    value = _final_blue_hwg_hashtag(value)
+    return _final_force_blue_channel_signature(value)
+
+
+# Use the stable chain captured immediately before the faulty cross-line clause
+# reconstruction.  It already preserves source paragraphs and puts HERE WE GO on
+# the corresponding source line.  The later reconstruction layer is bypassed.
+_STABLE_HWG_BUILD_BASE = _PRE_RTL_HWG_FINAL_BUILD_MESSAGE
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    clean_translated = _stable_preclean_hwg_translation(post, translated)
+    clean_quoted = _stable_preclean_hwg_translation(post, quoted_translated)
+    rendered = _STABLE_HWG_BUILD_BASE(
+        post,
+        clean_translated,
+        clean_quoted,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _final_split_green_light_like_source(post, rendered)
+    return _stable_postclean_hwg_message(post, rendered)
+
+
+# Bypass the later clause-reconstruction finalizers as well.  This is a message-only
+# cleanup and therefore cannot create or move a player/club phrase.
+_STABLE_HWG_FINALIZE_BASE = _PRE_USER_FINALIZE_OUTGOING_MESSAGE_ONLY
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    value = _STABLE_HWG_FINALIZE_BASE(message)
+    value = "\n".join(
+        _stable_clean_duplicate_hwg_line(line, source_terminal=True)
+        for line in str(value or "").split("\n")
+    )
+    value = _final_blue_hwg_hashtag(value)
+    return _final_force_blue_channel_signature(value)
+
+
+_STABLE_QUIET_MEDIA_FALLBACK = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    """Always put the original media in the quiet-channel prepared message.
+
+    Photos are branded and sent with the final caption.  If branding/upload fails,
+    fall back to the pre-existing media sender instead of leaving a text-only post.
+    """
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("Quiet preview exact hydration failed; using stored media: %s", exc)
+
+    if _acceptance_post_requires_video(post):
+        return _STABLE_QUIET_MEDIA_FALLBACK(post, token, message_html)
+
+    images = list(dict.fromkeys(list(getattr(post, "image_urls", []) or [])))[:MAX_IMAGES_PER_POST]
+    if not images:
+        try:
+            images = list(dict.fromkeys(selected_post_images(post)))[:MAX_IMAGES_PER_POST]
+        except Exception:
+            images = []
+    if not images or not CONTROL_CHAT_ID:
+        return _STABLE_QUIET_MEDIA_FALLBACK(post, token, message_html)
+
+    try:
+        branded = _channel_brand_images(images)
+        markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+        response = _channel_send_photo_set_to_chat(
+            str(CONTROL_CHAT_ID),
+            branded,
+            message_html,
+            reply_markup=markup if len(branded) == 1 else None,
+        )
+        ids = _telegram_result_message_ids(response)
+        if ids:
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, ids)
+            if len(branded) > 1:
+                # Telegram albums cannot carry an inline keyboard. Send only the
+                # action row, not another copy of the report text.
+                send_control_html("שלח את ההודעה המוכנה:", control_send_to_main_reply_markup(token))
+            return list(ids)
+    except Exception as exc:
+        logging.warning("Branded quiet-channel photo send failed; using original media path: %s", exc)
+
+    return _STABLE_QUIET_MEDIA_FALLBACK(post, token, message_html)
+
+# ====== END FINAL STABLE SINGLE-PASS HERE-WE-GO / QUIET PHOTO GUARANTEE ======
+
 
 if __name__ == "__main__":
     main()
