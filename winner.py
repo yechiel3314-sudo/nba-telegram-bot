@@ -44666,7 +44666,7 @@ def _channel_brand_image(source: str) -> str:
         raise RuntimeError(
             "Neto Sport logo is unavailable. Ensure neto_sport_logo.jpg and Pillow are installed."
         )
-    key = hashlib.sha256(("neto-logo-175-v4|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
+    key = hashlib.sha256(("neto-logo-uniform-7pct-v1|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
     with _CHANNEL_LOGO_CACHE_LOCK:
         cached = _CHANNEL_BRANDED_IMAGE_CACHE.get(key)
         if cached and time.time() - cached[0] < 24 * 60 * 60 and os.path.isfile(cached[1]):
@@ -44683,15 +44683,14 @@ def _channel_brand_image(source: str) -> str:
     width, height = base.size
     if width < 80 or height < 80:
         raise RuntimeError("image_too_small_for_logo")
-    if height > width * 1.10:
-        # Requested enlargement: at least 1.75x the previous portrait badge.
-        logo_size = max(133, min(300, round(min(width, height) * 0.219)))
-    else:
-        # Keep the same proportional enlargement on landscape/square images.
-        logo_size = max(102, min(220, round(min(width, height) * 0.158)))
+    # Uniform proportional logo size for every image orientation.
+    # Use the short side so square, portrait and landscape images look consistent.
+    # The fixed floor/ceiling prevent the badge from becoming invisible or oversized.
+    short_side = min(width, height)
+    logo_size = max(34, min(76, round(short_side * 0.07)))
     badge_path = _channel_logo_badge(logo_size)
     badge = Image.open(badge_path).convert("RGBA")
-    margin = max(12, min(30, round(min(width, height) * 0.018)))
+    margin = max(8, min(18, round(short_side * 0.014)))
     base.alpha_composite(badge, (margin, margin))
     base.convert("RGB").save(output, "JPEG", quality=95, optimize=True)
     with _CHANNEL_LOGO_CACHE_LOCK:
