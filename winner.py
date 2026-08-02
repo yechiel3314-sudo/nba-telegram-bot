@@ -45938,5 +45938,263 @@ def send_prepared_control_post_to_main(token: str) -> str:
 
 # ====== END FINAL AUTHORITATIVE QUIET PREVIEW / EXACT COPY / FRESH LOGO PATCH ======
 
+
+
+# ====== FINAL SMALLER LOGO / ONE PREPARED MESSAGE / COMPLETE TEXT PATCH (2026-08-02) ======
+# Narrow scope only:
+# - slightly reduce the channel logo size;
+# - keep one prepared-report message with its buttons (also for albums);
+# - normalize awkward translated lead-ins to the standard Hebrew "דיווח:";
+# - reject an obviously cut manual translation and replace it with a full-layout
+#   Google fallback. RSS, source selection, filtering and persistent files are untouched.
+
+
+def _final_normalize_news_leadins(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"(?iu)\bרק\s+בפנים\s*:", "דיווח:", text)
+    text = re.sub(r"(?iu)\bעכשיו\s+בדיווח\s*:", "דיווח:", text)
+    text = re.sub(r"(?iu)\bנכנס\s+עכשיו\s*:", "דיווח:", text)
+    return text
+
+
+# Reduce the latest oversized badge while keeping it clearly readable.
+def _channel_brand_image(source: str) -> str:
+    if not _channel_logo_enabled():
+        raise RuntimeError("Neto Sport logo/Pillow is unavailable")
+    key = hashlib.sha256(("neto-logo-balanced-v8|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
+    with _CHANNEL_LOGO_CACHE_LOCK:
+        cached = _CHANNEL_BRANDED_IMAGE_CACHE.get(key)
+        if cached and time.time() - cached[0] < 24 * 60 * 60 and os.path.isfile(cached[1]):
+            return cached[1]
+    folder = _channel_logo_cache_dir() / "photos"
+    folder.mkdir(parents=True, exist_ok=True)
+    output = folder / f"{key}.jpg"
+    if output.is_file() and output.stat().st_size > 0:
+        with _CHANNEL_LOGO_CACHE_LOCK:
+            _CHANNEL_BRANDED_IMAGE_CACHE[key] = (time.time(), str(output))
+        return str(output)
+    raw = _channel_read_image_bytes(source)
+    base = Image.open(io.BytesIO(raw)).convert("RGBA")
+    width, height = base.size
+    if width < 80 or height < 80:
+        raise RuntimeError("image_too_small_for_logo")
+    if height > width * 1.10:
+        logo_size = max(112, min(255, round(min(width, height) * 0.180)))
+    else:
+        logo_size = max(88, min(190, round(min(width, height) * 0.130)))
+    badge_path = _channel_logo_badge(logo_size)
+    if not badge_path:
+        raise RuntimeError("logo_badge_unavailable")
+    badge = Image.open(badge_path).convert("RGBA")
+    margin = max(12, min(28, round(min(width, height) * 0.018)))
+    base.alpha_composite(badge, (margin, margin))
+    base.convert("RGB").save(output, "JPEG", quality=95, optimize=True)
+    with _CHANNEL_LOGO_CACHE_LOCK:
+        _CHANNEL_BRANDED_IMAGE_CACHE[key] = (time.time(), str(output))
+    return str(output)
+
+
+_PRE_FINAL_COMPLETE_MANUAL_TRANSLATION = _manual_translation_for_preview
+
+
+def _final_translation_is_obviously_cut(source: str, translated: str) -> bool:
+    src = clean_for_ai_translation(html.unescape(str(source or ""))).strip()
+    dst = str(translated or "").strip()
+    if not src or not dst:
+        return bool(src and not dst)
+    src_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", src)
+    dst_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", dst)
+    if len(src_words) >= 28 and len(dst_words) < max(10, round(len(src_words) * 0.45)):
+        return True
+    if re.search(r"(?:\.\.\.|…|[-–—])\s*$", dst) and not re.search(r"(?:\.\.\.|…|[-–—])\s*$", src):
+        return True
+    # RSS/X truncation remnants that should never be accepted as a complete report.
+    if re.search(r"(?iu)(?:\bעוד|\bmore|\bread\s+more)\s*$", dst):
+        return True
+    return False
+
+
+def _manual_translation_for_preview(post: Post) -> tuple[str, str, str]:
+    translated, quoted, author = _PRE_FINAL_COMPLETE_MANUAL_TRANSLATION(post)
+    try:
+        source = _post_original_text(_ensure_post_original_structure(post), quoted=False)
+    except Exception:
+        source = str(getattr(post, "text", "") or "")
+    if _final_translation_is_obviously_cut(source, translated):
+        try:
+            fallback = _google_translate_preserve_full_layout(source)
+            if fallback and not _final_translation_is_obviously_cut(source, fallback):
+                translated = fallback
+        except Exception as exc:
+            logging.warning("Full-layout fallback after cut translation failed: %s", exc)
+    return (
+        _final_normalize_news_leadins(translated),
+        _final_normalize_news_leadins(quoted),
+        str(author or ""),
+    )
+
+
+_PRE_FINAL_NEWS_LEADIN_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _PRE_FINAL_NEWS_LEADIN_BUILD_MESSAGE(
+        post,
+        _final_normalize_news_leadins(translated),
+        _final_normalize_news_leadins(quoted_translated),
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _final_normalize_news_leadins(rendered)
+
+
+_PRE_FINAL_NEWS_LEADIN_FINALIZE = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    return _final_normalize_news_leadins(
+        _PRE_FINAL_NEWS_LEADIN_FINALIZE(message)
+    )
+
+
+_PRE_FINAL_NEWS_LEADIN_QUIET_CAPTION = _quiet_exact_final_caption
+
+
+def _quiet_exact_final_caption(message: Any) -> str:
+    return _final_normalize_news_leadins(
+        _PRE_FINAL_NEWS_LEADIN_QUIET_CAPTION(message)
+    )
+
+
+def _final_delete_control_messages(message_ids: list[int]) -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    for message_id in message_ids:
+        try:
+            telegram_api(
+                "deleteMessage",
+                {"chat_id": CONTROL_CHAT_ID, "message_id": int(message_id)},
+                max_attempts=1,
+                timeout=max(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS, 3.0),
+            )
+        except Exception:
+            pass
+
+
+def _final_attach_buttons_to_album(message_ids: list[int], markup: dict[str, Any]) -> bool:
+    if not CONTROL_CHAT_ID or not message_ids:
+        return False
+    # Telegram sendMediaGroup has no reply_markup field, but the markup can be
+    # attached immediately afterwards to one album message.
+    for message_id in (message_ids[0], message_ids[-1]):
+        try:
+            telegram_api(
+                "editMessageReplyMarkup",
+                {
+                    "chat_id": CONTROL_CHAT_ID,
+                    "message_id": int(message_id),
+                    "reply_markup": markup,
+                },
+                max_attempts=1,
+                timeout=max(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS, 4.0),
+            )
+            return True
+        except Exception as exc:
+            logging.debug("Could not attach buttons to album message %s: %s", message_id, exc)
+    return False
+
+
+def _final_send_album_as_report_plus_media(
+    branded: list[str],
+    caption: str,
+    markup: dict[str, Any],
+) -> list[int]:
+    """Fallback when Telegram refuses markup on a media-group message.
+
+    The first photo is the single report message and carries the buttons. Any
+    remaining photos are sent immediately afterwards without another text/button
+    message, so the operator never sees a separate button-only card.
+    """
+    if not CONTROL_CHAT_ID or not branded:
+        return []
+    ids: list[int] = []
+    first_response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        [branded[0]],
+        caption,
+        reply_markup=markup,
+    )
+    ids.extend(_telegram_result_message_ids(first_response))
+    for path in branded[1:]:
+        response = _channel_multipart_telegram_api(
+            "sendPhoto",
+            {"chat_id": str(CONTROL_CHAT_ID)},
+            [("photo", path)],
+        )
+        ids.extend(_telegram_result_message_ids(response))
+    return [int(value) for value in ids if int(value) > 0]
+
+
+# Authoritative quiet preparation: one report message with its buttons. There is
+# never a second text-only/button-only message.
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    _quiet_clear_stale_prepared_media(token)
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("Exact quiet-preview hydration failed; checking stored media: %s", exc)
+
+    final_caption = _quiet_exact_final_caption(message_html)
+    if _acceptance_post_requires_video(post):
+        ids = _STABLE_QUIET_MEDIA_FALLBACK(post, token, final_caption)
+        if ids:
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, list(ids))
+        return list(ids or [])
+
+    images = _quiet_current_photo_sources(post)
+    if not images:
+        ids = _STABLE_QUIET_MEDIA_FALLBACK(post, token, final_caption)
+        if ids:
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, list(ids))
+        return list(ids or [])
+    if not CONTROL_CHAT_ID:
+        raise RuntimeError("CONTROL_CHAT_ID is missing")
+    if not _acceptance_caption_fits(final_caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    branded = _channel_brand_images(images)
+    markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        branded,
+        final_caption,
+        reply_markup=markup if len(branded) == 1 else None,
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if int(value) > 0]
+    if not ids:
+        raise RuntimeError("Telegram did not return prepared photo message IDs")
+
+    if len(branded) > 1 and not _final_attach_buttons_to_album(ids, markup):
+        # Remove the just-created album and recreate it without a separate button card.
+        _final_delete_control_messages(ids)
+        ids = _final_send_album_as_report_plus_media(branded, final_caption, markup)
+        if not ids:
+            raise RuntimeError("לא ניתן לצרף את הכפתורים להודעת הדיווח")
+
+    CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+    _save_prepared_media_ids(token, list(ids))
+    return list(ids)
+
+# ====== END FINAL SMALLER LOGO / ONE PREPARED MESSAGE / COMPLETE TEXT PATCH ======
+
+
 if __name__ == "__main__":
     main()
