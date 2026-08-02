@@ -46527,5 +46527,141 @@ def control_loop() -> None:
 
 # ====== END USER CONSOLIDATED FIX V2 ======
 
+# ====== USER HOTFIX V3: KEEP SUCCESSFUL ALBUM WHEN TELEGRAM CONFIRMS NO CHANGE (2026-08-03) ======
+# Telegram may apply editMessageReplyMarkup and then let the HTTP response time out.
+# Repeating the same edit then returns HTTP 400 "message is not modified", which is
+# positive confirmation that the requested keyboard is already attached.  The old
+# code treated that confirmation as a total album failure and deleted the successful
+# media group.  This layer makes the keyboard step idempotent and never destroys a
+# successfully uploaded album merely because the post-upload edit response was late.
+
+BOT_BUILD_ID = "winner-album-buttons-idempotent-no-false-failure-2026-08-03-v3"
+
+
+def _user_v3_message_not_modified(exc: BaseException | str) -> bool:
+    value = str(exc or "").casefold()
+    return "message is not modified" in value or "message_not_modified" in value
+
+
+def _user_v3_attach_album_keyboard(
+    chat_id: str,
+    message_id: int,
+    caption: str,
+    markup: dict[str, Any],
+) -> bool:
+    """Attach the keyboard idempotently to the captioned album item.
+
+    A timeout is ambiguous: Telegram may already have applied the edit.  Repeating
+    the exact same edit is safe; a subsequent "message is not modified" means the
+    desired keyboard is already present and therefore counts as success.
+    """
+    payload = {
+        "chat_id": chat_id,
+        "message_id": int(message_id),
+        "reply_markup": markup,
+    }
+    timeout = max(4.0, float(TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS))
+    first_error: Exception | None = None
+
+    for attempt in range(2):
+        try:
+            telegram_api(
+                "editMessageReplyMarkup",
+                payload,
+                max_attempts=1,
+                timeout=timeout,
+            )
+            return True
+        except Exception as exc:
+            if _user_v3_message_not_modified(exc):
+                logging.info(
+                    "Album keyboard is already attached; Telegram returned message is not modified. message_id=%s",
+                    message_id,
+                )
+                return True
+            if first_error is None:
+                first_error = exc
+            # The second identical request resolves the common case where Telegram
+            # performed the first edit but its HTTP response arrived too late.
+            if attempt == 0:
+                continue
+
+    # Compatibility fallback for Bot API deployments that only accept the keyboard
+    # when the existing caption is supplied with it.  This is also idempotent.
+    try:
+        telegram_api(
+            "editMessageCaption",
+            {
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_markup": markup,
+            },
+            max_attempts=1,
+            timeout=timeout,
+        )
+        return True
+    except Exception as exc:
+        if _user_v3_message_not_modified(exc):
+            logging.info(
+                "Album caption/keyboard was already updated; treating no-change response as success. message_id=%s",
+                message_id,
+            )
+            return True
+        logging.warning(
+            "Album uploaded successfully, but inline keyboard attachment failed; album is kept. "
+            "message_id=%s first_error=%s final_error=%s",
+            message_id,
+            short_error(first_error, 350) if first_error else "",
+            short_error(exc, 350),
+        )
+        return False
+
+
+def _user_v2_send_prepared_album_with_buttons(
+    token: str,
+    branded: list[str],
+    message_html: str,
+) -> list[int]:
+    if not CONTROL_CHAT_ID or not branded:
+        return []
+    caption = _finalize_outgoing_message_only(message_html)
+    if not _acceptance_caption_fits(caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+    markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        branded,
+        caption,
+        reply_markup=markup if len(branded) == 1 else None,
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+    if len(ids) != len(branded):
+        # Only an incomplete upload is removed. A complete album is never deleted
+        # because of a later keyboard edit/timeout.
+        _user_followup_delete_partial_control_messages(ids)
+        raise RuntimeError(f"telegram_album_count_mismatch:{len(ids)}/{len(branded)}")
+
+    if len(ids) > 1:
+        attached = _user_v3_attach_album_keyboard(
+            str(CONTROL_CHAT_ID),
+            ids[0],
+            caption,
+            markup,
+        )
+        if not attached:
+            # Preserve the usable album and its IDs. Do not emit the false
+            # "album preparation failed" notice and do not delete the media.
+            logging.warning(
+                "Prepared album kept without confirmed keyboard attachment. token=%s message_ids=%s",
+                token,
+                ids,
+            )
+    return ids
+
+# ====== END USER HOTFIX V3 ======
+
 if __name__ == "__main__":
     main()
