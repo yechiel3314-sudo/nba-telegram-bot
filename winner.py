@@ -46151,5 +46151,381 @@ def process_control_update(update: dict[str, Any]) -> None:
 # ====== END USER FOLLOW-UP FIX ======
 
 
+
+# ====== USER CONSOLIDATED FIX V2: BAYER / FAST BUTTONS / TRUE ALBUM / SINGLE FOOTER / NO SENTENCE SPLITS (2026-08-03) ======
+# Final narrow override. It does not rename/reset persistent files, change RSS
+# sources, or alter existing saved settings. It only corrects final rendering,
+# control responsiveness and forced multi-photo delivery.
+
+BOT_BUILD_ID = "winner-bayer-all-forms-fast-buttons-true-album-single-footer-2026-08-03-v2"
+
+# ---------------------------------------------------------------------------
+# 1) Normalize every Bayer Leverkusen form containing 04, regardless of whether
+#    04 appears before or after Leverkusen. Final Hebrew output is always:
+#    באייר לברקוזן
+# ---------------------------------------------------------------------------
+_USER_V2_BAYER_LATIN_RE = re.compile(
+    r"(?iu)(?<![A-Za-z])(?:FC[ \t\u00a0\u200e\u200f-]+)?"
+    r"Bayer[ \t\u00a0\u200e\u200f-]*(?:0?4[ \t\u00a0\u200e\u200f-]*)?"
+    r"Leverkusen(?:[ \t\u00a0\u200e\u200f-]*0?4)?"
+    r"(?:[ \t\u00a0\u200e\u200f-]+FC)?(?![A-Za-z])"
+)
+_USER_V2_BAYER_HEBREW_RE = re.compile(
+    r"(?iu)(?<![א-ת])באייר[ \t\u00a0\u200e\u200f־-]*"
+    r"(?:0?4[ \t\u00a0\u200e\u200f־-]*)?לברקוזן"
+    r"(?:[ \t\u00a0\u200e\u200f־-]*0?4)?(?![א-ת0-9])"
+)
+_USER_V2_BAYER_HEBREW_REVERSED_RE = re.compile(
+    r"(?iu)(?<![א-ת])לברקוזן[ \t\u00a0\u200e\u200f־-]*0?4(?![א-ת0-9])"
+)
+
+TEAM_REPLACEMENTS.update({
+    "Bayer Leverkusen 04": "באייר לברקוזן",
+    "Bayer 04 Leverkusen": "באייר לברקוזן",
+    "Bayer04 Leverkusen": "באייר לברקוזן",
+    "Bayer Leverkusen04": "באייר לברקוזן",
+    "FC Bayer 04 Leverkusen": "באייר לברקוזן",
+})
+HEBREW_FINAL_FIXES.update({
+    "באייר לברקוזן 04": "באייר לברקוזן",
+    "באייר לברקוזן 4": "באייר לברקוזן",
+    "באייר 04 לברקוזן": "באייר לברקוזן",
+    "באייר 4 לברקוזן": "באייר לברקוזן",
+})
+
+
+def _user_v2_normalize_bayer(value: Any) -> str:
+    text = str(value or "")
+    text = _USER_V2_BAYER_LATIN_RE.sub("באייר לברקוזן", text)
+    text = _USER_V2_BAYER_HEBREW_RE.sub("באייר לברקוזן", text)
+    text = _USER_V2_BAYER_HEBREW_REVERSED_RE.sub("באייר לברקוזן", text)
+    # Remove an accidental second 04 left beside the already normalized name.
+    text = re.sub(
+        r"(?iu)(באייר לברקוזן)[ \t\u00a0\u200e\u200f־-]*0?4(?!\d)",
+        r"\1",
+        text,
+    )
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 2) Never leave a paragraph break after a word that cannot grammatically end a
+#    Hebrew sentence. This repairs examples such as "נגד\n\nג'יאני" and the
+#    earlier "כשהוא\n\nמשוכנע", while leaving genuine completed paragraphs intact.
+# ---------------------------------------------------------------------------
+_USER_V2_HANGING_END_RE = re.compile(
+    r"(?mu)(?P<ending>"
+    r"נגד|עם|של|אל|על|את|מול|בין|עבור|אצל|לפי|לקראת|בשל|בגלל|למען|"
+    r"באמצעות|מטעם|תחת|מעל|מתחת|בתוך|מחוץ|סביב|לצד|בנוגע|בקשר[ \t]+ל|"
+    r"כשהוא|כשהיא|כשהם|כשהן|כאשר|בעודו|בעודה|בעודם|בעודן|"
+    r"לאחר[ \t]+ש|אחרי[ \t]+ש|לפני[ \t]+ש|בזמן[ \t]+ש|ברגע[ \t]+ש|"
+    r"מכיוון[ \t]+ש|מפני[ \t]+ש|משום[ \t]+ש|למרות[ \t]+ש|בלי[ \t]+ש|"
+    r"כדי[ \t]+ש|כך[ \t]+ש|בתנאי[ \t]+ש|עד[ \t]+ש"
+    r")[ \t\u00a0\u200e\u200f]*\n(?:[ \t\u00a0\u200e\u200f]*\n)+"
+    r"[ \t\u00a0\u200e\u200f]*(?=\S)"
+)
+
+
+def _user_v2_join_impossible_sentence_breaks(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    previous = None
+    while previous != text:
+        previous = text
+        text = _USER_V2_HANGING_END_RE.sub(lambda match: match.group("ending") + " ", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 3) Strong final footer cleanup. Inspect each rendered line without damaging
+#    its HTML, remove every plain/HTML/Markdown Neto Sport footer and orphan
+#    pencil line, then append exactly one canonical linked footer.
+# ---------------------------------------------------------------------------
+_USER_V2_INVISIBLE_RE = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+_USER_V2_HTML_TAG_RE = re.compile(r"(?is)<[^>]+>")
+_USER_V2_MARKDOWN_LINK_RE = re.compile(r"(?is)\[\s*נטו\s+ספורט\s*\]\([^)]*\)")
+_USER_V2_NETO_URL_RE = re.compile(r"(?iu)\(?\s*https?://t\.me/neto_sport/?\s*\)?")
+
+
+def _user_v2_is_footer_line(line: str) -> bool:
+    probe = html.unescape(str(line or ""))
+    probe = _USER_V2_MARKDOWN_LINK_RE.sub("נטו ספורט", probe)
+    probe = _USER_V2_HTML_TAG_RE.sub("", probe)
+    probe = _USER_V2_NETO_URL_RE.sub("", probe)
+    probe = _USER_V2_INVISIBLE_RE.sub("", probe)
+    probe = re.sub(r"[ \t\u00a0]+", " ", probe).strip()
+    return bool(
+        re.fullmatch(r"(?iu)נטו\s+ספורט\s*[.。]?\s*📝?", probe)
+        or re.fullmatch(r"[.。]?\s*📝", probe)
+    )
+
+
+def _user_v2_single_neto_footer(message: Any) -> str:
+    value = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
+    kept = [line for line in value.split("\n") if not _user_v2_is_footer_line(line)]
+    value = "\n".join(kept)
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n[ \t]+", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value).strip()
+    signature = f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">נטו ספורט</a>.📝'
+    return (value + "\n\n" + signature).strip() if value else signature
+
+
+_USER_V2_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _user_v2_join_impossible_sentence_breaks(_user_v2_normalize_bayer(translated))
+    quoted_translated = _user_v2_join_impossible_sentence_breaks(_user_v2_normalize_bayer(quoted_translated))
+    rendered = _USER_V2_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _user_v2_normalize_bayer(rendered)
+    rendered = _user_v2_join_impossible_sentence_breaks(rendered)
+    return _user_v2_single_neto_footer(rendered)
+
+
+_USER_V2_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    value = _USER_V2_PRE_FINALIZE_OUTGOING(message)
+    value = _user_v2_normalize_bayer(value)
+    value = _user_v2_join_impossible_sentence_breaks(value)
+    return _user_v2_single_neto_footer(value)
+
+
+# Keep every other dynamically used footer helper on the same final behavior.
+def _final_force_blue_channel_signature(message: str) -> str:
+    return _user_v2_single_neto_footer(message)
+
+
+def normalize_neto_sport_footer(message: Any) -> str:
+    return _user_v2_single_neto_footer(message)
+
+
+# ---------------------------------------------------------------------------
+# 4) True multi-photo album for forced preparation. One sendMediaGroup call
+#    contains every photo and the full caption. Afterwards, attach the existing
+#    inline keyboard to the captioned album item via Telegram's edit API, so no
+#    photo and no action row is sent as a separate message.
+# ---------------------------------------------------------------------------
+def _user_v2_send_prepared_album_with_buttons(
+    token: str,
+    branded: list[str],
+    message_html: str,
+) -> list[int]:
+    if not CONTROL_CHAT_ID or not branded:
+        return []
+    caption = _finalize_outgoing_message_only(message_html)
+    if not _acceptance_caption_fits(caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+    markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        branded,
+        caption,
+        reply_markup=markup if len(branded) == 1 else None,
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+    if len(ids) != len(branded):
+        _user_followup_delete_partial_control_messages(ids)
+        raise RuntimeError(f"telegram_album_count_mismatch:{len(ids)}/{len(branded)}")
+
+    if len(ids) > 1:
+        # sendMediaGroup has no reply_markup parameter. Telegram's edit methods do,
+        # so attach the keyboard to the first/captioned album item immediately.
+        try:
+            telegram_api(
+                "editMessageReplyMarkup",
+                {
+                    "chat_id": CONTROL_CHAT_ID,
+                    "message_id": ids[0],
+                    "reply_markup": markup,
+                },
+                max_attempts=1,
+                timeout=max(1.2, TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS),
+            )
+        except Exception:
+            try:
+                # Some Bot API deployments accept it only together with the caption.
+                telegram_api(
+                    "editMessageCaption",
+                    {
+                        "chat_id": CONTROL_CHAT_ID,
+                        "message_id": ids[0],
+                        "caption": caption,
+                        "parse_mode": "HTML",
+                        "reply_markup": markup,
+                    },
+                    max_attempts=1,
+                    timeout=max(1.2, TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS),
+                )
+            except Exception:
+                _user_followup_delete_partial_control_messages(ids)
+                raise
+    return ids
+
+
+_USER_V2_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("Quiet preview exact hydration failed; using stored media: %s", exc)
+
+    if _acceptance_post_requires_video(post):
+        return _USER_V2_PRE_CONTROL_CANDIDATE(post, token, message_html)
+
+    images = list(dict.fromkeys(list(getattr(post, "image_urls", []) or [])))[:MAX_IMAGES_PER_POST]
+    if not images:
+        try:
+            images = list(dict.fromkeys(selected_post_images(post)))[:MAX_IMAGES_PER_POST]
+        except Exception:
+            images = []
+    if not images:
+        return _USER_V2_PRE_CONTROL_CANDIDATE(post, token, message_html)
+
+    try:
+        branded = _channel_brand_images(images)
+        if len(branded) != len(images):
+            raise RuntimeError(f"branding_count_mismatch:{len(branded)}/{len(images)}")
+        ids = _user_v2_send_prepared_album_with_buttons(token, branded, message_html)
+        CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+        _save_prepared_media_ids(token, ids)
+        return list(ids)
+    except Exception as exc:
+        logging.exception("True prepared album send failed")
+        send_control_text(
+            "⛔ הכנת אלבום התמונות נכשלה:\n" + short_error(exc, 900),
+            None,
+            control_delete_message_reply_markup(),
+        )
+        return []
+
+
+# Copy all prepared album messages together to every main channel. copyMessages
+# explicitly preserves Telegram album grouping; the old implementation copied
+# only message_ids[:1], which dropped the remaining photos.
+def _copy_control_media_to_main(token: str) -> bool:
+    message_ids = sorted({
+        int(value) for value in (CONTROL_TELEGRAM_MEDIA_CACHE.get(token, []) or [])
+        if str(value).isdigit()
+    })
+    if not message_ids or not CONTROL_CHAT_ID:
+        return False
+
+    copied_any = False
+    copied_all_chats = True
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            if len(message_ids) == 1:
+                telegram_api(
+                    "copyMessage",
+                    {
+                        "chat_id": chat_id,
+                        "from_chat_id": CONTROL_CHAT_ID,
+                        "message_id": message_ids[0],
+                    },
+                )
+            else:
+                response = telegram_api(
+                    "copyMessages",
+                    {
+                        "chat_id": chat_id,
+                        "from_chat_id": CONTROL_CHAT_ID,
+                        "message_ids": message_ids,
+                    },
+                )
+                copied_ids = _telegram_result_message_ids(response)
+                if len(copied_ids) != len(message_ids):
+                    raise RuntimeError(f"copied_album_count_mismatch:{len(copied_ids)}/{len(message_ids)}")
+            copied_any = True
+        except Exception as exc:
+            copied_all_chats = False
+            logging.warning("Copying complete prepared album to %s failed: %s", chat_id, exc)
+    return copied_any and copied_all_chats
+
+
+# ---------------------------------------------------------------------------
+# 5) Faster control buttons. Process each update immediately and persist the
+#    Telegram offset only once after the batch, instead of writing a JSON file
+#    before every click. Long polling still returns instantly when a click arrives.
+# ---------------------------------------------------------------------------
+CONTROL_POLL_SECONDS = min(float(CONTROL_POLL_SECONDS), 0.05)
+
+
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    if CONTROL_SEND_PANEL_ON_STARTUP:
+        try:
+            send_quick_control_panel(force_new=True)
+        except Exception as exc:
+            logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
+    else:
+        try:
+            ensure_control_panel_once_if_requested()
+        except Exception as exc:
+            logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+
+    while True:
+        try:
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "20")),
+                    "allowed_updates": [
+                        "callback_query",
+                        "message",
+                        "edited_message",
+                        "channel_post",
+                        "edited_channel_post",
+                    ],
+                },
+            )
+            updates = response.get("result", []) or []
+            batch_offset = offset
+            for update in updates:
+                batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                # Handle the click before any persistent disk write.
+                process_control_update(update)
+                process_control_text_update(update)
+                process_channel_post_update(update)
+            if batch_offset != offset:
+                offset = batch_offset
+                save_control_state(control_update_offset=offset)
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+                    except Exception as cleanup_exc:
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+# ====== END USER CONSOLIDATED FIX V2 ======
+
 if __name__ == "__main__":
     main()
