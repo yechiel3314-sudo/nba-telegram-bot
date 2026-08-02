@@ -47535,5 +47535,492 @@ def process_control_update(update: dict[str, Any]) -> None:
 
 # ====== END USER ALBUM-IN-PLACE / GROUPED COPY / TRAILING CREDIT FIX V6 ======
 
+
+# ====== USER POLYMARKET + OLD-GOOD FAST RSS RESTORE V7 (2026-08-03) ======
+# Narrow scope requested:
+# - @PolymarketSport is managed in the Facts hub beside CentreGoals and uses the
+#   same broad football-story route, not the transfer-only writer route.
+# - It requires at least 15 real words and hard-blocks Instagram/TikTok/X-post
+#   stories, social-media trivia, interviews, press conferences and podcasts.
+# - Reactivate the previously proven bounded RSS/live orchestration. No feed URL,
+#   feed order, timeout variable, Gemini setting, persistent filename or JSON key
+#   is changed.
+
+BOT_BUILD_ID = "winner-polymarket-centregoals-rules-old-good-rss-2026-08-03-v7"
+
+POLYMARKET_SPORT_USERNAME = "PolymarketSport"
+POLYMARKET_SPORT_DISPLAY_NAME = "פולימרקט ספורט"
+_POLYMARKET_SPORT_ALIASES = {
+    "polymarketsport", "polymarket sport", "polymarket sports",
+    "פולימרקט ספורט", "פולימרקט",
+}
+
+_USER_V7_PRE_FACTS_SOURCE_CANONICAL = _facts_source_canonical
+
+
+def _facts_source_canonical(value: Any) -> str:
+    if isinstance(value, Post):
+        raw = str(getattr(value, "username", "") or "").strip().lstrip("@")
+    else:
+        raw = str(value or "").strip().lstrip("@")
+    if raw.casefold() in _POLYMARKET_SPORT_ALIASES:
+        return POLYMARKET_SPORT_USERNAME
+    return _USER_V7_PRE_FACTS_SOURCE_CANONICAL(value)
+
+
+# Keep it immediately after CentreGoals in every Facts menu and make it enabled
+# by default. This does not add any RSS template; it only adds the X username to
+# the already-existing account scan.
+if POLYMARKET_SPORT_USERNAME not in FACTS_SOURCE_ORDER:
+    _user_v7_facts_order = list(FACTS_SOURCE_ORDER)
+    try:
+        _user_v7_insert_at = _user_v7_facts_order.index(CENTREGOALS_USERNAME) + 1
+    except ValueError:
+        _user_v7_insert_at = len(_user_v7_facts_order)
+    _user_v7_facts_order.insert(_user_v7_insert_at, POLYMARKET_SPORT_USERNAME)
+    FACTS_SOURCE_ORDER = tuple(_user_v7_facts_order)
+
+FACTS_SOURCE_LABELS[POLYMARKET_SPORT_USERNAME] = POLYMARKET_SPORT_DISPLAY_NAME
+if not any(str(value or "").strip().lstrip("@").casefold() == POLYMARKET_SPORT_USERNAME.casefold() for value in X_ACCOUNTS):
+    X_ACCOUNTS.append(POLYMARKET_SPORT_USERNAME)
+PRIORITY_X_ACCOUNTS.add(POLYMARKET_SPORT_USERNAME)
+ACCOUNT_DISPLAY_NAMES[POLYMARKET_SPORT_USERNAME] = POLYMARKET_SPORT_DISPLAY_NAME
+HANDLE_REPLACEMENTS[POLYMARKET_SPORT_USERNAME] = POLYMARKET_SPORT_DISPLAY_NAME
+SELF_QUOTE_ALIASES.setdefault(
+    POLYMARKET_SPORT_USERNAME,
+    ["Polymarket Sports", "Polymarket Sport", POLYMARKET_SPORT_DISPLAY_NAME],
+)
+if "SOURCE_PRIORITY" in globals() and isinstance(SOURCE_PRIORITY, dict):
+    SOURCE_PRIORITY[POLYMARKET_SPORT_USERNAME] = max(
+        int(SOURCE_PRIORITY.get(POLYMARKET_SPORT_USERNAME, 0) or 0),
+        int(SOURCE_PRIORITY.get(CENTREGOALS_USERNAME, 0) or 0),
+    )
+
+
+def _user_v7_is_polymarket_post(post: Any) -> bool:
+    return bool(
+        isinstance(post, Post)
+        and str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+        == POLYMARKET_SPORT_USERNAME.casefold()
+    )
+
+
+# As with CentreGoals, keep Polymarket in the Facts menus/status/toggles but do
+# not send the actual post through the special statistics-only gate. Its own
+# explicit 15-word/social/interview rules below are authoritative.
+_USER_V7_PRE_IS_FACTS_SOURCE = _is_facts_source
+
+
+def _is_facts_source(value: Any) -> bool:
+    if _user_v7_is_polymarket_post(value):
+        return False
+    return _USER_V7_PRE_IS_FACTS_SOURCE(value)
+
+
+_USER_V7_PRE_HIDE_WRITER_HEADER = should_hide_writer_header
+
+
+def should_hide_writer_header(post: Post, translated: str) -> bool:
+    if _user_v7_is_polymarket_post(post):
+        return True
+    return _USER_V7_PRE_HIDE_WRITER_HEADER(post, translated)
+
+
+_USER_V7_SOCIAL_OR_INTERVIEW_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:instagram|insta(?:gram)?|tiktok|facebook|snapchat|threads|social\s+media)\b|"
+    r"\b(?:tweet(?:ed|s|ing)?|repost(?:ed|s|ing)?|posted\s+on\s+(?:x|twitter|instagram|tiktok)|"
+    r"x\s+post|twitter\s+post|instagram\s+(?:post|story)|social\s+post)\b|"
+    r"\b(?:interview|press\s+conference|mixed\s+zone|podcast|full\s+episode|speaking\s+to|"
+    r"spoke\s+to|asked\s+about|exclusive\s+with)\b|"
+    r"אינסטגרם|טיקטוק|פייסבוק|רשת(?:ות)?\s+חברת(?:ית|יות)|ציוץ|צייץ|צייצה|צייצו|"
+    r"פוסט\s+(?:באינסטגרם|בטוויטר|ב־?X|ברשת)|סטורי|פרסם\s+ברשת|ראיון|מסיבת\s+עיתונאים|"
+    r"אזור\s+מעורב|פודקאסט|פרק\s+מלא|אמר\s+בראיון|נשאל\s+על"
+    r")"
+)
+
+_USER_V7_PREDICTION_RE = re.compile(
+    r"(?iu)(?:\b(?:prediction|predict(?:s|ed|ion)?|probabilit(?:y|ies)|chance(?:s)?|odds|"
+    r"favourite|favorite|most\s+likely|market\s+expects?|priced\s+at)\b|"
+    r"תחזית|צפוי\s+ביותר|סיכוי(?:ים)?|הסתברות|יחס(?:ים)?|פייבוריט|המועמד\s+המוביל)"
+)
+
+
+def _user_v7_polymarket_source_text(post: Post) -> str:
+    for helper_name in ("_requested_raw_post_text", "_requested_source_text", "_final_source_text"):
+        helper = globals().get(helper_name)
+        if callable(helper):
+            try:
+                value = str(helper(post) or "").strip()
+                if value:
+                    return html.unescape(value)
+            except Exception:
+                pass
+    return html.unescape(str(getattr(post, "text", "") or ""))
+
+
+def _user_v7_polymarket_countable_text(post: Post) -> str:
+    value = _user_v7_polymarket_source_text(post)
+    value = URL_RE.sub(" ", value)
+    value = re.sub(r"(?<!\w)@[A-Za-z0-9_א-ת.'׳״\-]{1,64}", " ", value)
+    value = re.sub(r"(?im)^\s*(?:source|credit|via|h/t|מקור|קרדיט)\b[^\n]*$", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _user_v7_polymarket_word_count(post: Post) -> int:
+    return int(count_regular_words(_user_v7_polymarket_countable_text(post)))
+
+
+def _user_v7_polymarket_social_or_interview(post: Post) -> bool:
+    text = _user_v7_polymarket_source_text(post)
+    if _USER_V7_SOCIAL_OR_INTERVIEW_RE.search(text):
+        return True
+    if "_FINAL_SOCIAL_TRIVIA_RE" in globals() and _FINAL_SOCIAL_TRIVIA_RE.search(text):
+        return True
+    try:
+        if is_interview_post(post):
+            return True
+    except Exception:
+        pass
+    try:
+        if is_podcast_or_longform_post(post):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _user_v7_polymarket_general_story(post: Any) -> bool:
+    if not _user_v7_is_polymarket_post(post):
+        return False
+    plain = _user_v7_polymarket_countable_text(post)
+    if _user_v7_polymarket_word_count(post) < 15:
+        return False
+    if _user_v7_polymarket_social_or_interview(post):
+        return False
+    if _CENTREGOALS_LIVE_MATCH_RE.search(plain):
+        return False
+    is_prediction = bool(_USER_V7_PREDICTION_RE.search(plain))
+    try:
+        if is_other_sport_post(post) or is_women_or_wnba_post(post):
+            return False
+        if is_lineup_or_teamsheet_post(post):
+            return False
+        # Polymarket probability/favourite reports are editorial predictions,
+        # not audience polls. Keep real "who wins?"/vote posts blocked.
+        if is_poll_or_audience_post(post) and not is_prediction:
+            return False
+        if is_live_goal_or_match_moment_post(post):
+            return False
+        if is_match_result_or_engagement_post(post) and not is_prediction:
+            return False
+        if is_match_context_noise_post(post) and not is_prediction:
+            return False
+    except Exception:
+        pass
+
+    football_context = bool(
+        _USER_V5_CENTRE_FOOTBALL_CONTEXT_RE.search(plain)
+        or matches_managed_team_tier("tier1", plain)
+        or matches_managed_team_tier("tier2", plain)
+        or matches_managed_team_tier("tier3", plain)
+        or matches_managed_team_tier("national", plain)
+        or re.search(r"(?iu)\b(?:UEFA|FIFA|IFAB|CAS)\b|אופ[\"״׳']?א|פיפ[\"״׳']?א", plain)
+    )
+    concrete_story = bool(
+        _USER_V7_PREDICTION_RE.search(plain)
+        or _USER_V5_CENTRE_STORY_ACTION_RE.search(plain)
+        or has_news_action_signal(post)
+        or _final_interesting_football_story(post)
+    )
+    return bool(football_context and concrete_story)
+
+
+def _user_v7_wrap_polymarket_soft_filter(name: str) -> None:
+    previous = globals().get(name)
+    if not callable(previous):
+        return
+
+    def wrapper(post: Post, _previous=previous):
+        if _user_v7_polymarket_general_story(post):
+            return False
+        return _previous(post)
+
+    wrapper.__name__ = name
+    globals()[name] = wrapper
+
+
+for _user_v7_filter_name in (
+    "is_unclear_subject_news_post",
+    "is_vague_status_without_primary_context",
+    "is_media_without_report_post",
+    "is_too_short_without_strong_news_post",
+    "is_name_without_news_action_post",
+    "is_unclear_main_club_context_post",
+    "is_weak_copy_without_primary_value_post",
+    "is_writer_profile_noise_post",
+    "is_non_news_social_post",
+):
+    _user_v7_wrap_polymarket_soft_filter(_user_v7_filter_name)
+
+
+_USER_V7_PRE_IMPORTANCE_BLOCK_REASON = football_importance_block_reason
+
+
+def football_importance_block_reason(post: Post) -> str:
+    if _user_v7_polymarket_general_story(post):
+        return ""
+    return _USER_V7_PRE_IMPORTANCE_BLOCK_REASON(post)
+
+
+_USER_V7_PRE_LOCAL_BLOCK_REASON = pre_send_final_local_block_reason
+_USER_V7_POLYMARKET_HARD_REASON_RE = re.compile(
+    r"(?iu)(?:duplicate|כפיל|old_post|too_old|ישן|women|wnba|נשים|other_sport|nba|golf|גולף|"
+    r"podcast|פודקאסט|interview|ראיון|social|instagram|tiktok|tweet|live|match_result|"
+    r"match_update|lineup|poll|youth|academy|translation|תרגום|video|media_error|nonfootball)"
+)
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if not _user_v7_is_polymarket_post(post):
+        return _USER_V7_PRE_LOCAL_BLOCK_REASON(post)
+
+    if _user_v7_polymarket_word_count(post) < 15:
+        return "polymarketsport_less_than_15_words"
+    if _user_v7_polymarket_social_or_interview(post):
+        return "polymarketsport_social_media_or_interview"
+    source = _user_v7_polymarket_source_text(post)
+    if _CENTREGOALS_LIVE_MATCH_RE.search(source):
+        return "polymarketsport_live_match_update"
+
+    reason = _USER_V7_PRE_LOCAL_BLOCK_REASON(post)
+    if not reason:
+        return ""
+    if _user_v7_polymarket_general_story(post) and not _USER_V7_POLYMARKET_HARD_REASON_RE.search(str(reason)):
+        return ""
+    return reason
+
+
+_USER_V7_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "polymarketsport_less_than_15_words" in raw:
+        return "פולימרקט ספורט: הפוסט מכיל פחות מ־15 מילים"
+    if "polymarketsport_social_media_or_interview" in raw:
+        return "פולימרקט ספורט: תוכן מאינסטגרם/רשת חברתית, ציוץ, ראיון או פודקאסט נחסם"
+    if "polymarketsport_live_match_update" in raw:
+        return "פולימרקט ספורט: עדכון שער, תוצאה או אירוע חי ממשחק נחסם"
+    return _USER_V7_PRE_HEBREW_BLOCK_REASON(reason)
+
+
+# Defensive final removal in case an older captured writer-layout function still
+# emitted the source title. It removes only a real first heading row.
+def _user_v7_remove_polymarket_header(value: Any) -> str:
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    first_nonempty = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first_nonempty is None:
+        return ""
+    probe = html.unescape(_USER_V4_HTML_TAG_RE.sub("", lines[first_nonempty]))
+    probe = _USER_V4_INVISIBLE_RE.sub("", probe)
+    probe = re.sub(r"\s+", " ", probe).strip()
+    if re.fullmatch(r"(?iu)פולימרקט\s+ספורט\s*:", probe):
+        del lines[first_nonempty]
+        while first_nonempty < len(lines) and not lines[first_nonempty].strip():
+            del lines[first_nonempty]
+    return "\n".join(lines).strip()
+
+
+_USER_V7_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _USER_V7_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    if _user_v7_is_polymarket_post(post):
+        rendered = _user_v7_remove_polymarket_header(rendered)
+    return rendered
+
+
+# ---------------------------------------------------------------------------
+# Restore the exact old-good bounded RSS/live route that was already present in
+# the user's known working build. RSS and direct public-X discovery run in
+# parallel; a slow mirror continues in the background and cannot hold the entire
+# account scan. Existing cached results are reused on the next cycle.
+# ---------------------------------------------------------------------------
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    started = time.perf_counter()
+
+    rss_rows = _full_speed_rss_cache_get(canonical)
+    live_rows = _full_speed_cache_get(canonical)
+    rss_future = _full_speed_start_rss(canonical)
+    live_future = None if live_rows else _full_speed_start_live(canonical)
+
+    for future, kind in ((rss_future, "rss"), (live_future, "live")):
+        if future is None or not future.done():
+            continue
+        try:
+            rows = list(future.result() or [])
+        except Exception:
+            rows = []
+        if kind == "live":
+            live_rows = rows or _full_speed_cache_get(canonical)
+        else:
+            rss_rows = rows or _full_speed_rss_cache_get(canonical)
+
+    pending = {
+        future for future in (rss_future, live_future)
+        if future is not None and not future.done()
+    }
+    deadline = time.perf_counter() + FULL_SPEED_FETCH_BUDGET_SECONDS
+    while pending and time.perf_counter() < deadline:
+        remaining = max(0.0, deadline - time.perf_counter())
+        done, still_pending = _rss_wait(
+            pending,
+            timeout=remaining,
+            return_when=_RSS_FIRST_COMPLETED,
+        )
+        if not done:
+            break
+        for future in done:
+            try:
+                rows = list(future.result() or [])
+            except Exception:
+                rows = []
+            if future is live_future:
+                live_rows = rows or _full_speed_cache_get(canonical)
+            elif future is rss_future:
+                rss_rows = rows or _full_speed_rss_cache_get(canonical)
+        pending = set(still_pending)
+        if live_rows:
+            break
+
+    if not rss_rows:
+        rss_rows = _full_speed_rss_cache_get(canonical)
+    if not live_rows:
+        live_rows = _full_speed_cache_get(canonical)
+
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rss_rows, canonical)
+    _reliable_merge_posts(merged, live_rows, canonical)
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+
+    rss_latest = _full_speed_latest_ts(rss_rows)
+    live_latest = _full_speed_latest_ts(live_rows)
+    with _FULL_SPEED_LIVE_LOCK:
+        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
+        stats.update({
+            "last_bounded_fetch_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "last_rss_rows": len(rss_rows),
+            "last_live_rows_used": len(live_rows),
+            "last_merged_rows": len(ordered),
+            "rss_latest_ts": rss_latest,
+            "live_latest_ts": live_latest,
+            "live_was_newer": bool(live_latest and live_latest > rss_latest),
+            "checked_at": time.time(),
+            "active_route": "restored_old_good_bounded_parallel",
+        })
+        _FULL_SPEED_DISCOVERY_STATS[key] = stats
+
+    if live_latest and live_latest > rss_latest:
+        gap = max(0.0, live_latest - rss_latest) if rss_latest else 0.0
+        logging.info(
+            "⚡ @%s: נמצא פוסט חי חדש יותר מה-RSS%s והוא הועבר מיד למסלול האוטומטי.",
+            canonical,
+            f" בפער של {gap:.0f} שניות" if gap else "",
+        )
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        if isinstance(post, Post):
+            try:
+                _pipeline_mark_seen(post, "automatic:restored_fast_rss_live", observed, elapsed)
+            except Exception:
+                pass
+
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    started = time.perf_counter()
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows = fetch_posts(canonical)
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        return canonical, rows
+    except Exception as exc:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        logging.warning("⚠️ שליפת פוסטים נכשלה עבור @%s: %s", canonical, short_error(exc, 500))
+        try:
+            cached = list(_stable_rss_cached_posts(canonical, limit=60) or [])
+        except Exception:
+            cached = []
+        return canonical, cached
+
+
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    """Control/latest checks use the same bounded route as automatic discovery."""
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows = list(fetch_posts(canonical) or [])
+        if not rows:
+            try:
+                rows = list(_stable_rss_cached_posts(canonical, limit=60) or [])
+            except Exception:
+                rows = []
+        return canonical, rows, None
+    except Exception as exc:
+        try:
+            cached = list(_stable_rss_cached_posts(canonical, limit=60) or [])
+        except Exception:
+            cached = []
+        if cached:
+            return canonical, cached, None
+        return canonical, [], exc
+
+
+# Keep the facts summary count dynamic now that Polymarket is a sixth source.
+_USER_V7_PRE_FACTS_CHECK_ALL_TEXT = facts_check_all_text
+
+
+def facts_check_all_text() -> str:
+    text = _USER_V7_PRE_FACTS_CHECK_ALL_TEXT()
+    text = re.sub(
+        r"סה״כ נמצאו\s+(\d+)\s+פוסטים\s+ב(?:חמשת|ששת|כל)\s+מקורות\s+העובדות\.",
+        lambda match: f"סה״כ נמצאו {match.group(1)} פוסטים ב־{len(FACTS_SOURCE_ORDER)} מקורות העובדות.",
+        text,
+    )
+    return text
+
+# ====== END USER POLYMARKET + OLD-GOOD FAST RSS RESTORE V7 ======
+
 if __name__ == "__main__":
     main()
