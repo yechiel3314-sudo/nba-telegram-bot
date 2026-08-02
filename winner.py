@@ -44620,7 +44620,7 @@ def _channel_logo_cache_dir() -> Path:
 
 
 def _channel_logo_badge(size: int) -> str:
-    size = max(40, int(size))
+    size = max(24, int(size))
     with _CHANNEL_LOGO_CACHE_LOCK:
         cached = _CHANNEL_LOGO_BADGE_CACHE.get(size)
         if cached and os.path.isfile(cached):
@@ -44666,7 +44666,7 @@ def _channel_brand_image(source: str) -> str:
         raise RuntimeError(
             "Neto Sport logo is unavailable. Ensure neto_sport_logo.jpg and Pillow are installed."
         )
-    key = hashlib.sha256(("neto-logo-uniform-7pct-v1|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
+    key = hashlib.sha256(("neto-logo-uniform-12pct-v2|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
     with _CHANNEL_LOGO_CACHE_LOCK:
         cached = _CHANNEL_BRANDED_IMAGE_CACHE.get(key)
         if cached and time.time() - cached[0] < 24 * 60 * 60 and os.path.isfile(cached[1]):
@@ -44687,7 +44687,7 @@ def _channel_brand_image(source: str) -> str:
     # Use the short side so square, portrait and landscape images look consistent.
     # The fixed floor/ceiling prevent the badge from becoming invisible or oversized.
     short_side = min(width, height)
-    logo_size = max(34, min(76, round(short_side * 0.07)))
+    logo_size = max(24, round(short_side * 0.12))
     badge_path = _channel_logo_badge(logo_size)
     badge = Image.open(badge_path).convert("RGBA")
     margin = max(8, min(18, round(short_side * 0.014)))
@@ -45630,6 +45630,525 @@ def _send_full_control_candidate(post: Post, token: str, message_html: str) -> l
     return _STABLE_QUIET_MEDIA_FALLBACK(post, token, message_html)
 
 # ====== END FINAL STABLE SINGLE-PASS HERE-WE-GO / QUIET PHOTO GUARANTEE ======
+
+
+# ====== USER FINAL FIX: EXACT PARAGRAPHS / SINGLE FOOTER / 12% LOGO / CENTREGOALS GENERAL RULES (2026-08-02) ======
+# This final layer is intentionally narrow and is loaded before main(). It keeps
+# all persistent files and existing settings intact while correcting only the
+# requested output, branding and CentreGoals routing behavior.
+
+BOT_BUILD_ID = "winner-exact-paragraphs-single-footer-logo12-centregoals-general-2026-08-02"
+
+# ---------------------------------------------------------------------------
+# 1) Keep exactly one canonical Neto Sport signature and remove the accidental
+# standalone `.📝` artifact wherever an older formatter left it in the body.
+# ---------------------------------------------------------------------------
+_USER_FINAL_INVISIBLE = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*"
+_USER_FINAL_NETO_ANCHOR_RE = re.compile(
+    rf"(?is)<a\b[^>]*href=[\"']https?://t\.me/neto_sport/?[\"'][^>]*>"
+    rf"{_USER_FINAL_INVISIBLE}\s*נטו\s+ספורט\s*{_USER_FINAL_INVISIBLE}</a>"
+    rf"[ \t{chr(0x200e)}{chr(0x200f)}{chr(0x2066)}{chr(0x2067)}{chr(0x2068)}{chr(0x2069)}]*"
+    rf"[.。]?[ \t]*📝?"
+)
+_USER_FINAL_PLAIN_NETO_LINE_RE = re.compile(
+    rf"(?im)^[ \t]*{_USER_FINAL_INVISIBLE}נטו\s+ספורט"
+    rf"(?:\s*\(https?://t\.me/neto_sport\)|\s+https?://t\.me/neto_sport)?"
+    rf"\s*[.。]?[ \t]*📝?[ \t]*{_USER_FINAL_INVISIBLE}$"
+)
+_USER_FINAL_ORPHAN_PENCIL_LINE_RE = re.compile(
+    rf"(?im)^[ \t]*{_USER_FINAL_INVISIBLE}[.。]?[ \t]*📝[ \t]*{_USER_FINAL_INVISIBLE}$"
+)
+
+
+def _user_final_single_neto_footer(message: Any) -> str:
+    value = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
+    value = _USER_FINAL_NETO_ANCHOR_RE.sub("", value)
+    value = _USER_FINAL_PLAIN_NETO_LINE_RE.sub("", value)
+    value = _USER_FINAL_ORPHAN_PENCIL_LINE_RE.sub("", value)
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n[ \t]+", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value).strip()
+    signature = f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">נטו ספורט</a>.📝'
+    return (value + "\n\n" + signature).strip() if value else signature
+
+
+# Replace both footer helpers because different automatic/manual paths use them.
+def _final_force_blue_channel_signature(message: str) -> str:
+    return _user_final_single_neto_footer(message)
+
+
+def normalize_neto_sport_footer(message: Any) -> str:
+    return _user_final_single_neto_footer(message)
+
+
+# ---------------------------------------------------------------------------
+# 2) Normalize HERE WE GO without ever consuming a newline. Preserve the source
+# punctuation and force the exact source paragraph boundary after the phrase.
+# ---------------------------------------------------------------------------
+_USER_FINAL_HSPACE = r"[ \t\u00a0\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]"
+_USER_FINAL_HWG_INVISIBLE = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]"
+_USER_FINAL_HWG_RE = re.compile(
+    rf"(?iu)#?{_USER_FINAL_HWG_INVISIBLE}*HERE{_USER_FINAL_HWG_INVISIBLE}*"
+    rf"(?:_|{_USER_FINAL_HSPACE})+WE{_USER_FINAL_HWG_INVISIBLE}*"
+    rf"(?:_|{_USER_FINAL_HSPACE})+GO\b{_USER_FINAL_HWG_INVISIBLE}*"
+    rf"(?P<punct>[!?.…]?)"
+)
+
+
+def _user_final_blue_hwg(message: Any) -> str:
+    value = str(message or "")
+
+    def replace(match: re.Match[str]) -> str:
+        return "#HERE_WE_GO" + (match.group("punct") or "")
+
+    return _USER_FINAL_HWG_RE.sub(replace, value)
+
+
+# Override the global normalizer used dynamically by the stable final chain.
+def _final_blue_hwg_hashtag(message: Any) -> str:
+    return _user_final_blue_hwg(message)
+
+
+def _user_final_hwg_source_boundary(post: Post) -> tuple[str, str] | None:
+    source = _final_corresponding_source_text(post, quoted=False)
+    match = _USER_FINAL_HWG_RE.search(source)
+    if not match:
+        return None
+    tail = source[match.end():]
+    boundary = re.match(rf"{_USER_FINAL_HSPACE}*(?P<breaks>(?:\n{_USER_FINAL_HSPACE}*)+)", tail)
+    if not boundary:
+        return None
+    newline_count = boundary.group("breaks").count("\n")
+    separator = "\n\n" if newline_count >= 2 else "\n"
+    return separator, (match.group("punct") or "")
+
+
+def _user_final_restore_hwg_boundary(post: Post, rendered: Any) -> str:
+    value = _user_final_blue_hwg(rendered)
+    source_boundary = _user_final_hwg_source_boundary(post)
+    if not source_boundary:
+        return value
+    separator, source_punctuation = source_boundary
+    match = _USER_FINAL_HWG_RE.search(value)
+    if not match:
+        return value
+
+    # If translation dropped the original !/?/., restore only that punctuation.
+    current_punctuation = match.group("punct") or ""
+    token = "#HERE_WE_GO" + (current_punctuation or source_punctuation)
+    before = value[:match.start()]
+    after = value[match.end():]
+
+    # Replace only whitespace immediately after HERE WE GO. Horizontal spaces
+    # must never absorb or replace the next source paragraph.
+    leading = re.match(rf"{_USER_FINAL_HSPACE}*(?P<breaks>(?:\n{_USER_FINAL_HSPACE}*)*)", after)
+    consumed = leading.end() if leading else 0
+    remainder = after[consumed:]
+    if not remainder:
+        return before + token + after
+    return before + token + separator + remainder
+
+
+_USER_FINAL_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _USER_FINAL_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _user_final_restore_hwg_boundary(post, rendered)
+    return _user_final_single_neto_footer(rendered)
+
+
+_USER_FINAL_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    value = _USER_FINAL_PRE_FINALIZE_OUTGOING(message)
+    value = _user_final_blue_hwg(value)
+    return _user_final_single_neto_footer(value)
+
+
+# ---------------------------------------------------------------------------
+# 3) CentreGoals uses the same editorial filtering route as ordinary accounts.
+# It remains available in the Facts control hub and keeps its existing saved
+# enable/disable state, but source-specific over-filtering no longer drops reports.
+# ---------------------------------------------------------------------------
+if "EXTRA_FACT_SOURCE_USERNAMES" in globals() and isinstance(EXTRA_FACT_SOURCE_USERNAMES, list):
+    EXTRA_FACT_SOURCE_USERNAMES[:] = [
+        value for value in EXTRA_FACT_SOURCE_USERNAMES
+        if str(value or "").strip().lstrip("@").casefold() != CENTREGOALS_USERNAME.casefold()
+    ]
+
+_USER_FINAL_PRE_IS_FACTS_SOURCE = _is_facts_source
+
+
+def _is_facts_source(value: Any) -> bool:
+    # Keep CentreGoals in the Facts menu when functions pass its username, but
+    # treat an actual CentreGoals post as an ordinary report for editorial rules.
+    if isinstance(value, Post):
+        username = str(getattr(value, "username", "") or "").strip().lstrip("@").casefold()
+        if username == CENTREGOALS_USERNAME.casefold():
+            return False
+    return _USER_FINAL_PRE_IS_FACTS_SOURCE(value)
+
+
+_USER_FINAL_PRE_CENTREGOALS_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    if username != CENTREGOALS_USERNAME.casefold():
+        return _USER_FINAL_PRE_CENTREGOALS_BLOCK(post)
+
+    # Run the complete current ordinary-account rule chain. The temporary name
+    # only disables CentreGoals/facts-source special gates; it does not alter the
+    # post text, media, timestamp, link, duplicate identity or persistent memory.
+    original_username = post.username
+    try:
+        post.username = "__centregoals_regular_report__"
+        return _USER_FINAL_PRE_CENTREGOALS_BLOCK(post)
+    finally:
+        post.username = original_username
+
+
+# ---------------------------------------------------------------------------
+# 4) Every photo must be branded. Retry branding, verify one output per input,
+# and never fall back to sending an original unbranded photo in the quiet channel.
+# ---------------------------------------------------------------------------
+_USER_FINAL_PRE_BRAND_IMAGES = _channel_brand_images
+
+
+def _channel_brand_images(images: list[str]) -> list[str]:
+    sources = list(dict.fromkeys(str(value) for value in (images or []) if str(value).strip()))
+    if not sources:
+        return []
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            branded = _USER_FINAL_PRE_BRAND_IMAGES(sources)
+            if len(branded) != len(sources):
+                raise RuntimeError(f"branding_count_mismatch:{len(branded)}/{len(sources)}")
+            missing = [path for path in branded if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0]
+            if missing:
+                raise RuntimeError("branded_file_missing")
+            return branded
+        except Exception as exc:
+            last_error = exc
+            logging.warning("Photo branding attempt %s/3 failed: %s", attempt, short_error(exc, 500))
+            if attempt < 3:
+                time.sleep(0.35 * attempt)
+    raise RuntimeError("Every photo requires the 12% Neto Sport logo: " + short_error(last_error, 700))
+
+
+_USER_FINAL_CONTROL_MEDIA_FALLBACK = _STABLE_QUIET_MEDIA_FALLBACK
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("Quiet preview exact hydration failed; using stored media: %s", exc)
+
+    # Videos remain on the established path because adding a still-image logo to
+    # video requires re-encoding. The 12% guarantee applies to every photo.
+    if _acceptance_post_requires_video(post):
+        return _USER_FINAL_CONTROL_MEDIA_FALLBACK(post, token, message_html)
+
+    images = list(dict.fromkeys(list(getattr(post, "image_urls", []) or [])))[:MAX_IMAGES_PER_POST]
+    if not images:
+        try:
+            images = list(dict.fromkeys(selected_post_images(post)))[:MAX_IMAGES_PER_POST]
+        except Exception:
+            images = []
+    if not images or not CONTROL_CHAT_ID:
+        return _USER_FINAL_CONTROL_MEDIA_FALLBACK(post, token, message_html)
+
+    try:
+        branded = _channel_brand_images(images)
+        markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+        response = _channel_send_photo_set_to_chat(
+            str(CONTROL_CHAT_ID),
+            branded,
+            _finalize_outgoing_message_only(message_html),
+            reply_markup=markup if len(branded) == 1 else None,
+        )
+        ids = _telegram_result_message_ids(response)
+        if not ids:
+            raise RuntimeError("Telegram returned no message IDs for branded photos")
+        CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+        _save_prepared_media_ids(token, ids)
+        if len(branded) > 1:
+            send_control_html("שלח את ההודעה המוכנה:", control_send_to_main_reply_markup(token))
+        return list(ids)
+    except Exception as exc:
+        logging.exception("Branded quiet-channel photo send failed; unbranded fallback is disabled")
+        try:
+            send_control_text(
+                "⛔ התמונה לא נשלחה משום שלא ניתן היה להבטיח לוגו נטו ספורט בגודל 12% בכל תמונה:\n"
+                + short_error(exc, 900),
+                None,
+                control_delete_message_reply_markup(),
+            )
+        except Exception:
+            pass
+        return []
+
+# ====== END USER FINAL FIX ======
+
+
+# ====== USER FOLLOW-UP FIX: BAYER NAME / NO MID-SENTENCE BREAK / SAME-MESSAGE BUTTONS (2026-08-03) ======
+# Narrow final layer. Persistent files, JSON keys, RSS sources, filters and
+# previously requested behavior remain unchanged.
+
+BOT_BUILD_ID = "winner-bayer-no-fragment-same-message-buttons-2026-08-03"
+
+# ---------------------------------------------------------------------------
+# 1) Always render Bayer 04 Leverkusen simply as Bayer Leverkusen in Hebrew.
+# ---------------------------------------------------------------------------
+TEAM_REPLACEMENTS.update(
+    {
+        "Bayer 04 Leverkusen": "באייר לברקוזן",
+        "Bayer 04": "באייר לברקוזן",
+        "Bayer 04 Leverkusen FC": "באייר לברקוזן",
+    }
+)
+HEBREW_FINAL_FIXES.update(
+    {
+        "באייר 04 לברקוזן": "באייר לברקוזן",
+        "באייר 4 לברקוזן": "באייר לברקוזן",
+    }
+)
+
+_USER_FOLLOWUP_BAYER_LATIN_RE = re.compile(
+    r"(?iu)\bBayer[ \t\u00a0\u200e\u200f-]*0?4(?:[ \t\u00a0\u200e\u200f-]+Leverkusen(?:[ \t]+FC)?)?\b"
+)
+_USER_FOLLOWUP_BAYER_HEBREW_RE = re.compile(
+    r"(?iu)באייר[ \t\u00a0\u200e\u200f-]*(?:0?4[ \t\u00a0\u200e\u200f-]*)?לברקוזן"
+)
+_USER_FOLLOWUP_BAYER_SHORT_HEBREW_RE = re.compile(
+    r"(?iu)באייר[ \t\u00a0\u200e\u200f-]+0?4\b"
+)
+
+
+def _user_followup_normalize_bayer(value: Any) -> str:
+    text = str(value or "")
+    text = _USER_FOLLOWUP_BAYER_LATIN_RE.sub("Bayer Leverkusen", text)
+    text = _USER_FOLLOWUP_BAYER_HEBREW_RE.sub("באייר לברקוזן", text)
+    text = _USER_FOLLOWUP_BAYER_SHORT_HEBREW_RE.sub("באייר לברקוזן", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 2) Repair only unmistakable paragraph breaks inserted in the middle of a
+#    Hebrew sentence, such as "כשהוא\n\nמשוכנע". Real paragraphs remain intact.
+# ---------------------------------------------------------------------------
+_USER_FOLLOWUP_HANGING_CONNECTOR_RE = re.compile(
+    r"(?mu)(?P<connector>"
+    r"כשהוא|כשהיא|כשהם|כשהן|כאשר|בעודו|בעודה|בעודם|בעודן|"
+    r"לאחר[ \t]+ש|אחרי[ \t]+ש|לפני[ \t]+ש|בזמן[ \t]+ש|ברגע[ \t]+ש|"
+    r"מכיוון[ \t]+ש|מפני[ \t]+ש|משום[ \t]+ש|למרות[ \t]+ש|בלי[ \t]+ש|"
+    r"כדי[ \t]+ש|כך[ \t]+ש|בתנאי[ \t]+ש|עד[ \t]+ש"
+    r")[ \t\u00a0\u200e\u200f]*\n[ \t\u00a0\u200e\u200f]*\n+[ \t\u00a0\u200e\u200f]*(?=\S)"
+)
+
+
+def _user_followup_join_broken_sentence(value: Any) -> str:
+    text = str(value or "")
+    return _USER_FOLLOWUP_HANGING_CONNECTOR_RE.sub(lambda match: match.group("connector") + " ", text)
+
+
+_USER_FOLLOWUP_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _user_followup_join_broken_sentence(_user_followup_normalize_bayer(translated))
+    quoted_translated = _user_followup_join_broken_sentence(_user_followup_normalize_bayer(quoted_translated))
+    rendered = _USER_FOLLOWUP_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _user_followup_normalize_bayer(rendered)
+    rendered = _user_followup_join_broken_sentence(rendered)
+    return _user_final_single_neto_footer(rendered)
+
+
+_USER_FOLLOWUP_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    value = _USER_FOLLOWUP_PRE_FINALIZE_OUTGOING(message)
+    value = _user_followup_normalize_bayer(value)
+    value = _user_followup_join_broken_sentence(value)
+    return _user_final_single_neto_footer(value)
+
+
+# ---------------------------------------------------------------------------
+# 3) Prepared reports always carry their Send/Delete buttons on the report
+#    message itself. Telegram media albums cannot have inline keyboards, so for
+#    multiple photos we send the earlier photos first and the final photo with
+#    the full caption and keyboard. No separate action-row message is created.
+# ---------------------------------------------------------------------------
+_USER_FOLLOWUP_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _user_followup_delete_partial_control_messages(message_ids: list[int]) -> None:
+    for message_id in message_ids:
+        try:
+            telegram_api(
+                "deleteMessage",
+                {"chat_id": CONTROL_CHAT_ID, "message_id": int(message_id)},
+                max_attempts=1,
+                timeout=TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            pass
+
+
+def _user_followup_send_prepared_photos_with_buttons(
+    token: str,
+    branded: list[str],
+    message_html: str,
+) -> list[int]:
+    if not CONTROL_CHAT_ID:
+        return []
+    final_caption = _finalize_outgoing_message_only(message_html)
+    if not _acceptance_caption_fits(final_caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    markup = ensure_delete_button_reply_markup(control_send_to_main_reply_markup(token))
+    sent_ids: list[int] = []
+    try:
+        for index, path in enumerate(branded):
+            is_final = index == len(branded) - 1
+            fields: dict[str, Any] = {"chat_id": str(CONTROL_CHAT_ID)}
+            if is_final:
+                fields.update(
+                    {
+                        "caption": final_caption,
+                        "parse_mode": "HTML",
+                        "reply_markup": markup,
+                    }
+                )
+            response = _channel_multipart_telegram_api("sendPhoto", fields, [("photo", path)])
+            ids = _telegram_result_message_ids(response)
+            if not ids:
+                raise RuntimeError("Telegram returned no message ID for prepared photo")
+            sent_ids.extend(int(value) for value in ids)
+        return sent_ids
+    except Exception:
+        _user_followup_delete_partial_control_messages(sent_ids)
+        raise
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("Quiet preview exact hydration failed; using stored media: %s", exc)
+
+    # Existing video/text paths already support an inline keyboard on their
+    # prepared message. Only the multi-photo album path needed replacement.
+    if _acceptance_post_requires_video(post):
+        return _USER_FOLLOWUP_PRE_CONTROL_CANDIDATE(post, token, message_html)
+
+    images = list(dict.fromkeys(list(getattr(post, "image_urls", []) or [])))[:MAX_IMAGES_PER_POST]
+    if not images:
+        try:
+            images = list(dict.fromkeys(selected_post_images(post)))[:MAX_IMAGES_PER_POST]
+        except Exception:
+            images = []
+    if not images:
+        return _USER_FOLLOWUP_PRE_CONTROL_CANDIDATE(post, token, message_html)
+
+    try:
+        branded = _channel_brand_images(images)
+        if len(branded) != len(images):
+            raise RuntimeError(f"branding_count_mismatch:{len(branded)}/{len(images)}")
+        ids = _user_followup_send_prepared_photos_with_buttons(token, branded, message_html)
+        if not ids:
+            raise RuntimeError("Prepared photo message returned no Telegram IDs")
+        CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+        _save_prepared_media_ids(token, ids)
+        return list(ids)
+    except Exception as exc:
+        logging.exception("Prepared photo send with same-message buttons failed")
+        send_control_text(
+            "⛔ הכנת התמונות עם הכפתורים מתחת לאותה הודעה נכשלה:\n" + short_error(exc, 900),
+            None,
+            control_delete_message_reply_markup(),
+        )
+        return []
+
+
+# Do not create a temporary progress message or a separate success message when
+# "Prepare report" is pressed. The callback notice is enough; the prepared post
+# itself appears with its own buttons.
+_USER_FOLLOWUP_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def _user_followup_prepare_without_status_message(token: str) -> None:
+    try:
+        prepare_history_post_with_ai(token)
+    except Exception as exc:
+        logging.exception("Prepare-report button task failed")
+        send_control_text(
+            "⛔ הכנת הדיווח נכשלה:\n" + short_error(exc, 900),
+            None,
+            control_delete_message_reply_markup(),
+        )
+    finally:
+        with _PREPARE_BUTTON_LOCK:
+            _PREPARE_BUTTON_INFLIGHT.discard(token)
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "") if callback else ""
+    if not data.startswith("football_prepare_history_ai:"):
+        return _USER_FOLLOWUP_PRE_PROCESS_CONTROL_UPDATE(update)
+
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+
+    token = data.split(":", 1)[1].strip()
+    with _PREPARE_BUTTON_LOCK:
+        already_running = token in _PREPARE_BUTTON_INFLIGHT
+        if not already_running:
+            _PREPARE_BUTTON_INFLIGHT.add(token)
+    if already_running:
+        if callback_id:
+            answer_control_callback(callback_id, "הדיווח כבר נמצא בהכנה")
+        return
+    if callback_id:
+        answer_control_callback(callback_id, "מכין את הדיווח המלא")
+    Thread(target=_user_followup_prepare_without_status_message, args=(token,), daemon=True).start()
+
+# ====== END USER FOLLOW-UP FIX ======
 
 
 if __name__ == "__main__":
