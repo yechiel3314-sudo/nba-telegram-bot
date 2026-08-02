@@ -395,7 +395,7 @@ MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = int(os.environ.get("MAX_PARALLEL_FEED_CHE
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = int(os.environ.get("MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK", "20"))
 MAX_POSTS_SENT_PER_CYCLE = int(os.environ.get("MAX_POSTS_SENT_PER_CYCLE", "4"))
 MAX_POST_AGE_SECONDS = int(os.environ.get("MAX_POST_AGE_SECONDS", str(2 * 60 * 60)))
-MIN_TRANSFER_FEE_MILLIONS_TO_SEND = float(os.environ.get("MIN_TRANSFER_FEE_MILLIONS_TO_SEND", "15"))
+MIN_TRANSFER_FEE_MILLIONS_TO_SEND = float(os.environ.get("MIN_TRANSFER_FEE_MILLIONS_TO_SEND", "8"))
 SEND_BACKLOG_FOR_NEW_ACCOUNTS = False
 NIGHT_MODE_ENABLED = False
 NIGHT_START_HOUR = 0
@@ -44666,7 +44666,7 @@ def _channel_brand_image(source: str) -> str:
         raise RuntimeError(
             "Neto Sport logo is unavailable. Ensure neto_sport_logo.jpg and Pillow are installed."
         )
-    key = hashlib.sha256(str(source).encode("utf-8", errors="ignore")).hexdigest()
+    key = hashlib.sha256(("neto-logo-portrait-v2|" + str(source)).encode("utf-8", errors="ignore")).hexdigest()
     with _CHANNEL_LOGO_CACHE_LOCK:
         cached = _CHANNEL_BRANDED_IMAGE_CACHE.get(key)
         if cached and time.time() - cached[0] < 24 * 60 * 60 and os.path.isfile(cached[1]):
@@ -44683,7 +44683,11 @@ def _channel_brand_image(source: str) -> str:
     width, height = base.size
     if width < 80 or height < 80:
         raise RuntimeError("image_too_small_for_logo")
-    logo_size = max(58, min(124, round(min(width, height) * 0.09)))
+    if height > width * 1.10:
+        # Portrait images get a slightly larger badge so the detailed logo stays readable.
+        logo_size = max(66, min(142, round(min(width, height) * 0.105)))
+    else:
+        logo_size = max(58, min(124, round(min(width, height) * 0.09)))
     badge_path = _channel_logo_badge(logo_size)
     badge = Image.open(badge_path).convert("RGBA")
     margin = max(12, min(30, round(min(width, height) * 0.018)))
@@ -44911,6 +44915,177 @@ def _channel_logo_startup_diagnostic() -> None:
 _channel_logo_startup_diagnostic()
 # ====== END FINAL WORKING CHANNEL LOGO ON IMAGES ======
 
+
+
+
+# ====== FINAL FABRIZIO / €8 / EXACT HERE-WE-GO POSITION PATCH (2026-08-02) ======
+# Narrow requested scope only:
+# 1) Fabrizio Romano is not blocked by the generic 15-word minimum.
+# 2) The normal transfer-fee floor is €8m.
+# 3) A genuine HERE WE GO remains on the exact source line and is never appended
+#    to another paragraph. Existing source line/paragraph separators are preserved.
+
+MIN_TRANSFER_FEE_MILLIONS_TO_SEND = 8.0
+
+_PRE_FINAL_FABRIZIO_WORD_GATE = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = _PRE_FINAL_FABRIZIO_WORD_GATE(post)
+    if (
+        str(getattr(post, "username", "") or "").casefold() == "fabrizioromano"
+        and "report_under_15_words" in str(reason or "")
+    ):
+        return ""
+    return reason
+
+
+_FINAL_HWG_ANY_OUTPUT_RE = re.compile(
+    r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO\b"
+)
+_FINAL_HWG_TRANSLATED_PLACEHOLDER_RE = re.compile(
+    r"(?iu)(?:הנה(?:\s+זה\s+(?:קורה|בא))?|כאן\s+אנחנו\s+הולכים|היר\s+וי\s+גו)\s*[!?.…]?"
+)
+
+
+def _final_hwg_source_parts(post: Post) -> tuple[list[str], int, re.Match[str] | None]:
+    source = _final_corresponding_source_text(post, quoted=False)
+    source = source.replace("\r\n", "\n").replace("\r", "\n")
+    segments = [part.strip() for part in re.split(r"\n+", source) if part.strip()]
+    for index, segment in enumerate(segments):
+        match = _FINAL_EXPLICIT_HWG_RE.search(segment)
+        if match:
+            return segments, index, match
+    return segments, -1, None
+
+
+def _final_hwg_token_from_source(segment: str, match: re.Match[str]) -> str:
+    raw = match.group(0)
+    token = "#HERE_WE_GO" if ("#" in raw or "_" in raw) else "HERE WE GO"
+    tail = segment[match.end():]
+    punctuation = ""
+    punctuation_match = re.match(r"\s*([!?…\.])", tail)
+    if punctuation_match:
+        punctuation = punctuation_match.group(1)
+    return token + punctuation
+
+
+def _final_remove_hwg_from_line(line: str, remove_placeholder: bool = False) -> str:
+    value = re.sub(
+        r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO\b\s*[!?.…]?",
+        "",
+        str(line or ""),
+    )
+    if remove_placeholder:
+        value = _FINAL_HWG_TRANSLATED_PLACEHOLDER_RE.sub("", value)
+    value = re.sub(r"[ \t]+([,.;:!?])", r"\1", value)
+    value = re.sub(r"([,;:])\s*([!?])", r"\2", value)
+    value = value.strip()
+    value = re.sub(r"([.!?…])[,;:]+$", r"\1", value)
+    value = re.sub(r"([.!?…])[!?…]+$", r"\1", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\s+([.!?…])$", r"\1", value)
+    return value.strip()
+
+
+def _final_insert_hwg_on_source_line(line: str, source_segment: str, match: re.Match[str]) -> str:
+    clean = _final_remove_hwg_from_line(line, remove_placeholder=True)
+    token = _final_hwg_token_from_source(source_segment, match)
+    before = source_segment[:match.start()].rstrip()
+    after = source_segment[match.end():].strip()
+    after_without_punctuation = re.sub(r"^[!?….,;:\s]+|[!?….,;:\s]+$", "", after)
+
+    # The common Fabrizio form is "..., here we go!". Keep the token at that
+    # exact point: the end of the corresponding translated source line.
+    if not after_without_punctuation:
+        source_needs_comma = before.endswith(",")
+        core = clean.rstrip()
+        # Remove only a terminal punctuation mark produced by translating HERE
+        # WE GO itself. Keep a source comma because it belongs before the phrase.
+        core = re.sub(r"[!?…\.]+$", "", core).rstrip()
+        if source_needs_comma and not core.endswith(","):
+            core = core.rstrip(";:") + ","
+        return (core + " " + token).strip()
+
+    # Phrase at the start of the source line.
+    if not re.sub(r"[\s,;:]+", "", before):
+        return (token + " " + clean.lstrip()).strip()
+
+    # Rare middle-of-line case: insert by the source word ratio without changing
+    # any newline or paragraph separator.
+    source_before_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", before)
+    source_all_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", source_segment)
+    target_matches = list(re.finditer(r"[A-Za-zÀ-ÿא-ת0-9]+", clean))
+    if not target_matches:
+        return token
+    ratio = len(source_before_words) / max(1, len(source_all_words))
+    target_index = max(0, min(len(target_matches) - 1, round(ratio * len(target_matches)) - 1))
+    insert_at = target_matches[target_index].end()
+    return (clean[:insert_at].rstrip() + " " + token + " " + clean[insert_at:].lstrip()).strip()
+
+
+def _final_relocate_hwg_in_rendered_message(post: Post, rendered: str) -> str:
+    source_segments, target_segment_index, source_match = _final_hwg_source_parts(post)
+    if target_segment_index < 0 or source_match is None:
+        return _final_remove_unauthorized_here_we_go(rendered, _final_corresponding_source_text(post, quoted=False))
+
+    message = str(rendered or "")
+    signature_match = re.search(r"\n\n(?=<a\s+href=)", message)
+    if not signature_match:
+        return message
+    before_signature = message[:signature_match.start()]
+    signature = message[signature_match.start():]
+
+    header = ""
+    body = before_signature
+    header_split = before_signature.find("\n\n")
+    if before_signature.lstrip().startswith("<b>") and header_split >= 0:
+        header = before_signature[:header_split + 2]
+        body = before_signature[header_split + 2:]
+
+    lines = body.split("\n")
+    nonempty = [index for index, line in enumerate(lines) if line.strip()]
+    if not nonempty:
+        return message
+    target_nonempty = min(target_segment_index, len(nonempty) - 1)
+    target_line_index = nonempty[target_nonempty]
+
+    # Remove any token incorrectly appended by an older formatter from every
+    # body line, then restore it only on its corresponding source line.
+    for index in nonempty:
+        lines[index] = _final_remove_hwg_from_line(
+            lines[index], remove_placeholder=(index == target_line_index)
+        )
+    source_segment = source_segments[target_segment_index]
+    lines[target_line_index] = _final_insert_hwg_on_source_line(
+        lines[target_line_index], source_segment, source_match
+    )
+    body = "\n".join(lines)
+    body = re.sub(r"[ \t]+\n", "\n", body)
+    body = re.sub(r"\n[ \t]+", "\n", body)
+    return _final_fix_punctuation_collisions_in_message(header + body + signature)
+
+
+_PRE_FINAL_EXACT_HWG_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _PRE_FINAL_EXACT_HWG_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _final_relocate_hwg_in_rendered_message(post, rendered)
+
+# ====== END FINAL FABRIZIO / €8 / EXACT HERE-WE-GO POSITION PATCH ======
 
 if __name__ == "__main__":
     main()
