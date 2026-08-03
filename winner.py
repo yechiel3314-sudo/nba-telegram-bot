@@ -46735,300 +46735,32 @@ _send_full_control_candidate = _v20_preserve_control_candidate
 #    longer suppresses direct-X/fallback checks. Direct and RSS refresh in the
 #    background every ten seconds and automatic fetch always starts both lanes.
 # ---------------------------------------------------------------------------
-V20_DISCOVERY_REFRESH_SECONDS = max(6.0, float(os.environ.get("V20_DISCOVERY_REFRESH_SECONDS", "10")))
-V20_PRIMARY_FRESH_SECONDS = max(30.0, float(os.environ.get("V20_PRIMARY_FRESH_SECONDS", "120")))
-V20_FETCH_WAIT_EMPTY_SECONDS = max(0.5, min(4.0, float(os.environ.get("V20_FETCH_WAIT_EMPTY_SECONDS", "2.5"))))
-V20_FETCH_WAIT_CACHED_SECONDS = max(0.0, min(0.8, float(os.environ.get("V20_FETCH_WAIT_CACHED_SECONDS", "0.20"))))
-FULL_SPEED_LIVE_REFRESH_SECONDS = int(round(V20_DISCOVERY_REFRESH_SECONDS))
-CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS = V20_DISCOVERY_REFRESH_SECONDS
-FULL_SPEED_FETCH_BUDGET_SECONDS = min(float(FULL_SPEED_FETCH_BUDGET_SECONDS), V20_FETCH_WAIT_EMPTY_SECONDS)
-_V20_RSS_LAST_STARTED: dict[str, float] = {}
 
 
-def _v20_latest_age(rows: Any) -> float:
-    latest = _full_speed_latest_ts(rows)
-    return max(0.0, time.time() - latest) if latest else math.inf
 
 
-def _v20_final_rss_network_fetch(
-    username: str,
-    limit: int = 30,
-    exhaustive: bool = False,
-) -> tuple[list[Post], dict[str, Any]]:
-    canonical = str(username or "").strip().lstrip("@")
-    requested = max(1, int(limit))
-    target = min(requested, 10 if exhaustive else 1)
-    templates = _final_rss_ordered_templates()
-    primary = [item for item in templates if "nitter.net" in feed_source_name(item).casefold()]
-    fallback = [item for item in templates if item not in primary]
-    diagnostics: dict[str, Any] = {
-        "errors": [], "timeouts": [], "sources": {}, "variants": [],
-        "path": [], "returned_network": 0, "freshness_aware_v20": True,
-    }
-    merged: dict[str, Post] = {}
-    variants = _stable_rss_username_variants(canonical) or [canonical]
-
-    for variant in variants:
-        diagnostics["variants"].append(variant)
-        for template in primary:
-            posts, error = _final_rss_fetch_one(variant, template)
-            if error:
-                diagnostics["errors"].append(error)
-                continue
-            before = len(merged)
-            _reliable_merge_posts(merged, posts, canonical)
-            diagnostics["sources"][f"primary:{variant}:{feed_source_name(template)}"] = len(merged) - before
-            if len(merged) > before:
-                diagnostics["path"].append("primary_rss")
-        # One exact/case variant that returned rows is enough for the primary.
-        if merged:
-            break
-
-    primary_rows = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-    primary_age = _v20_latest_age(primary_rows)
-    diagnostics["primary_latest_age_seconds"] = None if math.isinf(primary_age) else round(primary_age, 1)
-    primary_is_fresh = bool(primary_rows and primary_age <= V20_PRIMARY_FRESH_SECONDS)
-
-    # A full but stale primary feed is not healthy. Probe direct X regardless of
-    # row count, which fixes the previous early-return bug.
-    if not primary_is_fresh or len(primary_rows) < target:
-        try:
-            direct = _reliable_direct_profile_posts(canonical, limit=max(20, requested), force=True)
-            before = len(merged)
-            _reliable_merge_posts(merged, direct, canonical)
-            diagnostics["sources"]["direct_x_forced"] = len(merged) - before
-            if len(merged) > before:
-                diagnostics["path"].append("direct_x_forced")
-        except Exception as exc:
-            diagnostics["errors"].append("direct_x_forced: " + short_error(exc, 350))
-
-    current_rows = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-    current_age = _v20_latest_age(current_rows)
-    needs_fallback = len(current_rows) < target or current_age > V20_PRIMARY_FRESH_SECONDS
-    if needs_fallback and fallback:
-        for variant in variants:
-            try:
-                posts, errors, timeouts = collect_posts_from_feed_templates(variant, fallback)
-            except Exception as exc:
-                posts, errors, timeouts = [], ["fallback: " + short_error(exc, 350)], []
-            diagnostics["errors"].extend(errors or [])
-            diagnostics["timeouts"].extend(timeouts or [])
-            before = len(merged)
-            _reliable_merge_posts(merged, posts, canonical)
-            diagnostics["sources"][f"fallback:{variant}"] = len(merged) - before
-            if len(merged) > before:
-                diagnostics["path"].append("fallback_rss")
-            ordered_probe = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-            if len(ordered_probe) >= target and _v20_latest_age(ordered_probe) <= V20_PRIMARY_FRESH_SECONDS:
-                break
-
-    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-    diagnostics["returned_network"] = len(ordered)
-    diagnostics["latest_age_seconds"] = None if not ordered else round(_v20_latest_age(ordered), 1)
-    diagnostics["errors"] = list(dict.fromkeys(diagnostics["errors"]))[-12:]
-    diagnostics["timeouts"] = list(dict.fromkeys(diagnostics["timeouts"]))[-12:]
-    _final_rss_store_diagnostics(canonical, diagnostics)
-    return ordered[:requested], diagnostics
 
 
-_final_rss_network_fetch = _v20_final_rss_network_fetch
 
 
-def _v20_full_speed_rss_job(username: str) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    started = time.perf_counter()
-    try:
-        rows, diagnostics = _v20_final_rss_network_fetch(
-            canonical,
-            limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
-            exhaustive=True,
-        )
-    except Exception as exc:
-        logging.warning("V20 freshness RSS job failed for @%s: %s", canonical, short_error(exc, 400))
-        rows, diagnostics = [], {"errors": [short_error(exc, 400)], "path": ["failed"]}
-    rows = sorted([post for post in rows if isinstance(post, Post)], key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
-    key = canonical.casefold()
-    with _FULL_SPEED_RSS_LOCK:
-        if rows:
-            _FULL_SPEED_RSS_CACHE[key] = (time.time(), list(rows))
-    with _FULL_SPEED_LIVE_LOCK:
-        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
-        stats.update({
-            "last_rss_job_ms": round((time.perf_counter() - started) * 1000.0, 1),
-            "last_rss_job_rows": len(rows),
-            "last_rss_job_at": time.time(),
-            "last_rss_path": list(diagnostics.get("path") or []),
-            "last_rss_latest_age_seconds": diagnostics.get("latest_age_seconds"),
-            "active_route": "v20_freshness_aware_parallel",
-        })
-        _FULL_SPEED_DISCOVERY_STATS[key] = stats
-    if rows:
-        try:
-            _stable_rss_remember(canonical, rows)
-            _remember_control_rss_posts(canonical, rows)
-            _ten_history_save(canonical, rows)
-        except Exception as exc:
-            logging.debug("V20 discovery cache save failed for @%s: %s", canonical, short_error(exc, 250))
-        observed = time.time()
-        elapsed = time.perf_counter() - started
-        for post in rows:
-            try:
-                _pipeline_mark_seen(post, "v20:freshness_rss_direct_fallback", observed, elapsed)
-            except Exception:
-                pass
-    return rows
 
 
-_full_speed_rss_job = _v20_full_speed_rss_job
 
 
-def _v20_full_speed_start_rss(username: str):
-    canonical = str(username or "").strip().lstrip("@")
-    key = canonical.casefold()
-    now = time.time()
-    with _FULL_SPEED_RSS_LOCK:
-        existing = _FULL_SPEED_RSS_INFLIGHT.get(key)
-        if existing is not None and not existing.done():
-            return existing
-        if now - float(_V20_RSS_LAST_STARTED.get(key, 0.0) or 0.0) < V20_DISCOVERY_REFRESH_SECONDS:
-            return existing if existing is not None and existing.done() else None
-        _V20_RSS_LAST_STARTED[key] = now
-        future = _FULL_SPEED_RSS_EXECUTOR.submit(_v20_full_speed_rss_job, canonical)
-        _FULL_SPEED_RSS_INFLIGHT[key] = future
-        return future
 
 
-_full_speed_start_rss = _v20_full_speed_start_rss
 
 
-def _v20_fetch_posts(username: str) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    key = canonical.casefold()
-    started = time.perf_counter()
-    rss_rows = _full_speed_rss_cache_get(canonical)
-    live_rows = _full_speed_cache_get(canonical)
-    continuous_rows = _continuous_force_cached_rows(canonical) if callable(globals().get("_continuous_force_cached_rows")) else []
-
-    rss_future = _v20_full_speed_start_rss(canonical)
-    # Always request the direct lane when its cadence allows; old code started it
-    # only when the cache was empty, which could leave a stale cache untouched.
-    live_future = _full_speed_start_live(canonical)
-    has_cached = bool(rss_rows or live_rows or continuous_rows)
-    deadline = time.perf_counter() + (V20_FETCH_WAIT_CACHED_SECONDS if has_cached else V20_FETCH_WAIT_EMPTY_SECONDS)
-    pending = {future for future in (rss_future, live_future) if future is not None and not future.done()}
-    while pending and time.perf_counter() < deadline:
-        done, pending = _rss_wait(
-            pending,
-            timeout=max(0.0, deadline - time.perf_counter()),
-            return_when=_RSS_FIRST_COMPLETED,
-        )
-        if not done:
-            break
-        for future in done:
-            try:
-                rows = list(future.result() or [])
-            except Exception:
-                rows = []
-            if future is live_future:
-                live_rows = rows or _full_speed_cache_get(canonical)
-            elif future is rss_future:
-                rss_rows = rows or _full_speed_rss_cache_get(canonical)
-
-    rss_rows = rss_rows or _full_speed_rss_cache_get(canonical)
-    live_rows = live_rows or _full_speed_cache_get(canonical)
-    continuous_rows = _continuous_force_cached_rows(canonical) if callable(globals().get("_continuous_force_cached_rows")) else continuous_rows
-    merged: dict[str, Post] = {}
-    _reliable_merge_posts(merged, rss_rows, canonical)
-    _reliable_merge_posts(merged, live_rows, canonical)
-    _reliable_merge_posts(merged, continuous_rows, canonical)
-    ordered = sorted(merged.values(), key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
-
-    with _FULL_SPEED_LIVE_LOCK:
-        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
-        stats.update({
-            "last_bounded_fetch_ms": round((time.perf_counter() - started) * 1000.0, 1),
-            "last_rss_rows": len(rss_rows),
-            "last_live_rows_used": len(live_rows),
-            "last_continuous_rows_used": len(continuous_rows),
-            "last_merged_rows": len(ordered),
-            "rss_latest_ts": _full_speed_latest_ts(rss_rows),
-            "live_latest_ts": _full_speed_latest_ts(live_rows),
-            "continuous_latest_ts": _full_speed_latest_ts(continuous_rows),
-            "checked_at": time.time(),
-            "active_route": "v20_freshness_aware_parallel",
-        })
-        _FULL_SPEED_DISCOVERY_STATS[key] = stats
-    if ordered:
-        try:
-            _stable_rss_remember(canonical, ordered)
-            _remember_control_rss_posts(canonical, ordered)
-            _ten_history_save(canonical, ordered)
-        except Exception as exc:
-            logging.debug("V20 merged discovery save failed for @%s: %s", canonical, short_error(exc, 250))
-        observed = time.time()
-        elapsed = time.perf_counter() - started
-        for post in ordered:
-            try:
-                _pipeline_mark_seen(post, "automatic:v20_fast_parallel", observed, elapsed)
-            except Exception:
-                pass
-    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
 
 
-fetch_posts = _v20_fetch_posts
 
 
-def _v20_continuous_force_probe_account(username: str) -> list[Post]:
-    canonical = _continuous_force_account_name(username)
-    started = time.perf_counter()
-    merged: dict[str, Post] = {}
-    errors: list[str] = []
-    try:
-        direct_future = _FULL_SPEED_LIVE_EXECUTOR.submit(
-            _reliable_direct_profile_posts,
-            canonical,
-            CONTINUOUS_FORCE_LIMIT,
-            True,
-        )
-        rss_future = _v20_full_speed_start_rss(canonical)
-        futures = {direct_future}
-        if rss_future is not None:
-            futures.add(rss_future)
-        deadline = time.perf_counter() + V20_FETCH_WAIT_EMPTY_SECONDS
-        pending = set(futures)
-        while pending and time.perf_counter() < deadline:
-            done, pending = _rss_wait(
-                pending,
-                timeout=max(0.0, deadline - time.perf_counter()),
-                return_when=_RSS_FIRST_COMPLETED,
-            )
-            if not done:
-                break
-            for future in done:
-                try:
-                    _reliable_merge_posts(merged, list(future.result() or []), canonical)
-                except Exception as exc:
-                    errors.append(short_error(exc, 250))
-        _reliable_merge_posts(merged, _full_speed_cache_get(canonical), canonical)
-        _reliable_merge_posts(merged, _full_speed_rss_cache_get(canonical), canonical)
-        rows = sorted(merged.values(), key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
-        return _continuous_force_store_rows(canonical, rows, time.perf_counter() - started) if rows else []
-    except Exception as exc:
-        errors.append(short_error(exc, 300))
-        logging.debug("V20 continuous discovery failed for @%s: %s", canonical, " | ".join(errors))
-        return []
-    finally:
-        with _CONTINUOUS_FORCE_LOCK:
-            _CONTINUOUS_FORCE_INFLIGHT.pop(canonical.casefold(), None)
 
 
-_continuous_force_probe_account = _v20_continuous_force_probe_account
 
 logging.info(
-    "V20 active: regular_min=%s, discovery_refresh=%.1fs, primary_fresh=%.0fs, logo_audit=%s",
+    "V20 active: regular_min=%s, logo_audit=%s",
     REGULAR_REPORT_MIN_WORDS,
-    V20_DISCOVERY_REFRESH_SECONDS,
-    V20_PRIMARY_FRESH_SECONDS,
     V20_LOGO_AUDIT_FILE,
 )
 # ====== END V20 REQUESTED RELIABILITY / FAST DISCOVERY / FORMAT / LOGO AUDIT ======
@@ -47742,153 +47474,24 @@ _v20_format_message = _v21_format_message
 #    runs in parallel. RSS dates are corrected from the X snowflake ID when a
 #    mirror publishes a stale item with a misleading current pubDate.
 # ---------------------------------------------------------------------------
-V21_RSS_TOTAL_TIMEOUT_SECONDS = max(2.5, min(8.0, float(os.environ.get("V21_RSS_TOTAL_TIMEOUT_SECONDS", "5.0"))))
-V21_RSS_WORKERS_PER_ACCOUNT = max(2, min(8, int(os.environ.get("V21_RSS_WORKERS_PER_ACCOUNT", "5"))))
-V20_DISCOVERY_REFRESH_SECONDS = max(6.0, float(os.environ.get("V20_DISCOVERY_REFRESH_SECONDS", "10")))
-FULL_SPEED_LIVE_REFRESH_SECONDS = int(round(V20_DISCOVERY_REFRESH_SECONDS))
-CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS = V20_DISCOVERY_REFRESH_SECONDS
-V20_FETCH_WAIT_EMPTY_SECONDS = max(0.5, min(2.0, float(os.environ.get("V20_FETCH_WAIT_EMPTY_SECONDS", "1.2"))))
-V20_FETCH_WAIT_CACHED_SECONDS = max(0.0, min(0.35, float(os.environ.get("V20_FETCH_WAIT_CACHED_SECONDS", "0.05"))))
 
 
-def _v21_cache_busted_feed_url(url: str) -> str:
-    try:
-        parsed = urllib.parse.urlsplit(url)
-        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        query = [(key, value) for key, value in query if key != "_neto_refresh"]
-        query.append(("_neto_refresh", str(int(time.time() // max(6, int(V20_DISCOVERY_REFRESH_SECONDS))))))
-        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(query), parsed.fragment))
-    except Exception:
-        return url
 
 
-def http_get_feed(url: str, timeout: float = 4.5) -> bytes:
-    request = urllib.request.Request(
-        _v21_cache_busted_feed_url(url),
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0 NetoSportV21",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            "Cache-Control": "no-cache, no-store, max-age=0",
-            "Pragma": "no-cache",
-        },
-    )
-    last_error: Exception | None = None
-    attempts = max(1, min(2, int(FEED_HTTP_RETRIES)))
-    for attempt in range(attempts):
-        try:
-            with urllib.request.urlopen(request, timeout=max(2.5, float(timeout))) as response:
-                raw = response.read()
-                if not raw:
-                    raise RuntimeError("empty RSS response")
-                return raw
-        except Exception as exc:
-            last_error = exc
-            if attempt + 1 < attempts:
-                time.sleep(0.15)
-    raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
 
 
-def _v21_correct_post_timestamp(post: Post) -> Post:
-    try:
-        tweet_id = str(_final_tweet_numeric_id(post) or "")
-    except Exception:
-        match = re.search(r"(\d{17,22})", " ".join([str(getattr(post, "post_id", "") or ""), str(getattr(post, "link", "") or "")]))
-        tweet_id = match.group(1) if match else ""
-    if not tweet_id:
-        return post
-    try:
-        snowflake_ts = float(_reliable_snowflake_timestamp(tweet_id) or 0.0)
-    except Exception:
-        snowflake_ts = 0.0
-    now = time.time()
-    if snowflake_ts < 1262304000 or snowflake_ts > now + 120:
-        return post
-    old_ts = float(getattr(post, "published_ts", 0.0) or 0.0)
-    if not old_ts or abs(old_ts - snowflake_ts) > 120:
-        setattr(post, "rss_original_published_ts", old_ts)
-        post.published_ts = snowflake_ts
-        setattr(post, "timestamp_corrected_from_snowflake", True)
-    return post
 
 
-def _v21_final_rss_network_fetch(
-    username: str,
-    limit: int = 30,
-    exhaustive: bool = False,
-) -> tuple[list[Post], dict[str, Any]]:
-    canonical = str(username or "").strip().lstrip("@")
-    requested = max(1, int(limit))
-    templates = list(dict.fromkeys(_final_rss_ordered_templates()))
-    variants = list(dict.fromkeys((_stable_rss_username_variants(canonical) or [canonical])[:2]))
-    diagnostics: dict[str, Any] = {
-        "errors": [], "timeouts": [], "sources": {}, "variants": variants,
-        "path": ["all_rss_mirrors_parallel_v21"], "returned_network": 0,
-        "freshness_aware_v21": True,
-    }
-    merged: dict[str, Post] = {}
-    tasks: list[tuple[str, str]] = [(variant, template) for variant in variants for template in templates]
-    if not tasks:
-        _final_rss_store_diagnostics(canonical, diagnostics)
-        return [], diagnostics
-    executor = ThreadPoolExecutor(
-        max_workers=min(V21_RSS_WORKERS_PER_ACCOUNT, len(tasks)),
-        thread_name_prefix=f"rss-v21-{canonical[:12]}",
-    )
-    futures = {
-        executor.submit(_final_rss_fetch_one, variant, template): (variant, template)
-        for variant, template in tasks
-    }
-    try:
-        for future in as_completed(futures, timeout=V21_RSS_TOTAL_TIMEOUT_SECONDS):
-            variant, template = futures[future]
-            source = feed_source_name(template)
-            key = f"{source}:{variant}"
-            try:
-                posts, error = future.result()
-            except Exception as exc:
-                posts, error = [], f"{source}: {short_error(exc, 350)}"
-            if error:
-                diagnostics["errors"].append(error)
-                diagnostics["sources"][key] = 0
-                continue
-            corrected = [_v21_correct_post_timestamp(post) for post in posts if isinstance(post, Post)]
-            before = len(merged)
-            _reliable_merge_posts(merged, corrected, canonical)
-            diagnostics["sources"][key] = len(merged) - before
-    except FuturesTimeoutError:
-        diagnostics["timeouts"] = [
-            f"{feed_source_name(template)}:{variant}"
-            for future, (variant, template) in futures.items() if not future.done()
-        ]
-    finally:
-        for future in futures:
-            future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
-    ordered = sorted(merged.values(), key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-    diagnostics["returned_network"] = len(ordered)
-    diagnostics["latest_age_seconds"] = None if not ordered else round(max(0.0, time.time() - float(ordered[0].published_ts or 0.0)), 1)
-    diagnostics["latest_post_id"] = str(getattr(ordered[0], "post_id", "") or "") if ordered else ""
-    diagnostics["errors"] = list(dict.fromkeys(diagnostics["errors"]))[-15:]
-    diagnostics["timeouts"] = list(dict.fromkeys(diagnostics["timeouts"]))[-15:]
-    _final_rss_store_diagnostics(canonical, diagnostics)
-    return ordered[:requested], diagnostics
 
 
-_final_rss_network_fetch = _v21_final_rss_network_fetch
-_v20_final_rss_network_fetch = _v21_final_rss_network_fetch
 
 # Mark only rows that a network lane actually returned; cached rows retain their
 # original first-seen timestamp. Corrected snowflake timestamps make the delay
 # report reflect the real X publication time rather than a mirror refresh time.
-_V21_PRE_PIPELINE_MARK_SEEN = _pipeline_mark_seen
 
 
-def _v21_pipeline_mark_seen(post: Post, lane: str, observed_at: float, fetch_seconds: float = 0.0) -> None:
-    _v21_correct_post_timestamp(post)
-    return _V21_PRE_PIPELINE_MARK_SEEN(post, lane, observed_at, fetch_seconds)
 
 
-_pipeline_mark_seen = _v21_pipeline_mark_seen
 
 # Keep the audit file as an additional persistent diagnostic without changing any
 # existing memory filename or JSON key.
@@ -47944,9 +47547,7 @@ except Exception as _v21_audit_exc:
     logging.error("V21 startup self-audit crashed safely: %s", short_error(_v21_audit_exc, 400))
 
 logging.info(
-    "V21 active: rss_refresh=%.1fs, all_mirror_timeout=%.1fs, cached_wait=%.2fs, empty_wait=%.2fs, logo=%s",
-    V20_DISCOVERY_REFRESH_SECONDS, V21_RSS_TOTAL_TIMEOUT_SECONDS,
-    V20_FETCH_WAIT_CACHED_SECONDS, V20_FETCH_WAIT_EMPTY_SECONDS,
+    "V21 active: logo=%s",
     _channel_logo_resolved_path(),
 )
 # ====== END V21 FINAL RELIABILITY / TRUE SAME-EVENT DEDUPE / FAST ALL-SOURCE DISCOVERY ======
@@ -47966,13 +47567,6 @@ BOT_BUILD_ID = "winner-v22-album-race-safe-dedupe-timing-all-mirrors-2026-08-03"
 # Five independent mirrors provide the retry redundancy. One request per mirror
 # per refresh prevents a slow mirror from consuming two attempts while the other
 # mirrors wait, and avoids orphaned retry threads after the total timeout.
-FEED_HTTP_RETRIES = 1
-V20_DISCOVERY_REFRESH_SECONDS = max(
-    6.0,
-    min(10.0, float(os.environ.get("V22_DISCOVERY_REFRESH_SECONDS", "8"))),
-)
-FULL_SPEED_LIVE_REFRESH_SECONDS = int(round(V20_DISCOVERY_REFRESH_SECONDS))
-CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS = V20_DISCOVERY_REFRESH_SECONDS
 
 # The old V21 functions use deterministic temp names. Keep them unchanged and
 # serialize only the operations that can target the same file. Different source
@@ -48004,106 +47598,10 @@ _channel_brand_image = _v22_brand_image_race_safe
 # Give every configured mirror one worker immediately. A second username spelling
 # is tried inside that mirror's own worker only when the canonical spelling gave
 # no rows, instead of doubling the task queue before all mirrors started.
-def _v22_fetch_one_mirror_with_variants(
-    canonical: str,
-    template: str,
-    variants: list[str],
-) -> tuple[list[Post], str, str]:
-    errors: list[str] = []
-    used_variant = canonical
-    for variant in variants or [canonical]:
-        used_variant = variant
-        try:
-            posts, error = _final_rss_fetch_one(variant, template)
-        except Exception as exc:
-            posts, error = [], f"{feed_source_name(template)}: {short_error(exc, 350)}"
-        if posts:
-            return posts, "", variant
-        if error:
-            errors.append(str(error))
-    return [], " | ".join(dict.fromkeys(errors)), used_variant
 
 
-def _v22_final_rss_network_fetch(
-    username: str,
-    limit: int = 30,
-    exhaustive: bool = False,
-) -> tuple[list[Post], dict[str, Any]]:
-    canonical = str(username or "").strip().lstrip("@")
-    requested = max(1, int(limit))
-    templates = list(dict.fromkeys(_final_rss_ordered_templates()))
-    variants = list(dict.fromkeys((_stable_rss_username_variants(canonical) or [canonical])[:2]))
-    diagnostics: dict[str, Any] = {
-        "errors": [],
-        "timeouts": [],
-        "sources": {},
-        "variants": variants,
-        "path": ["every_rss_mirror_first_v22"],
-        "returned_network": 0,
-        "freshness_aware_v21": True,
-        "all_mirrors_started_v22": True,
-    }
-    merged: dict[str, Post] = {}
-    if not templates:
-        _final_rss_store_diagnostics(canonical, diagnostics)
-        return [], diagnostics
-
-    executor = ThreadPoolExecutor(
-        max_workers=len(templates),
-        thread_name_prefix=f"rss-v22-{canonical[:12]}",
-    )
-    futures = {
-        executor.submit(_v22_fetch_one_mirror_with_variants, canonical, template, variants): template
-        for template in templates
-    }
-    try:
-        for future in as_completed(futures, timeout=V21_RSS_TOTAL_TIMEOUT_SECONDS):
-            template = futures[future]
-            source = feed_source_name(template)
-            try:
-                posts, error, used_variant = future.result()
-            except Exception as exc:
-                posts, error, used_variant = [], f"{source}: {short_error(exc, 350)}", canonical
-            key = f"{source}:{used_variant}"
-            if error:
-                diagnostics["errors"].append(error)
-                diagnostics["sources"][key] = 0
-                continue
-            corrected = [_v21_correct_post_timestamp(post) for post in posts if isinstance(post, Post)]
-            before = len(merged)
-            _reliable_merge_posts(merged, corrected, canonical)
-            diagnostics["sources"][key] = len(merged) - before
-    except FuturesTimeoutError:
-        diagnostics["timeouts"] = [
-            feed_source_name(template)
-            for future, template in futures.items()
-            if not future.done()
-        ]
-    finally:
-        for future in futures:
-            future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
-
-    ordered = sorted(
-        merged.values(),
-        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
-        reverse=True,
-    )
-    diagnostics["returned_network"] = len(ordered)
-    diagnostics["latest_age_seconds"] = (
-        None
-        if not ordered
-        else round(max(0.0, time.time() - float(ordered[0].published_ts or 0.0)), 1)
-    )
-    diagnostics["latest_post_id"] = str(getattr(ordered[0], "post_id", "") or "") if ordered else ""
-    diagnostics["errors"] = list(dict.fromkeys(diagnostics["errors"]))[-15:]
-    diagnostics["timeouts"] = list(dict.fromkeys(diagnostics["timeouts"]))[-15:]
-    _final_rss_store_diagnostics(canonical, diagnostics)
-    return ordered[:requested], diagnostics
 
 
-_final_rss_network_fetch = _v22_final_rss_network_fetch
-_v20_final_rss_network_fetch = _v22_final_rss_network_fetch
 
 
 # Re-wrap the final active duplicate/filter functions. Earlier telemetry wrappers
@@ -48182,8 +47680,6 @@ cluster_parallel_candidates = _v22_cluster_parallel_candidates_with_timing
 
 def _v22_startup_self_audit() -> None:
     failures: list[str] = []
-    if FEED_HTTP_RETRIES != 1:
-        failures.append("rss_retry_policy")
     if _v21_logo_badge is not _v22_logo_badge_race_safe:
         failures.append("badge_lock_not_active")
     if _v21_brand_image is not _v22_brand_image_race_safe:
@@ -48194,8 +47690,8 @@ def _v22_startup_self_audit() -> None:
         logging.error("V22 startup self-audit warnings: %s", " | ".join(failures))
     else:
         logging.info(
-            "V22 self-audit passed: album badge/output races blocked, every mirror starts first, "
-            "and final duplicate/filter timing wrappers are active."
+            "V22 self-audit passed: album badge/output races blocked and final "
+            "duplicate/filter timing wrappers are active."
         )
 
 
@@ -48205,10 +47701,7 @@ except Exception as _v22_audit_exc:
     logging.error("V22 startup self-audit crashed safely: %s", short_error(_v22_audit_exc, 400))
 
 logging.info(
-    "V22 active: discovery_refresh=%.1fs, rss_attempts=%d, mirror_timeout=%.1fs, logo_album_lock=on",
-    V20_DISCOVERY_REFRESH_SECONDS,
-    FEED_HTTP_RETRIES,
-    V21_RSS_TOTAL_TIMEOUT_SECONDS,
+    "V22 active: logo_album_lock=on, duplicate/filter timing=on"
 )
 # ====== END V22 FINAL CONCURRENCY / TIMING / MIRROR-RACE HARDENING ======
 
