@@ -49138,7 +49138,7 @@ def process_control_update(update: dict[str, Any]) -> None:
             try:
                 prepare_history_post_with_ai(token)
                 if status_id:
-                    send_control_text("✅ הדיווח הוכן ונשלח לערוץ השקט.", status_id, control_delete_message_reply_markup())
+                    _quiet_delete_temporary_status(status_id)
             except Exception as exc:
                 error = "⛔ הכנת הדיווח נכשלה:\n" + short_error(exc, 900)
                 if status_id:
@@ -49151,6 +49151,276 @@ def process_control_update(update: dict[str, Any]) -> None:
     return _V9_PRE_PROCESS_CONTROL_UPDATE(update)
 
 # ====== END USER COMPLETE RELIABILITY / FAST PIPELINE FIX V9 ======
+
+
+# ====== USER WRITER-HEADER / QUIET-PREPARE FINAL FIX V11 (2026-08-03) ======
+# Narrow final override:
+# - reporter headings are de-duplicated at the source and at final HTML output;
+# - every normal reporter heading appears exactly once, on its own line, followed
+#   by exactly one blank line and then the report body;
+# - Nicolò Schira keeps the previously requested compact heading layout, but is
+#   still de-duplicated so his name can never appear twice;
+# - fact/aggregation feeds that intentionally have no reporter heading keep that
+#   behavior (CentreGoals, Polymarket Sport, FootballFactly, Opta, etc.);
+# - after "prepare report" succeeds, the temporary loading row is deleted and no
+#   separate success-confirmation message is left in the quiet channel.
+# RSS, filters, translation, media, duplicate memory and persistent JSON files are
+# intentionally untouched.
+
+BOT_BUILD_ID = "winner-single-writer-heading-no-prepare-confirmation-2026-08-03-v14"
+
+_V11_INVISIBLE = r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*"
+_V11_FORMAT_OPEN = r"(?:<(?:b|strong|i|em)[^>]*>\s*)*"
+_V11_FORMAT_CLOSE = r"(?:</(?:b|strong|i|em)>\s*)*"
+_V11_FACT_KEY_CACHE: set[str] | None = None
+_V11_WRITER_KEY_CACHE: set[str] | None = None
+
+_V11_FACT_SOURCE_NAMES = {
+    "footballfactly", "football_factly", "football facts", "footballfacts",
+    "optajoe", "opta", "footballtweet", "football tweets", "centregoals",
+    "centre goals", "polymarketsport", "polymarket sport", "sofascore",
+    "theeuropeanlad", "statmusefc", "mטרות מרכזיות", "מטרות מרכזיות",
+    "פולימרקט ספורט", "עובדות כדורגל", "ציוצי כדורגל", "אופטה",
+}
+
+
+def _v11_compact_key(value: Any) -> str:
+    probe = html.unescape(str(value or ""))
+    probe = re.sub(r"<[^>]+>", "", probe)
+    probe = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", probe)
+    return re.sub(r"[^0-9a-zא-ת]+", "", probe.casefold())
+
+
+def _v11_fact_source_keys() -> set[str]:
+    global _V11_FACT_KEY_CACHE
+    if _V11_FACT_KEY_CACHE is not None:
+        return _V11_FACT_KEY_CACHE
+    values = set(_V11_FACT_SOURCE_NAMES)
+    helper = globals().get("_user_v8_fact_source_keys")
+    if callable(helper):
+        try:
+            values.update(str(item or "") for item in helper())
+        except Exception:
+            pass
+    for name in (
+        "FOOTBALL_FACTLY_DEFAULT_ACTIVE_ALIASES",
+        "CENTREGOALS_ACCOUNT_ALIASES",
+        "POLYMARKET_SPORT_ACCOUNT_ALIASES",
+    ):
+        item = globals().get(name)
+        if isinstance(item, (set, list, tuple)):
+            values.update(str(entry or "") for entry in item)
+    _V11_FACT_KEY_CACHE = {_v11_compact_key(item) for item in values if _v11_compact_key(item)}
+    return _V11_FACT_KEY_CACHE
+
+
+def _v11_is_fact_or_no_writer_source(post: Any) -> bool:
+    candidates = {
+        _v11_compact_key(getattr(post, "username", "")),
+        _v11_compact_key(getattr(post, "source_name", "")),
+    }
+    return bool((candidates - {""}) & _v11_fact_source_keys())
+
+
+def _v11_known_writer_usernames() -> set[str]:
+    global _V11_WRITER_KEY_CACHE
+    if _V11_WRITER_KEY_CACHE is not None:
+        return _V11_WRITER_KEY_CACHE
+    values: set[str] = set()
+    for name in (
+        "X_ACCOUNTS",
+        "OPTIONAL_CONTROLLED_ACCOUNTS",
+        "PRIORITY_X_ACCOUNTS",
+    ):
+        item = globals().get(name)
+        if isinstance(item, (set, list, tuple)):
+            values.update(str(entry or "").strip().lstrip("@").casefold() for entry in item)
+    for name in (
+        "ACCOUNT_DISPLAY_NAMES",
+        "CONTROLLED_BASE_ACCOUNT_LABELS",
+        "OPTIONAL_CONTROLLED_ACCOUNT_LABELS",
+        "SELF_QUOTE_ALIASES",
+    ):
+        item = globals().get(name)
+        if isinstance(item, dict):
+            values.update(str(entry or "").strip().lstrip("@").casefold() for entry in item.keys())
+    dynamic = globals().get("all_writer_accounts")
+    if callable(dynamic):
+        try:
+            values.update(str(entry or "").strip().lstrip("@").casefold() for entry in dynamic())
+        except Exception:
+            pass
+    _V11_WRITER_KEY_CACHE = {value for value in values if value}
+    return _V11_WRITER_KEY_CACHE
+
+
+def _v11_writer_label(post: Any) -> str:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    if not username or _v11_is_fact_or_no_writer_source(post):
+        return ""
+    if username.casefold() not in _v11_known_writer_usernames():
+        return ""
+    label = ""
+    helper = globals().get("_hebrew_account_label")
+    if callable(helper):
+        try:
+            label = str(helper(username) or "").strip()
+        except Exception:
+            label = ""
+    if not label or label.casefold() == username.casefold():
+        for mapping_name in (
+            "ACCOUNT_DISPLAY_NAMES",
+            "CONTROLLED_BASE_ACCOUNT_LABELS",
+            "OPTIONAL_CONTROLLED_ACCOUNT_LABELS",
+        ):
+            mapping = globals().get(mapping_name)
+            if isinstance(mapping, dict) and mapping.get(username):
+                label = str(mapping[username]).strip()
+                break
+    return label if label and label.casefold() != username.casefold() else ""
+
+
+def _v11_writer_aliases(post: Any, label: str) -> list[str]:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    aliases: set[str] = {label, username, "@" + username if username else ""}
+    mapping = globals().get("SELF_QUOTE_ALIASES")
+    if isinstance(mapping, dict):
+        for key, values in mapping.items():
+            if str(key or "").casefold() == username.casefold() and isinstance(values, (list, tuple, set)):
+                aliases.update(str(value or "").strip() for value in values)
+    for mapping_name in (
+        "ACCOUNT_DISPLAY_NAMES",
+        "CONTROLLED_BASE_ACCOUNT_LABELS",
+        "OPTIONAL_CONTROLLED_ACCOUNT_LABELS",
+    ):
+        table = globals().get(mapping_name)
+        if isinstance(table, dict):
+            for key, value in table.items():
+                if str(key or "").casefold() == username.casefold():
+                    aliases.add(str(value or "").strip())
+    # Longer aliases first prevents a short handle from consuming part of a name.
+    return sorted({alias for alias in aliases if alias}, key=len, reverse=True)
+
+
+def _v11_strip_leading_writer_prefixes(value: Any, aliases: list[str]) -> str:
+    """Remove one or more writer-name prefixes only at the absolute beginning.
+
+    This accepts plain text and Telegram HTML, including hidden RTL marks. It
+    never removes a writer mention later in the report body.
+    """
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text or not aliases:
+        return text
+    alias_pattern = "|".join(re.escape(alias) for alias in aliases)
+    prefix_re = re.compile(
+        rf"(?is)^\s*{_V11_INVISIBLE}{_V11_FORMAT_OPEN}{_V11_INVISIBLE}"
+        rf"(?:{alias_pattern}){_V11_INVISIBLE}\s*[:：]{_V11_INVISIBLE}\s*"
+        rf"{_V11_FORMAT_CLOSE}{_V11_INVISIBLE}[ \t]*(?:\n[ \t]*)?"
+    )
+    previous = None
+    while text != previous:
+        previous = text
+        text = prefix_re.sub("", text, count=1)
+    return text.lstrip(" \t\n\r\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff")
+
+
+def _v11_prepare_translation_without_writer_prefix(post: Any, value: Any) -> str:
+    label = _v11_writer_label(post)
+    if not label:
+        return str(value or "")
+    return _v11_strip_leading_writer_prefixes(value, _v11_writer_aliases(post, label))
+
+
+def _v11_render_single_writer_heading(post: Any, rendered: Any) -> str:
+    text = str(rendered or "")
+    label = _v11_writer_label(post)
+    if not label:
+        return text
+
+    aliases = _v11_writer_aliases(post, label)
+    body = _v11_strip_leading_writer_prefixes(text, aliases)
+    # A prior builder can leave an empty formatting wrapper before the second
+    # duplicate prefix. Remove only empty wrappers at the beginning and retry.
+    body = re.sub(r"(?is)^\s*(?:<(?:b|strong|i|em)[^>]*>\s*</(?:b|strong|i|em)>\s*)+", "", body)
+    body = _v11_strip_leading_writer_prefixes(body, aliases).lstrip()
+
+    safe_heading = f"<b>{html.escape(rtl(label + ':'))}</b>"
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    if username == "nicoschira":
+        # Preserve the user's standing Nico Schira exception: compact layout,
+        # while still guaranteeing one and only one occurrence of his name.
+        return f"{safe_heading} {body}".rstrip() if body else safe_heading
+    return f"{safe_heading}\n\n{body}".rstrip() if body else safe_heading
+
+
+_V11_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    # Fix the root cause first: translated text from Gemini/RSS can already start
+    # with the writer name. Strip it before the existing builder adds its header.
+    clean_translated = _v11_prepare_translation_without_writer_prefix(post, translated)
+    rendered = _V11_PRE_BUILD_MESSAGE(
+        post,
+        clean_translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    # Final safety net for every legacy builder/patch path: remove all repeated
+    # leading occurrences and reconstruct one canonical writer heading.
+    rendered = _v11_render_single_writer_heading(post, rendered)
+    return _user_v2_single_neto_footer(rendered) if callable(globals().get("_user_v2_single_neto_footer")) else normalize_neto_sport_footer(rendered)
+
+
+_V11_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "") if callback else ""
+    if data.startswith("football_prepare_history_ai:"):
+        callback_id = str(callback.get("id", "") or "")
+        token = data.split(":", 1)[1].strip()
+        if callback_id:
+            answer_control_callback(callback_id, "מכין את הדיווח המלא")
+        try:
+            status_id = send_control_text(
+                "⏳ מכין את הדיווח המלא...",
+                None,
+                control_delete_message_reply_markup(),
+            )
+        except Exception:
+            status_id = None
+
+        def _v11_prepare_worker() -> None:
+            try:
+                prepare_history_post_with_ai(token)
+                # The prepared report itself is the result. Delete the temporary
+                # spinner; do not leave a second success message in the channel.
+                _quiet_delete_temporary_status(status_id)
+            except Exception as exc:
+                error = "⛔ הכנת הדיווח נכשלה:\n" + short_error(exc, 900)
+                if status_id:
+                    send_control_text(error, status_id, control_delete_message_reply_markup())
+                else:
+                    send_control_text(error, None, control_delete_message_reply_markup())
+
+        Thread(
+            target=_v11_prepare_worker,
+            daemon=True,
+            name="prepare-report-no-success-message-v11",
+        ).start()
+        return
+    return _V11_PRE_PROCESS_CONTROL_UPDATE(update)
+
+# ====== END USER WRITER-HEADER / QUIET-PREPARE FINAL FIX V11 ======
 
 if __name__ == "__main__":
     main()
