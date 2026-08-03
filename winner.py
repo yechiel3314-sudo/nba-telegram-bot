@@ -49608,5 +49608,137 @@ _base_send_prepared_message_to_main = manual_force_send_prepared_message
 
 # ====== END FINAL MEDIA-AWARE WRITER LAYOUT / QUIET PREP FIX V15 ======
 
+
+# ====== FINAL QUIET-PREPARE HEADING BOUNDARY FIX V16 ======
+# Root cause fixed here:
+# the structural RSS line-repair pass ran again while finalizing Telegram captions
+# and treated a standalone bold reporter heading ending in ':' as an unfinished
+# sentence. It therefore rejoined "פבריציו רומאנו:" with the first report line.
+# Preserve standalone HTML headings as real paragraph boundaries, and add a final
+# safety check after every outgoing-message cleanup. This affects the actual quiet-
+# channel preparation/send path, not only build_message simulations.
+
+BOT_BUILD_ID = "winner-quiet-prepare-final-heading-boundary-2026-08-03-v16"
+
+_V16_STANDALONE_HTML_HEADING_RE = re.compile(
+    r"(?is)^\s*<(?:b|strong)(?:\s+[^>]*)?>\s*.+?\s*:\s*</(?:b|strong)>\s*$"
+)
+_V16_LEADING_HTML_HEADING_RE = re.compile(
+    r"(?is)^(?P<prefix>[\s\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*)"
+    r"(?P<heading><(?:b|strong)(?:\s+[^>]*)?>\s*.+?\s*:\s*</(?:b|strong)>)"
+    r"(?P<gap>(?:[ \t]*\n){2,})"
+)
+
+
+def _v16_is_standalone_html_heading(value: Any) -> bool:
+    """A canonical Telegram HTML heading is a paragraph, never prose wrapping."""
+    return bool(_V16_STANDALONE_HTML_HEADING_RE.fullmatch(str(value or "")))
+
+
+# Replace only the boundary decision from the structural repair layer. All of its
+# existing punctuation/list behavior is preserved exactly; the sole addition is
+# recognition of a standalone bold heading.
+def _user_v4_repair_prose_layout(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    raw_blocks = [part.strip() for part in re.split(r"\n{2,}", text) if part.strip()]
+    if not raw_blocks:
+        return ""
+    blocks = [_user_v4_collapse_physical_rows(block) for block in raw_blocks]
+    result: list[str] = []
+    for block in blocks:
+        if not result:
+            result.append(block)
+            continue
+        previous = result[-1].rstrip()
+        next_block = block.lstrip()
+        previous_last = previous.splitlines()[-1] if previous else ""
+        next_first = next_block.splitlines()[0] if next_block else ""
+        heading_to_list = _user_v4_plain_for_boundary(previous_last).endswith(":") and _user_v4_is_list_line(next_first)
+        keep_boundary = (
+            _v16_is_standalone_html_heading(previous)
+            or _user_v4_paragraph_is_complete(previous)
+            or (_user_v4_is_list_line(previous_last) and _user_v4_is_list_line(next_first))
+            or heading_to_list
+        )
+        if keep_boundary:
+            result.append(next_block)
+        else:
+            result[-1] = previous + " " + next_block
+    repaired = "\n\n".join(result)
+    repaired = re.sub(r"[ \t]+\n", "\n", repaired)
+    repaired = re.sub(r"\n[ \t]+", "\n", repaired)
+    repaired = re.sub(r"[ \t]{2,}", " ", repaired)
+    return re.sub(r"\n{3,}", "\n\n", repaired).strip()
+
+
+_V16_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    """Finalize normally, then restore the leading reporter paragraph if present.
+
+    The saved input boundary is authoritative because it was produced by the
+    media-aware writer renderer after exact post hydration. This prevents any
+    older cleanup layer from compacting a media caption again.
+    """
+    original = str(message or "")
+    leading = _V16_LEADING_HTML_HEADING_RE.match(original)
+    result = str(_V16_PRE_FINALIZE_OUTGOING(message) or "")
+    if not leading:
+        return result
+
+    heading = leading.group("heading").strip()
+    prefix = leading.group("prefix")
+    # The legacy finalizer normally preserves the exact HTML heading and only
+    # changes whitespace. Rebuild one canonical blank line after it.
+    start = result.lstrip(" \t\n\r\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff")
+    if start.startswith(heading):
+        body = start[len(heading):].lstrip(
+            " \t\n\r\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff"
+        )
+        return (prefix + heading + ("\n\n" + body if body else "")).rstrip()
+
+    # Entity escaping may have been normalized by an older layer. Match by the
+    # visible heading, remove one leading copy, and reconstruct the original HTML.
+    visible_heading = _user_v4_plain_for_boundary(heading)
+    escaped_visible = re.escape(visible_heading)
+    stripped = re.sub(
+        rf"(?is)^\s*(?:<(?:b|strong)(?:\s+[^>]*)?>\s*)?{escaped_visible}(?:\s*</(?:b|strong)>)?\s*",
+        "",
+        start,
+        count=1,
+    ).lstrip()
+    if stripped != start:
+        return (prefix + heading + ("\n\n" + stripped if stripped else "")).rstrip()
+    return result
+
+
+# Final quiet-channel safety: exact media hydration is authoritative. Re-render
+# the writer layout immediately before the existing send chain, then the V16
+# finalizer above preserves that paragraph through photo/video caption cleanup.
+_V16_PRE_SEND_FULL_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("V16 quiet prepare exact hydration kept stored media: %s", short_error(exc, 240))
+
+    explicit_media = bool(
+        _acceptance_post_requires_video(post)
+        or list(getattr(post, "image_urls", []) or [])
+        or list(getattr(post, "video_urls", []) or [])
+        or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False))
+        or bool(getattr(post, "quoted_has_video", False))
+        or bool(getattr(post, "photo_expected", False))
+    )
+    if callable(globals().get("_v15_render_writer_layout")):
+        message_html = _v15_render_writer_layout(post, message_html, explicit_media=explicit_media)
+    return _V16_PRE_SEND_FULL_CONTROL_CANDIDATE(post, token, message_html)
+
+# ====== END FINAL QUIET-PREPARE HEADING BOUNDARY FIX V16 ======
+
 if __name__ == "__main__":
     main()
