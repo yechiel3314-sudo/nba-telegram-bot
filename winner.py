@@ -48389,5 +48389,768 @@ def find_post_translation_duplicate_event(post: Post, translated_message: str, s
 
 # ====== END USER FACTS CLEANUP / VISIBLE ALBUM BUTTONS / CROSS-SOURCE DUPLICATES V8 ======
 
+# ====== USER COMPLETE RELIABILITY / FAST PIPELINE FIX V9 (2026-08-03) ======
+# Requested behavior:
+# - Preserve the currently working RSS/live discovery implementation exactly.
+# - Remove long post-discovery stalls caused by network-based duplicate judging,
+#   serialized translation queues and 60-second image-download retries.
+# - Keep writer headings on their own paragraph only for posts with photo/video (except Nico Schira).
+# - Start every heavy control action in a fresh status message and update that message.
+# - Guarantee Send/Delete controls for every prepared quiet-channel post; albums use
+#   in-place controls when Telegram accepts them and an immediate fallback action row otherwise.
+# - Detect paraphrased duplicates locally and bidirectionally without a Gemini request.
+# - Normalize historical openings to #היום_לפני.
+# - Keep the 12% Neto Sport logo on every photo and never send an unbranded fallback.
+
+BOT_BUILD_ID = "winner-fast-local-dedupe-reliable-controls-media-heading-logo-2026-08-03-v10"
+
+# ---------------------------------------------------------------------------
+# 1) Pipeline latency: do not touch fetch_posts/http_get_feed/RSS mirror order.
+#    The previous 45-minute delays were mainly created after discovery:
+#    - Gemini duplicate judging could block for many minutes;
+#    - one translation semaphore serialized every candidate;
+#    - one image could consume 3 x 60 seconds before failing.
+# ---------------------------------------------------------------------------
+CHECK_EVERY_SECONDS = min(int(CHECK_EVERY_SECONDS), 5)
+NIGHT_CHECK_EVERY_SECONDS = min(int(NIGHT_CHECK_EVERY_SECONDS), 5)
+MAX_POSTS_SENT_PER_CYCLE = 6
+MAX_PARALLEL_POST_SENDS = max(6, min(8, int(MAX_PARALLEL_POST_SENDS)))
+NIGHT_MAX_PARALLEL_POST_SENDS = max(6, min(8, int(NIGHT_MAX_PARALLEL_POST_SENDS)))
+
+# Three translations may run at once. This removes the long queue while keeping
+# the key pool protected from the old 8-way burst.
+GEMINI_MAX_PARALLEL_TRANSLATIONS = 3
+GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = min(max(1, int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS)), 3)
+GEMINI_MAX_KEYS_PER_OPERATION = min(max(1, int(GEMINI_MAX_KEYS_PER_OPERATION)), 3)
+GEMINI_TRANSLATION_TIMEOUT_SECONDS = min(max(8, int(GEMINI_TRANSLATION_TIMEOUT_SECONDS)), 12)
+GEMINI_RETRY_WAIT_SECONDS = min(max(0, int(GEMINI_RETRY_WAIT_SECONDS)), 1)
+
+# Fast, bounded image download. Branding remains mandatory; a failed image is
+# blocked rather than being sent without the logo.
+_V9_IMAGE_DOWNLOAD_TIMEOUT_SECONDS = max(4.0, min(10.0, float(os.environ.get("NETO_IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "7"))))
+_V9_IMAGE_BRAND_WORKERS = max(2, min(4, int(os.environ.get("NETO_IMAGE_BRAND_WORKERS", "4"))))
+
+
+def _channel_read_image_bytes(source: str) -> bytes:
+    if os.path.isfile(source):
+        return Path(source).read_bytes()
+    request = urllib.request.Request(
+        str(source),
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/150.0",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Referer": "https://x.com/",
+        },
+    )
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=_V9_IMAGE_DOWNLOAD_TIMEOUT_SECONDS) as response:
+                data = response.read()
+            if not data:
+                raise RuntimeError("empty_image_response")
+            return data
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.15)
+    raise RuntimeError("image_download_failed: " + short_error(last_error, 350))
+
+
+def _v9_verify_branded_image(path: str) -> str:
+    if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        raise RuntimeError("branded_file_missing")
+    try:
+        with Image.open(path) as probe:
+            width, height = probe.size
+            if width < 80 or height < 80:
+                raise RuntimeError("branded_image_invalid_dimensions")
+            probe.verify()
+    except Exception as exc:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        raise RuntimeError("branded_image_verification_failed: " + short_error(exc, 300))
+    return path
+
+
+def _v9_brand_one_image(source: str) -> str:
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            return _v9_verify_branded_image(_channel_brand_image(source))
+        except Exception as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.2)
+    raise RuntimeError("12pct_logo_branding_failed: " + short_error(last_error, 450))
+
+
+def _channel_brand_images(images: list[str]) -> list[str]:
+    sources = list(dict.fromkeys(str(value).strip() for value in (images or []) if str(value).strip()))
+    if not sources:
+        return []
+    workers = min(_V9_IMAGE_BRAND_WORKERS, len(sources))
+    outputs: list[str | None] = [None] * len(sources)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="neto-logo") as executor:
+        futures = {executor.submit(_v9_brand_one_image, source): index for index, source in enumerate(sources)}
+        for future in as_completed(futures):
+            index = futures[future]
+            outputs[index] = future.result()
+    branded = [str(value) for value in outputs if value]
+    if len(branded) != len(sources):
+        raise RuntimeError(f"branding_count_mismatch:{len(branded)}/{len(sources)}")
+    return branded
+
+
+# Avoid rereading the complete durable sent-memory file for every candidate.
+_V9_EXACT_MEMORY_LOCK = RLock()
+_V9_EXACT_MEMORY_LOADED_AT = 0.0
+_V9_EXACT_MEMORY_FINGERPRINTS: set[str] = set()
+
+
+def _requested_exact_text_already_in_memory(post: Post, fingerprint: str) -> bool:
+    global _V9_EXACT_MEMORY_LOADED_AT, _V9_EXACT_MEMORY_FINGERPRINTS
+    if not fingerprint:
+        return False
+    now = time.time()
+    with _V9_EXACT_MEMORY_LOCK:
+        if now - _V9_EXACT_MEMORY_LOADED_AT > 60.0:
+            fingerprints: set[str] = set()
+            try:
+                rows = load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-1500:]
+            except Exception:
+                rows = []
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    timestamp = float(item.get("ts") or item.get("sent_at") or 0.0)
+                except Exception:
+                    timestamp = 0.0
+                if timestamp and now - timestamp > 48 * 60 * 60:
+                    continue
+                username = str(item.get("username") or item.get("source") or "").strip().lstrip("@").casefold()
+                previous_text = str(item.get("source_text") or item.get("original_text") or item.get("text") or "")
+                normalized = _final_repost_normalize(previous_text)
+                if normalized:
+                    fingerprints.add(hashlib.sha256((username + "\n" + normalized).encode("utf-8", errors="ignore")).hexdigest())
+            _V9_EXACT_MEMORY_FINGERPRINTS = fingerprints
+            _V9_EXACT_MEMORY_LOADED_AT = now
+        return fingerprint in _V9_EXACT_MEMORY_FINGERPRINTS
+
+
+# ---------------------------------------------------------------------------
+# 2) Fast local semantic duplicate engine. It compares the event headline,
+#    distinctive tokens, action family and concrete facts. No Gemini call is
+#    permitted in duplicate detection, so this stage stays sub-second.
+# ---------------------------------------------------------------------------
+_V9_DUPLICATE_WINDOW_SECONDS = 24 * 60 * 60
+_V9_DUPLICATE_MAX_ROWS = 500
+_V9_DUP_STOPWORDS = {
+    "של", "את", "על", "עם", "אל", "כי", "גם", "לא", "הוא", "היא", "הם", "הן", "זה", "זו", "זאת",
+    "אשר", "כדי", "לפי", "בכך", "שבו", "שבה", "שלא", "כבר", "עוד", "מר", "חדשות", "דיווח", "חדש",
+    "the", "a", "an", "of", "to", "for", "and", "or", "in", "on", "with", "that", "this", "is", "are",
+    "was", "were", "has", "have", "had", "from", "as", "by", "mr", "new", "report", "reports", "breaking",
+}
+_V9_ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("withdraw_support", re.compile(r"(?iu)משכ\w*\s+(?:את\s+)?תמיכ|הסיר\w*\s+תמיכ|withdraw\w*\s+(?:its\s+|their\s+)?support")),
+    ("lawsuit", re.compile(r"(?iu)תביע|הליך\s+משפטי|בית\s+משפט|lawsuit|legal\s+action|\bsue\w*\b")),
+    ("investigation", re.compile(r"(?iu)חקיר|investigat|charge\w*|אישומ|הואשמ")),
+    ("ban", re.compile(r"(?iu)הרחק|השע|עונש|סנקצי|קנס|\bban\w*\b|suspend|sanction|fine")),
+    ("transfer", re.compile(r"(?iu)העברה|עסקה|יחתום|חתם|יצטרף|הצעה|משא\s+ומתן|בדיקות\s+רפואיות|transfer|deal|sign\w*|join\w*|bid|offer|medical")),
+    ("contract", re.compile(r"(?iu)חוזה|הארכ|renew|extension|contract")),
+    ("injury", re.compile(r"(?iu)פציע|ניתוח|טיפול\s+רפואי|injur|surgery|operation")),
+    ("appointment", re.compile(r"(?iu)מונה|מינוי|פוטר|התפטר|מאמן|appoint|sack|dismiss|resign|manager")),
+    ("sale", re.compile(r"(?iu)למכור|מכירת|אחזק|בעלות|רכיש|sell|sale|stake|ownership|takeover")),
+    ("decision", re.compile(r"(?iu)החליט|אישר|דחה|הודיע|הצבע|תקנון|decid|approve|reject|announce|vote|rule")),
+)
+_V9_STRONG_ADVANCEMENT_RE = re.compile(
+    r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO|רשמי|העסקה\s+סוכמה|הושג\s+סיכום|נחתם|חתם|"
+    r"נקבעו\s+בדיקות|בדיקות\s+רפואיות|הוגשה\s+הצעה|ההצעה\s+התקבלה|"
+    r"official|deal\s+agreed|agreement\s+reached|signed|medical(?:s)?\s+(?:booked|scheduled)|bid\s+accepted"
+)
+
+
+def _v9_duplicate_plain_text(value: Any) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = URL_RE.sub(" ", text)
+    text = re.sub(r"(?<!\w)@[A-Za-z0-9_]{1,64}", " ", text)
+    text = re.sub(r"(?iu)נטו\s+ספורט\s*[.。]?\s*📝?", " ", text)
+    text = re.sub(r"(?m)^\s*\[[^\[\]\n]{1,180}\]\s*[.!?…]?\s*$", " ", text)
+    text = unicodedata.normalize("NFKC", text).casefold()
+    # Stable editorial synonym normalization for paraphrased versions.
+    replacements = {
+        "מנהיגות": "הנהגה", "אמונה": "אמון", "בראש סדר העדיפויות": "במקום הראשון",
+        "להיבחר מחדש": "לבחירה מחדש", "כנשיא": "לנשיא", "ראוי להישאר": "להישאר",
+        "כשלים": "כשל", "תהליכים": "תהליך", "ערכים": "ערך", "תקשורת": "תקשורת",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    text = re.sub(r"[^0-9a-zà-ÿא-ת£€$%]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _v9_duplicate_tokens(value: Any) -> set[str]:
+    result: set[str] = set()
+    for token in _v9_duplicate_plain_text(value).split():
+        clean = token.strip("-'׳״")
+        if not clean or clean in _V9_DUP_STOPWORDS or len(clean) < 3:
+            continue
+        result.add(clean)
+        # Hebrew one-letter conjunction/preposition prefixes should not turn the
+        # same noun into a different event token.
+        if clean[:1] in {"ו", "ב", "ל", "מ", "ה", "כ", "ש"} and len(clean) >= 6:
+            stripped = clean[1:]
+            if stripped not in _V9_DUP_STOPWORDS:
+                result.add(stripped)
+    return result
+
+
+def _v9_duplicate_lead(value: Any) -> str:
+    plain = _v9_duplicate_plain_text(value)
+    if not plain:
+        return ""
+    words = plain.split()
+    # Headlines from facts sources are normally in the first sentence/35 words.
+    return " ".join(words[:35])
+
+
+def _v9_action_families(value: Any) -> set[str]:
+    text = str(value or "")
+    return {name for name, pattern in _V9_ACTION_PATTERNS if pattern.search(text)}
+
+
+def _v9_material_facts(value: Any) -> set[str]:
+    text = unicodedata.normalize("NFKC", html.unescape(str(value or "")))
+    facts = set(re.findall(r"(?iu)(?:€|£|\$)?\d+(?:[.,]\d+)?\s*(?:m|bn|million|billion|מיליון|מיליארד|שנים?|חודשים?|ימים?|%)?", text))
+    facts.update(match.group(0).casefold() for match in _V9_STRONG_ADVANCEMENT_RE.finditer(text))
+    return {re.sub(r"\s+", " ", fact).strip().casefold() for fact in facts if str(fact).strip()}
+
+
+def _v9_item_text(item: dict[str, Any]) -> str:
+    for key in (
+        "translated", "rendered", "channel_memory_text", "source_text", "original_text",
+        "ai_text", "text", "preview", "caption", "message",
+    ):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    signature = item.get("signature")
+    if isinstance(signature, dict):
+        return str(signature.get("text") or "")
+    return ""
+
+
+_V9_DURABLE_DUPLICATE_LOCK = RLock()
+_V9_DURABLE_DUPLICATE_LOADED_AT = 0.0
+_V9_DURABLE_DUPLICATE_ROWS: list[dict[str, Any]] = []
+
+
+def _v9_durable_duplicate_rows() -> list[dict[str, Any]]:
+    global _V9_DURABLE_DUPLICATE_LOADED_AT, _V9_DURABLE_DUPLICATE_ROWS
+    now = time.time()
+    with _V9_DURABLE_DUPLICATE_LOCK:
+        if now - _V9_DURABLE_DUPLICATE_LOADED_AT > 45.0:
+            try:
+                loaded = load_json_list_file(persistent_memory_path("football_sent_memory.json"))[-700:]
+                _V9_DURABLE_DUPLICATE_ROWS = [item for item in loaded if isinstance(item, dict)]
+            except Exception:
+                _V9_DURABLE_DUPLICATE_ROWS = []
+            _V9_DURABLE_DUPLICATE_LOADED_AT = now
+        return list(_V9_DURABLE_DUPLICATE_ROWS)
+
+
+def _v9_recent_duplicate_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
+    now = time.time()
+    rows: list[dict[str, Any]] = []
+    keys = {
+        "recent_news_events", "channel_recent_news_events", "last_sent_posts", "bot_sent_reply_targets",
+        str(globals().get("RECENT_NEWS_STATE_KEY", "")),
+        str(globals().get("CHANNEL_RECENT_NEWS_STATE_KEY", "")),
+        str(globals().get("BOT_SENT_REPLY_TARGETS_STATE_KEY", "")),
+    }
+    for key in keys:
+        values = state.get(key, []) if isinstance(state, dict) and key else []
+        if isinstance(values, list):
+            rows.extend(item for item in values if isinstance(item, dict))
+    # Durable cross-restart memory is cached; duplicate checks never reread the
+    # JSON file for every candidate.
+    rows.extend(_v9_durable_duplicate_rows())
+    unique: dict[str, dict[str, Any]] = {}
+    for item in rows:
+        if bool(item.get("pending", False)):
+            continue
+        try:
+            timestamp = float(item.get("ts") or item.get("sent_at") or item.get("created_at") or 0.0)
+        except Exception:
+            timestamp = 0.0
+        if timestamp and now - timestamp > _V9_DUPLICATE_WINDOW_SECONDS:
+            continue
+        text = _v9_item_text(item)
+        if not text:
+            continue
+        identity = str(item.get("post_id") or item.get("link") or item.get("id") or "").strip()
+        if not identity:
+            identity = hashlib.sha1(_v9_duplicate_plain_text(text).encode("utf-8", errors="ignore")).hexdigest()
+        unique[identity] = item
+    return list(unique.values())[-_V9_DUPLICATE_MAX_ROWS:]
+
+
+def _v9_same_event_text(current_text: str, previous_text: str) -> tuple[bool, float]:
+    current_plain = _v9_duplicate_plain_text(current_text)
+    previous_plain = _v9_duplicate_plain_text(previous_text)
+    if not current_plain or not previous_plain:
+        return False, 0.0
+    if current_plain == previous_plain:
+        return True, 1.0
+
+    current_tokens = _v9_duplicate_tokens(current_text)
+    previous_tokens = _v9_duplicate_tokens(previous_text)
+    shared = current_tokens & previous_tokens
+    if not shared:
+        return False, 0.0
+    containment = len(shared) / max(1, min(len(current_tokens), len(previous_tokens)))
+    union_ratio = len(shared) / max(1, len(current_tokens | previous_tokens))
+    lead_ratio = SequenceMatcher(None, _v9_duplicate_lead(current_text), _v9_duplicate_lead(previous_text)).ratio()
+    whole_ratio = SequenceMatcher(None, current_plain[:1600], previous_plain[:1600]).ratio()
+    family_overlap = bool(_v9_action_families(current_text) & _v9_action_families(previous_text))
+
+    same = bool(
+        (lead_ratio >= 0.86 and len(shared) >= 6)
+        or (containment >= 0.76 and len(shared) >= 9 and (family_overlap or lead_ratio >= 0.74))
+        or (union_ratio >= 0.58 and len(shared) >= 12 and family_overlap)
+        or (whole_ratio >= 0.76 and len(shared) >= 10)
+    )
+    score = max(lead_ratio, whole_ratio, containment * 0.92, union_ratio)
+    if not same:
+        return False, score
+
+    # A later paraphrase with only an extra explanatory sentence remains a
+    # duplicate. Release it only for a genuinely new concrete stage/fact.
+    new_facts = _v9_material_facts(current_text) - _v9_material_facts(previous_text)
+    if new_facts and _V9_STRONG_ADVANCEMENT_RE.search(current_text):
+        return False, score
+    return True, score
+
+
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    try:
+        if is_duplicate_false_positive_post(post):
+            return None
+    except Exception:
+        pass
+    try:
+        if _final_is_fabrizio_here_we_go(post):
+            return None
+    except Exception:
+        pass
+    current_text = str(text_override or _final_source_text(post) or getattr(post, "text", "")).strip()
+    if not current_text:
+        return None
+    current_id = str(getattr(post, "post_id", "") or getattr(post, "link", "")).strip()
+    for item in reversed(_v9_recent_duplicate_rows(state)):
+        previous_id = str(item.get("post_id") or item.get("link") or item.get("id") or "").strip()
+        if current_id and previous_id and current_id == previous_id:
+            duplicate = dict(item)
+            duplicate.update({"duplicate": True, "is_duplicate": True, "duplicate_score": 1.0, "duplicate_verdict": "EXACT_ID"})
+            return duplicate
+        previous_text = _v9_item_text(item)
+        same, score = _v9_same_event_text(current_text, previous_text)
+        if not same:
+            continue
+        duplicate = dict(item)
+        duplicate.update({
+            "duplicate": True,
+            "is_duplicate": True,
+            "duplicate_score": float(score),
+            "duplicate_verdict": "LOCAL_PARAPHRASE_SAME_EVENT",
+            "duplicate_source": str(item.get("username") or item.get("source") or "דיווח קודם"),
+            "reason": "fast_local_paraphrase_duplicate",
+            "raw_reason": "fast_local_paraphrase_duplicate",
+        })
+        return duplicate
+    return None
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v9_fast_duplicate(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v9_fast_duplicate(post, state)
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v9_fast_duplicate(post, state)
+
+
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v9_fast_duplicate(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v9_fast_duplicate(post, state, html_message_to_plain_text(translated_message))
+
+
+def gemini_duplicate_event_verdict(current_post: Post, previous_item: dict[str, Any]) -> str:
+    previous_text = _v9_item_text(previous_item)
+    same, _score = _v9_same_event_text(_final_source_text(current_post), previous_text)
+    return "SAME_DUPLICATE" if same else "DIFFERENT"
+
+
+def parallel_duplicate_relation(post_a: Post, post_b: Post) -> str:
+    text_a = _final_source_text(post_a)
+    text_b = _final_source_text(post_b)
+    same, _score = _v9_same_event_text(text_b, text_a)
+    if same:
+        return "SAME"
+    if _v9_action_families(text_a) & _v9_action_families(text_b):
+        facts_a = _v9_material_facts(text_a)
+        facts_b = _v9_material_facts(text_b)
+        if facts_b - facts_a and (_V9_STRONG_ADVANCEMENT_RE.search(text_b) or len(facts_b - facts_a) >= 2):
+            return "ADVANCED"
+    return "DIFFERENT"
+
+
+# ---------------------------------------------------------------------------
+# 3) Final message formatting.
+# ---------------------------------------------------------------------------
+_V9_TODAY_BEFORE_RE = re.compile(
+    r"(?imu)^(?P<prefix>[\s\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*(?:📅\s*)?)"
+    r"(?:(?:כמו\s+)?היום\s*,?\s*לפני|ביום\s+הזה\s*,?\s*לפני)\s+"
+)
+
+
+def _v9_normalize_today_before(value: Any) -> str:
+    return _V9_TODAY_BEFORE_RE.sub(lambda match: match.group("prefix") + "#היום_לפני ", str(value or ""))
+
+
+def _v9_post_has_media(post: Post) -> bool:
+    return bool(
+        list(getattr(post, "image_urls", []) or [])
+        or list(getattr(post, "video_urls", []) or [])
+        or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False))
+        or bool(getattr(post, "quoted_has_video", False))
+    )
+
+
+def _v9_separate_text_only_writer_heading(post: Post, value: Any) -> str:
+    """Put the writer heading on its own paragraph only when the post has media.
+
+    Text-only messages keep the previous compact format (writer and report on the
+    same line). Nicolò Schira keeps the pre-existing behavior in every mode.
+    """
+    text = str(value or "")
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    if not _v9_post_has_media(post) or username == "nicoschira":
+        return text
+    try:
+        label = str(_hebrew_account_label(getattr(post, "username", "")) or "").strip()
+    except Exception:
+        label = str(ACCOUNT_DISPLAY_NAMES.get(getattr(post, "username", ""), "") or "").strip()
+    if not label:
+        return text
+    escaped_labels = {label, html.escape(label)}
+    for candidate in sorted(escaped_labels, key=len, reverse=True):
+        pattern = re.compile(
+            rf"(?is)^(?P<lead>[\s\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*"
+            rf"(?:<(?:b|strong|i|em)[^>]*>\s*)*{re.escape(candidate)}\s*:\s*"
+            rf"(?:</(?:b|strong|i|em)>\s*)*)"
+        )
+        match = pattern.match(text)
+        if not match:
+            continue
+        heading = match.group("lead").rstrip()
+        remainder = text[match.end():].lstrip(" \t\r\n")
+        return heading + ("\n\n" + remainder if remainder else "")
+    fact_keys: set[str] = set()
+    try:
+        fact_keys.update(str(value).strip().lstrip("@").casefold() for value in _user_v8_fact_source_keys())
+    except Exception:
+        pass
+    fact_keys.update({
+        "footballfactly", "optajoe", "footballtweet", "centregoals", "polymarketsport",
+        "sofascore", "theeuropeanlad", "statmusefc",
+    })
+    if username in fact_keys:
+        return text
+    # Some historical builder paths omitted the heading completely. Media
+    # reporter posts must still receive it, except Nico Schira as requested.
+    return f"{html.escape(label)}:\n\n{text.lstrip()}" if text.strip() else text
+
+
+_V9_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V9_PRE_BUILD_MESSAGE(
+        post,
+        _v9_normalize_today_before(translated),
+        _v9_normalize_today_before(quoted_translated),
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _v9_normalize_today_before(rendered)
+    return _v9_separate_text_only_writer_heading(post, rendered)
+
+
+_V9_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    return _v9_normalize_today_before(_V9_PRE_FINALIZE_OUTGOING(message))
+
+
+# ---------------------------------------------------------------------------
+# 4) Reliable quiet-channel prepared controls.
+# ---------------------------------------------------------------------------
+def _v9_prepared_markup(token: str) -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "📤 שלח לערוץ נטו ספורט", "callback_data": f"football_send_test:{token}"}],
+        [{"text": "🗑️ מחק הודעה", "callback_data": f"football_delete_prepared:{token}"}],
+    ])
+
+
+def _v9_attach_prepared_markup(message_id: int, token: str, caption: str = "") -> bool:
+    markup = _v9_prepared_markup(token)
+    for method, payload in (
+        ("editMessageReplyMarkup", {
+            "chat_id": CONTROL_CHAT_ID,
+            "message_id": int(message_id),
+            "reply_markup": markup,
+        }),
+        ("editMessageCaption", {
+            "chat_id": CONTROL_CHAT_ID,
+            "message_id": int(message_id),
+            "caption": caption,
+            "parse_mode": "HTML",
+            "reply_markup": markup,
+        }),
+    ):
+        if method == "editMessageCaption" and not caption:
+            continue
+        try:
+            telegram_api(method, payload, max_attempts=1, timeout=max(4.0, TELEGRAM_BUTTON_FAST_TIMEOUT_SECONDS))
+            return True
+        except Exception as exc:
+            if _user_v3_message_not_modified(exc):
+                return True
+    return False
+
+
+def _v9_send_fallback_action_message(token: str, reply_to_message_id: int) -> int:
+    response = telegram_api(
+        "sendMessage",
+        {
+            "chat_id": CONTROL_CHAT_ID,
+            "text": "פעולות לדיווח:",
+            "reply_to_message_id": int(reply_to_message_id),
+            "allow_sending_without_reply": True,
+            "reply_markup": _v9_prepared_markup(token),
+            "disable_web_page_preview": True,
+        },
+        max_attempts=2,
+        timeout=max(6.0, REQUEST_TIMEOUT_SECONDS),
+    )
+    ids = _telegram_result_message_ids(response)
+    if not ids:
+        raise RuntimeError("prepared_action_message_missing_id")
+    action_id = int(ids[0])
+    CONTROL_PREPARED_ACTION_CACHE[token] = action_id
+    return action_id
+
+
+def _user_v2_send_prepared_album_with_buttons(token: str, branded: list[str], message_html: str) -> list[int]:
+    if not CONTROL_CHAT_ID or not branded:
+        return []
+    caption = _finalize_outgoing_message_only(message_html)
+    if not _acceptance_caption_fits(caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+    markup = _v9_prepared_markup(token)
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        branded,
+        caption,
+        reply_markup=markup if len(branded) == 1 else None,
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+    if len(ids) != len(branded):
+        _user_followup_delete_partial_control_messages(ids)
+        raise RuntimeError(f"telegram_album_count_mismatch:{len(ids)}/{len(branded)}")
+    _user_v6_delete_old_action_message(token)
+    if len(ids) > 1:
+        # Telegram captions the first media item. Try the buttons there first.
+        attached = _v9_attach_prepared_markup(ids[0], token, caption)
+        if not attached:
+            time.sleep(0.35)
+            attached = _v9_attach_prepared_markup(ids[0], token, caption)
+        if not attached:
+            # The user explicitly requested that the post still be prepared even
+            # when Telegram refuses album-item markup.
+            _v9_send_fallback_action_message(token, ids[0])
+    return ids
+
+
+_V9_PRE_SEND_FULL_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    try:
+        _reliable_hydrate_exact_post(post, force=True)
+    except Exception as exc:
+        logging.debug("Prepared-post exact hydration finished without replacement: %s", short_error(exc, 240))
+
+    # For text-only posts, bypass old fallback chains and send the final message
+    # once with both required buttons on that exact message.
+    if not _v9_post_has_media(post) and CONTROL_CHAT_ID:
+        final_message = _finalize_outgoing_message_only(message_html)
+        if len(html_message_to_plain_text(final_message)) <= 4000:
+            response = telegram_api(
+                "sendMessage",
+                {
+                    "chat_id": CONTROL_CHAT_ID,
+                    "text": rtl(final_message),
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                    "reply_markup": _v9_prepared_markup(token),
+                },
+                max_attempts=2,
+                timeout=max(7.0, REQUEST_TIMEOUT_SECONDS),
+            )
+            ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+            if not ids:
+                raise RuntimeError("prepared_text_message_missing_id")
+            CONTROL_TELEGRAM_MEDIA_CACHE[token] = list(ids)
+            _save_prepared_media_ids(token, ids)
+            return ids
+    return _V9_PRE_SEND_FULL_CONTROL_CANDIDATE(post, token, message_html)
+
+
+# ---------------------------------------------------------------------------
+# 5) Every heavy control action starts with a new message and updates it.
+# ---------------------------------------------------------------------------
+def _v9_control_result_parts(result: Any) -> list[str]:
+    if isinstance(result, (list, tuple)):
+        raw_parts = [str(item) for item in result if str(item).strip()]
+    else:
+        value = str(result or "").strip()
+        raw_parts = [value] if value else []
+    if not raw_parts:
+        raw_parts = ["לא נמצאו נתונים להצגה."]
+    parts: list[str] = []
+    for raw in raw_parts:
+        chunks = control_text_chunks(raw)
+        parts.extend(chunks or [raw])
+    return parts
+
+
+def _all_new_results_submit(callback_id: str, acknowledgement: str, compute_fn, reply_markup: dict[str, Any] | None = None) -> None:
+    if callback_id:
+        answer_control_callback(callback_id, acknowledgement)
+    loading_id: int | None = None
+    try:
+        label = str(acknowledgement or "מבצע את הפעולה").strip()
+        loading_id = send_control_text("⏳ " + label + "...", None, control_delete_message_reply_markup())
+    except Exception as exc:
+        logging.debug("Could not create fresh control loading message: %s", exc)
+
+    def _worker() -> None:
+        try:
+            parts = _v9_control_result_parts(compute_fn())
+        except Exception as exc:
+            parts = ["הפעולה נכשלה:\n" + short_error(exc, 900)]
+        final_markup = reply_markup if reply_markup is not None else control_delete_message_reply_markup()
+        try:
+            if loading_id and parts:
+                send_control_text(parts[0], loading_id, final_markup)
+                for extra in parts[1:]:
+                    send_control_text(extra, None, final_markup)
+            else:
+                for part in parts:
+                    send_control_text(part, None, final_markup)
+        except Exception as exc:
+            logging.exception("Updating fresh control result failed: %s", exc)
+
+    try:
+        _CONTROL_BUTTON_EXECUTOR.submit(_worker)
+    except Exception:
+        Thread(target=_worker, daemon=True).start()
+
+
+_V9_PRE_SEND_CONTROL_TEXT_ASYNC = send_control_text_async
+
+
+def send_control_text_async(
+    loading_text: str,
+    compute_fn,
+    message_id: Any = None,
+    reply_markup: dict[str, Any] | None = None,
+    *,
+    result_new_message: bool = False,
+    result_reply_markup: dict[str, Any] | None = None,
+    full_result: bool = False,
+    loading_new_message: bool = False,
+    loading_reply_markup: dict[str, Any] | None = None,
+) -> None:
+    # Heavy actions never overwrite the menu. A fresh loading message is created
+    # immediately and that exact message becomes the final result.
+    return _V9_PRE_SEND_CONTROL_TEXT_ASYNC(
+        loading_text,
+        compute_fn,
+        None,
+        reply_markup,
+        result_new_message=False,
+        result_reply_markup=result_reply_markup,
+        full_result=full_result,
+        loading_new_message=True,
+        loading_reply_markup=(loading_reply_markup if loading_reply_markup is not None else control_delete_message_reply_markup()),
+    )
+
+
+_V9_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "") if callback else ""
+    if data.startswith("football_prepare_history_ai:"):
+        callback_id = str(callback.get("id", "") or "")
+        token = data.split(":", 1)[1].strip()
+        if callback_id:
+            answer_control_callback(callback_id, "מכין את הדיווח המלא")
+        try:
+            status_id = send_control_text("⏳ מכין את הדיווח המלא...", None, control_delete_message_reply_markup())
+        except Exception:
+            status_id = None
+
+        def _prepare_worker() -> None:
+            try:
+                prepare_history_post_with_ai(token)
+                if status_id:
+                    send_control_text("✅ הדיווח הוכן ונשלח לערוץ השקט.", status_id, control_delete_message_reply_markup())
+            except Exception as exc:
+                error = "⛔ הכנת הדיווח נכשלה:\n" + short_error(exc, 900)
+                if status_id:
+                    send_control_text(error, status_id, control_delete_message_reply_markup())
+                else:
+                    send_control_text(error, None, control_delete_message_reply_markup())
+
+        Thread(target=_prepare_worker, daemon=True, name="prepare-report-status").start()
+        return
+    return _V9_PRE_PROCESS_CONTROL_UPDATE(update)
+
+# ====== END USER COMPLETE RELIABILITY / FAST PIPELINE FIX V9 ======
+
 if __name__ == "__main__":
     main()
