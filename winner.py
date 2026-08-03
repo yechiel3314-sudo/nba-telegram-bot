@@ -49011,6 +49011,24 @@ def _send_full_control_candidate(post: Post, token: str, message_html: str) -> l
     except Exception as exc:
         logging.debug("Prepared-post exact hydration finished without replacement: %s", short_error(exc, 240))
 
+    # Media can be discovered only during exact hydration. Re-apply the final
+    # writer layout now, so quiet-channel preparation uses the real media state
+    # rather than the incomplete RSS preview state.
+    if callable(globals().get("_v15_render_writer_layout")):
+        message_html = _v15_render_writer_layout(post, message_html)
+        try:
+            prepared_item = _restore_prepared_send(token)
+            if isinstance(prepared_item, dict):
+                prepared_item["prepared_final_message_html"] = message_html
+                CONTROL_PREPARED_SENDS[token] = prepared_item
+                _persist_prepared_send(token, prepared_item)
+                try:
+                    _persist_prepared_send_durable(token, prepared_item)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logging.debug("Could not refresh prepared final caption safely: %s", short_error(exc, 240))
+
     # For text-only posts, bypass old fallback chains and send the final message
     # once with both required buttons on that exact message.
     if not _v9_post_has_media(post) and CONTROL_CHAT_ID:
@@ -49421,6 +49439,174 @@ def process_control_update(update: dict[str, Any]) -> None:
     return _V11_PRE_PROCESS_CONTROL_UPDATE(update)
 
 # ====== END USER WRITER-HEADER / QUIET-PREPARE FINAL FIX V11 ======
+
+
+# ====== FINAL MEDIA-AWARE WRITER LAYOUT / QUIET PREP FIX V15 ======
+# Requested exact behavior:
+# - Posts WITH a photo/video: every reporter heading is on its own line, followed
+#   by one blank line, except Nicolò Schira who keeps the compact inline style.
+# - Posts WITHOUT photo/video: all reporter headings use the compact inline style,
+#   exactly like Nicolò Schira.
+# - A reporter heading is reconstructed once only, even when RSS/Gemini already
+#   included it one or more times.
+# - Quiet-channel preparation is normalized after exact media hydration, so a
+#   photo discovered late cannot accidentally retain the text-only layout.
+
+BOT_BUILD_ID = "winner-media-aware-single-writer-heading-quiet-prepare-2026-08-03-v15"
+
+
+def _v15_post_has_media(post: Any, explicit_media: bool | None = None) -> bool:
+    if explicit_media is not None:
+        return bool(explicit_media)
+    helper = globals().get("_v9_post_has_media")
+    if callable(helper):
+        try:
+            return bool(helper(post))
+        except Exception:
+            pass
+    return bool(
+        list(getattr(post, "image_urls", []) or [])
+        or list(getattr(post, "video_urls", []) or [])
+        or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False))
+        or bool(getattr(post, "quoted_has_video", False))
+        or bool(getattr(post, "photo_expected", False))
+    )
+
+
+def _v15_render_writer_layout(
+    post: Any,
+    rendered: Any,
+    explicit_media: bool | None = None,
+) -> str:
+    """Return one canonical reporter prefix with the requested media layout."""
+    text = str(rendered or "")
+    label_helper = globals().get("_v11_writer_label")
+    aliases_helper = globals().get("_v11_writer_aliases")
+    strip_helper = globals().get("_v11_strip_leading_writer_prefixes")
+    if not (callable(label_helper) and callable(aliases_helper) and callable(strip_helper)):
+        return text
+
+    label = str(label_helper(post) or "").strip()
+    if not label:
+        return text
+    raw_aliases = aliases_helper(post, label)
+    # Existing Telegram HTML headings may encode apostrophes as &#x27;. Include
+    # both plain and escaped aliases so a second normalization never duplicates
+    # names such as ג'אנלוקה, בן ג'ייקובס or פול ג'ויס.
+    alias_variants: set[str] = set()
+    for alias in raw_aliases:
+        value = str(alias or "").strip()
+        if not value:
+            continue
+        alias_variants.add(value)
+        alias_variants.add(html.escape(value, quote=True))
+        alias_variants.add(html.escape(value, quote=False))
+    aliases = sorted(alias_variants, key=len, reverse=True)
+    body = strip_helper(text, aliases)
+    body = re.sub(
+        r"(?is)^\s*(?:<(?:b|strong|i|em)[^>]*>\s*</(?:b|strong|i|em)>\s*)+",
+        "",
+        body,
+    )
+    body = strip_helper(body, aliases).lstrip(
+        " \t\n\r\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff"
+    )
+
+    heading = f"<b>{html.escape(rtl(label + ':'))}</b>"
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    compact = username == "nicoschira" or not _v15_post_has_media(post, explicit_media)
+    if compact:
+        result = f"{heading} {body}".rstrip() if body else heading
+    else:
+        result = f"{heading}\n\n{body}".rstrip() if body else heading
+
+    footer_helper = globals().get("_user_v2_single_neto_footer")
+    if callable(footer_helper):
+        return footer_helper(result)
+    return normalize_neto_sport_footer(result)
+
+
+_V15_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V15_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _v15_render_writer_layout(post, rendered)
+
+
+# Main-channel senders receive the final media list explicitly. Normalize again
+# with that authoritative state, covering media discovered after build_message.
+_V15_PRE_SEND_PREPARED_MESSAGE_TO_MAIN = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    explicit_media = bool(
+        images
+        or video_url
+        or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False))
+        or bool(getattr(post, "quoted_has_video", False))
+    )
+    clean_message = _v15_render_writer_layout(post, message, explicit_media=explicit_media)
+    return _V15_PRE_SEND_PREPARED_MESSAGE_TO_MAIN(
+        post,
+        clean_message,
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+
+
+_V15_PRE_MANUAL_FORCE_SEND_PREPARED_MESSAGE = manual_force_send_prepared_message
+
+
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    explicit_media = bool(
+        images
+        or video_url
+        or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False))
+        or bool(getattr(post, "quoted_has_video", False))
+    )
+    clean_message = _v15_render_writer_layout(post, message, explicit_media=explicit_media)
+    return _V15_PRE_MANUAL_FORCE_SEND_PREPARED_MESSAGE(
+        post,
+        clean_message,
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+
+
+# Keep historical aliases on the corrected manual sender.
+_base_send_prepared_message_to_main = manual_force_send_prepared_message
+
+# ====== END FINAL MEDIA-AWARE WRITER LAYOUT / QUIET PREP FIX V15 ======
 
 if __name__ == "__main__":
     main()
