@@ -47764,5 +47764,450 @@ def _v22_duplicate_false_positive_policy(post: Post) -> bool:
 is_duplicate_false_positive_post = _v22_duplicate_false_positive_policy
 
 
+
+# ====== V24 NON-RSS CONTENT / TRAILING ATTRIBUTION / PROFILE-LOGO HARDENING ======
+# IMPORTANT: This block deliberately does not change RSS URLs, RSS timeouts,
+# mirror ordering, feed retries, discovery cadence, fetch_posts(), or any live-X
+# discovery function. It changes only outgoing text cleanup, hard editorial
+# exclusions, and photo branding/delivery boundaries.
+
+# ---------------------------------------------------------------------------
+# 1) Remove source-credit artifacts that occasionally survive translation.
+#    - A dash followed by Ben Jacobs at the very end of a paragraph is a source
+#      credit, not part of the report.
+#    - A standalone final S04/אס 04 row is Schalke's abbreviation and must not be
+#      printed as a separate paragraph. "שאלקה 04" inside a sentence is untouched.
+# ---------------------------------------------------------------------------
+_V24_INVISIBLE_CHARS = "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff"
+_V24_BEN_JACOBS_NAME_RE = (
+    r"(?:בן\s+ג[׳'’]?ייק(?:ובס|וסב|וב)|Ben\s+Jacobs)"
+)
+_V24_TRAILING_BEN_CREDIT_RE = re.compile(
+    rf"(?iu)\s*[-–—־]\s*{_V24_BEN_JACOBS_NAME_RE}\s*[.!?…]*\s*$"
+)
+_V24_STANDALONE_BEN_CREDIT_RE = re.compile(
+    rf"(?iu)^[{_V24_INVISIBLE_CHARS}\s]*{_V24_BEN_JACOBS_NAME_RE}\s*[.!?…]*[{_V24_INVISIBLE_CHARS}\s]*$"
+)
+_V24_STANDALONE_S04_RE = re.compile(
+    rf"(?iu)^[{_V24_INVISIBLE_CHARS}\s]*(?:#\s*)?(?:S\s*[-._־]?\s*0?4|אס\s*[-._־]?\s*0?4)\s*[.!?…]*[{_V24_INVISIBLE_CHARS}\s]*$"
+)
+
+
+def _v24_visible_line(value: Any) -> str:
+    plain = html.unescape(re.sub(r"<[^>]+>", "", str(value or "")))
+    plain = re.sub(rf"[{_V24_INVISIBLE_CHARS}]", "", plain)
+    return plain.strip()
+
+
+def _v24_add_period_after_credit_removal(line: str) -> str:
+    value = line.rstrip()
+    visible = _v24_visible_line(value)
+    if visible and not re.search(r"[.!?…:;]$", visible):
+        # The affected source credit appears after ordinary plain text. Preserve
+        # any final HTML closing tags if one of the earlier formatters added them.
+        closing = re.search(r"(?is)((?:</(?:b|strong|i|em|u|s|a|code)>\s*)+)$", value)
+        if closing:
+            pos = closing.start(1)
+            return value[:pos].rstrip() + "." + value[pos:]
+        return value + "."
+    return value
+
+
+def _v24_clean_trailing_source_artifacts(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned: list[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line
+        if _V24_STANDALONE_S04_RE.fullmatch(line) or _V24_STANDALONE_BEN_CREDIT_RE.fullmatch(line):
+            continue
+        replaced = _V24_TRAILING_BEN_CREDIT_RE.sub("", line)
+        if replaced != line:
+            replaced = _v24_add_period_after_credit_removal(replaced)
+        cleaned.append(replaced.rstrip())
+    text = "\n".join(cleaned)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+_V24_PRE_FORMAT_MESSAGE = _v20_format_message
+
+
+def _v24_format_message(post: Any, message: Any) -> str:
+    return _v24_clean_trailing_source_artifacts(_V24_PRE_FORMAT_MESSAGE(post, message))
+
+
+_v20_format_message = _v24_format_message
+_V24_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _v24_finalize_outgoing_message(message: Any) -> str:
+    return _v24_clean_trailing_source_artifacts(_V24_PRE_FINALIZE_OUTGOING(message))
+
+
+_finalize_outgoing_message_only = _v24_finalize_outgoing_message
+
+# ---------------------------------------------------------------------------
+# 2) Absolute hard blocks for Instagram-sourced reports and NBA/basketball
+#    content. These run after every source-specific rescue, including Facts,
+#    CentreGoals and Polymarket, and are repeated at actual delivery boundaries
+#    so a manual/quiet route cannot accidentally bypass them.
+# ---------------------------------------------------------------------------
+_V24_INSTAGRAM_HARD_RE = re.compile(
+    r"(?iu)(?:\binstagram\b|\binsta(?:gram)?\b|instagram\.com|"
+    r"אינסטגרם|אינסטגראם|אינסטגרמא|דרך\s+אינסטגרם|באינסטגרם)"
+)
+_V24_NBA_HARD_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bNBA\b|\bWNBA\b|\bbasketball\b|\bSixers\b|\b76ers\b|\bWarriors\b|"
+    r"\bLakers\b|\bCeltics\b|\bNuggets\b|\bMavericks\b|\bClippers\b|"
+    r"\bBucks\b|\bThunder\b|\bHeat\b|\bNets\b|\bRockets\b|"
+    r"כדורסל|אן\s*בי\s*אי|אנ\s*בי\s*אי|סיקסרס|ווריורס|ווריירס|לייקרס|"
+    r"סלטיקס|נאגטס|מאבריקס|קליפרס|מילווקי\s+באקס|אוקלהומה\s+סיטי|"
+    r"טייריס\s+מקסי|ג['׳]?ואל\s+אמביד|סטף\s+קרי|קליי\s+תומפסון|"
+    r"דריימונד\s+גרין|קווין\s+דוראנט|לברון\s+ג['׳]?יימס|ג['׳]?יילן\s+בראון|"
+    r"נקודות\s+למשחק|ריבאונד(?:ים)?|אסיסט(?:ים)?|אולסטאר|סופר[-־ ]?טים|"
+    r"\bMVP\b|מופ\s+(?:של\s+)?(?:הגמר|הליגה)"
+    r")"
+)
+
+
+def _v24_hard_source_text(post: Any) -> str:
+    values = [
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "quoted_text", "") or ""),
+        str(getattr(post, "title", "") or ""),
+    ]
+    text = html.unescape("\n".join(value for value in values if value))
+    return re.sub(r"<[^>]+>", " ", text)
+
+
+def _v24_hard_content_reason(post: Any) -> str:
+    text = _v24_hard_source_text(post)
+    if _V24_INSTAGRAM_HARD_RE.search(text):
+        return "instagram_source_hard_block"
+    if _V24_NBA_HARD_RE.search(text):
+        return "nba_basketball_hard_block"
+    return ""
+
+
+_V24_PRE_OTHER_SPORT_POST = is_other_sport_post
+
+
+def is_other_sport_post(post: Post) -> bool:
+    if _V24_NBA_HARD_RE.search(_v24_hard_source_text(post)):
+        return True
+    return bool(_V24_PRE_OTHER_SPORT_POST(post))
+
+
+_V24_PRE_LOCAL_BLOCK_REASON = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    started = time.perf_counter()
+    hard_reason = _v24_hard_content_reason(post)
+    if hard_reason:
+        try:
+            _final_pipeline_set_processing_started(post)
+            _pipeline_add_stage(post, "filter_wall_seconds", time.perf_counter() - started)
+        except Exception:
+            pass
+        return hard_reason
+    return str(_V24_PRE_LOCAL_BLOCK_REASON(post) or "")
+
+
+_V24_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "instagram_source_hard_block" in raw:
+        return "דיווח שמקורו באינסטגרם נחסם"
+    if "nba_basketball_hard_block" in raw:
+        return "דיווח NBA או כדורסל נחסם"
+    return _V24_PRE_HEBREW_BLOCK_REASON(reason)
+
+
+def _v24_raise_if_hard_blocked(post: Any) -> None:
+    reason = _v24_hard_content_reason(post)
+    if reason:
+        raise RuntimeError(hebrew_block_reason(reason))
+
+
+_V24_PRE_SEND_PREPARED_MAIN = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    _v24_raise_if_hard_blocked(post)
+    return _V24_PRE_SEND_PREPARED_MAIN(
+        post, message, images, video_url=video_url, reply_message_ids=reply_message_ids
+    )
+
+
+_V24_PRE_MANUAL_SEND_PREPARED = manual_force_send_prepared_message
+
+
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    _v24_raise_if_hard_blocked(post)
+    return _V24_PRE_MANUAL_SEND_PREPARED(
+        post, message, images, video_url=video_url, reply_message_ids=reply_message_ids
+    )
+
+
+_base_send_prepared_message_to_main = manual_force_send_prepared_message
+_V24_PRE_SEND_FULL_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    hard_reason = _v24_hard_content_reason(post)
+    if hard_reason:
+        try:
+            send_control_text(
+                "⛔ " + hebrew_block_reason(hard_reason),
+                None,
+                control_delete_message_reply_markup(),
+            )
+        except Exception:
+            pass
+        return []
+    return _V24_PRE_SEND_FULL_CONTROL_CANDIDATE(
+        post, token, _v24_clean_trailing_source_artifacts(message_html)
+    )
+
+# ---------------------------------------------------------------------------
+# 3) Restore the exact uploaded logo as a true circular profile badge. V21 kept
+#    the right source image but its supersampled badge did not apply an ellipse
+#    mask, so the cached overlay could remain square. A new cache namespace also
+#    prevents old square-logo outputs from being reused.
+# ---------------------------------------------------------------------------
+_V24_PROFILE_BADGE_VERSION = "v24-profile-circle-1"
+
+
+def _v24_profile_logo_badge(size: int) -> str:
+    from PIL import ImageFilter
+    size = max(48, int(size))
+    folder = _channel_logo_cache_dir() / "badges_v24_profile"
+    folder.mkdir(parents=True, exist_ok=True)
+    output = folder / f"badge_{_V21_LOGO_SHA256[:12]}_{size}.png"
+    with _V22_BADGE_CREATION_LOCK:
+        if output.is_file() and output.stat().st_size > 300:
+            try:
+                with Image.open(output) as probe:
+                    if probe.size == (size, size) and probe.mode in {"RGBA", "LA"}:
+                        return str(output)
+            except Exception:
+                try:
+                    output.unlink()
+                except Exception:
+                    pass
+        if not _channel_logo_enabled():
+            raise RuntimeError("logo_source_unavailable")
+        render_size = max(size * 4, 320)
+        with Image.open(_channel_logo_resolved_path()) as opened:
+            source = ImageOps.exif_transpose(opened).convert("RGBA")
+            square = ImageOps.fit(
+                source,
+                (render_size, render_size),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+        square = square.filter(ImageFilter.UnsharpMask(radius=0.9, percent=130, threshold=2))
+        mask = Image.new("L", (render_size, render_size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, render_size - 1, render_size - 1), fill=255)
+        badge_hi = Image.new("RGBA", (render_size, render_size), (0, 0, 0, 0))
+        badge_hi.paste(square, (0, 0), mask)
+        border = max(8, round(render_size * 0.025))
+        inset = border // 2
+        ImageDraw.Draw(badge_hi).ellipse(
+            (inset, inset, render_size - 1 - inset, render_size - 1 - inset),
+            outline=(255, 255, 255, 245),
+            width=border,
+        )
+        badge = badge_hi.resize((size, size), Image.Resampling.LANCZOS)
+        tmp = output.with_suffix(".tmp.png")
+        badge.save(tmp, "PNG", optimize=True)
+        os.replace(tmp, output)
+        return str(output)
+
+
+_v21_logo_badge = _v24_profile_logo_badge
+_channel_logo_badge = _v24_profile_logo_badge
+
+
+def _v24_brand_image_profile(source: str) -> str:
+    from PIL import ImageFilter
+    source_text = str(source or "").strip()
+    if not source_text:
+        raise RuntimeError("empty_image_source")
+    already = _v21_verified_brand_info(source_text)
+    if already:
+        return os.path.realpath(source_text)
+    if not _channel_logo_enabled():
+        _v20_logo_audit(
+            "brand_failed", source=source_text, stage="logo_source",
+            error="logo_unavailable", version="v24_profile",
+        )
+        raise RuntimeError("Neto Sport logo unavailable; original image will not be sent")
+
+    key = hashlib.sha256(
+        ("neto-logo-v24-profile|" + _V21_LOGO_SHA256 + "|" + source_text).encode(
+            "utf-8", errors="ignore"
+        )
+    ).hexdigest()
+    folder = _channel_logo_cache_dir() / "photos_v24_profile"
+    folder.mkdir(parents=True, exist_ok=True)
+    output = folder / f"{key}.jpg"
+
+    if output.is_file() and output.stat().st_size > 800:
+        try:
+            with Image.open(output) as probe:
+                width, height = probe.size
+                probe.verify()
+            _v21_register_branded(
+                str(output), source_text, width=width, height=height, logo_size=0
+            )
+            _v20_logo_audit(
+                "brand_cache_hit", source=source_text, branded_file=str(output),
+                version="v24_profile",
+            )
+            return str(output)
+        except Exception:
+            try:
+                output.unlink()
+            except Exception:
+                pass
+
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            _v20_logo_audit(
+                "download_started", source=source_text, attempt=attempt,
+                version="v24_profile",
+            )
+            raw = _channel_read_image_bytes(source_text)
+            if not raw or len(raw) < 200:
+                raise RuntimeError("downloaded_image_empty_or_too_small")
+            with Image.open(io.BytesIO(raw)) as opened:
+                base = ImageOps.exif_transpose(opened).convert("RGBA")
+            width, height = base.size
+            if width < 100 or height < 100:
+                raise RuntimeError(f"image_too_small_for_logo:{width}x{height}")
+            short_side = min(width, height)
+            logo_size = max(72, round(short_side * 0.14))
+            logo_size = min(logo_size, max(72, round(short_side * 0.19)))
+            badge_path = _v24_profile_logo_badge(logo_size)
+            with Image.open(badge_path) as opened_badge:
+                badge = opened_badge.convert("RGBA")
+            margin = max(8, min(28, round(short_side * 0.016)))
+            base.alpha_composite(badge, (margin, margin))
+            rgb = base.convert("RGB").filter(
+                ImageFilter.UnsharpMask(radius=0.30, percent=108, threshold=3)
+            )
+            tmp = output.with_suffix(f".attempt{attempt}.tmp.jpg")
+            rgb.save(tmp, "JPEG", quality=98, subsampling=0, optimize=True)
+            os.replace(tmp, output)
+            with Image.open(output) as probe:
+                out_size = probe.size
+                probe.verify()
+            if out_size != (width, height):
+                raise RuntimeError(f"branded_dimension_mismatch:{out_size}!={(width, height)}")
+            _v21_register_branded(
+                str(output), source_text, width=width, height=height, logo_size=logo_size
+            )
+            _v20_logo_audit(
+                "brand_succeeded", source=source_text, branded_file=str(output),
+                width=width, height=height, logo_size=logo_size,
+                logo_sha256=_V21_LOGO_SHA256, attempt=attempt,
+                shape="circular_profile", version="v24_profile",
+            )
+            return str(output)
+        except Exception as exc:
+            last_error = exc
+            try:
+                output.unlink(missing_ok=True)
+            except Exception:
+                pass
+            _v20_logo_audit(
+                "brand_attempt_failed", source=source_text, attempt=attempt,
+                error=short_error(exc, 500), version="v24_profile",
+            )
+            if attempt < 3:
+                time.sleep(0.35 * attempt)
+
+    raise RuntimeError(
+        "logo_branding_failed_after_3_attempts; original image blocked: "
+        + short_error(last_error or RuntimeError("unknown_logo_error"), 500)
+    )
+
+
+def _v24_brand_image_profile_race_safe(source: str) -> str:
+    key = hashlib.sha256(str(source or "").strip().encode("utf-8", errors="ignore")).digest()[0]
+    lock = _V22_BRAND_STRIPE_LOCKS[key % len(_V22_BRAND_STRIPE_LOCKS)]
+    with lock:
+        return _v24_brand_image_profile(source)
+
+
+_v21_brand_image = _v24_brand_image_profile_race_safe
+_channel_brand_image = _v24_brand_image_profile_race_safe
+
+# One legacy single-photo quiet-preview helper could still hand an original URL
+# directly to sendPhoto. Keep its exact one-photo behavior, but brand and verify
+# that photo first. Multi-photo preparation continues through the established
+# album route, which already brands every image.
+_V24_PRE_CONTROL_MEDIA_PAYLOAD = _control_candidate_media_payload
+
+
+def _control_candidate_media_payload(
+    post: Post,
+    message_html: str,
+    reply_markup: dict[str, Any],
+) -> tuple[list[int], bool]:
+    _v24_raise_if_hard_blocked(post)
+    _reliable_hydrate_exact_post(post, force=True)
+    if _acceptance_post_requires_video(post):
+        return _V24_PRE_CONTROL_MEDIA_PAYLOAD(post, message_html, reply_markup)
+    images = _final_dedupe_exact_photos(selected_post_images(post))
+    if not images:
+        if bool(getattr(post, "photo_expected", False)):
+            _v20_logo_audit(
+                "quiet_send_blocked", post_id=getattr(post, "post_id", ""),
+                stage="expected_photo_missing", version="v24_profile",
+            )
+            raise RuntimeError("Expected photo is missing; unbranded fallback is forbidden")
+        return [], False
+    branded = _v21_brand_images(images)
+    if not branded or _v21_verified_brand_info(branded[0]) is None:
+        raise RuntimeError("Verified profile-logo photo was not produced")
+    caption = _finalize_outgoing_message_only(_v20_format_message(post, message_html))
+    if not _acceptance_caption_fits(caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        [branded[0]],
+        caption,
+        reply_markup=ensure_delete_button_reply_markup(reply_markup),
+    )
+    return _telegram_result_message_ids(response), True
+
+
+logging.info(
+    "V24 non-RSS fixes active: trailing Ben/S04 cleanup, Instagram/NBA hard blocks, "
+    "and circular profile-logo photo hard gate"
+)
+# ====== END V24 NON-RSS CONTENT / TRAILING ATTRIBUTION / PROFILE-LOGO HARDENING ======
+
 if __name__ == "__main__":
     main()
