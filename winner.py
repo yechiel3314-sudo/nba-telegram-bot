@@ -48209,5 +48209,147 @@ logging.info(
 )
 # ====== END V24 NON-RSS CONTENT / TRAILING ATTRIBUTION / PROFILE-LOGO HARDENING ======
 
+
+# ====== V25 NO-LOGO / LOW-SERVER-LOAD MEDIA PATH (2026-08-04) ======
+# Requested change only: stop adding a logo to photos. The RSS path, filtering,
+# duplicate detection, formatting, persistent memory and Telegram control flow
+# remain unchanged. Original photo URLs/files are handed to Telegram directly,
+# avoiding image download, Pillow decode, resize/composite and JPEG re-encoding.
+
+BOT_BUILD_ID = "winner-v24-non-rss-no-image-logo-2026-08-04-v25"
+IMAGE_LOGO_ENABLED = False
+
+
+def _v25_original_image_list(images: list[str]) -> list[str]:
+    """Return the exact original image references, deduplicated in source order."""
+    return list(dict.fromkeys(
+        str(value or "").strip() for value in (images or []) if str(value or "").strip()
+    ))
+
+
+def _v25_no_logo_one_image(source: str) -> str:
+    source_text = str(source or "").strip()
+    if not source_text:
+        raise RuntimeError("empty_image_source")
+    return source_text
+
+
+def _v25_no_logo_images(images: list[str]) -> list[str]:
+    return _v25_original_image_list(images)
+
+
+# Neutralize every dynamically looked-up branding entry point. Existing legacy
+# wrappers can continue to call them, but they now receive the original media.
+_channel_brand_image = _v25_no_logo_one_image
+_v21_brand_image = _v25_no_logo_one_image
+_channel_brand_images = _v25_no_logo_images
+_v21_brand_images = _v25_no_logo_images
+
+
+def _v25_send_original_photo_set_to_chat(
+    chat_id: str,
+    images: list[str],
+    caption: str,
+    reply_markup: dict[str, Any] | None = None,
+    reply_id: int | None = None,
+) -> dict[str, Any]:
+    """Send original photos without local processing.
+
+    Local files use the established multipart sender. Remote URLs are passed to
+    Telegram directly, so Railway does not download or re-encode them.
+    """
+    originals = _v25_original_image_list(images)
+    if not originals:
+        raise RuntimeError("missing_images")
+
+    if all(os.path.isfile(path) for path in originals):
+        return _V20_PRE_PHOTO_SET_SENDER(
+            str(chat_id), originals, caption, reply_markup=reply_markup, reply_id=reply_id
+        )
+
+    common: dict[str, Any] = {"chat_id": str(chat_id)}
+    if reply_id:
+        common["reply_to_message_id"] = int(reply_id)
+        common["allow_sending_without_reply"] = True
+
+    if len(originals) == 1:
+        common.update({
+            "photo": originals[0],
+            "caption": caption,
+            "parse_mode": "HTML",
+        })
+        if reply_markup:
+            common["reply_markup"] = reply_markup
+        return telegram_api("sendPhoto", common, max_attempts=1)
+
+    media: list[dict[str, Any]] = []
+    for index, source in enumerate(originals):
+        item: dict[str, Any] = {"type": "photo", "media": source}
+        if index == 0:
+            item["caption"] = caption
+            item["parse_mode"] = "HTML"
+        media.append(item)
+    common["media"] = media
+    return telegram_api("sendMediaGroup", common, max_attempts=1)
+
+
+# Remove the V21/V24 verified-logo gate at the final Telegram photo boundary.
+_channel_send_photo_set_to_chat = _v25_send_original_photo_set_to_chat
+
+
+def _v25_send_original_photos_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    originals = _final_dedupe_exact_photos(images or selected_post_images(post))
+    if not originals:
+        raise RuntimeError("No exact images available")
+    if not _acceptance_caption_fits(message):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    message_ids: dict[str, int] = {}
+    errors: list[str] = []
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            response = _v25_send_original_photo_set_to_chat(
+                str(chat_id), originals, message,
+                reply_id=(reply_message_ids or {}).get(str(chat_id)),
+            )
+            ids = _telegram_result_message_ids(response)
+            if ids:
+                message_ids[str(chat_id)] = int(ids[0])
+        except Exception as exc:
+            errors.append(f"{chat_id}: {short_error(exc, 500)}")
+            logging.error("V25 original-photo send failed for chat %s: %s", chat_id, exc)
+    if not message_ids:
+        raise RuntimeError("Original photo broadcast failed for all chats: " + " | ".join(errors))
+    return message_ids, f"{len(originals)} original_images_no_logo"
+
+
+# Active V21 main/manual wrappers look this name up at call time.
+_v21_send_verified_branded_to_main = _v25_send_original_photos_to_main
+_channel_send_branded_to_main = _v25_send_original_photos_to_main
+
+
+# Restore the established original-media quiet preview for a single photo/video.
+# The V24 Instagram/NBA hard block remains active before this call.
+def _control_candidate_media_payload(
+    post: Post,
+    message_html: str,
+    reply_markup: dict[str, Any],
+) -> tuple[list[int], bool]:
+    _v24_raise_if_hard_blocked(post)
+    clean = _v24_format_message(post, _v24_clean_trailing_source_artifacts(message_html))
+    return _V24_PRE_CONTROL_MEDIA_PAYLOAD(post, clean, reply_markup)
+
+
+logging.info(
+    "V25 no-logo media mode active: original photos are sent directly; "
+    "RSS and all non-logo behavior are unchanged"
+)
+# ====== END V25 NO-LOGO / LOW-SERVER-LOAD MEDIA PATH ======
+
 if __name__ == "__main__":
     main()
