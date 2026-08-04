@@ -38363,11 +38363,9 @@ _PRE_FOUR_RETRY_MANUAL_TRANSLATION = _final_validated_manual_single_attempt
 
 
 
-# ====== FINAL SINGLE CONTROL PANEL / NO DUPLICATE KEYBOARDS FIX (2026-08-02) ======
-# Keep exactly one persistent management panel:
-# - startup edits/reuses the saved panel instead of forcing a fresh keyboard;
-# - navigation continues to edit the clicked panel;
-# - result messages never receive the full navigation keyboard, only Delete.
+# ====== FINAL CONTROL PANEL BEHAVIOR (2026-08-04) ======
+# Send a fresh complete control panel after every process start. Navigation still
+# edits the clicked panel, and result messages still receive only their local actions.
 # This patch does not touch RSS, filters, translations, source lists or memory files.
 
 
@@ -38375,15 +38373,8 @@ _PRE_SINGLE_PANEL_SEND_QUICK_CONTROL = send_quick_control_panel
 
 
 def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> None:
-    """Reuse the existing root panel even when an older startup caller asks for force_new."""
-    effective_force_new = bool(force_new)
-    try:
-        saved = load_control_state().get("quick_control_message_id")
-        if saved:
-            effective_force_new = False
-    except Exception:
-        pass
-    return _PRE_SINGLE_PANEL_SEND_QUICK_CONTROL(action_done, force_new=effective_force_new)
+    """Honor force_new so startup always sends a fresh complete control panel."""
+    return _PRE_SINGLE_PANEL_SEND_QUICK_CONTROL(action_done, force_new=bool(force_new))
 
 
 def _final_control_markup_callbacks(reply_markup: dict[str, Any] | None) -> set[str]:
@@ -48908,6 +48899,211 @@ logging.info(
     "number-word validation and external article-card image fallback; RSS/logo mode unchanged"
 )
 # ====== END V27 CONTROL LAYOUT / RELIABLE ALBUM ACTIONS / SAFE TRANSLATION / ARTICLE-CARD IMAGE FALLBACK ======
+
+
+# ====== V29 NARROW TEXT / SAME-EVENT DUPLICATE FIXES (2026-08-04) ======
+# This layer intentionally changes only four user-requested behaviors:
+# 1) remove the exact promotional sentence "the deal was completed by the agents...";
+# 2) catch short paraphrases of the same transfer event;
+# 3) allow the opening label "חדש:" to use the existing safe bold formatter;
+# 4) remove stray pencil/period artifacts before the single Neto Sport footer.
+# RSS, discovery cadence, media selection, server limits, buttons and persistence
+# are deliberately untouched.
+
+BOT_BUILD_ID = "winner-v29-agent-credit-same-event-new-label-punctuation-2026-08-04"
+
+# "חדש:" is a one-word opening label, just like "דיווח:" and "רשמי:".
+# The existing formatter still applies it only to the first report line and only
+# when there is no reporter heading, so ordinary uses of the word חדש are untouched.
+try:
+    _V20_SAFE_OPENING_LABELS.add("חדש")
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# 1) Remove only the exact agent-credit sentence requested by the user.
+# Do not remove ordinary news about agents, representation, negotiations or any
+# other sentence. The rule must start with "העסקה הושלמה..." and explicitly name
+# the agent(s) as the people who completed it.
+# ---------------------------------------------------------------------------
+_V29_AGENT_COMPLETION_CREDIT_RE = re.compile(
+    r"(?iu)(?<![A-Za-zא-ת0-9])"
+    r"העסקה\s+הושלמה\s+(?:על\s+ידי|ע[\"״']?י)\s+"
+    r"הסוכנ(?:ים|ות|ת)?\b[^.!?\n]{1,220}[.!?]?"
+)
+_V29_NON_SIGNATURE_PENCIL_RE = re.compile(r"(?iu)[ \t]*[.。]?[ \t]*📝[ \t]*$")
+_V29_TRAILING_EMOJI_PERIOD_RE = re.compile(
+    r"(?P<punct>[!?…])(?P<space>[ \t]*)"
+    r"(?P<emoji>(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2300-\u27BF\ufe0f\u200d]+[ \t]*)+)"
+    r"\.$"
+)
+
+
+def _v29_clean_requested_text_artifacts(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = _V29_AGENT_COMPLETION_CREDIT_RE.sub("", text)
+
+    cleaned_lines: list[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip()
+        visible = html.unescape(re.sub(r"<[^>]+>", "", line))
+        is_neto_signature = bool(
+            "t.me/neto_sport" in line
+            or re.search(r"(?iu)נטו\s+ספורט", visible)
+        )
+        if not is_neto_signature:
+            # A pencil belongs only to the canonical Neto Sport footer. Keep any
+            # preceding flag/emoji, but remove the accidental ".📝" artifact.
+            line = _V29_NON_SIGNATURE_PENCIL_RE.sub("", line).rstrip()
+            # When a sentence already ends in !/?/… before its final emoji cluster,
+            # a second full stop after the emoji is redundant: "! 🤍⏳." -> "! 🤍⏳".
+            line = _V29_TRAILING_EMOJI_PERIOD_RE.sub(
+                lambda match: match.group("punct") + match.group("space") + match.group("emoji").rstrip(),
+                line,
+            )
+
+        line = re.sub(r"[ \t]+([.!?…])", r"\1", line)
+        line = re.sub(r"\.{2,}", ".", line)
+        line = re.sub(r"[ \t]{2,}", " ", line)
+        cleaned_lines.append(line)
+
+    text = "\n".join(cleaned_lines)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+_V29_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _v29_clean_requested_text_artifacts(translated)
+    if quoted_translated:
+        quoted_translated = _v29_clean_requested_text_artifacts(quoted_translated)
+    rendered = _V29_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _v29_clean_requested_text_artifacts(rendered)
+
+
+_V29_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    return _v29_clean_requested_text_artifacts(_V29_PRE_FINALIZE_OUTGOING(message))
+
+
+# ---------------------------------------------------------------------------
+# 2) Conservative short-paraphrase duplicate rule for the same transfer event.
+# It is intentionally directional: a later short summary is blocked when all of
+# its named clubs were already present, the same distinctive identity is shared,
+# and both reports are at the same transfer stage. A genuinely newer stage
+# (interest -> agreement/official) is not blocked.
+# ---------------------------------------------------------------------------
+_V29_TRANSFER_CONTEXT_RE = re.compile(
+    r"(?iu)(?:"
+    r"transfer|move|sign(?:ing)?|join(?:ing)?|interest(?:ed)?|keen|candidate|"
+    r"close(?:d|r)?|complete(?:d)?|agreement|deal|"
+    r"העברה|מעבר|להחתים|יחתום|חתם|יצטרף|עניין|מעוניינ|מועמד|"
+    r"צפוי\s+לה(?:יסגר|ושלם)|קרוב|הסכם|עסקה"
+    r")"
+)
+_V29_INTEREST_STAGE_RE = re.compile(
+    r"(?iu)(?:interest(?:ed)?|keen|monitoring|candidate|shortlist|considering|"
+    r"מגלה\s+עניין|עניין\s+ב|מעוניינ|רשימת\s+המועמדים|ברשימת\s+המועמדים|בוחנת|שוקלת)"
+)
+_V29_CLOSE_STAGE_RE = re.compile(
+    r"(?iu)(?:expected\s+to\s+(?:close|complete)|set\s+to\s+(?:close|complete)|"
+    r"close\s+to|nearing|full\s+agreement\s+close|"
+    r"צפוי\s+לה(?:יסגר|ושלם)|צפויה\s+לה(?:יסגר|ושלם)|"
+    r"הסכם\s+מלא\s+קרוב|קרוב\s+ל(?:סגירה|השלמה)|צפוי\s+להיסגר\s+השבוע)"
+)
+_V29_OFFICIAL_STAGE_RE = re.compile(
+    r"(?iu)(?:#?HERE(?:_|\s)+WE(?:_|\s)+GO|official|confirmed|deal\s+agreed|"
+    r"agreement\s+reached|signed|completed|done\s+deal|medical(?:s)?\s+(?:booked|scheduled)|"
+    r"רשמי|אושר|אושרה|העסקה\s+סוכמה|הושג\s+סיכום|חתם|נחתם|"
+    r"העסקה\s+הושלמה|נקבעו\s+בדיקות|בדיקות\s+רפואיות)"
+)
+
+
+def _v29_transfer_stage(value: Any) -> int:
+    text = str(value or "")
+    if _V29_OFFICIAL_STAGE_RE.search(text):
+        return 3
+    if _V29_CLOSE_STAGE_RE.search(text):
+        return 2
+    if _V29_INTEREST_STAGE_RE.search(text):
+        return 1
+    return 0
+
+
+def _v29_conservative_same_transfer_event(current_text: str, previous_text: str) -> bool:
+    if not _V29_TRANSFER_CONTEXT_RE.search(current_text) or not _V29_TRANSFER_CONTEXT_RE.search(previous_text):
+        return False
+
+    current_stage = _v29_transfer_stage(current_text)
+    previous_stage = _v29_transfer_stage(previous_text)
+    if current_stage <= 0 or previous_stage <= 0:
+        return False
+    # A current report that materially advances the event must remain publishable.
+    if current_stage > previous_stage:
+        return False
+
+    try:
+        current_teams = set(_final_logical_team_ids(current_text) or set())
+        previous_teams = set(_final_logical_team_ids(previous_text) or set())
+    except Exception:
+        return False
+    if not current_teams or not previous_teams:
+        return False
+    # The later short version may omit a contextual club (e.g. another interested
+    # club mentioned only in the longer report), but it may not introduce a new club.
+    if current_teams - previous_teams:
+        return False
+
+    try:
+        shared_identity = set(_final_event_identity_tokens(current_text) or set()) & set(
+            _final_event_identity_tokens(previous_text) or set()
+        )
+    except Exception:
+        shared_identity = set()
+    # Require multiple shared distinctive tokens and at least one long token.
+    # This catches the supplied Reijnders/Diomande examples while avoiding a
+    # same-club match based only on generic words such as "השבוע" or "מעבר".
+    if len(shared_identity) < 2 or not any(len(token) >= 7 for token in shared_identity):
+        return False
+    return True
+
+
+_V29_PRE_V9_SAME_EVENT_TEXT = _v9_same_event_text
+
+
+def _v9_same_event_text(current_text: str, previous_text: str) -> tuple[bool, float]:
+    same, score = _V29_PRE_V9_SAME_EVENT_TEXT(current_text, previous_text)
+    if same:
+        return same, score
+    if _v29_conservative_same_transfer_event(current_text, previous_text):
+        return True, max(float(score or 0.0), 0.96)
+    return False, score
+
+
+logging.info(
+    "V29 active: exact agent-credit removal, conservative same-transfer duplicate catch, "
+    "bold חדש opener and punctuation cleanup; RSS/server/button settings unchanged"
+)
+# ====== END V29 NARROW TEXT / SAME-EVENT DUPLICATE FIXES ======
 
 if __name__ == "__main__":
     main()
