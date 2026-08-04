@@ -49105,5 +49105,303 @@ logging.info(
 )
 # ====== END V29 NARROW TEXT / SAME-EVENT DUPLICATE FIXES ======
 
+
+# ====== V30 EXACT WRITER SPACING / SINGLE FOOTER / OPENING-LABEL LINE BREAK ======
+# Narrow formatting-only patch requested on 2026-08-04:
+# - exactly one empty line between a reporter heading and the report;
+# - exactly one canonical Neto Sport footer, even when a legacy footer was glued
+#   to a flag/emoji line;
+# - after a bold opening label such as "פרסום ראשון:", place the report on the
+#   immediately following line (no empty line);
+# - remove redundant full stops around trailing emoji clusters.
+# RSS, discovery, filters, buttons, media, server limits and persistence are untouched.
+
+BOT_BUILD_ID = "winner-v30-writer-spacing-single-footer-opening-line-2026-08-04"
+
+_V30_INVISIBLE_CHARS = "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff"
+_V30_EMOJI_BASE = r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2300-\u27BF]"
+_V30_EMOJI_CLUSTER = rf"(?:{_V30_EMOJI_BASE}(?:\ufe0f|\u200d{_V30_EMOJI_BASE})*)"
+
+_V30_SIGNATURE_PATTERNS = (
+    re.compile(
+        r'(?is)[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*'
+        r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>'
+        r'\s*[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*נטו\s+ספורט\s*'
+        r'</a>\s*[.。]?\s*📝'
+    ),
+    re.compile(
+        r'(?is)[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*'
+        r'\[\s*נטו\s+ספורט\s*\]\(\s*https?://t\.me/neto_sport/?\s*\)\s*[.。]?\s*📝'
+    ),
+    re.compile(
+        r'(?is)[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*'
+        r'נטו\s+ספורט\s*\(\s*https?://t\.me/neto_sport/?\s*\)\s*[.。]?\s*📝'
+    ),
+    re.compile(
+        r'(?is)[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*'
+        r'נטו\s+ספורט\s*[.。]?\s*📝'
+    ),
+)
+
+
+def _v30_visible_line(value: Any) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", str(value or ""))).strip(
+        " \t" + _V30_INVISIBLE_CHARS
+    )
+
+
+def _v30_known_writer_labels() -> set[str]:
+    labels: set[str] = set()
+    for value in ACCOUNT_DISPLAY_NAMES.values():
+        clean = str(value or "").strip().rstrip(":").strip()
+        if clean:
+            labels.add(clean.casefold())
+    labels.update({
+        "פבריציו רומאנו מאשר",
+    })
+    return labels
+
+
+_V30_WRITER_LABELS = _v30_known_writer_labels()
+
+
+def _v30_is_writer_heading(line: str) -> bool:
+    visible = _v30_visible_line(line)
+    if not visible.endswith(":"):
+        return False
+    label = visible[:-1].strip().casefold()
+    if label in _V30_WRITER_LABELS:
+        return True
+    # A bold opening label such as "פרסום ראשון:" is not a reporter heading.
+    # For an unknown dynamically configured reporter, accept the heading only
+    # when it has no leading emoji and is not one of the safe opening labels.
+    safe_labels = {str(item).casefold() for item in _V20_SAFE_OPENING_LABELS}
+    has_leading_emoji = bool(re.match(
+        rf"^[{re.escape(_V30_INVISIBLE_CHARS)} \t]*(?:{_V30_EMOJI_CLUSTER})",
+        line,
+    ))
+    return bool(
+        re.search(r"<(?:b|strong)\b", line, re.I)
+        and 2 <= len(label) <= 60
+        and label not in safe_labels
+        and not has_leading_emoji
+    )
+
+
+def _v30_split_inline_writer_heading(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    first = next((idx for idx, line in enumerate(lines) if line.strip()), None)
+    if first is None:
+        return text
+    line = lines[first]
+    match = re.match(
+        rf"^(?P<prefix>[{re.escape(_V30_INVISIBLE_CHARS)} \t]*)"
+        r"(?P<head><(?P<tag>b|strong)(?:\s+[^>]*)?>.*?:\s*</(?P=tag)>)"
+        r"[ \t]+(?P<body>\S.*)$",
+        line,
+        re.I,
+    )
+    if not match or not _v30_is_writer_heading(match.group("head")):
+        return text
+    body = match.group("body").lstrip()
+    if re.search(r"[\u0590-\u05FF]", _v30_visible_line(body)) and not body.lstrip().startswith(RTL_MARK):
+        body = RTL_MARK + body
+    lines[first:first + 1] = [match.group("prefix") + match.group("head"), "", body]
+    return "\n".join(lines)
+
+
+def _v30_remove_all_neto_footers(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    for pattern in _V30_SIGNATURE_PATTERNS:
+        text = pattern.sub("", text)
+    # Remove an orphan pencil left by a legacy signature only when it is its own
+    # trailing artifact. Other pencil emoji inside a report are untouched.
+    text = re.sub(
+        r"(?im)^[ \t\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*[.。]?[ \t]*📝[ \t]*$",
+        "",
+        text,
+    )
+    return text
+
+
+def _v30_clean_emoji_punctuation(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned: list[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip()
+        # Keep a normal sentence-ending mark before the emoji, but ensure a
+        # readable space: "קבועות.🧤" -> "קבועות. 🧤".
+        line = re.sub(
+            rf"([.!?…])(?={_V30_EMOJI_CLUSTER})",
+            r"\1 ",
+            line,
+        )
+        # A full stop after an emoji is redundant when another emoji follows or
+        # when the emoji cluster is already the visual end of the line.
+        line = re.sub(
+            rf"(?P<emoji>{_V30_EMOJI_CLUSTER})[ \t]*\.(?=[ \t]*(?:{_V30_EMOJI_CLUSTER}|$))",
+            lambda match: match.group("emoji"),
+            line,
+        )
+        line = re.sub(r"[ \t]+([.!?…])", r"\1", line)
+        line = re.sub(r"\.{2,}", ".", line)
+        line = re.sub(r"[ \t]{2,}", " ", line)
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
+def _v30_split_bold_opening_label(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    nonempty = [idx for idx, line in enumerate(lines) if line.strip()]
+    if not nonempty:
+        return text
+
+    report_index = nonempty[0]
+    if _v30_is_writer_heading(lines[report_index]):
+        for idx in nonempty[1:]:
+            report_index = idx
+            break
+        else:
+            return text
+
+    line = lines[report_index]
+    labels = sorted((str(item) for item in _V20_SAFE_OPENING_LABELS), key=len, reverse=True)
+    label_alt = "|".join(re.escape(item) for item in labels)
+    pattern = re.compile(
+        rf"^(?P<prefix>[{re.escape(_V30_INVISIBLE_CHARS)} \t]*)"
+        rf"(?P<emoji>(?:{_V30_EMOJI_CLUSTER}[ \t]*)*)"
+        rf"(?P<bold><(?P<tag>b|strong)(?:\s+[^>]*)?>\s*(?:{label_alt})\s*:\s*</(?P=tag)>)"
+        r"[ \t]*(?P<body>\S.*)$",
+        re.I,
+    )
+    match = pattern.match(line)
+    if not match:
+        # Also accept Telegram-style Markdown cached in an old prepared message.
+        markdown_pattern = re.compile(
+            rf"^(?P<prefix>[{re.escape(_V30_INVISIBLE_CHARS)} \t]*)"
+            rf"(?P<emoji>(?:{_V30_EMOJI_CLUSTER}[ \t]*)*)"
+            rf"(?P<bold>\*\*\s*(?:{label_alt})\s*:\s*\*\*)"
+            r"[ \t]*(?P<body>\S.*)$",
+            re.I,
+        )
+        match = markdown_pattern.match(line)
+    if not match:
+        return text
+
+    opening_line = (match.group("prefix") + match.group("emoji") + match.group("bold")).rstrip()
+    body_line = match.group("body").lstrip()
+    if re.search(r"[\u0590-\u05FF]", _v30_visible_line(body_line)) and not body_line.lstrip().startswith(RTL_MARK):
+        body_line = RTL_MARK + body_line
+    lines[report_index:report_index + 1] = [opening_line, body_line]
+    return "\n".join(lines)
+
+
+def _v30_strip_same_writer_prefix(line: str, writer_label: str) -> tuple[str, bool]:
+    variants = {
+        writer_label,
+        html.escape(writer_label, quote=False),
+        html.escape(writer_label, quote=True),
+    }
+    variants = {item for item in variants if item}
+    if not variants:
+        return line, False
+    alt = "|".join(re.escape(item) for item in sorted(variants, key=len, reverse=True))
+    pattern = re.compile(
+        rf"^[{re.escape(_V30_INVISIBLE_CHARS)} \t]*"
+        r"(?:<(?:b|strong)(?:\s+[^>]*)?>\s*)?"
+        rf"[{re.escape(_V30_INVISIBLE_CHARS)} \t]*(?:{alt})\s*:"
+        r"\s*(?:</(?:b|strong)>\s*)?",
+        re.I,
+    )
+    match = pattern.match(line)
+    if not match:
+        return line, False
+    return line[match.end():].lstrip(" \t" + _V30_INVISIBLE_CHARS), True
+
+
+def _v30_force_writer_paragraph_gap(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    first = next((idx for idx, line in enumerate(lines) if line.strip()), None)
+    if first is None or not _v30_is_writer_heading(lines[first]):
+        return text
+    writer_label = _v30_visible_line(lines[first])[:-1].strip()
+
+    # Remove only repeated copies of the same writer immediately after the
+    # canonical first heading. A mention later in the report is never touched.
+    cursor = first + 1
+    while cursor < len(lines):
+        if not lines[cursor].strip():
+            cursor += 1
+            continue
+        stripped, changed = _v30_strip_same_writer_prefix(lines[cursor], writer_label)
+        if not changed:
+            break
+        if stripped:
+            if re.search(r"[\u0590-\u05FF]", _v30_visible_line(stripped)) and not stripped.lstrip().startswith(RTL_MARK):
+                stripped = RTL_MARK + stripped
+            lines[cursor] = stripped
+            break
+        del lines[cursor]
+
+    body = next((idx for idx in range(first + 1, len(lines)) if lines[idx].strip()), None)
+    if body is None:
+        return "\n".join(lines[:first + 1])
+    # Remove any existing blank-line count and insert exactly one empty line.
+    return "\n".join(lines[:first + 1] + [""] + lines[body:])
+
+
+def _v30_format_report_body(value: Any) -> str:
+    text = _v30_remove_all_neto_footers(value)
+    text = _v30_clean_emoji_punctuation(text)
+    text = _v30_split_inline_writer_heading(text)
+    text = _v30_split_bold_opening_label(text)
+    text = _v30_force_writer_paragraph_gap(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+_V30_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V30_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _v30_format_report_body(rendered)
+
+
+_V30_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    # Let the existing chain perform all established sanitizing first, then make
+    # the final Telegram payload deterministic at the absolute boundary.
+    rendered = _V30_PRE_FINALIZE_OUTGOING(message)
+    body = _v30_format_report_body(rendered)
+    signature = RTL_MARK + f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">נטו ספורט</a>.📝'
+    return (body + "\n\n" + signature).strip() if body else signature
+
+
+logging.info(
+    "V30 active: exact writer paragraph gap, one Neto footer, opening label on its own line, "
+    "and trailing emoji punctuation cleanup; RSS/buttons/server settings unchanged"
+)
+# ====== END V30 EXACT WRITER SPACING / SINGLE FOOTER / OPENING-LABEL LINE BREAK ======
+
 if __name__ == "__main__":
     main()
