@@ -49403,5 +49403,216 @@ logging.info(
 )
 # ====== END V30 EXACT WRITER SPACING / SINGLE FOOTER / OPENING-LABEL LINE BREAK ======
 
+
+# ====== V31 EXACTLY ONE NETO SPORT FOOTER AT EVERY REPORT SEND BOUNDARY ======
+# Formatting-only hardening requested on 2026-08-04. V30 correctly normalized
+# the footer whenever its finalizer was called, but several established media
+# routes (especially original-photo/album sends after V25) could hand a caption
+# directly to Telegram without passing through that finalizer. Text routes did
+# pass through it, which explains why the footer appeared on some reports but
+# was missing on others. Make the operation idempotent and apply it at each
+# actual report-delivery boundary. RSS, discovery, buttons, filters, translation,
+# media selection, server limits and persistence are unchanged.
+
+BOT_BUILD_ID = "winner-v31-exact-one-footer-all-report-routes-2026-08-04"
+
+_V31_SIGNATURE_HTML = (
+    RTL_MARK
+    + f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">נטו ספורט</a>.📝'
+)
+
+
+def _v31_exact_single_neto_footer(value: Any) -> str:
+    """Return the report with one canonical footer, regardless of input state.
+
+    `_v30_format_report_body` removes every supported old/HTML/Markdown/plain
+    Neto Sport footer, including a footer glued to a flag line. Appending the
+    canonical footer afterwards makes this function safe to call repeatedly.
+    """
+    body = _v30_format_report_body(value)
+    return (body + "\n\n" + _V31_SIGNATURE_HTML).strip() if body else _V31_SIGNATURE_HTML
+
+
+# Use the deterministic implementation directly rather than passing through the
+# historical chain of finalizers. Every existing caller that resolves this name
+# dynamically now receives the same exactly-once behavior.
+_finalize_outgoing_message_only = _v31_exact_single_neto_footer
+
+
+# Main-channel JSON broadcasts are a final boundary for older text/media routes.
+# Only HTML report fields are normalized; startup/status payloads without HTML
+# parse mode remain untouched.
+_V31_PRE_TELEGRAM_BROADCAST = telegram_broadcast
+
+
+def telegram_broadcast(
+    method: str,
+    payload: dict[str, Any],
+    reply_message_ids: dict[str, int] | None = None,
+) -> dict[str, int]:
+    clean_payload = dict(payload or {})
+    parse_mode = str(clean_payload.get("parse_mode") or "").upper()
+    if parse_mode == "HTML":
+        if "text" in clean_payload:
+            clean_payload["text"] = _v31_exact_single_neto_footer(clean_payload["text"])
+        if "caption" in clean_payload:
+            clean_payload["caption"] = _v31_exact_single_neto_footer(clean_payload["caption"])
+
+    if isinstance(clean_payload.get("media"), list):
+        media: list[Any] = []
+        for raw_item in clean_payload["media"]:
+            if not isinstance(raw_item, dict):
+                media.append(raw_item)
+                continue
+            item = dict(raw_item)
+            if str(item.get("parse_mode") or "").upper() == "HTML" and "caption" in item:
+                item["caption"] = _v31_exact_single_neto_footer(item["caption"])
+            media.append(item)
+        clean_payload["media"] = media
+
+    return _V31_PRE_TELEGRAM_BROADCAST(
+        method,
+        clean_payload,
+        reply_message_ids=reply_message_ids,
+    )
+
+
+# V25's no-logo sender is the absolute boundary for original photos and albums,
+# both in the quiet channel and in the main channel. It previously accepted a
+# caption that was not guaranteed to have passed through the finalizer.
+_V31_PRE_ORIGINAL_PHOTO_SET_SENDER = _v25_send_original_photo_set_to_chat
+
+
+def _v25_send_original_photo_set_to_chat(
+    chat_id: str,
+    images: list[str],
+    caption: str,
+    reply_markup: dict[str, Any] | None = None,
+    reply_id: int | None = None,
+) -> dict[str, Any]:
+    return _V31_PRE_ORIGINAL_PHOTO_SET_SENDER(
+        str(chat_id),
+        images,
+        _v31_exact_single_neto_footer(caption),
+        reply_markup=reply_markup,
+        reply_id=reply_id,
+    )
+
+
+# Keep both dynamically resolved names on the same corrected photo boundary.
+_channel_send_photo_set_to_chat = _v25_send_original_photo_set_to_chat
+
+
+# Video captions use a separate direct Telegram path, so normalize them at that
+# boundary as well. A video sent without a caption remains unchanged.
+_V31_PRE_FINAL_VIDEO_ONE_CHAT = _final_send_video_one_chat
+
+
+def _final_send_video_one_chat(
+    post: Post,
+    chat_id: str,
+    caption: str,
+    reply_markup: dict[str, Any] | None = None,
+    reply_id: int | None = None,
+) -> dict[str, Any]:
+    clean_caption = (
+        _v31_exact_single_neto_footer(caption)
+        if str(caption or "").strip()
+        else ""
+    )
+    return _V31_PRE_FINAL_VIDEO_ONE_CHAT(
+        post,
+        str(chat_id),
+        clean_caption,
+        reply_markup=reply_markup,
+        reply_id=reply_id,
+    )
+
+
+# Prepared reports can enter through automatic, manual or quiet-channel routes.
+# Normalize before the established route runs, then the final media/text boundary
+# normalizes once more idempotently. This covers text-only candidates as well as
+# every image/album/video variant without changing their control flow.
+_V31_PRE_SEND_PREPARED_MAIN = send_prepared_message_to_main
+
+
+def send_prepared_message_to_main(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    return _V31_PRE_SEND_PREPARED_MAIN(
+        post,
+        _v31_exact_single_neto_footer(message),
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+
+
+_V31_PRE_MANUAL_SEND_PREPARED = manual_force_send_prepared_message
+
+
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    return _V31_PRE_MANUAL_SEND_PREPARED(
+        post,
+        _v31_exact_single_neto_footer(message),
+        images,
+        video_url=video_url,
+        reply_message_ids=reply_message_ids,
+    )
+
+
+_base_send_prepared_message_to_main = manual_force_send_prepared_message
+
+
+_V31_PRE_SEND_FULL_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    return _V31_PRE_SEND_FULL_CONTROL_CANDIDATE(
+        post,
+        token,
+        _v31_exact_single_neto_footer(message_html),
+    )
+
+
+# Startup self-check: verify the exact-once property on the three historical
+# states that caused the issue (missing, correct and duplicate/glued footer).
+def _v31_footer_self_audit() -> None:
+    samples = (
+        "דיווח בדיקה.",
+        "דיווח בדיקה.\n\n" + _V31_SIGNATURE_HTML,
+        "דיווח בדיקה.\n🇨🇮 נטו ספורט (https://t.me/neto_sport).📝\n\n"
+        "נטו ספורט (https://t.me/neto_sport).📝",
+    )
+    for index, sample in enumerate(samples, 1):
+        rendered = _v31_exact_single_neto_footer(sample)
+        plain = html.unescape(re.sub(r"<[^>]+>", "", rendered))
+        count = len(re.findall(r"(?iu)נטו\s+ספורט", plain))
+        if count != 1 or "https://t.me/neto_sport" not in rendered or not rendered.rstrip().endswith(".📝"):
+            raise RuntimeError(f"v31_footer_self_audit_failed:{index}:count={count}")
+
+
+try:
+    _v31_footer_self_audit()
+    logging.info(
+        "V31 active: every report text/photo/album/video route ends with exactly one Neto Sport footer"
+    )
+except Exception as _v31_footer_audit_exc:
+    logging.error(
+        "V31 footer self-audit failed: %s",
+        short_error(_v31_footer_audit_exc, 500),
+    )
+# ====== END V31 EXACTLY ONE NETO SPORT FOOTER AT EVERY REPORT SEND BOUNDARY ======
+
 if __name__ == "__main__":
     main()
