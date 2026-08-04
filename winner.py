@@ -48354,5 +48354,560 @@ logging.info(
 )
 # ====== END V25 NO-LOGO / LOW-SERVER-LOAD MEDIA PATH ======
 
+
+# ====== V27 CONTROL LAYOUT / RELIABLE ALBUM ACTIONS / SAFE TRANSLATION / ARTICLE-CARD IMAGE FALLBACK ======
+# Scope is deliberately narrow. RSS sources/order/timings, persistent filenames,
+# filters, duplicate logic, server limits and the V25 no-logo media mode remain unchanged.
+
+BOT_BUILD_ID = "winner-v27-control-album-translation-article-image-2026-08-04"
+
+# ---------------------------------------------------------------------------
+# 1) Compact root control panel with grouped submenus. No action is removed.
+# ---------------------------------------------------------------------------
+def _v27_sources_writers_markup() -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "👥 ניהול כתבים", "callback_data": "football_menu_writers"}],
+        [{"text": "📊 מקורות עובדות", "callback_data": "football_menu_facts"}],
+        [{"text": "👤 בדוק כתב ספציפי", "callback_data": "football_choose_account_latest"}],
+        [{"text": "📚 10 אחרונים לפי כתב", "callback_data": "football_choose_account_history"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ])
+
+
+def _v27_teams_filter_markup() -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "🏟️ ניהול קבוצות", "callback_data": "football_menu_teams"}],
+        [{"text": "🛡️ הגדרות וסינון", "callback_data": "football_menu_filter"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ])
+
+
+def _v27_reports_stats_markup() -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "📊 סטטיסטיקות", "callback_data": "football_menu_stats"}],
+        [{"text": "⏱️ בדיקת עיכוב אמיתית", "callback_data": "football_pipeline_timings"}],
+        [{"text": "📊 סיכום היום עכשיו", "callback_data": "football_daily_report_now"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ])
+
+
+def _v27_system_memory_markup() -> dict[str, Any]:
+    return stable_reply_markup([
+        [{"text": "💾 זיכרון ועדכוני קוד", "callback_data": "football_persistence_guide"}],
+        [{"text": "🤖 מצב Gemini", "callback_data": "football_gemini_status"}],
+        [{"text": "🧪 בדיקת חיבורים מלאה", "callback_data": "football_system_health"}],
+        [{"text": "⬅️ חזרה לראשי", "callback_data": "football_quick_main"}],
+    ])
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    paused = bool(is_control_paused())
+    return stable_reply_markup([
+        [{
+            "text": "▶️ הפעל בוט" if paused else "⏸️ כבה בוט",
+            "callback_data": "football_bot_on" if paused else "football_bot_off",
+        }],
+        [{"text": "🔎 בדיקות וניטור", "callback_data": "football_menu_monitor"}],
+        [{"text": "👥 מקורות וכתבים", "callback_data": "football_menu_sources_writers_v27"}],
+        [{"text": "🛡️ קבוצות וסינון", "callback_data": "football_menu_teams_filter_v27"}],
+        [{"text": "📊 דוחות וסטטיסטיקות", "callback_data": "football_menu_reports_stats_v27"}],
+        [{"text": "⚙️ מערכת וזיכרון", "callback_data": "football_menu_system_memory_v27"}],
+    ])
+
+
+_V27_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "") if callback else ""
+    message = callback.get("message", {}) or {}
+    callback_id = str(callback.get("id", "") or "")
+    message_id = message.get("message_id")
+
+    if data == "football_menu_sources_writers_v27":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח מקורות וכתבים")
+        send_control_menu("👥 מקורות וכתבים\nבחר פעולה.", _v27_sources_writers_markup(), message_id)
+        return
+    if data == "football_menu_teams_filter_v27":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח קבוצות וסינון")
+        send_control_menu("🛡️ קבוצות וסינון\nבחר פעולה.", _v27_teams_filter_markup(), message_id)
+        return
+    if data == "football_menu_reports_stats_v27":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח דוחות וסטטיסטיקות")
+        send_control_menu("📊 דוחות וסטטיסטיקות\nבחר פעולה.", _v27_reports_stats_markup(), message_id)
+        return
+    if data == "football_menu_system_memory_v27":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח מערכת וזיכרון")
+        send_control_menu("⚙️ מערכת וזיכרון\nבחר פעולה.", _v27_system_memory_markup(), message_id)
+        return
+    return _V27_PRE_PROCESS_CONTROL_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 2) Telegram albums cannot reliably display inline markup on an album item.
+#    For 2+ photos always create one compact reply message with Send/Delete.
+#    This avoids the old false-positive edit result that left the album buttonless.
+# ---------------------------------------------------------------------------
+_V27_ALBUM_ACTION_LOCK = RLock()
+_V27_ALBUM_ACTION_REPAIRING: set[str] = set()
+
+
+def _v27_send_album_action_once(token: str, album_message_id: int) -> int:
+    response = telegram_api(
+        "sendMessage",
+        {
+            "chat_id": str(CONTROL_CHAT_ID),
+            "text": "פעולות לדיווח:",
+            "reply_to_message_id": int(album_message_id),
+            "allow_sending_without_reply": True,
+            "reply_markup": _v9_prepared_markup(token),
+            "disable_web_page_preview": True,
+        },
+        max_attempts=1,
+        timeout=max(8.0, REQUEST_TIMEOUT_SECONDS),
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+    if not ids:
+        raise RuntimeError("prepared_album_action_message_missing_id")
+    action_id = ids[0]
+    CONTROL_PREPARED_ACTION_CACHE[token] = action_id
+    return action_id
+
+
+def _v27_background_repair_album_actions(token: str, album_message_id: int) -> None:
+    with _V27_ALBUM_ACTION_LOCK:
+        if token in _V27_ALBUM_ACTION_REPAIRING:
+            return
+        _V27_ALBUM_ACTION_REPAIRING.add(token)
+
+    def worker() -> None:
+        try:
+            for attempt in range(1, 13):
+                try:
+                    _v27_send_album_action_once(token, album_message_id)
+                    logging.info(
+                        "Prepared album action buttons recovered: token=%s album_message_id=%s attempt=%s",
+                        token, album_message_id, attempt,
+                    )
+                    return
+                except Exception as exc:
+                    logging.warning(
+                        "Prepared album action retry failed: token=%s attempt=%s error=%s",
+                        token, attempt, short_error(exc, 300),
+                    )
+                    time.sleep(min(30.0, 2.0 + attempt * 2.0))
+        finally:
+            with _V27_ALBUM_ACTION_LOCK:
+                _V27_ALBUM_ACTION_REPAIRING.discard(token)
+
+    Thread(target=worker, daemon=True, name=f"album-actions-{token[:10]}").start()
+
+
+def _user_v2_send_prepared_album_with_buttons(token: str, branded: list[str], message_html: str) -> list[int]:
+    if not CONTROL_CHAT_ID or not branded:
+        return []
+    caption = _finalize_outgoing_message_only(message_html)
+    if not _acceptance_caption_fits(caption):
+        raise RuntimeError(hebrew_block_reason("caption_too_long_for_single_media_message"))
+
+    markup = _v9_prepared_markup(token)
+    response = _channel_send_photo_set_to_chat(
+        str(CONTROL_CHAT_ID),
+        branded,
+        caption,
+        reply_markup=markup if len(branded) == 1 else None,
+    )
+    ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+    if len(ids) != len(branded):
+        _user_followup_delete_partial_control_messages(ids)
+        raise RuntimeError(f"telegram_album_count_mismatch:{len(ids)}/{len(branded)}")
+
+    _user_v6_delete_old_action_message(token)
+    if len(ids) > 1:
+        last_error: Exception | None = None
+        for attempt, delay in enumerate((0.0, 0.6, 1.5, 3.0), 1):
+            if delay:
+                time.sleep(delay)
+            try:
+                _v27_send_album_action_once(token, ids[0])
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                logging.warning(
+                    "Prepared album action message attempt %s failed: %s",
+                    attempt, short_error(exc, 350),
+                )
+        if last_error is not None:
+            # Keep the successfully prepared album and continue retrying in the
+            # background instead of deleting it or falsely claiming success.
+            _v27_background_repair_album_actions(token, ids[0])
+            logging.error(
+                "Prepared album exists but action buttons are pending automatic recovery: token=%s error=%s",
+                token, short_error(last_error, 400),
+            )
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# 3) Translation safety: exact-source HERE WE GO only, conservative repair of
+#    known literal Google phrases, and no false missing-number rejection for a
+#    small number translated into Hebrew words or appearing only as metadata.
+# ---------------------------------------------------------------------------
+_V27_EXPLICIT_HWG_RE = re.compile(r"(?iu)(?<![A-Za-z])#?HERE(?:_|\s)+WE(?:_|\s)+GO\b")
+_V27_OUTPUT_HWG_RE = re.compile(
+    r"(?iu)(?:#?HERE(?:_|\s)+WE(?:_|\s)+GO\b|היר\s+וי\s+גו|הנה\s+זה\s+קורה|כאן\s+אנחנו\s+הולכים)"
+)
+
+
+def _v27_source_has_explicit_hwg(post: Post, quoted: bool = False) -> bool:
+    return bool(_V27_EXPLICIT_HWG_RE.search(_final_corresponding_source_text(post, quoted=quoted)))
+
+
+def _v27_repair_literal_transfer_translation(post: Post, value: Any, quoted: bool = False) -> str:
+    text = str(value or "")
+    source_has_hwg = _v27_source_has_explicit_hwg(post, quoted=quoted)
+
+    # Exact known literal mistakes only; ordinary wording is untouched.
+    text = re.sub(
+        r"(?imu)^(?P<prefix>[ \t\u200e\u200f]*(?:[🚨🔵⚪️🔴🟡🟢🇧🇷🇩🇪🇮🇹🇪🇸🇫🇷]+[ \t]*)*)הבנת[ \t]+",
+        lambda match: match.group("prefix") + "לפי המידע, ",
+        text,
+    )
+    text = re.sub(r"(?iu)מהלך[ \t]+ההלוואה", "מהלך ההשאלה", text)
+    text = re.sub(r"(?iu)עמלת[ \t]+הלוואה", "דמי השאלה", text)
+    text = re.sub(r"(?iu)סעיף[ \t]+אופציית[ \t]+קנייה", "סעיף אופציית רכישה", text)
+    text = re.sub(
+        r"(?iu)(?:ה?פרטים[ \t]+האחרונים|פרטים[ \t]+אחרונים)[ \t]+(?:ממוינים|מסודרים)",
+        "הפרטים האחרונים נמצאים בסגירה",
+        text,
+    )
+
+    if source_has_hwg:
+        text = re.sub(
+            r"(?iu)הפרטים האחרונים נמצאים בסגירה[ \t]*(?:,|;|—|-)?[ \t]*(?:אז[ \t]+)?הנה[.!…]*",
+            "הפרטים האחרונים נמצאים בסגירה, #HERE_WE_GO!",
+            text,
+        )
+    else:
+        text = _V27_OUTPUT_HWG_RE.sub("", text)
+        text = re.sub(r"(?iu)(?:,|;|—|-)?[ \t]*(?:אז[ \t]+)?הנה[.!…]*", ".", text)
+
+    text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
+    text = re.sub(r"([,;:])\s*([!?])", r"\2", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+_V27_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _v27_repair_literal_transfer_translation(post, translated, quoted=False)
+    if quoted_translated:
+        quoted_translated = _v27_repair_literal_transfer_translation(post, quoted_translated, quoted=True)
+    rendered = _V27_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+
+    combined_source = _final_corresponding_source_text(post, quoted=False)
+    if quoted_translated:
+        combined_source += "\n" + _final_corresponding_source_text(post, quoted=True)
+    if not _V27_EXPLICIT_HWG_RE.search(combined_source):
+        rendered = _V27_OUTPUT_HWG_RE.sub("", rendered)
+        rendered = re.sub(r"[ \t]+([,.;:!?])", r"\1", rendered)
+        rendered = re.sub(r"([,;:])\s*([!?])", r"\2", rendered)
+        rendered = re.sub(r"[ \t]{2,}", " ", rendered)
+        rendered = re.sub(r"\n{3,}", "\n\n", rendered)
+    return rendered.strip()
+
+
+_V27_SMALL_NUMBER_WORDS: dict[str, tuple[str, ...]] = {
+    "0": ("אפס",),
+    "1": ("אחד", "אחת", "שנה אחת",),
+    "2": ("שניים", "שתיים", "שני", "שתי", "שנתיים",),
+    "3": ("שלושה", "שלוש",),
+    "4": ("ארבעה", "ארבע",),
+    "5": ("חמישה", "חמש",),
+    "6": ("שישה", "שש",),
+    "7": ("שבעה", "שבע",),
+    "8": ("שמונה",),
+    "9": ("תשעה", "תשע",),
+    "10": ("עשרה", "עשר",),
+}
+_V27_SINGLE_DIGIT_CONTEXT_RE = re.compile(
+    r"(?iu)(?:€|£|\$|%|מיליון|אלף|אירו|דולר|פאונד|שנ(?:ה|ים|תיים)|חודש|ימים|"
+    r"חוזה|משחקים|הופעות|שערים|בישולים|נקודות|מקום|דירוג|סעיף|אופציה|דמי|"
+    r"million|thousand|euros?|dollars?|pounds?|years?|months?|days?|contract|"
+    r"games?|appearances?|goals?|assists?|points?|option|fee|rank|number|no\.)"
+)
+
+
+def _v27_number_rendered_as_words(number: str, translated: str) -> bool:
+    plain = html.unescape(re.sub(r"<[^>]+>", " ", str(translated or "")))
+    for word in _V27_SMALL_NUMBER_WORDS.get(str(number), ()): 
+        if re.search(rf"(?<![א-ת]){re.escape(word)}(?![א-ת])", plain):
+            return True
+    return False
+
+
+def _v27_number_is_meaningful_in_source(number: str, source: str) -> bool:
+    clean = URL_RE.sub(" ", str(source or ""))
+    clean = BARE_EXTERNAL_DOMAIN_RE.sub(" ", clean)
+    normalized = str(number or "").strip()
+    if not normalized:
+        return False
+    if len(re.sub(r"\D", "", normalized)) >= 2 or "." in normalized:
+        return normalized in _final_normalized_numbers(clean)
+    for match in re.finditer(rf"(?<!\d){re.escape(normalized)}(?!\d)", clean):
+        start = max(0, match.start() - 45)
+        end = min(len(clean), match.end() + 45)
+        context = clean[start:end]
+        if _V27_SINGLE_DIGIT_CONTEXT_RE.search(context):
+            return True
+        if re.search(rf"\b\d+\s*[-:]\s*{re.escape(normalized)}\b|\b{re.escape(normalized)}\s*[-:]\s*\d+\b", context):
+            return True
+    return False
+
+
+_V27_PRE_TRANSLATION_COMPLETENESS = _final_translation_completeness_issues
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    issues = list(_V27_PRE_TRANSLATION_COMPLETENESS(source, translated))
+    result: list[str] = []
+    for issue in issues:
+        if not str(issue).startswith("חסרים מספרים מהמקור:"):
+            result.append(issue)
+            continue
+        raw_numbers = str(issue).split(":", 1)[1]
+        remaining: list[str] = []
+        for number in [part.strip() for part in raw_numbers.split(",") if part.strip()]:
+            if _v27_number_rendered_as_words(number, translated):
+                continue
+            if not _v27_number_is_meaningful_in_source(number, source):
+                continue
+            remaining.append(number)
+        if remaining:
+            result.append("חסרים מספרים מהמקור: " + ", ".join(remaining[:8]))
+    return list(dict.fromkeys(result))
+
+
+# ---------------------------------------------------------------------------
+# 4) Recover an article-card image when X/RSS says a photo exists but only an
+#    external webpage URL is available. Fetch only the small HTML page and use
+#    og:image/twitter:image directly; no Pillow/logo/local re-encoding is used.
+# ---------------------------------------------------------------------------
+_V27_ARTICLE_IMAGE_CACHE_LOCK = RLock()
+_V27_ARTICLE_IMAGE_CACHE: dict[str, tuple[float, str]] = {}
+_V27_ARTICLE_IMAGE_CACHE_SECONDS = 6 * 60 * 60
+_V27_ARTICLE_HTML_LIMIT = 2 * 1024 * 1024
+
+
+def _v27_post_text_and_metadata_values(post: Post) -> list[str]:
+    values: list[str] = []
+    for name in (
+        "original_text", "text", "original_quoted_text", "quoted_text", "raw_source_html",
+        "rss_description", "description", "summary", "content", "card_url", "external_url",
+        "expanded_url", "article_url", "source_url",
+    ):
+        value = getattr(post, name, "")
+        if isinstance(value, str) and value.strip():
+            values.append(html.unescape(value))
+    for name in ("expanded_urls", "external_urls", "article_urls", "urls"):
+        value = getattr(post, name, None)
+        if isinstance(value, (list, tuple, set)):
+            values.extend(str(item) for item in value if str(item).strip())
+    return values
+
+
+def _v27_external_article_urls(post: Post) -> list[str]:
+    found: list[str] = []
+    post_link = str(getattr(post, "link", "") or "").strip()
+    for value in _v27_post_text_and_metadata_values(post):
+        for raw in re.findall(r"https?://[^\s<>\"']+", value, flags=re.IGNORECASE):
+            url = html.unescape(raw).rstrip(".,;:!?)]}>")
+            if not url or url == post_link:
+                continue
+            try:
+                host = urllib.parse.urlsplit(url).netloc.casefold()
+            except Exception:
+                host = ""
+            if host.endswith(("x.com", "twitter.com", "nitter.net")):
+                continue
+            if any(url.casefold().endswith(ext) for ext in IMAGE_EXTENSIONS + VIDEO_EXTENSIONS):
+                continue
+            if url not in found:
+                found.append(url)
+    return found[:4]
+
+
+def _v27_meta_image_from_html(raw_html: str, base_url: str) -> str:
+    from html.parser import HTMLParser
+
+    class PreviewParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.candidates: list[tuple[int, str]] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            data = {str(key or "").casefold(): str(value or "").strip() for key, value in attrs}
+            if tag.casefold() == "meta":
+                key = (data.get("property") or data.get("name") or data.get("itemprop") or "").casefold()
+                content = data.get("content", "")
+                priorities = {
+                    "og:image:secure_url": 0,
+                    "og:image": 1,
+                    "twitter:image:src": 2,
+                    "twitter:image": 3,
+                    "image": 4,
+                }
+                if content and key in priorities:
+                    self.candidates.append((priorities[key], content))
+            elif tag.casefold() == "link":
+                rel = data.get("rel", "").casefold()
+                href = data.get("href", "")
+                if href and "image_src" in rel:
+                    self.candidates.append((5, href))
+
+    parser = PreviewParser()
+    try:
+        parser.feed(raw_html)
+    except Exception:
+        pass
+    for _priority, candidate in sorted(parser.candidates, key=lambda item: item[0]):
+        absolute = urllib.parse.urljoin(base_url, html.unescape(candidate).strip())
+        if absolute.startswith(("http://", "https://")):
+            return absolute
+    return ""
+
+
+def _v27_fetch_article_preview_image(url: str) -> str:
+    key = str(url or "").strip()
+    if not key:
+        return ""
+    now = time.time()
+    with _V27_ARTICLE_IMAGE_CACHE_LOCK:
+        cached = _V27_ARTICLE_IMAGE_CACHE.get(key)
+        if cached and now - cached[0] <= _V27_ARTICLE_IMAGE_CACHE_SECONDS:
+            return cached[1]
+
+    image_url = ""
+    try:
+        request = urllib.request.Request(
+            key,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=6.0) as response:
+            final_url = str(response.geturl() or key)
+            content_type = str(response.headers.get("Content-Type") or "").casefold()
+            body = response.read(_V27_ARTICLE_HTML_LIMIT + 1)
+        if len(body) <= _V27_ARTICLE_HTML_LIMIT and ("html" in content_type or not content_type):
+            decoded = body.decode("utf-8", errors="replace")
+            image_url = _v27_meta_image_from_html(decoded, final_url)
+    except Exception as exc:
+        logging.debug("Article preview lookup failed safely for %s: %s", key, short_error(exc, 260))
+
+    with _V27_ARTICLE_IMAGE_CACHE_LOCK:
+        _V27_ARTICLE_IMAGE_CACHE[key] = (now, image_url)
+    return image_url
+
+
+def _v27_recover_external_article_image(post: Post) -> list[str]:
+    existing = _final_dedupe_exact_photos(getattr(post, "external_preview_image_urls", []) or [])
+    if existing:
+        return existing[:MAX_IMAGES_PER_POST]
+
+    tried: list[str] = []
+    for article_url in _v27_external_article_urls(post):
+        tried.append(article_url)
+        image_url = _v27_fetch_article_preview_image(article_url)
+        if not image_url:
+            continue
+        recovered = [image_url]
+        post.external_preview_image_urls = recovered
+        post.external_preview_article_url = article_url
+        post.image_urls = _final_dedupe_exact_photos([
+            *(getattr(post, "image_urls", []) or []),
+            *recovered,
+        ])
+        post.exact_image_urls = list(post.image_urls)
+        post.photo_expected = True
+        logging.info(
+            "Recovered external article preview image: post=%s article=%s image=%s",
+            getattr(post, "post_id", ""), article_url, image_url,
+        )
+        return recovered
+    post.external_preview_urls_tried = tried
+    if tried:
+        logging.warning(
+            "External article preview image not found: post=%s urls_tried=%s",
+            getattr(post, "post_id", ""), len(tried),
+        )
+    return []
+
+
+_V27_PRE_HYDRATE_EXACT_POST = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    result = _V27_PRE_HYDRATE_EXACT_POST(post, force=force)
+    if not isinstance(result, Post):
+        return result
+    has_images = bool(list(getattr(result, "image_urls", []) or []))
+    should_try = bool(getattr(result, "photo_expected", False)) or bool(_v27_external_article_urls(result))
+    if not has_images and should_try:
+        try:
+            _v27_recover_external_article_image(result)
+        except Exception as exc:
+            logging.warning(
+                "External article image recovery failed safely for post %s: %s",
+                getattr(result, "post_id", ""), short_error(exc, 320),
+            )
+    return result
+
+
+_V27_PRE_SELECTED_POST_IMAGES = selected_post_images
+
+
+def selected_post_images(post: Post) -> list[str]:
+    _reliable_hydrate_exact_post(post)
+    images = _final_dedupe_exact_photos(_V27_PRE_SELECTED_POST_IMAGES(post))
+    if images:
+        return images[:MAX_IMAGES_PER_POST]
+    recovered = _final_dedupe_exact_photos(getattr(post, "external_preview_image_urls", []) or [])
+    if not recovered:
+        recovered = _v27_recover_external_article_image(post)
+    return recovered[:MAX_IMAGES_PER_POST]
+
+
+# V24 NBA/Instagram blocking is intentionally retained. V25 no-logo mode is also
+# intentionally retained; this patch never restores image branding.
+logging.info(
+    "V27 active: grouped control menu, reliable album action reply, exact-source HERE_WE_GO, "
+    "number-word validation and external article-card image fallback; RSS/logo mode unchanged"
+)
+# ====== END V27 CONTROL LAYOUT / RELIABLE ALBUM ACTIONS / SAFE TRANSLATION / ARTICLE-CARD IMAGE FALLBACK ======
+
 if __name__ == "__main__":
     main()
