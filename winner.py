@@ -49614,5 +49614,1495 @@ except Exception as _v31_footer_audit_exc:
     )
 # ====== END V31 EXACTLY ONE NETO SPORT FOOTER AT EVERY REPORT SEND BOUNDARY ======
 
+
+# ====== V32 DANGLING HANDLE / SALAH DEDUPE / FACT-STAGE / FLAG-LIST FIX ======
+# Narrow patch requested on 2026-08-05. This layer changes only:
+# - removal of a broken lone @ credit at the end of a report;
+# - canonical spelling of Mohamed Salah for output and duplicate comparison;
+# - duplicate handling after HERE WE GO, with "official" treated normally for
+#   every source, including CentreGoals and Polymarket;
+# - preservation of flag-led player lists, including England/Scotland/Wales tag flags.
+# RSS, discovery cadence, buttons, media, server limits and persistent files are untouched.
+
+BOT_BUILD_ID = "winner-v33-official-fact-sources-restored-2026-08-05"
+
+_V32_INVISIBLE = "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff"
+_V32_REGIONAL_FLAG_PATTERN = r"[\U0001F1E6-\U0001F1FF]{2}"
+_V32_TAG_FLAG_PATTERN = r"\U0001F3F4[\U000E0061-\U000E007A]+\U000E007F"
+_V32_ANY_FLAG_PATTERN = rf"(?:{_V32_REGIONAL_FLAG_PATTERN}|{_V32_TAG_FLAG_PATTERN})"
+_V32_ANY_FLAG_RE = re.compile(_V32_ANY_FLAG_PATTERN)
+_V32_LINE_START_FLAG_RE = re.compile(rf"^[{_V32_INVISIBLE}]*{_V32_ANY_FLAG_PATTERN}")
+
+_V32_SALAH_PATTERNS = (
+    re.compile(r"(?iu)(?<![A-Za-zא-ת])מו\s+ס[א]?לאח(?![A-Za-zא-ת])"),
+    re.compile(r"(?iu)(?<![A-Za-zא-ת])מוחמד\s+סאלח(?![A-Za-zא-ת])"),
+    re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:mo|mohamed|mohammad|muhammad)\s+salah(?![A-Za-zא-ת])"),
+)
+
+
+def _v32_normalize_salah_name(value: Any) -> str:
+    text = str(value or "")
+    for pattern in _V32_SALAH_PATTERNS:
+        text = pattern.sub("מוחמד סלאח", text)
+    return text
+
+
+_V32_DANGLING_HANDLE_WITH_CREDIT_RE = re.compile(
+    rf"(?iu)(?:[ \t]+(?:יחד\s+עם|בשיתוף\s+עם|באמצעות|דרך|with|via)\s+)?"
+    rf"@\s*[.!?…,:;]*"
+    rf"(?=[ \t]*(?:[{_V32_INVISIBLE}]*{_V32_ANY_FLAG_PATTERN}|$))"
+)
+_V32_DANGLING_HANDLE_LINE_RE = re.compile(
+    rf"^[{_V32_INVISIBLE}\s]*@\s*[.!?…,:;]*[{_V32_INVISIBLE}\s]*$",
+    re.IGNORECASE,
+)
+
+
+def _v32_remove_dangling_handle(value: Any) -> str:
+    """Remove only a lone/broken @ credit, never a real @username mention."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    output: list[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line
+        if _V32_DANGLING_HANDLE_LINE_RE.fullmatch(line):
+            continue
+        line = _V32_DANGLING_HANDLE_WITH_CREDIT_RE.sub(" ", line)
+        line = re.sub(r"[ \t]{2,}", " ", line).rstrip()
+        output.append(line)
+    text = "\n".join(output)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _v32_is_flag_list_line(value: Any) -> bool:
+    visible = html.unescape(re.sub(r"(?is)<[^>]+>", "", str(value or ""))).strip()
+    visible = visible.lstrip(_V32_INVISIBLE + " \t")
+    return bool(_V32_LINE_START_FLAG_RE.match(visible))
+
+
+def _v32_repair_flag_player_lists(value: Any) -> str:
+    """Keep every flag-led player row on its own compact line.
+
+    The old formatter understood normal country flags but not subdivision flags
+    such as England's tag-sequence flag. When Telegram/RSS whitespace was folded,
+    those rows were joined to the preceding player. This formatter activates only
+    when at least three flag markers exist, so ordinary prose with one/two flags is
+    not reformatted as a list.
+    """
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if len(_V32_ANY_FLAG_RE.findall(text)) < 3:
+        return text
+
+    # A subsequent flag after horizontal whitespace starts a new list row. Keep
+    # any RLM/LRM characters with the new row so Telegram maintains RTL order.
+    text = re.sub(
+        rf"(?<!\n)[ \t\u00a0]+(?=[{_V32_INVISIBLE}]*{_V32_ANY_FLAG_PATTERN})",
+        "\n",
+        text,
+    )
+
+    # A concluding question/opinion belongs after the complete list, not on the
+    # final player's row. This is deliberately limited to a clear question emoji
+    # or an explicit "on paper / is this" question after a flag list.
+    text = re.sub(
+        rf"(?<!\n)[ \t\u00a0]+(?=[{_V32_INVISIBLE}]*(?:😳|🤔|❓)\s*(?:על\s+הנייר|האם|is\s+this|on\s+paper))",
+        "\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    lines = [line.rstrip() for line in text.split("\n")]
+    compact: list[str] = []
+    for index, line in enumerate(lines):
+        if line.strip():
+            compact.append(line.strip())
+            continue
+        previous_is_item = bool(compact and _v32_is_flag_list_line(compact[-1]))
+        next_is_item = False
+        for candidate in lines[index + 1:]:
+            if candidate.strip():
+                next_is_item = _v32_is_flag_list_line(candidate)
+                break
+        if previous_is_item and next_is_item:
+            continue
+        if compact and compact[-1] == "":
+            continue
+        compact.append("")
+
+    text = "\n".join(compact).strip()
+    # Ensure one paragraph break only before the first list row. Never add a
+    # blank row between consecutive list items.
+    first_item = re.search(rf"(?m)^[{_V32_INVISIBLE}]*{_V32_ANY_FLAG_PATTERN}", text)
+    if first_item and first_item.start() > 0:
+        prefix = text[:first_item.start()].rstrip("\n")
+        suffix = text[first_item.start():].lstrip("\n")
+        text = prefix + "\n\n" + suffix
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _v32_clean_report_text(value: Any) -> str:
+    text = _v32_normalize_salah_name(value)
+    text = _v32_remove_dangling_handle(text)
+    text = _v32_repair_flag_player_lists(text)
+    return text
+
+
+# Apply spelling/credit/list cleanup before the established message builder and
+# again at the absolute send boundary, covering cached/prepared messages too.
+_V32_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V32_PRE_BUILD_MESSAGE(
+        post,
+        _v32_clean_report_text(translated),
+        _v32_clean_report_text(quoted_translated) if quoted_translated else "",
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _v32_clean_report_text(rendered)
+
+
+def _v32_exact_single_neto_footer(value: Any) -> str:
+    body = _v30_format_report_body(value)
+    body = _v32_clean_report_text(body)
+    return (body + "\n\n" + _V31_SIGNATURE_HTML).strip() if body else _V31_SIGNATURE_HTML
+
+
+# V31 delivery wrappers resolve this name dynamically, so replacing it here
+# covers text, photo, album, video, quiet and manual routes without duplicating
+# their control flow.
+_v31_exact_single_neto_footer = _v32_exact_single_neto_footer
+_finalize_outgoing_message_only = _v32_exact_single_neto_footer
+
+
+# ---------------------------------------------------------------------------
+# Duplicate handling: canonical player spelling and source-aware stage logic.
+# ---------------------------------------------------------------------------
+_V32_SPECIAL_FACT_STAGE_SOURCES = {
+    "centregoals", "centre goals", "centergoals", "center goals", "מטרות מרכזיות",
+    "polymarketsport", "polymarket sport", "polymarket sports", "פולימרקט ספורט", "פולימרקט",
+}
+_V32_EVENT_TOKEN_RE = re.compile(r"[A-Za-zא-ת][A-Za-zא-ת׳'’\-]{2,}")
+_V32_EVENT_STOPWORDS = {
+    "דיווח", "חדש", "רשמי", "בלעדי", "פרסום", "ראשון", "הודעה", "מועדון", "המועדון",
+    "כדורגלן", "הכדורגלן", "מקצועני", "המקצועני", "שחקן", "השחקן", "חלוץ", "החלוץ",
+    "קשר", "הקשר", "מצרי", "המצרי", "שלנו", "בנוגע", "לגבי", "לאחר", "כבר", "קיים",
+    "היום", "השבוע", "מחר", "צפוי", "צפויה", "להפוך", "רשמית", "אמר", "אומר", "מאשר",
+    "מאשרת", "החלו", "החל", "משא", "ומתן", "משאות", "מתנים", "העברה", "העברתו", "מעבר",
+    "להעברתו", "עסקה", "העסקה", "הסכם", "סיכום", "חוזה", "שנתיים", "שנים", "כשחקן",
+    "חופשי", "מצטרף", "הצטרף", "להצטרף", "יחתום", "חתם", "official", "confirmed", "report",
+    "breaking", "exclusive", "player", "club", "transfer", "deal", "agreement", "contract",
+    "joins", "joined", "signs", "signed", "free", "agent", "here", "we", "go",
+}
+_V32_TRANSFER_CONTEXT_RE = re.compile(
+    r"(?iu)(?:#?HERE(?:_|\s)+WE(?:_|\s)+GO|transfer|move|join|sign|deal|agreement|contract|"
+    r"העברה|מעבר|להצטרף|מצטרף|הצטרף|להחתים|יחתום|חתם|עסקה|הסכם|סיכום|חוזה|משא\s+ומתן|משאות\s+ומתנים)"
+)
+_V32_HWG_RE = re.compile(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO")
+_V32_REVERSAL_RE = re.compile(
+    r"(?iu)(?:deal\s+off|collapsed|failed\s+medical|hijack|withdrawn|cancelled|canceled|"
+    r"העסקה\s+ירדה|העסקה\s+נפלה|נכשל\w*\s+בבדיקות|חטיפת\s+עסקה|בוטל|נסוג\w*|יעד\s+אחר)"
+)
+_V32_OPENING_OFFICIAL_RE = re.compile(
+    rf"(?iu)^(?P<prefix>[{_V32_INVISIBLE}\s]*(?:(?:{_V32_ANY_FLAG_PATTERN})|[\U0001F300-\U0001FAFF\u2600-\u27BF\ufe0f\u200d])*[{_V32_INVISIBLE} \t]*)"
+    r"(?:<b>|<strong>)?\s*(?:רשמי|official|confirmed)\s*:\s*(?:</b>|</strong>)?[ \t]*"
+)
+_V32_STAGE_OFFICIAL_RE = re.compile(
+    r"(?iu)(?:\bofficial\b|\bconfirmed\b|\bsigned\b|\bcompleted\b|"
+    r"רשמי|אושר|אושרה|חתם|נחתם|העסקה\s+הושלמה|הצטרף\s+רשמית)"
+)
+_V32_STAGE_AGREED_RE = re.compile(
+    r"(?iu)(?:#?HERE(?:_|\s)+WE(?:_|\s)+GO|deal\s+agreed|agreement\s+reached|"
+    r"העסקה\s+סוכמה|הושג\s+סיכום|סיכום\s+מלא|סיכום\s+בעל\s+פה)"
+)
+_V32_STAGE_TALKS_RE = re.compile(
+    r"(?iu)(?:negotiations|talks|bid|offer|משא\s+ומתן|משאות\s+ומתנים|שיחות|הצעה)"
+)
+_V32_STAGE_INTEREST_RE = re.compile(
+    r"(?iu)(?:interested|interest|linked|monitoring|מעוניינ|עניין|מקושר|בוחנת|שוקלת)"
+)
+_V32_AMOUNT_RE = re.compile(
+    r"(?iu)(?:[€£$]\s*\d+(?:[.,]\d+)?\s*(?:m|million|k|thousand)?|"
+    r"\d+(?:[.,]\d+)?\s*(?:מיליון|אלף)\s*(?:אירו|יורו|ליש[\"״']?ט|דולר)|"
+    r"דמי\s+העברה\s+של\s+[^.!?\n]{1,45})"
+)
+_V32_CONTRACT_END_RE = re.compile(r"(?iu)(?:עד\s+20\d{2}|until\s+20\d{2})")
+_V32_CONTRACT_LENGTH_RE = re.compile(
+    r"(?iu)(?:לשנתיים|לשלוש\s+שנים|לארבע\s+שנים|לחמש\s+שנים|"
+    r"ל[-־ ]?\d+\s+שנים|(?:two|three|four|five|\d+)\s*[- ]?year\s+deal)"
+)
+_V32_TERM_FACTS = {
+    "free_agent": re.compile(r"(?iu)(?:שחקן\s+חופשי|העברה\s+חופשית|free\s+agent|free\s+transfer)"),
+    "loan": re.compile(r"(?iu)(?:השאלה|loan)"),
+    "permanent": re.compile(r"(?iu)(?:העברה\s+קבועה|permanent\s+(?:move|transfer))"),
+    "option": re.compile(r"(?iu)(?:אופצי(?:ה|ית)\s+לרכישה|option\s+to\s+buy)"),
+    "obligation": re.compile(r"(?iu)(?:חובת\s+רכישה|obligation\s+to\s+buy)"),
+    "medical": re.compile(r"(?iu)(?:בדיקות\s+רפואיות|medical(?:s)?)"),
+}
+
+
+def _v32_source_key(value: Any) -> str:
+    if isinstance(value, Post):
+        value = getattr(value, "username", "")
+    return str(value or "").strip().lstrip("@").casefold()
+
+
+def _v32_is_special_fact_stage_source(value: Any) -> bool:
+    key = _v32_source_key(value)
+    if key in _V32_SPECIAL_FACT_STAGE_SOURCES:
+        return True
+    try:
+        canonical = str(_facts_source_canonical(value) or "").strip().lstrip("@").casefold()
+    except Exception:
+        canonical = ""
+    return canonical in {"centregoals", "polymarketsport"}
+
+
+def _v32_stage_text(value: Any, source: Any = "") -> str:
+    # Treat a leading "official:" label the same for every source, including
+    # CentreGoals and Polymarket, exactly as before the V32 source exception.
+    return _v32_normalize_salah_name(
+        html.unescape(re.sub(r"(?is)<[^>]+>", "", str(value or "")))
+    )
+
+
+def _v32_event_stage(value: Any, source: Any = "") -> int:
+    text = _v32_stage_text(value, source)
+    if _V32_STAGE_OFFICIAL_RE.search(text):
+        return 4
+    if _V32_STAGE_AGREED_RE.search(text):
+        return 3
+    if _V32_STAGE_TALKS_RE.search(text):
+        return 2
+    if _V32_STAGE_INTEREST_RE.search(text):
+        return 1
+    return 0
+
+
+def _v32_event_tokens(value: Any) -> list[str]:
+    plain = _v32_normalize_salah_name(html.unescape(re.sub(r"(?is)<[^>]+>", " ", str(value or "")))).casefold()
+    plain = re.sub(r"#?here(?:_|\s)+we(?:_|\s)+go", " ", plain, flags=re.IGNORECASE)
+    tokens: list[str] = []
+    for raw in _V32_EVENT_TOKEN_RE.findall(plain):
+        token = raw.strip("-'׳’").casefold()
+        variants = [token]
+        if len(token) >= 7 and token[:1] in "בלכמשוה":
+            variants.append(token[1:])
+        for candidate in variants:
+            if len(candidate) < 4 or candidate in _V32_EVENT_STOPWORDS:
+                continue
+            if candidate not in tokens:
+                tokens.append(candidate)
+    return tokens
+
+
+def _v32_name_bigrams(value: Any) -> set[str]:
+    tokens = _v32_event_tokens(value)
+    return {
+        left + " " + right
+        for left, right in zip(tokens, tokens[1:])
+        if left not in _V32_EVENT_STOPWORDS and right not in _V32_EVENT_STOPWORDS
+    }
+
+
+def _v32_normalized_entity_phrase(value: Any) -> str:
+    phrase = _v32_normalize_salah_name(value).casefold()
+    phrase = re.sub(r"[^A-Za-zא-ת׳'’\- ]+", " ", phrase)
+    return re.sub(r"\s+", " ", phrase).strip(" -'׳’")
+
+
+def _v32_known_team_phrases() -> set[str]:
+    cached = globals().get("_V32_KNOWN_TEAM_PHRASES_CACHE")
+    if isinstance(cached, set):
+        return cached
+    names: set[str] = set()
+    for key, value in dict(globals().get("TEAM_REPLACEMENTS", {}) or {}).items():
+        for item in (key, value):
+            normalized = _v32_normalized_entity_phrase(item)
+            if normalized:
+                names.add(normalized)
+    catalog = globals().get("TEAM_CATALOG", {})
+    if isinstance(catalog, dict):
+        for row in catalog.values():
+            if not isinstance(row, dict):
+                continue
+            for item in (row.get("name"), *(row.get("aliases") or [])):
+                normalized = _v32_normalized_entity_phrase(item)
+                if normalized:
+                    names.add(normalized)
+    globals()["_V32_KNOWN_TEAM_PHRASES_CACHE"] = names
+    return names
+
+
+def _v32_known_player_alias_map() -> dict[str, str]:
+    cached = globals().get("_V32_PLAYER_ALIAS_MAP_CACHE")
+    if isinstance(cached, dict):
+        return cached
+    aliases: dict[str, str] = {}
+    for key, value in dict(globals().get("PLAYER_REPLACEMENTS", {}) or {}).items():
+        canonical = _v32_normalized_entity_phrase(value or key)
+        for item in (key, value):
+            alias = _v32_normalized_entity_phrase(item)
+            if alias and canonical:
+                aliases[alias] = canonical
+    aliases[_v32_normalized_entity_phrase("Mo Salah")] = "מוחמד סלאח"
+    aliases[_v32_normalized_entity_phrase("Mohamed Salah")] = "מוחמד סלאח"
+    aliases[_v32_normalized_entity_phrase("מוחמד סלאח")] = "מוחמד סלאח"
+    globals()["_V32_PLAYER_ALIAS_MAP_CACHE"] = aliases
+    return aliases
+
+
+_V32_ROLE_NAME_RE = re.compile(
+    r"(?iu)(?:הכדורגלן|השחקן|החלוץ|הקשר|הבלם|השוער)(?:\s+המקצועני)?\s+"
+    r"(?P<name>[A-Za-zא-ת׳'’\-]{2,}(?:\s+[A-Za-zא-ת׳'’\-]{2,}){1,2}?)"
+    r"(?=\s+(?:למועדון|ל[A-Za-zא-ת]|צפוי|צפויה|יחתום|חתם|יגיע|מגיע|הצטרף|מצטרף|\bis\b|\bwill\b|\bto\b)|[,.!?:])"
+)
+_V32_LEAD_NAME_RE = re.compile(
+    rf"(?iu)^[{_V32_INVISIBLE}\s]*(?:(?:{_V32_ANY_FLAG_PATTERN})|[\U0001F300-\U0001FAFF\u2600-\u27BF\ufe0f\u200d])*[{_V32_INVISIBLE} \t]*"
+    r"(?:(?:דיווח|חדש|בלעדי|פרסום\s+ראשון|פרסום\s+בלעדי|רשמי)\s*:\s*)?"
+    r"(?P<name>[A-Za-zא-ת׳'’\-]{2,}(?:\s+[A-Za-zא-ת׳'’\-]{2,}){1,2}?)"
+    r"(?=\s+(?:צפוי|צפויה|קרוב|קרובה|יחתום|חתם|מצטרף|הצטרף|ל[A-Za-zא-ת]|\bset\b|\bwill\b|\bto\b))"
+)
+
+
+def _v32_person_keys(value: Any) -> set[str]:
+    plain = _v32_normalize_salah_name(html.unescape(re.sub(r"(?is)<[^>]+>", " ", str(value or ""))))
+    normalized_plain = " " + _v32_normalized_entity_phrase(plain) + " "
+    keys: set[str] = set()
+    aliases = _v32_known_player_alias_map()
+    for alias, canonical in aliases.items():
+        if alias and (" " + alias + " ") in normalized_plain:
+            keys.add(canonical)
+
+    for pattern in (_V32_ROLE_NAME_RE, _V32_LEAD_NAME_RE):
+        for match in pattern.finditer(plain):
+            phrase = _v32_normalized_entity_phrase(match.group("name"))
+            if not phrase or phrase in _v32_known_team_phrases():
+                continue
+            words = phrase.split()
+            if len(words) < 2 or any(word in _V32_EVENT_STOPWORDS for word in words):
+                continue
+            keys.add(aliases.get(phrase, phrase))
+    return keys
+
+
+def _v32_material_transfer_facts(value: Any) -> set[str]:
+    text = _v32_normalize_salah_name(html.unescape(re.sub(r"(?is)<[^>]+>", " ", str(value or "")))).casefold()
+    facts: set[str] = set()
+    for match in _V32_AMOUNT_RE.finditer(text):
+        facts.add("amount:" + re.sub(r"\s+", " ", match.group(0)).strip())
+    for match in _V32_CONTRACT_END_RE.finditer(text):
+        facts.add("contract_end:" + re.sub(r"\s+", " ", match.group(0)).strip())
+    for match in _V32_CONTRACT_LENGTH_RE.finditer(text):
+        facts.add("contract_length:" + re.sub(r"\s+", " ", match.group(0)).strip())
+    for label, pattern in _V32_TERM_FACTS.items():
+        if pattern.search(text):
+            facts.add(label)
+    return facts
+
+
+def _v32_same_transfer_identity(current_text: Any, previous_text: Any) -> bool:
+    current = _v32_normalize_salah_name(current_text)
+    previous = _v32_normalize_salah_name(previous_text)
+    if not _V32_TRANSFER_CONTEXT_RE.search(current) or not _V32_TRANSFER_CONTEXT_RE.search(previous):
+        return False
+
+    current_people = _v32_person_keys(current)
+    previous_people = _v32_person_keys(previous)
+    if current_people and previous_people and not (current_people & previous_people):
+        return False
+
+    current_tokens = set(_v32_event_tokens(current))
+    previous_tokens = set(_v32_event_tokens(previous))
+    shared = current_tokens & previous_tokens
+    shared_bigrams = _v32_name_bigrams(current) & _v32_name_bigrams(previous)
+    shared_long = {token for token in shared if len(token) >= 6}
+
+    # Existing canonical team knowledge remains useful when available.
+    try:
+        current_teams = set(_final_logical_team_ids(current) or set())
+        previous_teams = set(_final_logical_team_ids(previous) or set())
+    except Exception:
+        current_teams = previous_teams = set()
+    shared_team = bool(current_teams & previous_teams)
+
+    # A full shared name plus another distinctive long token (normally the club)
+    # is a strong transfer identity. The fallback requires more shared material.
+    if current_people and previous_people and (current_people & previous_people):
+        # A shared player identity plus a shared club/entity token is sufficient.
+        if shared_team or any(len(token) >= 7 for token in shared):
+            return True
+    if shared_bigrams and (shared_team or (len(shared) >= 3 and len(shared_long) >= 1)):
+        return True
+    return bool((shared_team and len(shared) >= 3) or (len(shared) >= 4 and len(shared_long) >= 2))
+
+
+def _v32_same_event_without_new_fact(
+    current_text: Any,
+    previous_text: Any,
+    current_source: Any = "",
+    previous_source: Any = "",
+) -> bool:
+    current = _v32_normalize_salah_name(current_text)
+    previous = _v32_normalize_salah_name(previous_text)
+    if not _v32_same_transfer_identity(current, previous):
+        return False
+    if _V32_REVERSAL_RE.search(current):
+        return False
+
+    current_facts = _v32_material_transfer_facts(current)
+    previous_facts = _v32_material_transfer_facts(previous)
+    genuinely_new_facts = current_facts - previous_facts
+
+    # HERE WE GO is the agreement milestone. A later paraphrase or a generic
+    # official/talks headline is duplicate unless it adds a concrete transfer
+    # term (fee, contract duration/end, loan/option/medical, etc.). Arrival times,
+    # quotes and the word "official" alone are not material transfer facts.
+    if _V32_HWG_RE.search(previous):
+        return not genuinely_new_facts
+
+    current_stage = _v32_event_stage(current, current_source)
+    previous_stage = _v32_event_stage(previous, previous_source)
+    if current_stage > previous_stage:
+        return False
+    return not genuinely_new_facts
+
+
+_V32_PRE_FAST_DUPLICATE = _v9_fast_duplicate
+
+
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    # Preserve manual false-positive releases and always allow Fabrizio's own new
+    # HERE WE GO milestone to be published.
+    try:
+        if is_duplicate_false_positive_post(post):
+            return None
+    except Exception:
+        pass
+    try:
+        if _final_is_fabrizio_here_we_go(post):
+            return None
+    except Exception:
+        pass
+
+    current_text = str(text_override or _final_source_text(post) or getattr(post, "text", "")).strip()
+    if not current_text:
+        return None
+
+    result = _V32_PRE_FAST_DUPLICATE(post, state, text_override)
+    if result:
+        # The legacy semantic matcher can over-weight identical club/contract
+        # wording and call two different players the same transfer. For transfer
+        # reports, validate the shared player/event identity before accepting its
+        # verdict. Non-transfer duplicate behavior remains exactly as before.
+        previous_result_text = _v9_item_text(result)
+        both_transfer_reports = bool(
+            _V32_TRANSFER_CONTEXT_RE.search(_v32_normalize_salah_name(current_text))
+            and _V32_TRANSFER_CONTEXT_RE.search(_v32_normalize_salah_name(previous_result_text))
+        )
+        if not both_transfer_reports or _v32_same_transfer_identity(current_text, previous_result_text):
+            return result
+
+    current_id = str(getattr(post, "post_id", "") or getattr(post, "link", "")).strip()
+    current_source = getattr(post, "username", "")
+
+    for item in reversed(_v9_recent_duplicate_rows(state)):
+        previous_id = str(item.get("post_id") or item.get("link") or item.get("id") or "").strip()
+        if current_id and previous_id and current_id == previous_id:
+            duplicate = dict(item)
+            duplicate.update({"duplicate": True, "is_duplicate": True, "duplicate_score": 1.0, "duplicate_verdict": "EXACT_ID"})
+            return duplicate
+        previous_text = _v9_item_text(item)
+        previous_source = item.get("username") or item.get("source") or ""
+        if not _v32_same_event_without_new_fact(current_text, previous_text, current_source, previous_source):
+            continue
+        duplicate = dict(item)
+        duplicate.update({
+            "duplicate": True,
+            "is_duplicate": True,
+            "duplicate_score": 0.985,
+            "duplicate_verdict": "SAME_TRANSFER_NO_NEW_MATERIAL_FACT",
+            "duplicate_source": str(previous_source or "דיווח קודם"),
+            "reason": "same_transfer_no_new_material_fact",
+            "raw_reason": "same_transfer_no_new_material_fact",
+        })
+        return duplicate
+    return None
+
+
+def _v32_add_duplicate_timing(post: Any, started: float) -> None:
+    try:
+        _pipeline_add_stage(post, "duplicate_wall_seconds", time.perf_counter() - started)
+    except Exception:
+        pass
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    started = time.perf_counter()
+    try:
+        return _v9_fast_duplicate(post, state)
+    finally:
+        _v32_add_duplicate_timing(post, started)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    started = time.perf_counter()
+    try:
+        return _v9_fast_duplicate(post, state)
+    finally:
+        _v32_add_duplicate_timing(post, started)
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    started = time.perf_counter()
+    try:
+        return _v9_fast_duplicate(post, state)
+    finally:
+        _v32_add_duplicate_timing(post, started)
+
+
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    started = time.perf_counter()
+    try:
+        return _v9_fast_duplicate(post, state)
+    finally:
+        _v32_add_duplicate_timing(post, started)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    started = time.perf_counter()
+    try:
+        return _v9_fast_duplicate(post, state, html_message_to_plain_text(translated_message))
+    finally:
+        _v32_add_duplicate_timing(post, started)
+
+
+# Same-cycle candidates also need the canonical Salah identity. Run the proven
+# cluster first, then collapse only remaining same-transfer/no-new-fact pairs.
+_V32_PRE_CLUSTER_PARALLEL = cluster_parallel_candidates
+
+
+def cluster_parallel_candidates(candidates: list[tuple[str, Post, float]]) -> list[tuple[str, Post, float]]:
+    initial = list(_V32_PRE_CLUSTER_PARALLEL(candidates) or [])
+    if len(initial) <= 1:
+        return initial
+    kept: list[tuple[str, Post, float]] = []
+    for candidate in initial:
+        username, post, found_at = candidate
+        current_text = _v21_source_text(post)
+        matched: int | None = None
+        for index, (old_username, old_post, _old_found_at) in enumerate(kept):
+            old_text = _v21_source_text(old_post)
+            if _v32_same_event_without_new_fact(current_text, old_text, username, old_username):
+                matched = index
+                break
+            # A HERE WE GO arriving after an earlier rumor should replace it.
+            if _V32_HWG_RE.search(current_text) and _v32_same_transfer_identity(current_text, old_text):
+                matched = index
+                break
+        if matched is None:
+            kept.append(candidate)
+            continue
+
+        old_username, old_post, old_found_at = kept[matched]
+        current_hwg = bool(_V32_HWG_RE.search(current_text))
+        old_hwg = bool(_V32_HWG_RE.search(_v21_source_text(old_post)))
+        if current_hwg and not old_hwg:
+            try:
+                _v21_merge_candidate_ids(post, old_post, old_username)
+            except Exception:
+                pass
+            kept[matched] = (username, post, min(float(found_at), float(old_found_at)))
+            logging.info("V32 same-event collapse: HERE WE GO replaced earlier @%s", old_username)
+        else:
+            try:
+                _v21_merge_candidate_ids(old_post, post, username)
+            except Exception:
+                pass
+            logging.info("V32 same-event collapse: kept @%s and suppressed @%s", old_username, username)
+    return kept
+
+
+# Keep textual duplicate comparisons consistent even in diagnostic/manual tools.
+_V32_PRE_SAME_EVENT_TEXT = _v9_same_event_text
+
+
+def _v9_same_event_text(current_text: str, previous_text: str) -> tuple[bool, float]:
+    current = _v32_normalize_salah_name(current_text)
+    previous = _v32_normalize_salah_name(previous_text)
+    same, score = _V32_PRE_SAME_EVENT_TEXT(current, previous)
+    if same:
+        return same, score
+    if _v32_same_event_without_new_fact(current, previous):
+        return True, max(float(score or 0.0), 0.985)
+    return False, score
+
+
+# Startup self-audit for the exact user examples.
+def _v32_self_audit() -> None:
+    dangling = _v32_clean_report_text("נבס יתאמן עם הקבוצה הבוגרת. יחד עם @. 🇱🇺")
+    if "@" in dangling or "יחד עם" in dangling or "🇱🇺" not in dangling:
+        raise RuntimeError("v32_dangling_handle_cleanup_failed")
+
+    source_list = (
+        "🤯🔴 ארסנל הרכיבה מרכז שדה גדוש לחלוטין!\n\n"
+        "עם הגעתו של ברונו גימארייס, כך נראה כעת אחד מאמצעי השדה האדירים באירופה.\n\n"
+        "🇧🇷 ברונו גימאראיס (28) 🇪🇸 מרטין זובימנדי (27) "
+        "🏴\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F דקלן רייס (27) "
+        "🇪🇸 מיקל מרינו (30) 🇳🇴 מרטין אודגארד (27) "
+        "🏴\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F אברצ'י אזה (28) "
+        "🏴\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F מיילס לואיס-סקילי (19) "
+        "😳 על הנייר, האם זה הקישור הטוב ביותר בכדורגל העולמי?"
+    )
+    fixed_list = _v32_repair_flag_player_lists(source_list)
+    item_lines = [line for line in fixed_list.splitlines() if _v32_is_flag_list_line(line)]
+    if len(item_lines) != 7 or "\n\n😳" not in fixed_list:
+        raise RuntimeError(f"v32_flag_list_cleanup_failed:{len(item_lines)}")
+
+    hwg = (
+        "🚨💣 דיווח: מו סלאח לטרבזונספור #HERE_WE_GO! המועדון מאשר כי קיים הסכם. "
+        "סלאח מצטרף בחוזה לשנתיים כשחקן חופשי."
+    )
+    followup = (
+        "🚨 דיווח: מוחמד סלאח צפוי להצטרף לטרבזונספור בחוזה לשנתיים כשחקן חופשי. "
+        "סיכום בעל פה כבר קיים."
+    )
+    facts_official = (
+        "🚨🚨 רשמי: הודעה מטרבזונספור: החלו משאות ומתנים בנוגע להעברתו של "
+        "הכדורגלן המקצועני מוחמד סלאח למועדון שלנו."
+    )
+    if not _v32_same_event_without_new_fact(followup, hwg, "JacobsBen", "FabrizioRomano"):
+        raise RuntimeError("v32_salah_regular_duplicate_failed")
+    if not _v32_same_event_without_new_fact(facts_official, hwg, "centregoals", "FabrizioRomano"):
+        raise RuntimeError("v32_salah_fact_duplicate_failed")
+    if _v32_event_stage(facts_official, "centregoals") != 4:
+        raise RuntimeError("v33_fact_opening_official_restore_failed")
+    different_player = followup.replace("מוחמד סלאח", "עומר מרמוש")
+    if _v32_same_transfer_identity(different_player, hwg):
+        raise RuntimeError("v32_different_player_false_duplicate")
+
+    footer = _v32_exact_single_neto_footer("דיווח.\n\n" + _V31_SIGNATURE_HTML)
+    plain = html.unescape(re.sub(r"<[^>]+>", "", footer))
+    if len(re.findall(r"(?iu)נטו\s+ספורט", plain)) != 1:
+        raise RuntimeError("v32_footer_regression")
+
+
+try:
+    _v32_self_audit()
+    logging.info(
+        "V33 active: dangling @ removed, Salah aliases canonicalized, post-HWG duplicates hardened, "
+        "CentreGoals/Polymarket official label restored, tag-flag lists preserved"
+    )
+except Exception as _v32_audit_exc:
+    logging.error("V32 self-audit failed: %s", short_error(_v32_audit_exc, 600))
+
+# ====== END V32 DANGLING HANDLE / SALAH DEDUPE / FACT-STAGE / FLAG-LIST FIX ======
+
+# ====== V34 CAUSE-AWARE GENERAL RULE ENGINE / ACTIVE-CONFIG AUDIT ======
+# General hardening requested on 2026-08-05. This final layer does not remove
+# any established rule. It turns the recurring one-off fixes into data-driven,
+# cause-aware mechanisms and validates the active configuration at startup.
+# RSS discovery functions, mirror order, polling cadence, media limits, buttons,
+# persistent filenames and existing filters are not replaced here.
+
+BOT_BUILD_ID = "winner-v34-cause-aware-general-rules-2026-08-05"
+
+# ---------------------------------------------------------------------------
+# 1) Entity aliases are canonicalized for comparison from the existing player
+#    dictionary, plus explicit aliases learned from confirmed operator examples.
+#    Output spelling remains controlled by the established translation pipeline;
+#    this canonicalizer is used mainly for event identity and duplicate logic.
+# ---------------------------------------------------------------------------
+_V34_EXPLICIT_ENTITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "מוחמד סלאח": (
+        "מו סלאח", "מוחמד סאלח", "מוחמד סלאח",
+        "Mo Salah", "Mohamed Salah", "Mohammad Salah", "Muhammad Salah",
+    ),
+}
+_V34_ALIAS_MAP_CACHE: dict[str, str] | None = None
+
+
+def _v34_phrase_norm(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", html.unescape(str(value or ""))).casefold()
+    text = text.replace("־", "-").replace("’", "'").replace("׳", "'")
+    text = re.sub(r"[^A-Za-zÀ-ÿא-ת0-9'\- ]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip(" -'")
+
+
+def _v34_entity_alias_map() -> dict[str, str]:
+    global _V34_ALIAS_MAP_CACHE
+    if isinstance(_V34_ALIAS_MAP_CACHE, dict):
+        return _V34_ALIAS_MAP_CACHE
+    aliases: dict[str, str] = {}
+    for raw, translated in dict(globals().get("PLAYER_REPLACEMENTS", {}) or {}).items():
+        canonical = _v34_phrase_norm(translated or raw)
+        if not canonical:
+            continue
+        for item in (raw, translated):
+            alias = _v34_phrase_norm(item)
+            if alias:
+                aliases[alias] = canonical
+    for canonical_raw, group in _V34_EXPLICIT_ENTITY_ALIASES.items():
+        canonical = _v34_phrase_norm(canonical_raw)
+        for item in (canonical_raw, *group):
+            alias = _v34_phrase_norm(item)
+            if alias:
+                aliases[alias] = canonical
+    _V34_ALIAS_MAP_CACHE = aliases
+    return aliases
+
+
+def _v34_canonical_compare_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", html.unescape(re.sub(r"(?is)<[^>]+>", " ", str(value or ""))))
+    text = URL_RE.sub(" ", text)
+    text = re.sub(r"@[A-Za-z0-9_]{2,40}", " ", text)
+    # Longest aliases first; exact letter/digit boundaries prevent partial-name
+    # replacements inside unrelated words.
+    for alias, canonical in sorted(_v34_entity_alias_map().items(), key=lambda pair: len(pair[0]), reverse=True):
+        if len(alias) < 4:
+            continue
+        pattern = re.compile(
+            rf"(?<![A-Za-zÀ-ÿא-ת0-9]){re.escape(alias)}(?![A-Za-zÀ-ÿא-ת0-9])",
+            re.IGNORECASE,
+        )
+        text = pattern.sub(canonical, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_V34_EXPLICIT_TEAM_ALIASES: dict[str, tuple[str, ...]] = {
+    "trabzonspor": ("Trabzonspor", "טרבזונספור"),
+    "schalke": ("Schalke", "Schalke 04", "S04", "שאלקה", "שאלקה 04"),
+}
+_V34_TEAM_ALIAS_MAP_CACHE: dict[str, str] | None = None
+
+
+def _v34_team_alias_map() -> dict[str, str]:
+    global _V34_TEAM_ALIAS_MAP_CACHE
+    if isinstance(_V34_TEAM_ALIAS_MAP_CACHE, dict):
+        return _V34_TEAM_ALIAS_MAP_CACHE
+    aliases: dict[str, str] = {}
+    catalog = globals().get("TEAM_CATALOG", {})
+    if isinstance(catalog, dict):
+        for key, row in catalog.items():
+            if not isinstance(row, dict):
+                continue
+            canonical = _v34_phrase_norm(key or row.get("name"))
+            for item in (row.get("name"), *(row.get("aliases") or [])):
+                alias = _v34_phrase_norm(item)
+                if alias and (len(alias) >= 4 or re.search(r"[א-ת]", alias)):
+                    aliases[alias] = canonical
+    for raw, translated in dict(globals().get("TEAM_REPLACEMENTS", {}) or {}).items():
+        canonical = _v34_phrase_norm(translated or raw)
+        for item in (raw, translated):
+            alias = _v34_phrase_norm(item)
+            if alias and canonical and (len(alias) >= 4 or re.search(r"[א-ת]", alias)):
+                aliases[alias] = canonical
+    for raw in tuple(globals().get("KNOWN_UNTRACKED_DESTINATION_CLUB_ALIASES", ()) or ()):
+        alias = _v34_phrase_norm(raw)
+        if alias and len(alias) >= 4:
+            aliases.setdefault(alias, alias)
+    for canonical_raw, group in _V34_EXPLICIT_TEAM_ALIASES.items():
+        canonical = _v34_phrase_norm(canonical_raw)
+        for item in group:
+            alias = _v34_phrase_norm(item)
+            if alias:
+                aliases[alias] = canonical
+    _V34_TEAM_ALIAS_MAP_CACHE = aliases
+    return aliases
+
+
+def _v34_team_keys(value: Any) -> set[str]:
+    normalized = _v34_phrase_norm(_v34_canonical_compare_text(value))
+    result: set[str] = set()
+    for alias, canonical in sorted(_v34_team_alias_map().items(), key=lambda pair: len(pair[0]), reverse=True):
+        if re.search(r"[א-ת]", alias):
+            # Hebrew prepositions are commonly attached to club names:
+            # מטרבזונספור, לברצלונה, באינטר. Treat the grammatical prefix as
+            # outside the entity while preserving exact word boundaries.
+            pattern = re.compile(
+                rf"(?<![A-Za-zÀ-ÿא-ת0-9])(?:[ובלמשהכ])?{re.escape(alias)}(?![A-Za-zÀ-ÿא-ת0-9])",
+                re.IGNORECASE,
+            )
+        else:
+            pattern = re.compile(
+                rf"(?<![A-Za-zÀ-ÿא-ת0-9]){re.escape(alias)}(?![A-Za-zÀ-ÿא-ת0-9])",
+                re.IGNORECASE,
+            )
+        if pattern.search(normalized):
+            result.add(canonical)
+    return result
+
+
+def _v34_item_event_text(item: dict[str, Any]) -> str:
+    # Compare source with source whenever available, while retaining translated
+    # text as a second representation for aliases/transliterations. This avoids
+    # a false miss when the current tweet is English and durable memory is Hebrew.
+    parts: list[str] = []
+    for key in ("source_text", "original_text", "text", "translated", "rendered", "channel_memory_text", "preview", "caption", "message"):
+        value = str(item.get(key) or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    signature = item.get("signature")
+    if isinstance(signature, dict):
+        value = str(signature.get("text") or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# 2) General report formatter. Existing proven cleaners remain the base; this
+#    layer enforces the invariants uniformly for cached, automatic, quiet,
+#    manual, text, photo, album and video reports.
+# ---------------------------------------------------------------------------
+_V34_OPENING_CANONICAL = {
+    "דיווח ראשוני": "פרסום ראשון",
+    "פרסום ראשוני": "פרסום ראשון",
+    "זה עתה נכנס": "דיווח",
+}
+_V34_EXTRA_SAFE_OPENINGS = {
+    "חדש", "פרסום בלעדי", "דיווח בלעדי", "ידיעה בלעדית", "הודעה רשמית",
+}
+_V20_SAFE_OPENING_LABELS.update(_V34_EXTRA_SAFE_OPENINGS)
+_V34_LIST_MARKER_RE = re.compile(
+    r"(?:[•▪▫◦●‣⁃]|(?:\d{1,2}|[א-י])[.)])(?=[ \t\u00a0]+\S)",
+    re.UNICODE,
+)
+
+
+def _v34_replace_opening_aliases(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Operate only on a true opening label after optional RTL marks and emoji.
+    emoji_prefix = rf"(?P<prefix>^[{re.escape(_V30_INVISIBLE_CHARS)} \t]*(?:{_V30_EMOJI_CLUSTER}[ \t]*)*)"
+    for source, target in sorted(_V34_OPENING_CANONICAL.items(), key=lambda item: len(item[0]), reverse=True):
+        pattern = re.compile(
+            emoji_prefix
+            + rf"(?:<(?:b|strong)(?:\s+[^>]*)?>\s*)?{re.escape(source)}\s*:"
+            + r"\s*(?:</(?:b|strong)>\s*)?",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        text = pattern.sub(lambda match, replacement=target: match.group("prefix") + replacement + ": ", text)
+    return text
+
+
+def _v34_bold_and_split_opening(value: Any) -> str:
+    text = _v34_replace_opening_aliases(value)
+    lines = text.split("\n")
+    nonempty = [index for index, line in enumerate(lines) if line.strip()]
+    if not nonempty:
+        return text
+    report_index = nonempty[0]
+    if _v30_is_writer_heading(lines[report_index]):
+        following = [index for index in nonempty if index > report_index]
+        if not following:
+            return text
+        report_index = following[0]
+
+    labels = sorted({str(item) for item in _V20_SAFE_OPENING_LABELS}, key=len, reverse=True)
+    label_alt = "|".join(re.escape(item) for item in labels)
+    pattern = re.compile(
+        rf"^(?P<prefix>[{re.escape(_V30_INVISIBLE_CHARS)} \t]*)"
+        rf"(?P<emoji>(?:{_V30_EMOJI_CLUSTER}[ \t]*)*)"
+        r"(?:<(?:b|strong)(?:\s+[^>]*)?>\s*)?"
+        rf"(?P<label>{label_alt})\s*:"
+        r"\s*(?:</(?:b|strong)>\s*)?"
+        r"(?P<body>.*)$",
+        re.IGNORECASE,
+    )
+    match = pattern.match(lines[report_index])
+    if not match:
+        return text
+    label = re.sub(r"\s+", " ", match.group("label")).strip()
+    opening = match.group("prefix") + match.group("emoji") + f"<b>{html.escape(label, quote=False)}:</b>"
+    body = match.group("body").strip()
+    replacement = [opening.rstrip()]
+    if body:
+        if re.search(r"[\u0590-\u05FF]", _v30_visible_line(body)) and not body.startswith(RTL_MARK):
+            body = RTL_MARK + body
+        replacement.append(body)
+    lines[report_index:report_index + 1] = replacement
+    return "\n".join(lines)
+
+
+def _v34_repair_general_lists(value: Any) -> str:
+    text = _v32_repair_flag_player_lists(value)
+    # Repair bullet/number lists only when at least three real markers exist.
+    # This avoids treating one dash or one numbered fact in prose as a list.
+    if len(_V34_LIST_MARKER_RE.findall(_v20_visible_html(text))) < 3:
+        return text
+    text = re.sub(
+        r"(?<!\n)[ \t\u00a0]+(?=(?:[•▪▫◦●‣⁃]|(?:\d{1,2}|[א-י])[.)])[ \t\u00a0]+\S)",
+        "\n",
+        text,
+    )
+    lines = [line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    output: list[str] = []
+    for index, line in enumerate(lines):
+        if line.strip():
+            output.append(line.strip())
+            continue
+        previous_is_item = bool(output and _V34_LIST_MARKER_RE.match(_v20_visible_html(output[-1]).lstrip()))
+        next_is_item = False
+        for candidate in lines[index + 1:]:
+            if candidate.strip():
+                next_is_item = bool(_V34_LIST_MARKER_RE.match(_v20_visible_html(candidate).lstrip()))
+                break
+        if previous_is_item and next_is_item:
+            continue
+        if output and output[-1] == "":
+            continue
+        output.append("")
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(output)).strip()
+
+
+def _v34_clean_report_body(value: Any) -> str:
+    text = _v30_remove_all_neto_footers(value)
+    text = _v32_clean_report_text(text)
+    text = _v34_repair_general_lists(text)
+    text = _v30_clean_emoji_punctuation(text)
+    text = _v30_split_inline_writer_heading(text)
+    # Remove a repeated writer prefix from the report line before trying to
+    # recognize/bold its opening label. Run the gap normalizer again afterwards
+    # so cached messages and fresh builds converge to the same layout.
+    text = _v30_force_writer_paragraph_gap(text)
+    text = _v34_bold_and_split_opening(text)
+    text = _v30_force_writer_paragraph_gap(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return _v20_anchor_all_hebrew_lines(text)
+
+
+_V34_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V34_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _v34_clean_report_body(rendered)
+
+
+def _v34_exact_single_neto_footer(value: Any) -> str:
+    body = _v34_clean_report_body(value)
+    return (body + "\n\n" + _V31_SIGNATURE_HTML).strip() if body else _V31_SIGNATURE_HTML
+
+
+# V31/V25 send routes resolve these names dynamically. Replacing both keeps one
+# canonical footer at every actual delivery boundary without changing the media
+# route itself.
+_v31_exact_single_neto_footer = _v34_exact_single_neto_footer
+_finalize_outgoing_message_only = _v34_exact_single_neto_footer
+
+
+# ---------------------------------------------------------------------------
+# 3) Cause-aware event engine. It learns the *kind* of error from stable causes:
+#    entity identity, transfer stage and material facts. No sentence-specific
+#    hardcoding is needed for every new reporter paraphrase.
+# ---------------------------------------------------------------------------
+_V34_STAGE_REVERSAL_RE = _V32_REVERSAL_RE
+_V34_STAGE_OFFICIAL_RE = _V32_STAGE_OFFICIAL_RE
+_V34_STAGE_AGREED_RE = _V32_STAGE_AGREED_RE
+_V34_STAGE_TALKS_RE = _V32_STAGE_TALKS_RE
+_V34_STAGE_INTEREST_RE = _V32_STAGE_INTEREST_RE
+
+
+def _v34_event_stage(value: Any, source: Any = "") -> int:
+    text = _v34_canonical_compare_text(value)
+    if _V34_STAGE_REVERSAL_RE.search(text):
+        return 5
+    if _V34_STAGE_OFFICIAL_RE.search(text):
+        return 4
+    if _V34_STAGE_AGREED_RE.search(text):
+        return 3
+    if _V34_STAGE_TALKS_RE.search(text):
+        return 2
+    if _V34_STAGE_INTEREST_RE.search(text):
+        return 1
+    return 0
+
+
+def _v34_person_keys(value: Any) -> set[str]:
+    text = _v34_canonical_compare_text(value)
+    keys = set(_v32_person_keys(text))
+    normalized = " " + _v34_phrase_norm(text) + " "
+    for alias, canonical in _v34_entity_alias_map().items():
+        if len(alias.split()) >= 2 and (" " + alias + " ") in normalized:
+            keys.add(canonical)
+    return {item for item in keys if item}
+
+
+_V34_TRANSFER_CONFIRM_RE = re.compile(
+    r"(?iu)(?:שחקנ(?:ה|ו)?\s+החדש(?:ה)?\s+של|חתם\s+ב|חתמה\s+ב|הצטרף\s+ל|"
+    r"מצטרף\s+ל|צפוי\s+להצטרף|צפויה\s+להצטרף|new\s+(?:player|signing)|"
+    r"joins?\s+|signed\s+(?:for|with)|set\s+to\s+join)"
+)
+_V34_DESTINATION_PATTERNS = (
+    re.compile(
+        r"(?iu)(?:להצטרף|מצטרף|הצטרף|יחתום|חתם|עובר|עבר|שחקנ(?:ה|ו)?\s+החדש(?:ה)?\s+של)"
+        r"\s+(?:אל\s+|ל|ב|של\s+)?"
+        r"(?P<club>[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת׳'’\-]{2,}(?:\s+[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת׳'’\-]{2,}){0,3})"
+    ),
+    re.compile(
+        r"(?iu)(?P<club>ל[א-ת][א-ת׳'’\-]{3,}(?:\s+[א-ת][א-ת׳'’\-]{2,}){0,2})"
+        r"(?=\s+#?HERE(?:_|\s)+WE(?:_|\s)+GO)"
+    ),
+    re.compile(
+        r"(?iu)(?:joins?|signed\s+(?:for|with)|set\s+to\s+join|move\s+to|transfer\s+to)\s+"
+        r"(?P<club>[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’\-]{2,}(?:\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’\-]{2,}){0,3})"
+    ),
+)
+_V34_DESTINATION_STOPWORDS = {
+    "בחוזה", "חוזה", "כשחקן", "שחקן", "חופשי", "לשנתיים", "לשלוש", "השבוע",
+    "רשמית", "official", "free", "agent", "new", "player", "on", "as", "after",
+    "from", "until", "this", "בהעברה", "לאחר", "בקיץ", "עד",
+}
+
+
+def _v34_destination_keys(value: Any) -> set[str]:
+    text = _v34_canonical_compare_text(value)
+    result: set[str] = set()
+    for pattern in _V34_DESTINATION_PATTERNS:
+        for match in pattern.finditer(text):
+            words = _v34_phrase_norm(match.group("club")).split()
+            kept: list[str] = []
+            for word in words:
+                if word in _V34_DESTINATION_STOPWORDS or word.startswith(("בחוזה", "כשחקן", "בהעברה")):
+                    break
+                kept.append(word)
+            if not kept:
+                continue
+            # The Hebrew destination preposition is often attached to the club:
+            # לטרבזונספור / בטרבזונספור / ללוס אנג'לס. Strip only that grammatical
+            # prefix, not the first letter of the actual club name.
+            first = kept[0]
+            if len(first) >= 5 and first[0] in {"ל", "ב"}:
+                first = first[1:]
+            kept[0] = first
+            club = " ".join(kept).strip()
+            if club and club not in _V34_DESTINATION_STOPWORDS:
+                result.add(club)
+    return result
+
+
+def _v34_material_facts(value: Any) -> set[str]:
+    text = _v34_canonical_compare_text(value)
+    facts = set(_v32_material_transfer_facts(text))
+    extra_patterns = {
+        "sell_on": r"(?iu)(?:sell[- ]on|אחוזים?\s+ממכירה|מכירה\s+עתידית)",
+        "release_clause": r"(?iu)(?:release\s+clause|סעיף\s+שחרור)",
+        "salary": r"(?iu)(?:salary|wages|שכר)(?:\s+של)?\s+[^.!?\n]{0,35}(?:€|£|\$|מיליון|אלף|לשנה|לעונה)",
+        "medical_booked": r"(?iu)(?:medical(?:s)?\s+(?:booked|scheduled)|נקבעו\s+בדיקות\s+רפואיות)",
+    }
+    for label, pattern in extra_patterns.items():
+        if re.search(pattern, text):
+            facts.add(label)
+    # Currency-bearing amounts are canonicalized so punctuation/wording changes
+    # do not look like a new fact.
+    for match in re.finditer(
+        r"(?iu)(?:[€£$]\s*\d+(?:[.,]\d+)?\s*(?:m|million|k|thousand)?|"
+        r"\d+(?:[.,]\d+)?\s*(?:מיליון|אלף)\s*(?:אירו|יורו|ליש[\"״']?ט|דולר))",
+        text,
+    ):
+        amount = re.sub(r"\s+", "", match.group(0)).replace(",", ".").casefold()
+        facts.add("amount:" + amount)
+    return facts
+
+
+def _v34_event_signature(value: Any, source: Any = "") -> dict[str, Any]:
+    text = _v34_canonical_compare_text(value)
+    teams = _v34_team_keys(text)
+    try:
+        teams.update(set(_final_logical_team_ids(text) or set()))
+    except Exception:
+        pass
+    people = _v34_person_keys(text)
+    raw_destinations = _v34_destination_keys(text)
+    team_aliases = _v34_team_alias_map()
+    destinations = {team_aliases.get(item, item) for item in raw_destinations}
+    teams.update(destinations)
+    stage = _v34_event_stage(text, source)
+    return {
+        "text": text,
+        "source": _v32_source_key(source),
+        "people": people,
+        "teams": teams,
+        "destinations": destinations,
+        "tokens": set(_v32_event_tokens(text)),
+        "bigrams": _v32_name_bigrams(text),
+        "families": set(_v9_action_families(text)),
+        "stage": stage,
+        "facts": _v34_material_facts(text),
+        "is_transfer": bool(
+            _V32_TRANSFER_CONTEXT_RE.search(text)
+            or _V34_TRANSFER_CONFIRM_RE.search(text)
+            or (stage >= 1 and teams)
+            or (stage >= 2 and people)
+        ),
+        "is_hwg": bool(_V32_HWG_RE.search(text)),
+    }
+
+
+def _v34_same_event_identity(current: dict[str, Any], previous: dict[str, Any]) -> bool:
+    if not current.get("is_transfer") or not previous.get("is_transfer"):
+        return False
+    current_people = set(current.get("people") or set())
+    previous_people = set(previous.get("people") or set())
+    if current_people and previous_people and not (current_people & previous_people):
+        return False
+
+    current_teams = set(current.get("teams") or set())
+    previous_teams = set(previous.get("teams") or set())
+    if current_teams and previous_teams:
+        shared_teams = current_teams & previous_teams
+        if not shared_teams:
+            return False
+        # Same player linked to two genuinely different destinations must not be
+        # collapsed merely because both reports mention the selling club.
+        current_extra = current_teams - previous_teams
+        previous_extra = previous_teams - current_teams
+        if current_extra and previous_extra:
+            return False
+
+    shared_tokens = set(current.get("tokens") or set()) & set(previous.get("tokens") or set())
+    shared_bigrams = set(current.get("bigrams") or set()) & set(previous.get("bigrams") or set())
+    shared_long = {token for token in shared_tokens if len(token) >= 6}
+    people_overlap = bool(current_people and previous_people and (current_people & previous_people))
+    team_overlap = bool(current_teams and previous_teams and (current_teams & previous_teams))
+
+    if people_overlap and (team_overlap or len(shared_long) >= 1):
+        return True
+    if shared_bigrams and (team_overlap or (len(shared_tokens) >= 3 and shared_long)):
+        return True
+    return bool(team_overlap and len(shared_tokens) >= 4 and len(shared_long) >= 1)
+
+
+def _v34_event_decision(
+    current_text: Any,
+    previous_text: Any,
+    current_source: Any = "",
+    previous_source: Any = "",
+) -> dict[str, Any]:
+    current = _v34_event_signature(current_text, current_source)
+    previous = _v34_event_signature(previous_text, previous_source)
+    if not _v34_same_event_identity(current, previous):
+        return {"same_event": False, "duplicate": False, "reason": "different_event"}
+
+    current_stage = int(current.get("stage") or 0)
+    previous_stage = int(previous.get("stage") or 0)
+    current_facts = set(current.get("facts") or set())
+    previous_facts = set(previous.get("facts") or set())
+    new_facts = current_facts - previous_facts
+
+    if current_stage == 5:
+        return {
+            "same_event": True, "duplicate": False, "reason": "reversal_or_failure",
+            "current_stage": current_stage, "previous_stage": previous_stage,
+        }
+    # A real stage advance is publishable. This intentionally restores an
+    # official milestone after HERE WE GO for every source, including facts
+    # sources, while repeated official posts remain duplicates after the first.
+    if current_stage > previous_stage:
+        return {
+            "same_event": True, "duplicate": False, "reason": "stage_advanced",
+            "current_stage": current_stage, "previous_stage": previous_stage,
+        }
+    if new_facts:
+        return {
+            "same_event": True, "duplicate": False, "reason": "new_material_fact",
+            "new_facts": sorted(new_facts),
+            "current_stage": current_stage, "previous_stage": previous_stage,
+        }
+    return {
+        "same_event": True, "duplicate": True, "reason": "same_event_no_new_fact",
+        "current_stage": current_stage, "previous_stage": previous_stage,
+        "current_facts": sorted(current_facts), "previous_facts": sorted(previous_facts),
+    }
+
+
+_V34_PRE_FAST_DUPLICATE = _v9_fast_duplicate
+
+
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    try:
+        if is_duplicate_false_positive_post(post):
+            return None
+    except Exception:
+        pass
+    try:
+        if _final_is_fabrizio_here_we_go(post):
+            return None
+    except Exception:
+        pass
+
+    current_text = str(text_override or _final_source_text(post) or getattr(post, "text", "")).strip()
+    if not current_text:
+        return None
+    current_id = str(getattr(post, "post_id", "") or getattr(post, "link", "")).strip()
+    current_source = getattr(post, "username", "")
+
+    legacy = _V34_PRE_FAST_DUPLICATE(post, state, text_override)
+    if legacy:
+        previous_text = _v34_item_event_text(legacy)
+        previous_id = str(legacy.get("post_id") or legacy.get("link") or legacy.get("id") or "").strip()
+        if current_id and previous_id and current_id == previous_id:
+            return legacy
+        if _V32_TRANSFER_CONTEXT_RE.search(_v34_canonical_compare_text(current_text)) and _V32_TRANSFER_CONTEXT_RE.search(_v34_canonical_compare_text(previous_text)):
+            decision = _v34_event_decision(
+                current_text,
+                previous_text,
+                current_source,
+                legacy.get("username") or legacy.get("source") or "",
+            )
+            if decision.get("duplicate"):
+                result = dict(legacy)
+                result.update({
+                    "duplicate": True,
+                    "is_duplicate": True,
+                    "duplicate_verdict": "V34_SAME_EVENT_NO_NEW_FACT",
+                    "reason": "same_event_no_new_fact",
+                    "raw_reason": "same_event_no_new_fact",
+                    "duplicate_explanation": decision,
+                })
+                return result
+            # Ignore a legacy semantic false positive when entity identity differs
+            # or the newer report advances the stage/adds a material fact.
+        else:
+            return legacy
+
+    for item in reversed(_v9_recent_duplicate_rows(state)):
+        previous_id = str(item.get("post_id") or item.get("link") or item.get("id") or "").strip()
+        if current_id and previous_id and current_id == previous_id:
+            result = dict(item)
+            result.update({"duplicate": True, "is_duplicate": True, "duplicate_verdict": "EXACT_ID"})
+            return result
+        previous_text = _v34_item_event_text(item)
+        if not previous_text:
+            continue
+        decision = _v34_event_decision(
+            current_text,
+            previous_text,
+            current_source,
+            item.get("username") or item.get("source") or "",
+        )
+        if not decision.get("duplicate"):
+            continue
+        result = dict(item)
+        result.update({
+            "duplicate": True,
+            "is_duplicate": True,
+            "duplicate_score": 0.99,
+            "duplicate_verdict": "V34_SAME_EVENT_NO_NEW_FACT",
+            "duplicate_source": str(item.get("username") or item.get("source") or "דיווח קודם"),
+            "reason": "same_event_no_new_fact",
+            "raw_reason": "same_event_no_new_fact",
+            "duplicate_explanation": decision,
+        })
+        return result
+    return None
+
+
+# Use the pre-V32 candidate clustering as the stable base because V32's narrow
+# post-HWG collapse could suppress a later official milestone. Then apply the
+# general stage/fact policy once.
+_V34_BASE_CLUSTER_PARALLEL = globals().get("_V32_PRE_CLUSTER_PARALLEL", cluster_parallel_candidates)
+
+
+def cluster_parallel_candidates(candidates: list[tuple[str, Post, float]]) -> list[tuple[str, Post, float]]:
+    initial = list(_V34_BASE_CLUSTER_PARALLEL(candidates) or [])
+    if len(initial) <= 1:
+        return initial
+    kept: list[tuple[str, Post, float]] = []
+    for candidate in initial:
+        username, post, found_at = candidate
+        current_text = _v21_source_text(post)
+        suppress = False
+        for index, (old_username, old_post, old_found_at) in enumerate(list(kept)):
+            old_text = _v21_source_text(old_post)
+            current_vs_old = _v34_event_decision(current_text, old_text, username, old_username)
+            old_vs_current = _v34_event_decision(old_text, current_text, old_username, username)
+            if current_vs_old.get("duplicate"):
+                try:
+                    _v21_merge_candidate_ids(old_post, post, username)
+                except Exception:
+                    pass
+                suppress = True
+                break
+            if old_vs_current.get("duplicate"):
+                try:
+                    _v21_merge_candidate_ids(post, old_post, old_username)
+                except Exception:
+                    pass
+                kept[index] = (username, post, min(float(found_at), float(old_found_at)))
+                suppress = True
+                break
+        if not suppress:
+            kept.append(candidate)
+    return kept
+
+
+_V34_PRE_SAME_EVENT_TEXT = _v9_same_event_text
+
+
+def _v9_same_event_text(current_text: str, previous_text: str) -> tuple[bool, float]:
+    current_transfer = bool(_V32_TRANSFER_CONTEXT_RE.search(_v34_canonical_compare_text(current_text)))
+    previous_transfer = bool(_V32_TRANSFER_CONTEXT_RE.search(_v34_canonical_compare_text(previous_text)))
+    if current_transfer and previous_transfer:
+        decision = _v34_event_decision(current_text, previous_text)
+        if decision.get("duplicate"):
+            return True, 0.99
+        if decision.get("same_event"):
+            return False, 0.98
+    return _V34_PRE_SAME_EVENT_TEXT(current_text, previous_text)
+
+
+# ---------------------------------------------------------------------------
+# 4) Active-configuration and rule self-audit. It changes no setting; it catches
+#    contradictions immediately at startup instead of allowing a later patch to
+#    silently undo a working rule.
+# ---------------------------------------------------------------------------
+def _v34_runtime_configuration_audit() -> None:
+    required_memory = {
+        STATE_FILE, CONTROL_STATE_FILE, TRANSLATION_CACHE_FILE,
+        AI_DECISION_CACHE_FILE, DAILY_QUALITY_STATS_FILE, SHABBAT_CACHE_FILE,
+        "football_sent_memory.json", "football_learning_memory.json",
+    }
+    if not required_memory.issubset(set(PERSISTENT_MEMORY_FILES)):
+        raise RuntimeError("v34_persistent_memory_contract_changed")
+    if CHECK_EVERY_SECONDS != 20 or MAX_PARALLEL_ACCOUNT_CHECKS != 4:
+        raise RuntimeError("v34_server_scan_limits_regressed")
+    if MAX_PARALLEL_POST_SENDS != 4 or GEMINI_MAX_PARALLEL_TRANSLATIONS != 2:
+        raise RuntimeError("v34_parallel_limits_regressed")
+    if MAX_VIDEO_BYTES != 25 * 1024 * 1024:
+        raise RuntimeError("v34_video_limit_regressed")
+    if DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS != 60:
+        raise RuntimeError("v34_daily_stats_interval_regressed")
+    if not CONTROL_SEND_PANEL_ON_STARTUP:
+        raise RuntimeError("v34_startup_panel_disabled")
+    # Main-channel-only duplicate history must remain active.
+    if globals().get("_v9_recent_duplicate_rows") is not globals().get("_v20_recent_duplicate_rows"):
+        raise RuntimeError("v34_duplicate_history_not_main_only")
+
+
+_V34_PRE_RUNTIME_CONSISTENCY_AUDIT = runtime_consistency_audit
+
+
+def runtime_consistency_audit() -> list[str]:
+    issues = list(_V34_PRE_RUNTIME_CONSISTENCY_AUDIT() or [])
+    try:
+        _v34_runtime_configuration_audit()
+    except Exception as exc:
+        issues.append("סתירה בהגדרות הפעילות של V34: " + short_error(exc, 220))
+    if globals().get("_v31_exact_single_neto_footer") is not _v34_exact_single_neto_footer:
+        issues.append("מסלול החתימה הסופי אינו מצביע למנגנון האחיד")
+    if globals().get("_finalize_outgoing_message_only") is not _v34_exact_single_neto_footer:
+        issues.append("מסיים ההודעה אינו מצביע למנגנון החתימה האחיד")
+    if globals().get("_v9_recent_duplicate_rows") is not globals().get("_v20_recent_duplicate_rows"):
+        issues.append("זיכרון הכפילויות אינו מוגבל להודעות שנשלחו בפועל לערוץ הראשי")
+    # A tiny deterministic policy check catches future wrappers that silently
+    # reintroduce the old post-HWG official suppression.
+    try:
+        sample_hwg = "מוחמד סלאח לטרבזונספור HERE WE GO. חוזה לשנתיים."
+        sample_official = "רשמי: מוחמד סלאח חתם בטרבזונספור."
+        if _v34_event_decision(sample_official, sample_hwg).get("duplicate"):
+            issues.append("שלב רשמי חדש נחסם בטעות אחרי HERE WE GO")
+    except Exception as exc:
+        issues.append("לא ניתן היה לבדוק את מדיניות שלבי הכפילות: " + short_error(exc, 180))
+    # Preserve order while removing repeated messages inherited from nested audits.
+    return list(dict.fromkeys(str(item) for item in issues if str(item).strip()))
+
+
+def _v34_self_audit() -> None:
+    # Formatting invariants: one writer, one blank paragraph gap, opening on its
+    # own line, one footer and structured lists.
+    formatted = _v34_clean_report_body(
+        "<b>בן ג'ייקובס:</b> בן ג'ייקובס: 🚨 דיווח ראשוני: תוכן הדיווח.🧤. 🤝"
+    )
+    visible = _v20_visible_html(formatted)
+    if visible.count("בן ג'ייקובס:") != 1 or "בן ג'ייקובס:\n\n" not in visible:
+        raise RuntimeError("v34_writer_layout_failed")
+    if "דיווח ראשוני" in visible or "פרסום ראשון:\n" not in visible:
+        raise RuntimeError("v34_opening_generalization_failed")
+    footer = _v34_exact_single_neto_footer(formatted + "\n\n" + _V31_SIGNATURE_HTML)
+    footer_plain = _v20_visible_html(footer)
+    if len(re.findall(r"(?iu)נטו\s+ספורט", footer_plain)) != 1:
+        raise RuntimeError("v34_single_footer_failed")
+
+    list_input = "רשימה: • ראשון • שני • שלישי • רביעי"
+    list_output = _v34_repair_general_lists(list_input)
+    if len([line for line in list_output.splitlines() if _V34_LIST_MARKER_RE.match(_v20_visible_html(line).lstrip())]) != 4:
+        raise RuntimeError("v34_general_list_failed")
+
+    # Event-cause invariants: alias spelling, different players/destinations,
+    # stage advancement, repeated official and new material terms.
+    hwg = (
+        "🚨 מוחמד סלאח לטרבזונספור HERE WE GO. הסכם מלא, חוזה לשנתיים כשחקן חופשי."
+    )
+    paraphrase = (
+        "🚨 מו סלאח צפוי להצטרף לטרבזונספור בחוזה לשנתיים כשחקן חופשי."
+    )
+    official = "🚨 רשמי: מוחמד סאלח חתם בטרבזונספור."
+    official_repeat = "רשמי: מוחמד סלאח הוא שחקנה החדש של טרבזונספור."
+    new_fee = "מוחמד סלאח לטרבזונספור, HERE WE GO. דמי העברה של 12 מיליון אירו."
+    different_player = paraphrase.replace("מו סלאח", "עומר מרמוש")
+    different_destination = paraphrase.replace("טרבזונספור", "אל-הילאל")
+
+    if not _v34_event_decision(paraphrase, hwg).get("duplicate"):
+        raise RuntimeError("v34_alias_duplicate_failed")
+    if _v34_event_decision(official, hwg).get("duplicate"):
+        raise RuntimeError("v34_official_after_hwg_was_suppressed")
+    if not _v34_event_decision(official_repeat, official).get("duplicate"):
+        raise RuntimeError("v34_repeated_official_not_suppressed")
+    if _v34_event_decision(new_fee, hwg).get("duplicate"):
+        raise RuntimeError("v34_new_material_fact_suppressed")
+    if _v34_event_decision(different_player, hwg).get("same_event"):
+        raise RuntimeError("v34_different_player_false_duplicate")
+    if _v34_event_decision(different_destination, hwg).get("same_event"):
+        raise RuntimeError("v34_different_destination_false_duplicate")
+
+    # Confirm quiet/pending rows do not enter duplicate/burst history.
+    quiet = {"pending": False, "source": "quiet_preview", "text": "דיווח", "ts": time.time()}
+    sent = {"pending": False, "source": "bot_sent", "text": "דיווח", "ts": time.time()}
+    pending = {"pending": True, "source": "bot_sent", "text": "דיווח", "ts": time.time()}
+    if _v20_is_actual_main_channel_row(quiet, source_key="channel"):
+        raise RuntimeError("v34_quiet_row_counted_as_sent")
+    if not _v20_is_actual_main_channel_row(sent, source_key="channel"):
+        raise RuntimeError("v34_sent_row_not_counted")
+    if _v20_is_actual_main_channel_row(pending, source_key="channel"):
+        raise RuntimeError("v34_pending_row_counted_as_sent")
+
+
+try:
+    _v34_runtime_configuration_audit()
+    _v34_self_audit()
+    logging.info(
+        "V34 active: generalized cause-aware formatting/duplicate rules passed; "
+        "official after HERE WE GO is a real stage advance, repeated official is deduped, "
+        "and all existing server/RSS/persistence contracts remain unchanged"
+    )
+except Exception as _v34_audit_exc:
+    logging.error("V34 rule/configuration self-audit failed: %s", short_error(_v34_audit_exc, 900))
+
+# ====== END V34 CAUSE-AWARE GENERAL RULE ENGINE / ACTIVE-CONFIG AUDIT ======
+
+
 if __name__ == "__main__":
     main()
