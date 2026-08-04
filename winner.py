@@ -51105,163 +51105,107 @@ except Exception as _v34_audit_exc:
 
 
 
-# ====== V35 EXACT OLD-GOOD RSS EXECUTION RESTORE (2026-08-05) ======
-# The RSS constants, source order and mirror implementation below were already
-# identical to the known working build. The actual regression was orchestration:
-# the later bounded/background wrapper could return an empty list before the
-# proven synchronous RSS collection had finished, so the 14-writer control test
-# reported 0/14 even while RSS work was still running in the background.
+# ====== V36 RESTORE THE LAST CONFIRMED MANUAL RSS CHECK (2026-08-05) ======
+# The last version that the user demonstrably ran and reported output from was V31.
+# A byte-for-byte comparison showed that V31, V32, V33 and V34 all had the same
+# automatic RSS implementation. Therefore the 0/14 report was not caused by V34
+# changing the automatic RSS engine.
 #
-# Restore the old-good behavior at the active boundary:
-# - use the existing _working_shared_rss_fetch implementation directly;
-# - preserve its exact primary(3)-then-fallback(2), 6s request, 8s collection,
-#   two-attempt behavior and the existing source order;
-# - merge any already-available direct-X cache without waiting for it;
-# - keep all filters, formatting, buttons, 20-second scan, four account workers,
-#   media/server limits and persistent memory untouched.
+# The real issue is the final late override of fetch_control_posts: it uses the
+# short bounded automatic route and can return an empty placeholder on a cold
+# start before the RSS jobs complete. Earlier in the same known-working code,
+# the RSS status button used _working_shared_rss_fetch directly and waited for
+# the actual primary/fallback RSS collection. Restore exactly that behavior for
+# the MANUAL 14-writer RSS status button only. Do not change fetch_posts, source
+# order, scan cadence, automatic discovery, filters, buttons or persistent data.
 
-_V35_PRE_FETCH_POSTS = fetch_posts
-_V35_PRE_FETCH_CONTROL_POSTS = fetch_control_posts
-_V35_RSS_ROUTE_LOCKS: dict[str, Lock] = {}
-_V35_RSS_ROUTE_LOCKS_GUARD = Lock()
+_V36_PRE_FETCH_CONTROL_POSTS = fetch_control_posts
 
 
-def _v35_rss_lock(username: str) -> Lock:
-    key = str(username or '').strip().lstrip('@').casefold()
-    with _V35_RSS_ROUTE_LOCKS_GUARD:
-        lock = _V35_RSS_ROUTE_LOCKS.get(key)
-        if lock is None:
-            lock = Lock()
-            _V35_RSS_ROUTE_LOCKS[key] = lock
-        return lock
-
-
-def _v35_exact_old_good_rss_rows(username: str) -> list[Post]:
-    """Run the proven RSS path once per account and return real rows or cache."""
-    canonical = str(username or '').strip().lstrip('@')
-    if not canonical:
-        return []
-    lock = _v35_rss_lock(canonical)
-    with lock:
-        try:
-            rows = list(_working_shared_rss_fetch(canonical) or [])
-        except Exception as exc:
-            logging.warning(
-                '⚠️ RSS old-good route failed for @%s: %s',
-                canonical,
-                short_error(exc, 500),
+def _v36_fetch_control_posts_exact_manual_rss(
+    username: str,
+) -> tuple[str, list[Post], Exception | None]:
+    """RSS status button: direct proven RSS engine, not the bounded auto cache."""
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        if "value_contains_footballtweet" in globals() and value_contains_footballtweet(canonical):
+            rows = list(
+                _fetch_footballtweet_posts_isolated(
+                    limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+                )
+                or []
             )
-            rows = []
+        else:
+            rows = list(_working_shared_rss_fetch(canonical) or [])
         if not rows:
-            try:
-                rows = list(_working_rss_cached(canonical, limit=60) or [])
-            except Exception:
-                rows = []
-        return rows
-
-
-def _v35_fetch_posts(username: str) -> list[Post]:
-    """Active automatic route: exact working RSS plus non-blocking live cache."""
-    canonical = str(username or '').strip().lstrip('@')
-    started = time.perf_counter()
-    rss_rows = _v35_exact_old_good_rss_rows(canonical)
-
-    # Preserve the already-existing direct public-X safety lane, but never let it
-    # delay or replace RSS. Only consume a result that is already cached/ready.
-    live_rows: list[Post] = []
-    try:
-        live_rows = list(_full_speed_cache_get(canonical) or [])
-        _full_speed_start_live(canonical)
-    except Exception:
-        live_rows = []
-
-    merged: dict[str, Post] = {}
-    try:
-        _reliable_merge_posts(merged, rss_rows, canonical)
-        _reliable_merge_posts(merged, live_rows, canonical)
-    except Exception:
-        for post in list(rss_rows) + list(live_rows):
-            if not isinstance(post, Post):
-                continue
-            identity = str(post.post_id or post.link or '').strip()
-            if identity:
-                merged.setdefault(identity, post)
-
-    ordered = sorted(
-        merged.values(),
-        key=lambda post: float(getattr(post, 'published_ts', 0.0) or 0.0),
-        reverse=True,
-    )
-    if ordered:
-        try:
-            _stable_rss_remember(canonical, ordered)
-            _remember_control_rss_posts(canonical, ordered)
-            _ten_history_save(canonical, ordered)
-        except Exception:
-            pass
-
-    observed = time.time()
-    elapsed = time.perf_counter() - started
-    for post in ordered:
-        try:
-            _pipeline_mark_seen(post, 'automatic:exact_old_good_rss_v35', observed, elapsed)
-        except Exception:
-            pass
-    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
-
-
-def _v35_fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
-    """Control RSS tests wait for the real old-good RSS result, never a placeholder."""
-    canonical = str(username or '').strip().lstrip('@')
-    try:
-        rows = _v35_exact_old_good_rss_rows(canonical)
+            rows = list(
+                _working_rss_cached(
+                    canonical,
+                    max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+                )
+                or []
+            )
         return canonical, rows, None
     except Exception as exc:
-        try:
-            cached = list(_working_rss_cached(canonical, limit=60) or [])
-        except Exception:
-            cached = []
-        return canonical, cached, None if cached else exc
+        cached = list(
+            _working_rss_cached(
+                canonical,
+                max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+            )
+            or []
+        )
+        if cached:
+            return canonical, cached, None
+        logging.warning(
+            "⚠️ בדיקת RSS ידנית נכשלה עבור @%s: %s",
+            canonical,
+            short_error(exc, 500),
+        )
+        return canonical, [], exc
 
 
-# Activate by assignment rather than another duplicate public definition.
-fetch_posts = _v35_fetch_posts
-fetch_control_posts = _v35_fetch_control_posts
+# Only the manual control/status boundary is restored. Automatic fetch_posts is
+# intentionally left exactly as it was in V34/V31.
+fetch_control_posts = _v36_fetch_control_posts_exact_manual_rss
 
 
-def _v35_rss_restore_audit() -> None:
-    expected_templates = [
-        'https://nitter.net/{username}/rss',
-        'https://twiiit.com/{username}/rss',
-        'https://lightbrd.com/{username}/rss',
-        'https://rsshub.rssforever.com/twitter/user/{username}',
-        'https://rsshub.app/twitter/user/{username}',
+def _v36_manual_rss_restore_audit() -> None:
+    if fetch_control_posts is not _v36_fetch_control_posts_exact_manual_rss:
+        raise RuntimeError("v36_manual_rss_boundary_not_active")
+    if fetch_posts is not globals().get("fetch_posts"):
+        raise RuntimeError("v36_automatic_rss_route_changed")
+    expected = [
+        "https://nitter.net/{username}/rss",
+        "https://twiiit.com/{username}/rss",
+        "https://lightbrd.com/{username}/rss",
+        "https://rsshub.rssforever.com/twitter/user/{username}",
+        "https://rsshub.app/twitter/user/{username}",
     ]
-    active = list(active_feed_templates())
-    if active[:5] != expected_templates:
-        raise RuntimeError('v35_rss_source_order_changed')
+    if list(active_feed_templates())[:5] != expected:
+        raise RuntimeError("v36_rss_source_order_changed")
     if int(FEED_HTTP_RETRIES) != 2:
-        raise RuntimeError('v35_rss_retry_count_changed')
+        raise RuntimeError("v36_rss_retries_changed")
     if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
-        raise RuntimeError('v35_rss_request_timeout_changed')
+        raise RuntimeError("v36_rss_request_timeout_changed")
     if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
-        raise RuntimeError('v35_rss_collection_timeout_changed')
+        raise RuntimeError("v36_rss_collection_timeout_changed")
     if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
-        raise RuntimeError('v35_rss_primary_fallback_counts_changed')
-    if fetch_posts is not _v35_fetch_posts or fetch_control_posts is not _v35_fetch_control_posts:
-        raise RuntimeError('v35_rss_active_boundary_not_installed')
+        raise RuntimeError("v36_rss_primary_fallback_changed")
 
 
 try:
-    _v35_rss_restore_audit()
+    _v36_manual_rss_restore_audit()
     logging.info(
-        'V35 RSS restored: exact old-good synchronous RSS route is active; '
-        'control tests wait for real RSS results instead of returning early.'
+        "V36 active: manual 14-writer RSS test restored to the direct proven "
+        "RSS collector; automatic RSS and all non-RSS behavior are unchanged."
     )
-except Exception as _v35_rss_audit_exc:
-    logging.error('V35 RSS restore audit failed: %s', short_error(_v35_rss_audit_exc, 700))
+except Exception as _v36_rss_audit_exc:
+    logging.error(
+        "V36 manual RSS restore audit failed: %s",
+        short_error(_v36_rss_audit_exc, 700),
+    )
 
-# ====== END V35 EXACT OLD-GOOD RSS EXECUTION RESTORE ======
+# ====== END V36 RESTORE THE LAST CONFIRMED MANUAL RSS CHECK ======
 
 if __name__ == "__main__":
     main()
