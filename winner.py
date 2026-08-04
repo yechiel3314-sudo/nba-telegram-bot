@@ -374,7 +374,7 @@ DAILY_QUALITY_REPORT_MINUTE = int(os.environ.get("DAILY_QUALITY_REPORT_MINUTE", 
 DAILY_QUALITY_REPORT_LAST_DATE = ""
 DAILY_QUALITY_STATS: dict[str, Any] = {}
 DAILY_QUALITY_STATS_FILE = os.environ.get("DAILY_QUALITY_STATS_FILE", "football_daily_quality_stats.json")
-DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS = int(os.environ.get("DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS", "10"))
+DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS = int(os.environ.get("DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS", "60"))
 DAILY_QUALITY_STATS_LAST_SAVE_AT = 0.0
 DAILY_QUALITY_STATS_LOADED = False
 BOT_DATA_DIR = os.environ.get("FOOTBALL_BOT_DATA_DIR") or os.environ.get("BOT_DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or ""
@@ -433,7 +433,7 @@ SHABBAT_SLEEP_SECONDS = 300
 SHABBAT_CACHE_FILE = "football_shabbat_times_cache.json"
 MAX_PARALLEL_POST_SENDS = int(os.environ.get("MAX_PARALLEL_POST_SENDS", "4"))
 MAX_IMAGES_PER_POST = 4
-MAX_VIDEO_BYTES = 50 * 1024 * 1024
+MAX_VIDEO_BYTES = 25 * 1024 * 1024
 STATE_FILE = "football_x_to_telegram_state.json"
 AI_DECISION_CACHE_FILE = os.environ.get("AI_DECISION_CACHE_FILE", "football_ai_decision_cache.json")
 TRANSLATION_CACHE_FILE = "football_translation_cache.json"
@@ -32940,12 +32940,12 @@ CONTINUOUS_FORCE_DISCOVERY_ENABLED = os.environ.get(
 # Each account receives one fresh direct-X probe per cadence.  Accounts are
 # staggered evenly across the cadence instead of all firing in one burst.
 CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS = max(
-    12.0,
-    float(os.environ.get("CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS", "15")),
+    20.0,
+    float(os.environ.get("CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS", "20")),
 )
 CONTINUOUS_FORCE_WORKERS = max(
-    2,
-    min(8, int(os.environ.get("CONTINUOUS_FORCE_WORKERS", "6"))),
+    1,
+    min(4, int(os.environ.get("CONTINUOUS_FORCE_WORKERS", "4"))),
 )
 CONTINUOUS_FORCE_LIMIT = max(
     20,
@@ -44318,16 +44318,19 @@ _USER_V8_PRE_FIND_TRANSLATED_DUPLICATE = find_post_translation_duplicate_event
 #    - one translation semaphore serialized every candidate;
 #    - one image could consume 3 x 60 seconds before failing.
 # ---------------------------------------------------------------------------
-CHECK_EVERY_SECONDS = min(int(CHECK_EVERY_SECONDS), 5)
-NIGHT_CHECK_EVERY_SECONDS = min(int(NIGHT_CHECK_EVERY_SECONDS), 5)
+CHECK_EVERY_SECONDS = 20
+NIGHT_CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 4
 MAX_POSTS_SENT_PER_CYCLE = 6
-MAX_PARALLEL_POST_SENDS = max(6, min(8, int(MAX_PARALLEL_POST_SENDS)))
-NIGHT_MAX_PARALLEL_POST_SENDS = max(6, min(8, int(NIGHT_MAX_PARALLEL_POST_SENDS)))
+MAX_PARALLEL_POST_SENDS = 4
+NIGHT_MAX_PARALLEL_POST_SENDS = 4
 
-# Three translations may run at once. This removes the long queue while keeping
-# the key pool protected from the old 8-way burst.
-GEMINI_MAX_PARALLEL_TRANSLATIONS = 3
+# Two translations may run at once. Additional posts wait on the blocking
+# semaphore and are not skipped or discarded.
+GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
 GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(GEMINI_MAX_PARALLEL_TRANSLATIONS)
+DAILY_QUALITY_STATS_SAVE_EVERY_SECONDS = 60
 GEMINI_MAX_REAL_TRANSLATION_REQUESTS = min(max(1, int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS)), 3)
 GEMINI_MAX_KEYS_PER_OPERATION = min(max(1, int(GEMINI_MAX_KEYS_PER_OPERATION)), 3)
 GEMINI_TRANSLATION_TIMEOUT_SECONDS = min(max(8, int(GEMINI_TRANSLATION_TIMEOUT_SECONDS)), 12)
