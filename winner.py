@@ -55667,8 +55667,6 @@ except Exception as _v45_audit_exc:
 
 # ====== END V45 SMART EVENT DEDUPE + SERVER SAVINGS ======
 
-if __name__ == "__main__":
-    main()
 
 # ====== V46 PRINCIPLE-BASED POLICY ENGINE / FULL REGRESSION AUDIT (2026-08-05) ======
 # This layer replaces example-specific duplicate decisions with one general,
@@ -56707,3 +56705,396 @@ except Exception as _v46_audit_exc:
     raise
 
 # ====== END V46 PRINCIPLE-BASED POLICY ENGINE / FULL REGRESSION AUDIT ======
+
+# ====== V48 RSS REAL RECOVERY / PER-ENDPOINT CIRCUIT (2026-08-05) ======
+# Fixes the regression where one 403/404 on a mirror host paused that host for
+# every reporter.  The automatic and manual routes keep the approved savings:
+# one shared account fetch, one discovery lane, 12 automatic rows, no immediate
+# retry for 403/404, quiet repeated logs, and automatic recovery after cooldown.
+# Feed templates, their order, account lists and persistent files are unchanged.
+
+BOT_BUILD_ID = "winner-v48-rss-real-recovery-per-endpoint-2026-08-05"
+
+class _V48RSSCircuitOpen(RuntimeError):
+    pass
+
+
+_V48_RSS_LOCK = RLock()
+_V48_RSS_ENDPOINT_STATE: dict[str, dict[str, Any]] = {}
+_V48_RSS_LOGGED_AT: dict[str, float] = {}
+_V48_RSS_403_COOLDOWN = 30 * 60
+_V48_RSS_404_COOLDOWN = 2 * 60 * 60
+_V48_RSS_503_COOLDOWN = 10 * 60
+_V48_RSS_NETWORK_STEPS = (2 * 60, 5 * 60, 10 * 60, 20 * 60)
+_V48_RSS_LOG_INTERVAL = 60 * 60
+
+
+def _v48_rss_endpoint_key(url: str) -> str:
+    """Exact endpoint key: one account cannot pause a mirror for all accounts."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url or ""))
+        path = re.sub(r"/{2,}", "/", parsed.path or "/")
+        return urllib.parse.urlunsplit((parsed.scheme.casefold(), parsed.netloc.casefold(), path, parsed.query, ""))
+    except Exception:
+        return str(url or "").strip().casefold()
+
+
+def _v48_rss_log_once(key: str, message: str, level: str = "warning") -> None:
+    now = time.time()
+    stamp = hashlib.sha1(f"{key}|{message}".encode("utf-8", errors="ignore")).hexdigest()
+    with _V48_RSS_LOCK:
+        last = float(_V48_RSS_LOGGED_AT.get(stamp, 0.0) or 0.0)
+        if now - last < _V48_RSS_LOG_INTERVAL:
+            return
+        _V48_RSS_LOGGED_AT[stamp] = now
+        if len(_V48_RSS_LOGGED_AT) > 1000:
+            for old in sorted(_V48_RSS_LOGGED_AT, key=_V48_RSS_LOGGED_AT.get)[:250]:
+                _V48_RSS_LOGGED_AT.pop(old, None)
+    getattr(logging, level, logging.warning)(message)
+
+
+def _v48_rss_set_failure(key: str, cooldown: float, reason: str) -> None:
+    now = time.time()
+    with _V48_RSS_LOCK:
+        state = dict(_V48_RSS_ENDPOINT_STATE.get(key) or {})
+        state["failures"] = int(state.get("failures", 0) or 0) + 1
+        state["blocked_until"] = now + max(1.0, float(cooldown))
+        state["probe_inflight"] = False
+        state["last_reason"] = str(reason or "")
+        state["last_failure_at"] = now
+        _V48_RSS_ENDPOINT_STATE[key] = state
+    _v48_rss_log_once(
+        key,
+        f"RSS endpoint paused for {int(cooldown)}s after {reason}; automatic recovery remains enabled: {key}",
+    )
+
+
+def _v48_rss_set_success(key: str) -> None:
+    recovered = False
+    with _V48_RSS_LOCK:
+        previous = dict(_V48_RSS_ENDPOINT_STATE.get(key) or {})
+        recovered = bool(previous.get("failures") or previous.get("blocked_until"))
+        _V48_RSS_ENDPOINT_STATE[key] = {
+            "failures": 0,
+            "blocked_until": 0.0,
+            "probe_inflight": False,
+            "last_reason": "",
+            "last_success_at": time.time(),
+        }
+    if recovered:
+        _v48_rss_log_once(key, f"RSS endpoint recovered automatically: {key}", "info")
+
+
+def _v48_retry_after(exc: urllib.error.HTTPError) -> float:
+    try:
+        raw = str(exc.headers.get("Retry-After", "") or "").strip()
+        if raw.isdigit():
+            return max(60.0, float(raw))
+    except Exception:
+        pass
+    return 10 * 60
+
+
+def _v48_rss_enter_request(key: str) -> bool:
+    """Return True only for a half-open recovery probe."""
+    now = time.time()
+    with _V48_RSS_LOCK:
+        state = dict(_V48_RSS_ENDPOINT_STATE.get(key) or {})
+        blocked_until = float(state.get("blocked_until", 0.0) or 0.0)
+        if blocked_until > now:
+            reason = str(state.get("last_reason") or "temporary failure")
+            raise _V48RSSCircuitOpen(
+                f"RSS endpoint paused until {int(blocked_until)} after {reason}: {key}"
+            )
+        if int(state.get("failures", 0) or 0) > 0:
+            if bool(state.get("probe_inflight")):
+                raise _V48RSSCircuitOpen(f"RSS endpoint recovery probe already running: {key}")
+            state["probe_inflight"] = True
+            _V48_RSS_ENDPOINT_STATE[key] = state
+            return True
+    return False
+
+
+def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    """Working RSS GET with per-endpoint cooldown and safe automatic recovery.
+
+    Crucially, a failed Fabrizio URL does not pause the same host for the other
+    thirteen writers. HTTP 403/404 are attempted exactly once in the cycle.
+    """
+    key = _v48_rss_endpoint_key(url)
+    half_open = _v48_rss_enter_request(key)
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "Cache-Control": "no-cache",
+        },
+    )
+    attempts = max(1, int(FEED_HTTP_RETRIES))
+    last_error: Exception | None = None
+    try:
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    payload = response.read()
+                if not payload:
+                    raise RuntimeError("empty RSS response")
+                _v48_rss_set_success(key)
+                return payload
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                status = int(getattr(exc, "code", 0) or 0)
+                if status == 403:
+                    _v48_rss_set_failure(key, _V48_RSS_403_COOLDOWN, "HTTP 403")
+                    raise RuntimeError(f"RSS GET failed without retry (403): {url}") from exc
+                if status == 404:
+                    _v48_rss_set_failure(key, _V48_RSS_404_COOLDOWN, "HTTP 404")
+                    raise RuntimeError(f"RSS GET failed without retry (404): {url}") from exc
+                if status == 429:
+                    wait = _v48_retry_after(exc)
+                    _v48_rss_set_failure(key, wait, "HTTP 429")
+                    raise RuntimeError(f"RSS GET rate-limited: {url}") from exc
+                if status == 503 and attempt >= attempts:
+                    _v48_rss_set_failure(key, _V48_RSS_503_COOLDOWN, "HTTP 503")
+                    raise RuntimeError(f"RSS GET unavailable: {url}") from exc
+                if attempt < attempts:
+                    time.sleep(0.4)
+                    continue
+                with _V48_RSS_LOCK:
+                    failures = int((_V48_RSS_ENDPOINT_STATE.get(key) or {}).get("failures", 0) or 0)
+                cooldown = _V48_RSS_NETWORK_STEPS[min(failures, len(_V48_RSS_NETWORK_STEPS) - 1)]
+                _v48_rss_set_failure(key, cooldown, f"HTTP {status or 'error'}")
+                raise RuntimeError(f"RSS GET failed: {url}") from exc
+            except Exception as exc:
+                last_error = exc
+                if isinstance(exc, _V48RSSCircuitOpen):
+                    raise
+                if attempt < attempts:
+                    time.sleep(0.4)
+                    continue
+                with _V48_RSS_LOCK:
+                    failures = int((_V48_RSS_ENDPOINT_STATE.get(key) or {}).get("failures", 0) or 0)
+                cooldown = _V48_RSS_NETWORK_STEPS[min(failures, len(_V48_RSS_NETWORK_STEPS) - 1)]
+                _v48_rss_set_failure(key, cooldown, type(exc).__name__)
+                raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}") from exc
+        raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
+    finally:
+        if half_open:
+            with _V48_RSS_LOCK:
+                state = dict(_V48_RSS_ENDPOINT_STATE.get(key) or {})
+                state["probe_inflight"] = False
+                _V48_RSS_ENDPOINT_STATE[key] = state
+
+
+# Clear the obsolete host-wide states. They are process-local, not persistent.
+try:
+    with _V45_RSS_CB_LOCK:
+        _V45_RSS_CB.clear()
+except Exception:
+    pass
+
+
+# Manual RSS diagnostics must perform an RSS check, not silently report an empty
+# general/cache result as "RSS works". This does not alter automatic delivery.
+def _v48_rss_probe_account(username: str) -> tuple[str, list[Post], list[str], list[str], int]:
+    canonical = str(username or "").strip().lstrip("@")
+    merged: dict[str, Post] = {}
+    errors: list[str] = []
+    timeouts: list[str] = []
+    variants = _stable_rss_username_variants(canonical) or [canonical]
+    templates = list(_final_rss_ordered_templates())
+    for variant in variants:
+        try:
+            posts, variant_errors, variant_timeouts = collect_posts_from_feed_templates(variant, templates)
+        except Exception as exc:
+            posts, variant_errors, variant_timeouts = [], [short_error(exc, 500)], []
+        _reliable_merge_posts(merged, posts, canonical)
+        errors.extend(variant_errors or [])
+        timeouts.extend(variant_timeouts or [])
+        if merged:
+            break
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+    try:
+        cached_count = len(_stable_rss_cached_posts(canonical, limit=60) or [])
+    except Exception:
+        cached_count = 0
+    return canonical, ordered, list(dict.fromkeys(errors))[-10:], list(dict.fromkeys(timeouts))[-10:], cached_count
+
+
+def _v48_rss_probe_accounts(accounts: list[str]) -> dict[str, tuple[list[Post], list[str], list[str], int]]:
+    results: dict[str, tuple[list[Post], list[str], list[str], int]] = {
+        username: ([], [], [], 0) for username in accounts
+    }
+    if not accounts:
+        return results
+    workers = min(current_max_parallel_account_checks(), max(1, len(accounts)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(_v48_rss_probe_account, username): username for username in accounts}
+        for future in as_completed(future_map):
+            requested = future_map[future]
+            try:
+                canonical, posts, errors, timeouts, cached_count = future.result()
+                results[requested] = (posts, errors, timeouts, cached_count)
+                if canonical != requested and canonical in results:
+                    results[canonical] = (posts, errors, timeouts, cached_count)
+            except Exception as exc:
+                results[requested] = ([], [short_error(exc, 500)], [], 0)
+    return results
+
+
+def _v48_compact_rss_issue(errors: list[str], timeouts: list[str]) -> str:
+    items = list(errors or [])[:2]
+    items.extend(f"timeout: {item}" for item in list(timeouts or [])[:1])
+    if not items:
+        return "לא התקבלו פריטי RSS"
+    return " | ".join(short_error(RuntimeError(item), 180) for item in items)
+
+
+def rss_status_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"📡 בדיקת RSS אמיתית לכל {len(accounts)} הכתבים",
+        "",
+        "הבדיקה פונה כעת למקורות ה־RSS עצמם; היא אינה מציגה cache או X ישיר כאילו הם RSS.",
+        "מקורות העובדות נמצאים בתפריט ‘עובדות’.",
+        "",
+    ]
+    successful = 0
+    recent_total = 0
+    results = _v48_rss_probe_accounts(accounts)
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, errors, timeouts, cached_count = results.get(username, ([], [], [], 0))
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        if posts:
+            successful += 1
+            source = str(getattr(posts[0], "source_name", "") or "לא ידוע")
+            if recent:
+                latest_dt = datetime.fromtimestamp(
+                    float(recent[0].published_ts), ZoneInfo(SHABBAT_TIMEZONE)
+                ).strftime("%H:%M %d/%m/%Y")
+                lines.append(
+                    f"✅ {label}: {len(recent)} פוסטים ביממה | מקור אחרון: {source} | אחרון: {latest_dt}"
+                )
+            else:
+                age_hours = max(
+                    0.0,
+                    (time.time() - float(getattr(posts[0], "published_ts", 0.0) or 0.0)) / 3600,
+                ) if getattr(posts[0], "published_ts", 0.0) else 0.0
+                lines.append(
+                    f"⚠️ {label}: RSS החזיר פוסטים, אך האחרון ישן ({age_hours:.1f} שעות) | מקור: {source}"
+                )
+            continue
+        issue = _v48_compact_rss_issue(errors, timeouts)
+        cache_note = f" | קיימים {cached_count} פוסטים שמורים" if cached_count else ""
+        lines.append(f"❌ {label}: {issue}{cache_note}")
+    lines.extend([
+        "",
+        f"תוצאה: {successful}/{len(accounts)} כתבים החזירו RSS חי. פוסטים מהיממה האחרונה: {recent_total}.",
+    ])
+    return "\n".join(lines)
+
+
+# Keep all requested server-saving settings intact.
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+CONTROL_POLL_SECONDS = 0.40
+
+
+def _v48_self_audit() -> None:
+    if list(FEED_TEMPLATES[:5]) != [
+        "https://nitter.net/{username}/rss",
+        "https://twiiit.com/{username}/rss",
+        "https://lightbrd.com/{username}/rss",
+        "https://rsshub.rssforever.com/twitter/user/{username}",
+        "https://rsshub.app/twitter/user/{username}",
+    ]:
+        raise RuntimeError("v48_feed_order_changed")
+    if CONTINUOUS_FORCE_DISCOVERY_ENABLED:
+        raise RuntimeError("v48_second_discovery_lane_enabled")
+    if MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK != 12:
+        raise RuntimeError("v48_auto_limit_changed")
+    if abs(float(CONTROL_POLL_SECONDS) - 0.40) > 0.001:
+        raise RuntimeError("v48_control_pause_changed")
+
+    original_urlopen = urllib.request.urlopen
+    calls: list[str] = []
+    bad = "https://same-host.invalid/WriterA/rss"
+    good = "https://same-host.invalid/WriterB/rss"
+    payload = b"<?xml version='1.0'?><rss><channel></channel></rss>"
+    with _V48_RSS_LOCK:
+        _V48_RSS_ENDPOINT_STATE.clear()
+    def fake_urlopen(request: Any, timeout: Any = None):
+        url = str(getattr(request, "full_url", request))
+        calls.append(url)
+        if url == bad and calls.count(bad) == 1:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args: Any): return False
+            def read(self): return payload
+        return Response()
+    urllib.request.urlopen = fake_urlopen
+    try:
+        try:
+            http_get_feed(bad, timeout=1)
+        except Exception:
+            pass
+        if calls.count(bad) != 1:
+            raise RuntimeError(f"v48_404_retried:{calls.count(bad)}")
+        # Same host, different writer must still be allowed immediately.
+        if http_get_feed(good, timeout=1) != payload or calls.count(good) != 1:
+            raise RuntimeError("v48_one_writer_blocked_whole_host")
+        # The failed exact endpoint is cooled down without another network call.
+        try:
+            http_get_feed(bad, timeout=1)
+        except Exception:
+            pass
+        if calls.count(bad) != 1:
+            raise RuntimeError("v48_endpoint_cooldown_failed")
+        # Expiry produces a half-open probe and success clears the endpoint.
+        key = _v48_rss_endpoint_key(bad)
+        with _V48_RSS_LOCK:
+            state = dict(_V48_RSS_ENDPOINT_STATE.get(key) or {})
+            state["blocked_until"] = time.time() - 1
+            _V48_RSS_ENDPOINT_STATE[key] = state
+        if http_get_feed(bad, timeout=1) != payload or calls.count(bad) != 2:
+            raise RuntimeError("v48_automatic_recovery_failed")
+        with _V48_RSS_LOCK:
+            state = dict(_V48_RSS_ENDPOINT_STATE.get(key) or {})
+            if state.get("failures") or state.get("blocked_until"):
+                raise RuntimeError("v48_recovery_did_not_clear_state")
+    finally:
+        urllib.request.urlopen = original_urlopen
+        with _V48_RSS_LOCK:
+            _V48_RSS_ENDPOINT_STATE.clear()
+
+
+try:
+    _v48_self_audit()
+    logging.info(
+        "V48 active: real RSS restored with per-writer/per-endpoint cooldown; "
+        "403/404 no-retry; automatic recovery; accurate live RSS diagnostics; "
+        "single discovery lane, shared fetch, 12-row automatic cap and quiet logs preserved"
+    )
+except Exception as _v48_audit_exc:
+    logging.error("V48 self-audit failed: %s", short_error(_v48_audit_exc, 2000))
+    raise
+
+# ====== END V48 RSS REAL RECOVERY / PER-ENDPOINT CIRCUIT ======
+
+if __name__ == "__main__":
+    main()
