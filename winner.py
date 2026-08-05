@@ -33599,14 +33599,73 @@ _retained_pre_send_final_local_block_reason_L36943.__name__ = _retained_pre_send
 pre_send_final_local_block_reason = _retained_pre_send_final_local_block_reason_L36943
 
 
+
+# ====== V47 TRUSTED CONFIRMATION HELPERS ======
+def _v47_find_fabrizio_confirmation(post: Post, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() != _FABRIZIO_USERNAME:
+        return None
+    for item in reversed(rows):
+        source = str(item.get("username") or item.get("source") or "").strip().lstrip("@").casefold()
+        if source not in _FABRIZIO_CONFIRMATION_SOURCES:
+            continue
+        matched = False
+        for matcher_name in ("_smart_fabrizio_confirmation_match", "_fabrizio_confirmation_match"):
+            matcher = globals().get(matcher_name)
+            if callable(matcher):
+                try:
+                    if matcher(post, item):
+                        matched = True
+                        break
+                except Exception:
+                    pass
+        if matched:
+            return item
+    return None
+
+
+def _v47_message_ids_from_memory_item(item: dict[str, Any]) -> dict[str, int]:
+    for loader_name in ("_message_ids_from_reply_item", "_final_context_message_ids"):
+        loader = globals().get(loader_name)
+        if callable(loader):
+            try:
+                value = loader(item)
+                if isinstance(value, dict) and value:
+                    return {str(key): int(message_id) for key, message_id in value.items() if int(message_id or 0) > 0}
+            except Exception:
+                pass
+    raw = item.get("telegram_message_ids") or item.get("message_ids") or {}
+    if isinstance(raw, dict):
+        return {str(key): int(message_id) for key, message_id in raw.items() if int(message_id or 0) > 0}
+    return {}
+
 _PRE_REQUESTED_REPLY_TARGET_CORRECTION = find_bot_reply_target_for_post
 
 
 def find_bot_reply_target_for_post(post: Post, state: dict[str, Any]) -> dict[str, int]:
+    """Prefer the exact trusted-confirmation target, then retain all older context logic."""
+    item = getattr(post, "v47_confirmation_item", None)
+    if not isinstance(item, dict):
+        try:
+            rows = [
+                row for row in list(_v9_recent_duplicate_rows(state) or [])[-_V46_DUPLICATE_MAX_ROWS:]
+                if isinstance(row, dict) and not is_pending_memory_item(row)
+            ]
+            item = _v47_find_fabrizio_confirmation(post, rows)
+            if isinstance(item, dict):
+                post.fabrizio_confirmation = True
+                post.fabrizio_confirmation_source = str(item.get("username") or item.get("source") or "")
+                post.v47_confirmation_item = item
+        except Exception:
+            item = None
+    if isinstance(item, dict):
+        ids = _v47_message_ids_from_memory_item(item)
+        if ids:
+            return ids
+
     if not _requested_has_real_named_subject(post):
-        item = _requested_exact_context_item(post, state)
-        if item:
-            ids = _final_context_message_ids(item)
+        context_item = _requested_exact_context_item(post, state)
+        if context_item:
+            ids = _final_context_message_ids(context_item)
             if ids:
                 return ids
     return _PRE_REQUESTED_REPLY_TARGET_CORRECTION(post, state)
@@ -36631,8 +36690,70 @@ def _working_merge_history_rows(username: str, rows: list[Post], limit: int) -> 
 
 
 def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
-    canonical, rows, _error = fetch_control_posts(username)
-    return _working_merge_history_rows(canonical, rows, max(1, int(limit)))
+    """Failure-tolerant multi-source history reader for every configured source."""
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = max(1, int(limit))
+    gathered: list[Post] = []
+
+    # Each source is isolated deliberately: one broken route must never turn the
+    # complete 10-last screen into an empty result.
+    def control_rows() -> list[Post]:
+        result = fetch_control_posts(canonical)
+        if isinstance(result, tuple) and len(result) >= 2:
+            return list(result[1] or [])
+        return list(result or []) if isinstance(result, list) else []
+
+    loaders = (
+        lambda: _working_rss_cached(canonical, max(60, wanted * 6)),
+        lambda: _ten_history_load(canonical),
+        lambda: _ten_history_collect_existing_state_posts(canonical),
+        lambda: _stable_rss_cached_posts(canonical, limit=max(60, wanted * 6)),
+        lambda: _full_speed_rss_cache_get(canonical),
+        lambda: _full_speed_cache_get(canonical),
+        lambda: fetch_posts(canonical),
+        control_rows,
+    )
+    for loader in loaders:
+        try:
+            rows = list(loader() or [])
+        except Exception:
+            rows = []
+        if not rows:
+            continue
+        try:
+            gathered = list(_canonical_merge(gathered, rows, canonical) or gathered)
+        except Exception:
+            gathered.extend(row for row in rows if isinstance(row, Post))
+
+    unique: dict[str, Post] = {}
+    text_seen: set[str] = set()
+    for post in gathered:
+        if not isinstance(post, Post):
+            continue
+        pid = str(getattr(post, "post_id", "") or "").strip()
+        link = str(getattr(post, "link", "") or "").strip()
+        normalized = _final_duplicate_normalized_text(
+            "\n".join([str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or "")])
+        )
+        key = pid or link or normalized
+        if not key:
+            continue
+        if normalized and normalized in text_seen:
+            continue
+        unique.setdefault(key, post)
+        if normalized:
+            text_seen.add(normalized)
+
+    ordered = sorted(
+        unique.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    try:
+        _ten_history_save(canonical, ordered[:max(60, wanted * 6)])
+    except Exception:
+        pass
+    return ordered[:wanted]
 
 
 def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
@@ -51463,6 +51584,58 @@ def _v37_centregoals_iconic_concrete_fact(post: Post) -> bool:
     return bool(_V37_ICONIC_PLAYER_RE.search(text) and _V37_CONCRETE_FACT_RE.search(text))
 
 
+
+# ====== V47 FINAL SOURCE-POLICY HELPERS ======
+_V47_HARD_REASON_RE = re.compile(
+    r"(?iu)(?:women|wnba|נשים|other_sport|nba|basketball|instagram|tiktok|social|"
+    r"podcast|live|match_result|match_update|lineup|poll|old_post|too_old|translation|"
+    r"media_error|gambling|nonfootball|blocked_source|player_wedding)"
+)
+
+
+def _v47_hard_block_reason(reason: str, post: Post) -> bool:
+    if _V47_HARD_REASON_RE.search(str(reason or "")):
+        return True
+    try:
+        return bool(_v37_minimal_hard_reason(post))
+    except Exception:
+        return False
+
+
+def _v47_is_opta_regular_news(post: Post) -> bool:
+    if not _is_optajoe_post(post) or is_optajoe_statistical_post(post):
+        return False
+    text = _final_source_text(post)
+    if count_regular_words(text) < 7:
+        return False
+    checks = (_CONCRETE_TRANSFER_REPORT_RE, _TRANSFER_NEWS_MECHANIC_RE, _FINAL_STRONG_REPORT_RE)
+    if any(pattern.search(text) for pattern in checks):
+        return True
+    try:
+        return bool(has_news_action_signal(post))
+    except Exception:
+        return False
+
+
+def _v47_dedicated_fact_issue(post: Post) -> str:
+    label = "עובדות כדורגל" if _is_footballfactly_post(post) else "אופטה"
+    original = html.unescape("\n".join([_post_original_text(post), _post_original_text(post, quoted=True)]))
+    if _SPECIAL_WOMEN_RE.search(original) or is_women_or_wnba_post(post):
+        return f"{label}: כדורגל נשים נחסם"
+    if _SPECIAL_OTHER_SPORT_RE.search(original):
+        return f"{label}: ענף ספורט שאינו כדורגל גברים נחסם"
+    if _SPECIAL_LIVE_RE.search(original):
+        return f"{label}: שידור או לייב נחסם"
+    if _special_fact_quote_or_opinion(post):
+        return f"{label}: ראיון, דעה או ציטוט ללא עובדה נחסם"
+    minimum = FOOTBALL_FACTLY_AUTO_MIN_WORDS if _is_footballfactly_post(post) else OPTAJOE_AUTO_MIN_WORDS
+    word_count = count_regular_words(original)
+    if word_count < minimum:
+        return f"{label}: נספרו {word_count} מילים רגילות, נדרשות לפחות {minimum}"
+    if not _special_fact_has_media(post):
+        return f"{label}: פוסט בלי תמונה או סרטון לא נשלח"
+    return ""
+
 _V37_PRE_LOCAL_BLOCK_REASON = pre_send_final_local_block_reason
 
 
@@ -51494,21 +51667,43 @@ def _v37_minimal_hard_reason(post: Post) -> str:
 
 
 def pre_send_final_local_block_reason(post: Post) -> str:
+    """Final source-policy router: hard safety first, then the proper source lane."""
     if _v37_is_troll_football_post(post):
         source_reason = _v37_troll_block_reason(post)
         if source_reason:
             return source_reason
-        # This source deliberately bypasses shortness, media-required, weak-news,
-        # contextless-copy and opinion gates. Only the small hard-safety set runs,
-        # avoiding the expensive full reporter policy for a two-word reaction.
         return _v37_minimal_hard_reason(post)
 
     if _v37_centregoals_iconic_concrete_fact(post):
-        # Concrete Messi/Ronaldo facts (such as a documented donation) are not
-        # transfer-fee stories. Run hard safety/age/sport gates only.
         return _v37_minimal_hard_reason(post)
 
-    return str(_V37_PRE_LOCAL_BLOCK_REASON(post) or "")
+    # FootballFactly and number-led Opta are dedicated fact/stat routes.  Their
+    # explicit word/media/safety policy is authoritative; transfer-tier and
+    # subjective importance rules must not leak into them.
+    if _is_dedicated_fact_post(post):
+        hard = _v37_minimal_hard_reason(post)
+        if hard:
+            return hard
+        return _v47_dedicated_fact_issue(post)
+
+    reason = str(_V37_PRE_LOCAL_BLOCK_REASON(post) or "")
+    if not reason:
+        return ""
+
+    # Fabrizio's concrete transfer reporting bypasses only soft editorial gates.
+    # Women/other sport, live/podcast/social, age and other hard safety decisions
+    # remain binding.
+    if is_fabrizio_open_transfer_report(post) and not _v47_hard_block_reason(reason, post):
+        return ""
+
+    # Non-number-led Opta is ordinary concrete news, not a failed statistic.
+    if _v47_is_opta_regular_news(post) and reason in {
+        "special_source_transfer_report",
+        "special_source_not_meaningful_fact",
+        "special_source_competition_not_allowed",
+    }:
+        return ""
+    return reason
 
 
 _V37_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
@@ -53549,6 +53744,82 @@ def _v40_repair_translation_artifacts(source: Any, value: Any) -> str:
 # ---------------------------------------------------------------------------
 # 7) Writer opening remains inline/unbolded; no-writer opening keeps old format.
 # ---------------------------------------------------------------------------
+
+# ====== V47 SOURCE-LAYOUT RESTORATION HELPERS ======
+_V47_LAYOUT_TOKEN_RE = re.compile(r"[#@]?[A-Za-z0-9א-ת]+(?:[\-־'’״׳][A-Za-z0-9א-ת]+)*", re.UNICODE)
+_V47_HTML_SEPARATOR = r"(?:\s|&nbsp;|[\u200e\u200f\u202a-\u202e\u2066-\u2069]|<[^>]+>)+"
+
+
+def _v47_translation_segments(value: str) -> list[tuple[str, str]]:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if "\n" not in text:
+        return []
+    matches = list(re.finditer(r"(?P<segment>[^\n]+?)(?P<separator>\n+|$)", text))
+    output: list[tuple[str, str]] = []
+    for match in matches:
+        segment = match.group("segment").strip()
+        if not segment:
+            continue
+        sep_raw = match.group("separator")
+        separator = "\n\n" if len(sep_raw) >= 2 else ("\n" if sep_raw else "")
+        output.append((segment, separator))
+    return output if len(output) >= 2 else []
+
+
+def _v47_restore_layout_from_translation(rendered: str, translated: str) -> str:
+    segments = _v47_translation_segments(translated)
+    if not segments:
+        return str(rendered or "")
+    value = str(rendered or "")
+    footer_match = re.search(
+        r"(?is)\n{1,2}(?=(?:[\u200e\u200f\u202a-\u202e\u2066-\u2069]*<a\b[^>]*t\.me/neto_sport|"
+        r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]*נטו\s+ספורט))",
+        value,
+    )
+    body_end = footer_match.start() if footer_match else len(value)
+    body, footer = value[:body_end], value[body_end:]
+    insertions: list[tuple[int, str]] = []
+    cursor = 0
+    for segment, separator in segments[:-1]:
+        if not separator:
+            continue
+        tokens = _V47_LAYOUT_TOKEN_RE.findall(html_message_to_plain_text(segment))
+        found = None
+        for width in range(min(7, len(tokens)), 1, -1):
+            tail = tokens[-width:]
+            pattern = _V47_HTML_SEPARATOR.join(re.escape(token) for token in tail)
+            pattern += r"(?:</[^>]+>)*[.!?…,:;]*"
+            match = re.search(pattern, body[cursor:], re.IGNORECASE | re.UNICODE)
+            if match:
+                found = cursor + match.end()
+                break
+        if found is None:
+            continue
+        while found < len(body) and body[found] in " \t\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069":
+            found += 1
+        insertions.append((found, separator))
+        cursor = found
+    for position, separator in reversed(insertions):
+        left = body[:position].rstrip(" \t\n")
+        right = body[position:].lstrip(" \t\n")
+        body = left + separator + right
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return body.rstrip() + footer
+
+
+def _v47_clean_inline_writer_opening(value: Any) -> str:
+    text = str(value or "")
+    labels = globals().get("_V20_OPENING_LABELS", (
+        "דיווח", "רשמי", "בלעדי", "עדכון", "חשיפה", "פרסום ראשון", "פרסום בלעדי", "חדש"
+    ))
+    alt = "|".join(sorted((re.escape(str(label)) for label in labels), key=len, reverse=True))
+    return re.sub(
+        rf"(?iu)(?P<label>{alt})\s*[:：][ \t]*(?:[\u200e\u200f\u202a-\u202e\u2066-\u2069]+[ \t]*)+",
+        lambda match: match.group("label") + ": ",
+        text,
+        count=1,
+    )
+
 _V42_PRE_BUILD_MESSAGE = build_message
 
 
@@ -53559,11 +53830,22 @@ def build_message(
     quoted_author_translated: str = "",
     include_video_link: bool = False,
 ) -> str:
+    """Final rendering with source/translation layout preserved, never sentence-flattened."""
     rendered = _V42_PRE_BUILD_MESSAGE(
-        post, translated, quoted_translated, quoted_author_translated, include_video_link
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
     )
     if _v40_message_has_writer_heading(post, translated, rendered):
         rendered = _v40_inline_opening_for_writer(rendered)
+    # Restore only real separators present in the translated source.  This is an
+    # insertion-only repair: it cannot delete wording or invent list items.
+    if translated and not quoted_translated:
+        rendered = _v47_restore_layout_from_translation(rendered, translated)
+    if _v40_message_has_writer_heading(post, translated, rendered):
+        rendered = _v47_clean_inline_writer_opening(rendered)
     return rendered
 
 
@@ -54328,5 +54610,2100 @@ except Exception as _v43_audit_exc:
 
 # ====== END V43 ALL-CHANNEL ADMIN RTL / BRUNO DUPLICATE / FACTS-TROLL CONTROL ======
 
+
+# ====== V44 FACTS INTEGRATION / BIRTHDAY / CONTROL DETAILS / EVENT RACE / SOURCE LAYOUT ======
+# Added 2026-08-05. This layer does not change RSS URLs, RSS ordering, feed
+# timeouts, polling cadence, media limits, Gemini limits or persistent file keys.
+# It fixes only the operator-reported control/menu/text/duplicate/layout causes.
+
+BOT_BUILD_ID = "winner-v44-facts-birthday-details-race-layout-2026-08-05"
+
+# ---------------------------------------------------------------------------
+# 1) Troll Football is a normal Facts source in the existing Facts controls.
+#    The dedicated extra submenu is removed from the visible Facts root. The
+#    source remains in: latest source, 10 last, source management and Facts RSS.
+#    Its sent-vs-blocked report remains under the existing monitoring submenu.
+# ---------------------------------------------------------------------------
+_V44_PRE_FACTS_MAIN_MARKUP = facts_main_reply_markup
+_V44_PRE_FACTS_MONITOR_MARKUP = facts_monitor_reply_markup
+
+
+def _v44_copy_markup_rows(markup: Any) -> list[list[dict[str, Any]]]:
+    if not isinstance(markup, dict):
+        return []
+    return [
+        [dict(button) for button in row if isinstance(button, dict)]
+        for row in markup.get("inline_keyboard", [])
+        if isinstance(row, list)
+    ]
+
+
+def facts_main_reply_markup() -> dict[str, Any]:
+    rows = _v44_copy_markup_rows(_V44_PRE_FACTS_MAIN_MARKUP())
+    rows = [
+        row for row in rows
+        if not any(str(button.get("callback_data") or "") == "football_facts_troll" for button in row)
+    ]
+    return stable_reply_markup(rows)
+
+
+def facts_monitor_reply_markup() -> dict[str, Any]:
+    rows = _v44_copy_markup_rows(_V44_PRE_FACTS_MONITOR_MARKUP())
+    # Keep one integrated operational decision button, not a second source hub.
+    found = False
+    for row in rows:
+        for button in row:
+            if str(button.get("callback_data") or "") == "football_troll_decisions":
+                button["text"] = "🧾 טרול פוטבול — נשלח/נחסם"
+                found = True
+    if not found:
+        back_index = next(
+            (index for index, row in enumerate(rows)
+             if any(str(button.get("callback_data") or "") == "football_menu_facts" for button in row)),
+            len(rows),
+        )
+        rows.insert(back_index, [{"text": "🧾 טרול פוטבול — נשלח/נחסם", "callback_data": "football_troll_decisions"}])
+    return stable_reply_markup(rows)
+
+
+# ---------------------------------------------------------------------------
+# 2) A real birthday opening is normalized only at the first report line:
+#    "🎈 יום הולדת 36 שמח לX..." -> "#יום_הולדת לX...".
+#    Other occurrences of the words "יום הולדת" inside the report are untouched.
+# ---------------------------------------------------------------------------
+_V44_BIRTHDAY_OPENING_RE = re.compile(
+    rf"^(?P<prefix>[{re.escape(_V30_INVISIBLE_CHARS)} \t]*)"
+    rf"(?:(?:{_V30_EMOJI_CLUSTER})[ \t]*)*"
+    r"יום[ \t]+הולדת(?:[ \t]+(?:ה[-־]?)?\d{1,3})?[ \t]+שמח[ \t]+ל(?P<rest>.+)$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _v44_normalize_birthday_opening(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    nonempty = [index for index, line in enumerate(lines) if line.strip()]
+    if not nonempty:
+        return text
+    index = nonempty[0]
+    if _v30_is_writer_heading(lines[index]):
+        following = [item for item in nonempty if item > index]
+        if not following:
+            return text
+        index = following[0]
+    match = _V44_BIRTHDAY_OPENING_RE.match(lines[index])
+    if not match:
+        return text
+    rest = match.group("rest").strip()
+    if not rest:
+        return text
+    lines[index] = match.group("prefix") + "#יום_הולדת ל" + rest
+    return "\n".join(lines)
+
+
+_V44_PRE_CLEAN_REPORT_BODY = _v34_clean_report_body
+
+
+def _v34_clean_report_body(value: Any) -> str:
+    return _v44_normalize_birthday_opening(_V44_PRE_CLEAN_REPORT_BODY(value))
+
+
+# ---------------------------------------------------------------------------
+# 3) Returning/forwarding/replying to a report in the quiet channel must create
+#    the complete details message. V43's all-channel RTL editor previously edited
+#    the forwarded control message and returned before the details handler ran.
+#    Details reconstruction now has priority only in CONTROL_CHAT_ID; ordinary
+#    channel posts still use the all-channel RTL editor.
+# ---------------------------------------------------------------------------
+_V44_PRE_PROCESS_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
+def _v44_control_details_context(update: dict[str, Any]) -> bool:
+    message = (
+        update.get("message") or update.get("channel_post")
+        or update.get("edited_message") or update.get("edited_channel_post") or {}
+    )
+    if not isinstance(message, dict):
+        return False
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+    if not CONTROL_CHAT_ID or chat_id != str(CONTROL_CHAT_ID):
+        return False
+    try:
+        if _message_has_forward_source_context(message):
+            return True
+    except Exception:
+        pass
+    try:
+        if _requested_find_prepared_item(message):
+            return True
+    except Exception:
+        pass
+    # Replies to a bot-prepared/report message also belong to the details route.
+    reply = message.get("reply_to_message") or {}
+    if isinstance(reply, dict):
+        reply_text = str(reply.get("text") or reply.get("caption") or "")
+        if reply_text and (
+            "נטו ספורט" in reply_text
+            or "שלח לערוץ נטו ספורט" in reply_text
+            or bool(reply.get("forward_origin") or reply.get("forward_from_chat") or reply.get("forward_from"))
+        ):
+            return True
+    return False
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    if _v44_control_details_context(update):
+        # This is the pre-V43 details handler intentionally saved by V43.
+        return _V43_PRE_PROCESS_CONTROL_TEXT_UPDATE(update)
+    return _V44_PRE_PROCESS_CONTROL_TEXT_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 4) Preserve quoted-post structure from RSS HTML before list/layout processing.
+#    Blockquotes, quote containers and horizontal quote separators receive the
+#    marker already understood by split_primary_and_quoted_text(). This prevents
+#    a quoted second report being glued to the last sentence of the main tweet.
+# ---------------------------------------------------------------------------
+_V44_PRE_HTML_TO_SOURCE = _html_to_preserved_source_text
+_V44_QUOTE_OPEN_RE = re.compile(
+    r'<\s*(?:blockquote|div|p)\b[^>]*(?:quote|quoted|tweet-quote|quote-tweet)[^>]*>',
+    re.IGNORECASE,
+)
+_V44_BLOCKQUOTE_OPEN_RE = re.compile(r"<\s*blockquote\b[^>]*>", re.IGNORECASE)
+_V44_HR_RE = re.compile(r"<\s*hr\b[^>]*>", re.IGNORECASE)
+
+
+def _html_to_preserved_source_text(value: Any) -> str:
+    raw = str(value or "")
+    # Add a semantic separator before stripping HTML. Repeated markers collapse.
+    raw = _V44_QUOTE_OPEN_RE.sub("\n\nQuoted post\n", raw)
+    raw = _V44_BLOCKQUOTE_OPEN_RE.sub("\n\nQuoted post\n", raw)
+    raw = _V44_HR_RE.sub("\n\nQuoted post\n", raw)
+    rendered = _V44_PRE_HTML_TO_SOURCE(raw)
+    rendered = re.sub(r"(?iu)(?:\n\s*Quoted\s+post\s*){2,}", "\n\nQuoted post\n", rendered)
+    return re.sub(r"\n{3,}", "\n\n", rendered).strip()
+
+
+# ---------------------------------------------------------------------------
+# 5) Cross-source duplicate race protection. Two accounts can be processed by
+#    separate fast-lane workers before the first successful send reaches durable
+#    memory. Posts sharing the same event family/teams are serialized briefly:
+#    the second checks memory only after the first has sent or failed. Pending
+#    previews are still NOT counted as sent and never become duplicate history.
+# ---------------------------------------------------------------------------
+_V44_EVENT_LOCKS_GUARD = RLock()
+_V44_EVENT_LOCKS: dict[str, RLock] = {}
+
+
+def _v44_event_serial_key(post: Post) -> str:
+    try:
+        signature = _v34_event_signature(_final_source_text(post), getattr(post, "username", ""))
+    except Exception:
+        signature = {}
+    families = sorted(str(item) for item in (signature.get("families") or []) if str(item))
+    teams = sorted(str(item) for item in (signature.get("teams") or []) if str(item))[:4]
+    people = sorted(str(item) for item in (signature.get("people") or []) if str(item))[:3]
+    # Team/family serialization is intentionally broad but only controls order;
+    # the ordinary duplicate engine still decides whether either post is blocked.
+    material = "|".join(families + people + teams)
+    if not material:
+        material = str(getattr(post, "post_id", "") or getattr(post, "link", "") or _final_source_text(post))
+    return hashlib.sha1(material.casefold().encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _v44_event_lock(post: Post) -> RLock:
+    key = _v44_event_serial_key(post)
+    with _V44_EVENT_LOCKS_GUARD:
+        lock = _V44_EVENT_LOCKS.get(key)
+        if lock is None:
+            lock = RLock()
+            _V44_EVENT_LOCKS[key] = lock
+            if len(_V44_EVENT_LOCKS) > 1200:
+                # Locks are tiny; prune only unlocked historical entries by size.
+                for stale_key in list(_V44_EVENT_LOCKS)[:300]:
+                    if stale_key != key:
+                        _V44_EVENT_LOCKS.pop(stale_key, None)
+        return lock
+
+
+# Normalize common fact synonyms before event comparison. This is general for
+# transfer reports and does not depend on the Suzuki sentence.
+_V44_PRE_CANONICAL_COMPARE_TEXT = _v34_canonical_compare_text
+
+
+def _v34_canonical_compare_text(value: Any) -> str:
+    text = str(_V44_PRE_CANONICAL_COMPARE_TEXT(value) or "")
+    text = re.sub(r"(?iu)\b(?:add[- ]?ons?|bonuses?)\b|תוספות|בונוסים", "תוספות", text)
+    text = re.sub(r"(?iu)\b(?:on\s+loan|loaned?)\b|בהשאלה|מושאל(?:ת|ים|ות)?", "השאלה", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# Compare each stored representation independently. Concatenating source,
+# translation, caption and preview can add an unrelated quoted sentence and hide
+# a clear subset duplicate.
+_V44_PRE_LOCAL_DUPLICATE = _v42_local_duplicate
+
+
+def _v44_item_event_variants(item: dict[str, Any]) -> list[str]:
+    variants: list[str] = []
+    for key in (
+        "source_text", "original_text", "text", "translated", "rendered",
+        "channel_memory_text", "preview", "caption", "message",
+    ):
+        value = str(item.get(key) or "").strip()
+        if value and value not in variants:
+            variants.append(value)
+    signature = item.get("signature")
+    if isinstance(signature, dict):
+        value = str(signature.get("text") or "").strip()
+        if value and value not in variants:
+            variants.append(value)
+    return variants
+
+
+def _v42_local_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    result = _V44_PRE_LOCAL_DUPLICATE(post, state, text_override)
+    if result:
+        return result
+    try:
+        if is_duplicate_false_positive_post(post) or _final_is_fabrizio_here_we_go(post):
+            return None
+    except Exception:
+        pass
+    current_text = str(text_override or _final_source_text(post) or getattr(post, "text", "")).strip()
+    if not current_text:
+        return None
+    current_source = str(getattr(post, "username", "") or "")
+    for item in reversed(list(_v9_recent_duplicate_rows(state) or [])[-_V42_DUPLICATE_MAX_ROWS:]):
+        if not isinstance(item, dict) or is_pending_memory_item(item):
+            continue
+        previous_source = str(item.get("username") or item.get("source") or "")
+        for previous_text in _v44_item_event_variants(item):
+            decision = _v34_event_decision(current_text, previous_text, current_source, previous_source)
+            if not decision.get("duplicate"):
+                continue
+            duplicate = dict(item)
+            duplicate.update({
+                "duplicate": True,
+                "is_duplicate": True,
+                "duplicate_score": 0.995,
+                "duplicate_verdict": "V44_SEPARATE_REPRESENTATION_EVENT_MATCH",
+                "duplicate_source": previous_source or "דיווח קודם",
+                "reason": "same_event_no_new_fact",
+                "raw_reason": "same_event_no_new_fact",
+                "duplicate_explanation": decision,
+            })
+            return duplicate
+    return None
+
+
+# Rebind the public duplicate routes to the final local function.
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v42_local_duplicate(post, state, text_override)
+
+
+def _v42_timed_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    started = time.perf_counter()
+    try:
+        return _v42_local_duplicate(post, state, text_override)
+    finally:
+        _v32_add_duplicate_timing(post, started)
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state, html_message_to_plain_text(translated_message))
+
+
+# Fast-lane copy with one addition: hold the event lock from the first duplicate
+# check until the send result has been committed/released.
+def _v40_fast_process_post(post: Post) -> None:
+    key = _v40_post_claim_key(post)
+    setattr(_V40_FAST_LOCAL, "active", True)
+    try:
+        if is_shabbat_now() or bool(load_control_state().get("paused", False)):
+            return
+        event_lock = _v44_event_lock(post)
+        with event_lock:
+            state = load_state()
+            username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+            if not username or username not in state or not any(state.values()):
+                return
+            ids = _v40_post_ids(post)
+            if ids and any(item in set(state.get(username, [])) for item in ids):
+                return
+            if getattr(post, "published_ts", 0.0) and time.time() - float(post.published_ts) > MAX_POST_AGE_SECONDS:
+                _v40_mark_fast_completed(post, state)
+                save_state(state)
+                return
+
+            _final_pipeline_set_processing_started(post, time.time())
+            duplicate = find_channel_duplicate_event(post, state) or find_recent_duplicate_event_ai_aware(post, state)
+            if duplicate and not try_keep_non_duplicate_report_lines(post, state):
+                _v40_mark_fast_completed(post, state)
+                save_state(state)
+                return
+
+            reply_message_ids = find_bot_reply_target_for_post(post, state)
+            remember_recent_news_event(post, state, pending=True)
+            result = send_post(post, reply_message_ids=reply_message_ids, state=state)
+            mode = str(result.get("mode", "") or "")
+            if result.get("sent"):
+                confirm_recent_news_event(post, state)
+                _v40_mark_fast_completed(post, state)
+                if result.get("channel_memory_text"):
+                    remember_channel_news_text(str(result.get("channel_memory_text") or ""), state, message_id=post.link, source="bot_sent")
+                if result.get("telegram_message_ids"):
+                    remember_bot_sent_reply_target(post, state, dict(result.get("telegram_message_ids") or {}))
+                save_control_state(last_sent_post={"ts": time.time(), "username": username, "link": post.link})
+                logging.info("⚡ Fast lane sent @%s after event-serialized duplicate check: %s", username, post.link)
+            elif mode.startswith("translation_unavailable"):
+                forget_pending_recent_news_event(post, state)
+            elif mode in {"no_news", "translation_quality_blocked", "post_translation_duplicate"} or mode.startswith("pre_send_blocked:"):
+                forget_pending_recent_news_event(post, state)
+                _v40_mark_fast_completed(post, state)
+            else:
+                forget_pending_recent_news_event(post, state)
+            save_state(state)
+    except Exception as exc:
+        logging.error("Fast post-processing recovered safely for %s: %s", getattr(post, "link", ""), short_error(exc, 600))
+    finally:
+        setattr(_V40_FAST_LOCAL, "active", False)
+        with _V40_FAST_LOCK:
+            _V40_FAST_INFLIGHT.discard(key)
+            if key not in _V40_FAST_CLAIMED_UNTIL:
+                _V40_FAST_CLAIMED_UNTIL[key] = time.time() + 2.0
+
+
+# ---------------------------------------------------------------------------
+# 6) Deterministic local audit. No Telegram/network/Gemini calls.
+# ---------------------------------------------------------------------------
+def _v44_self_audit() -> None:
+    facts_callbacks = _final_control_markup_callbacks(facts_main_reply_markup())
+    if "football_facts_troll" in facts_callbacks:
+        raise RuntimeError("v44_troll_standalone_menu_still_visible")
+    for markup_fn, callback in (
+        (facts_latest_menu_reply_markup, f"football_test_latest_account:{TROLL_FOOTBALL_USERNAME}"),
+        (facts_history_menu_reply_markup, f"football_test_last_ten_account:{TROLL_FOOTBALL_USERNAME}"),
+        (facts_management_reply_markup, f"football_facts_toggle:{TROLL_FOOTBALL_USERNAME}:off"),
+    ):
+        callbacks = _final_control_markup_callbacks(markup_fn())
+        if callback not in callbacks and not any(item.startswith(f"football_facts_toggle:{TROLL_FOOTBALL_USERNAME}:") for item in callbacks):
+            raise RuntimeError("v44_troll_not_integrated:" + callback)
+    monitor_callbacks = _final_control_markup_callbacks(facts_monitor_reply_markup())
+    if "football_troll_decisions" not in monitor_callbacks:
+        raise RuntimeError("v44_troll_decisions_missing")
+
+    birthday = _v44_normalize_birthday_opening(
+        "🎈 יום הולדת 36 שמח לראיין ברטראנד, האיש שערך הופעת בכורה בגמר."
+    )
+    if not birthday.startswith("#יום_הולדת לראיין ברטראנד") or "36 שמח" in birthday:
+        raise RuntimeError("v44_birthday_opening_failed:" + birthday)
+    untouched = _v44_normalize_birthday_opening("הוא חגג יום הולדת אחרי המשחק.")
+    if untouched != "הוא חגג יום הולדת אחרי המשחק.":
+        raise RuntimeError("v44_birthday_changed_nonopening")
+
+    quoted_html = "<p>Main one</p><p>Main two</p><blockquote>Quoted report</blockquote>"
+    structured = _html_to_preserved_source_text(quoted_html)
+    main_text, _author, quoted_text = split_primary_and_quoted_text(structured)
+    if "Main one" not in main_text or "Main two" not in main_text or "Quoted report" not in quoted_text:
+        raise RuntimeError("v44_quote_structure_failed:" + repr((structured, main_text, quoted_text)))
+
+    first = "פ.ס.ז' צפויה לשפר את הצעתה עבור ציון סוזוקי לאחר הצעה ראשונית של 28 מיליון אירו פלוס תוספות. סוזוקי עשוי להצטרף ליובנטוס בהשאלה."
+    second = "פ.ס.ז' צפויה לשפר את הצעתה עבור ציון סוזוקי לאחר הצעה ראשונית של 28 מיליון אירו פלוס בונוסים. סוזוקי עשוי להיות מושאל ליובנטוס."
+    decision = _v34_event_decision(second, first, CENTREGOALS_USERNAME, "FabrizioRomano")
+    if not decision.get("duplicate"):
+        raise RuntimeError("v44_suzuki_cross_source_duplicate_failed:" + repr(decision))
+
+
+try:
+    _v44_self_audit()
+    logging.info(
+        "V44 active: Troll Football is integrated into Facts controls; birthday openings normalized; "
+        "quiet forwarded details take priority over RTL edits; quote HTML boundaries are preserved; "
+        "and same-event fast-lane reports are serialized before durable duplicate checks"
+    )
+except Exception as _v44_audit_exc:
+    logging.error("V44 self-audit failed: %s", short_error(_v44_audit_exc, 1600))
+
+# ====== END V44 FACTS INTEGRATION / BIRTHDAY / CONTROL DETAILS / EVENT RACE / SOURCE LAYOUT ======
+
+
+# ====== V45 SMART EVENT DEDUPE + SERVER SAVINGS (2026-08-05) ======
+# Scope requested by the operator:
+# - preserve all V44 behavior and persistent memory keys;
+# - make cross-source duplicate detection event-aware rather than sentence-aware;
+# - run one discovery lane, share concurrent account fetches, and cap automatic
+#   rows to 12 without limiting manual history controls;
+# - circuit-break failing RSS hosts and recover automatically;
+# - never retry HTTP 403/404 in the same RSS request;
+# - reduce repeated feed logs and use a 0.40s control-loop error pause.
+
+BOT_BUILD_ID = "winner-v45-smart-dedupe-server-savings-2026-08-05"
+
+# ---------------------------------------------------------------------------
+# 1) General entity aliases learned from spelling variation, not a sentence.
+# ---------------------------------------------------------------------------
+_V34_EXPLICIT_ENTITY_ALIASES.update({
+    "ז'ואאו קנסלו": (
+        "ז'ואאו קנסלו", "ז׳ואאו קנסלו", "זואאו קנסלו", "ז'ואו קנסלו",
+        "Joao Cancelo", "João Cancelo", "Cancelo",
+    ),
+    "ציון סוזוקי": (
+        "ציון סוזוקי", "ציון סוזוקי", "זיון סוזוקי", "Zion Suzuki", "Suzuki Zion",
+    ),
+})
+_V34_ALIAS_MAP_CACHE = None
+
+# ---------------------------------------------------------------------------
+# 2) Canonical report language. These are broad football-report synonyms.
+# ---------------------------------------------------------------------------
+_V45_PRE_CANONICAL_COMPARE_TEXT = _v34_canonical_compare_text
+
+
+def _v45_strip_latin_diacritics(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value or "")
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def _v34_canonical_compare_text(value: Any) -> str:
+    text = str(_V45_PRE_CANONICAL_COMPARE_TEXT(value) or "")
+    replacements = (
+        (r"(?iu)\b(?:add[- ]?ons?|bonuses?)\b|תוספות|בונוסים", "תוספות"),
+        (r"(?iu)\b(?:loaned?|on\s+loan|loan\s+move)\b|בהשאלה|מושאל(?:ת|ים|ות)?", "השאלה"),
+        (r"(?iu)\b(?:bid|offer|proposal)\b|הצעה", "הצעה"),
+        (r"(?iu)\b(?:transfer\s+fee|fee)\b|דמי\s+העברה", "דמי העברה"),
+        (r"(?iu)(?:remains?|stays?|continues?\s+to\s+be)\s+confident|"
+         r"שומר(?:ת)?\s+על\s+ביטחון(?:\s+מוחלט)?|נותר(?:ה)?\s+בטוח(?:ה)?|"
+         r"בטוח(?:ה)?\s+לחלוטין", "בטוחה"),
+        (r"(?iu)(?:before|by)\s+the\s+(?:end|close)\s+of\s+the\s+(?:transfer\s+)?window|"
+         r"עד\s+(?:תום|סוף)\s+(?:חלון\s+ההעברות|החלון)|לפני\s+תום\s+חלון\s+ההעברות", "עד סוף החלון"),
+        (r"(?iu)\b(?:talks?|negotiations?)\s+(?:continue|ongoing)\b|"
+         r"המשא\s+ומתן\s+(?:נמשך|נמשכים)|השיחות\s+נמשכות", "המשא ומתן נמשך"),
+        (r"(?iu)\b(?:pounds?|gbp)\b|פאונד(?:ים)?|ליש[\"״']?ט", "GBP"),
+        (r"(?iu)\b(?:euros?|eur)\b|אירו|יורו", "EUR"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# Clear signature/decision caches created before V45 normalization.
+for _v45_cache_name in ("_v40_cached_event_signature", "_v40_cached_event_decision"):
+    _v45_cache = globals().get(_v45_cache_name)
+    if callable(getattr(_v45_cache, "cache_clear", None)):
+        _v45_cache.cache_clear()
+try:
+    _V40_DUP_RESULT_CACHE.clear()
+except Exception:
+    pass
+
+
+_V45_STOPWORDS = {
+    "של", "את", "על", "עם", "גם", "כי", "לא", "אך", "או", "הוא", "היא", "הם", "הן",
+    "זה", "זו", "כעת", "היום", "לאחר", "לפני", "עד", "עוד", "כבר", "צפוי", "צפויה",
+    "the", "a", "an", "of", "to", "for", "with", "and", "or", "is", "are", "was", "were",
+    "after", "before", "now", "still", "this", "that", "will", "could", "may",
+}
+
+
+def _v45_semantic_tokens(value: Any) -> set[str]:
+    text = _v34_phrase_norm(_v34_canonical_compare_text(value))
+    tokens = set()
+    for token in text.split():
+        token = _v45_strip_latin_diacritics(token)
+        if len(token) < 3 or token in _V45_STOPWORDS or token.isdigit():
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _v45_name_similarity(left: str, right: str) -> float:
+    a = _v45_strip_latin_diacritics(_v34_phrase_norm(left))
+    b = _v45_strip_latin_diacritics(_v34_phrase_norm(right))
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    a_parts, b_parts = a.split(), b.split()
+    if a_parts and b_parts:
+        last_score = SequenceMatcher(None, a_parts[-1], b_parts[-1]).ratio()
+        first_score = SequenceMatcher(None, a_parts[0], b_parts[0]).ratio()
+        if last_score >= 0.86 and first_score >= 0.72:
+            return max(0.90, SequenceMatcher(None, a, b).ratio())
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _v45_sets_fuzzy_overlap(left: set[str], right: set[str], threshold: float = 0.88) -> bool:
+    if left & right:
+        return True
+    return any(_v45_name_similarity(a, b) >= threshold for a in left for b in right)
+
+
+def _v45_normalized_amounts(value: Any) -> set[str]:
+    text = _v34_canonical_compare_text(value)
+    found: set[str] = set()
+    patterns = (
+        re.compile(r"(?iu)(?P<symbol>[€£$])\s*(?P<num>\d+(?:[.,]\d+)?)\s*(?P<scale>m|million|k|thousand|מיליון|אלף)?"),
+        re.compile(r"(?iu)(?P<num>\d+(?:[.,]\d+)?)\s*(?P<scale>m|million|k|thousand|מיליון|אלף)?\s*(?P<currency>GBP|EUR|דולר|USD)"),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            raw_num = match.group("num").replace(",", ".")
+            try:
+                number = float(raw_num)
+            except Exception:
+                continue
+            scale = (match.groupdict().get("scale") or "").casefold()
+            if scale in {"m", "million", "מיליון"}:
+                number *= 1_000_000
+            elif scale in {"k", "thousand", "אלף"}:
+                number *= 1_000
+            symbol = match.groupdict().get("symbol") or ""
+            currency = match.groupdict().get("currency") or ""
+            unit = {"£": "GBP", "€": "EUR", "$": "USD"}.get(symbol, currency.upper())
+            if unit == "דולר":
+                unit = "USD"
+            found.add(f"{unit}:{int(round(number))}")
+    return found
+
+
+def _v45_structured_facts(value: Any, source: Any = "") -> dict[str, Any]:
+    text = _v34_canonical_compare_text(value)
+    signature = _v34_event_signature(text, source)
+    flags = {
+        "loan": bool(re.search(r"(?iu)\bloan\b|השאלה", text)),
+        "option": bool(re.search(r"(?iu)option\s+to\s+buy|אופצי(?:ה|ית)\s+רכישה", text)),
+        "obligation": bool(re.search(r"(?iu)obligation\s+to\s+buy|חובת\s+רכישה", text)),
+        "sell_on": bool(re.search(r"(?iu)sell[- ]on|מכירה\s+עתידית|אחוזים?\s+ממכירה", text)),
+        "release_clause": bool(re.search(r"(?iu)release\s+clause|סעיף\s+שחרור", text)),
+        "add_ons": bool(re.search(r"(?iu)תוספות", text)),
+        "medical": bool(re.search(r"(?iu)medical|בדיקות\s+רפואיות", text)),
+    }
+    contract_end = set(re.findall(r"(?iu)(?:until|עד)\s+(20\d{2})", text))
+    durations = set()
+    for match in re.finditer(r"(?iu)(\d{1,2})\s*(?:year|years|שנה|שנים)", text):
+        durations.add(match.group(1))
+    return {
+        "signature": signature,
+        "amounts": _v45_normalized_amounts(text),
+        "contract_end": contract_end,
+        "durations": durations,
+        "flags": flags,
+        "stage": int(_v34_event_stage(text, source) or 0),
+        "tokens": _v45_semantic_tokens(text),
+    }
+
+
+def _v45_same_event(current_text: Any, previous_text: Any, current_source: Any = "", previous_source: Any = "") -> bool:
+    current = _v45_structured_facts(current_text, current_source)
+    previous = _v45_structured_facts(previous_text, previous_source)
+    cs = current["signature"]
+    ps = previous["signature"]
+    if not cs.get("is_transfer") or not ps.get("is_transfer"):
+        return False
+
+    current_people = set(cs.get("people") or set())
+    previous_people = set(ps.get("people") or set())
+    people_match = _v45_sets_fuzzy_overlap(current_people, previous_people, 0.86) if current_people and previous_people else False
+    if current_people and previous_people and not people_match:
+        return False
+
+    current_teams = set(cs.get("teams") or set())
+    previous_teams = set(ps.get("teams") or set())
+    shared_teams = current_teams & previous_teams
+    current_dest = set(cs.get("destinations") or set())
+    previous_dest = set(ps.get("destinations") or set())
+    if current_dest and previous_dest and not (current_dest & previous_dest):
+        return False
+
+    current_tokens = set(current["tokens"])
+    previous_tokens = set(previous["tokens"])
+    union = current_tokens | previous_tokens
+    jaccard = len(current_tokens & previous_tokens) / max(1, len(union))
+    seq = SequenceMatcher(
+        None,
+        " ".join(sorted(current_tokens)),
+        " ".join(sorted(previous_tokens)),
+    ).ratio()
+
+    if people_match and shared_teams:
+        return True
+    if people_match and max(jaccard, seq) >= 0.30:
+        return True
+    # Fallback for sources that omit/garble a name but repeat the same two clubs
+    # and most of the material sentence. Requiring two shared clubs prevents two
+    # different players at one club from collapsing into one event.
+    if len(shared_teams) >= 2 and max(jaccard, seq) >= 0.48:
+        return True
+    return False
+
+
+def _v45_material_delta(current_text: Any, previous_text: Any, current_source: Any = "", previous_source: Any = "") -> list[str]:
+    current = _v45_structured_facts(current_text, current_source)
+    previous = _v45_structured_facts(previous_text, previous_source)
+    delta: list[str] = []
+    for label in ("amounts", "contract_end", "durations"):
+        new_values = set(current[label]) - set(previous[label])
+        delta.extend(f"{label}:{item}" for item in sorted(new_values))
+    current_flags = current["flags"]
+    previous_flags = previous["flags"]
+    for label in ("loan", "option", "obligation", "sell_on", "release_clause", "add_ons"):
+        if current_flags.get(label) and not previous_flags.get(label):
+            delta.append(label)
+    # A medical milestone is useful before an agreement, but routine medical
+    # wording after an agreement/HWG/official report is not a new event by itself.
+    if current_flags.get("medical") and not previous_flags.get("medical") and int(previous["stage"]) < 3:
+        delta.append("medical")
+    return delta
+
+
+_V45_PRE_EVENT_DECISION = _v34_event_decision
+
+
+def _v34_event_decision(
+    current_text: Any,
+    previous_text: Any,
+    current_source: Any = "",
+    previous_source: Any = "",
+) -> dict[str, Any]:
+    base = dict(_V45_PRE_EVENT_DECISION(current_text, previous_text, current_source, previous_source) or {})
+    same_event = bool(base.get("same_event")) or _v45_same_event(current_text, previous_text, current_source, previous_source)
+    if not same_event:
+        return base
+
+    current_stage = int(_v34_event_stage(current_text, current_source) or 0)
+    previous_stage = int(_v34_event_stage(previous_text, previous_source) or 0)
+    if current_stage == 5:
+        return {
+            **base, "same_event": True, "duplicate": False,
+            "reason": "reversal_or_failure", "current_stage": current_stage,
+            "previous_stage": previous_stage,
+        }
+    if current_stage > previous_stage:
+        return {
+            **base, "same_event": True, "duplicate": False,
+            "reason": "stage_advanced", "current_stage": current_stage,
+            "previous_stage": previous_stage,
+        }
+
+    delta = _v45_material_delta(current_text, previous_text, current_source, previous_source)
+    if delta:
+        return {
+            **base, "same_event": True, "duplicate": False,
+            "reason": "new_material_fact", "new_facts": delta,
+            "current_stage": current_stage, "previous_stage": previous_stage,
+        }
+
+    return {
+        **base, "same_event": True, "duplicate": True,
+        "reason": "same_event_no_material_new_fact",
+        "current_stage": current_stage, "previous_stage": previous_stage,
+        "new_facts": [],
+    }
+
+
+# Rebind all duplicate entry points to the V45 decision through the existing
+# sent-only durable memory scanner. Pending/quiet/blocked rows remain excluded.
+for _v45_cache_name in ("_v40_cached_event_signature", "_v40_cached_event_decision"):
+    _v45_cache = globals().get(_v45_cache_name)
+    if callable(getattr(_v45_cache, "cache_clear", None)):
+        _v45_cache.cache_clear()
+try:
+    _V40_DUP_RESULT_CACHE.clear()
+except Exception:
+    pass
+
+
+def _v44_event_serial_key(post: Post) -> str:
+    text = str(_final_source_text(post) or getattr(post, "text", ""))
+    signature = _v34_event_signature(text, getattr(post, "username", ""))
+    people = sorted(str(item) for item in (signature.get("people") or []) if str(item))[:3]
+    destinations = sorted(str(item) for item in (signature.get("destinations") or []) if str(item))[:2]
+    teams = sorted(str(item) for item in (signature.get("teams") or []) if str(item))[:4]
+    material = "|".join(people + destinations + teams)
+    if not material:
+        material = str(getattr(post, "post_id", "") or getattr(post, "link", "") or text)
+    return hashlib.sha1(_v34_phrase_norm(material).encode("utf-8", errors="ignore")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# 3) RSS circuit breaker. A host automatically reopens after its cooldown; the
+#    first request becomes a half-open probe and success immediately clears it.
+# ---------------------------------------------------------------------------
+class _V45RSSCircuitOpen(RuntimeError):
+    pass
+
+
+_V45_RSS_CB_LOCK = RLock()
+_V45_RSS_CB: dict[str, dict[str, Any]] = {}
+_V45_RSS_LOGGED: dict[str, float] = {}
+_V45_RSS_403_404_COOLDOWN = 6 * 60 * 60
+_V45_RSS_503_COOLDOWN = 10 * 60
+_V45_RSS_NETWORK_STEPS = (2 * 60, 5 * 60, 10 * 60, 20 * 60)
+FEED_ISSUE_LOG_EVERY_SECONDS = max(60 * 60, int(FEED_ISSUE_LOG_EVERY_SECONDS))
+
+
+def _v45_rss_source_key(url: str) -> str:
+    try:
+        return (urllib.parse.urlparse(url).netloc or url).casefold()
+    except Exception:
+        return str(url or "").casefold()
+
+
+def _v45_rss_log_transition(key: str, message: str, level: str = "warning") -> None:
+    now = time.time()
+    stamp_key = f"{key}|{message}"
+    with _V45_RSS_CB_LOCK:
+        last = float(_V45_RSS_LOGGED.get(stamp_key, 0.0) or 0.0)
+        if now - last < 60 * 60:
+            return
+        _V45_RSS_LOGGED[stamp_key] = now
+        if len(_V45_RSS_LOGGED) > 500:
+            oldest = sorted(_V45_RSS_LOGGED, key=_V45_RSS_LOGGED.get)[:150]
+            for item in oldest:
+                _V45_RSS_LOGGED.pop(item, None)
+    getattr(logging, level, logging.warning)(message)
+
+
+def _v45_rss_failure(key: str, cooldown: float, reason: str) -> None:
+    now = time.time()
+    with _V45_RSS_CB_LOCK:
+        state = dict(_V45_RSS_CB.get(key) or {})
+        state["failures"] = int(state.get("failures", 0) or 0) + 1
+        state["blocked_until"] = now + max(1.0, cooldown)
+        state["probe_inflight"] = False
+        state["last_reason"] = reason
+        _V45_RSS_CB[key] = state
+    _v45_rss_log_transition(
+        key,
+        f"RSS source {key} paused for {int(cooldown)}s after {reason}; it will probe and return automatically.",
+    )
+
+
+def _v45_rss_success(key: str) -> None:
+    recovered = False
+    with _V45_RSS_CB_LOCK:
+        state = dict(_V45_RSS_CB.get(key) or {})
+        recovered = bool(state.get("failures") or state.get("blocked_until"))
+        _V45_RSS_CB[key] = {"failures": 0, "blocked_until": 0.0, "probe_inflight": False, "last_reason": ""}
+    if recovered:
+        _v45_rss_log_transition(key, f"RSS source {key} recovered and was re-enabled automatically.", "info")
+
+
+def _v45_retry_after_seconds(exc: urllib.error.HTTPError) -> float:
+    try:
+        raw = str(exc.headers.get("Retry-After", "") or "").strip()
+        if raw.isdigit():
+            return max(60.0, float(raw))
+    except Exception:
+        pass
+    return 10 * 60
+
+
+def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    key = _v45_rss_source_key(url)
+    now = time.time()
+    half_open = False
+    with _V45_RSS_CB_LOCK:
+        state = dict(_V45_RSS_CB.get(key) or {})
+        blocked_until = float(state.get("blocked_until", 0.0) or 0.0)
+        if blocked_until > now:
+            raise _V45RSSCircuitOpen(f"RSS source temporarily paused until {int(blocked_until)}: {key}")
+        if int(state.get("failures", 0) or 0) > 0:
+            if bool(state.get("probe_inflight")):
+                raise _V45RSSCircuitOpen(f"RSS source recovery probe already running: {key}")
+            state["probe_inflight"] = True
+            _V45_RSS_CB[key] = state
+            half_open = True
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        },
+    )
+    last_error: Exception | None = None
+    max_attempts = max(1, int(FEED_HTTP_RETRIES))
+    try:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    payload = response.read()
+                _v45_rss_success(key)
+                return payload
+            except urllib.error.HTTPError as exc:
+                last_error = exc
+                status = int(getattr(exc, "code", 0) or 0)
+                if status in {403, 404}:
+                    _v45_rss_failure(key, _V45_RSS_403_404_COOLDOWN, f"HTTP {status}")
+                    raise RuntimeError(f"RSS GET failed without retry ({status}): {url}") from exc
+                if status == 429:
+                    wait = _v45_retry_after_seconds(exc)
+                    _v45_rss_failure(key, wait, "HTTP 429")
+                    raise RuntimeError(f"RSS GET rate-limited: {url}") from exc
+                if status == 503 and attempt >= max_attempts:
+                    _v45_rss_failure(key, _V45_RSS_503_COOLDOWN, "HTTP 503")
+                    raise RuntimeError(f"RSS GET unavailable: {url}") from exc
+                if attempt < max_attempts:
+                    time.sleep(0.4)
+                    continue
+                failures = int((_V45_RSS_CB.get(key) or {}).get("failures", 0) or 0)
+                cooldown = _V45_RSS_NETWORK_STEPS[min(failures, len(_V45_RSS_NETWORK_STEPS) - 1)]
+                _v45_rss_failure(key, cooldown, f"HTTP {status or 'error'}")
+                raise RuntimeError(f"RSS GET failed: {url}") from exc
+            except Exception as exc:
+                last_error = exc
+                if isinstance(exc, _V45RSSCircuitOpen):
+                    raise
+                if attempt < max_attempts:
+                    time.sleep(0.4)
+                    continue
+                with _V45_RSS_CB_LOCK:
+                    failures = int((_V45_RSS_CB.get(key) or {}).get("failures", 0) or 0)
+                cooldown = _V45_RSS_NETWORK_STEPS[min(failures, len(_V45_RSS_NETWORK_STEPS) - 1)]
+                _v45_rss_failure(key, cooldown, type(exc).__name__)
+                raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}") from exc
+        raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
+    finally:
+        if half_open:
+            with _V45_RSS_CB_LOCK:
+                state = dict(_V45_RSS_CB.get(key) or {})
+                state["probe_inflight"] = False
+                _V45_RSS_CB[key] = state
+
+
+# ---------------------------------------------------------------------------
+# 4) One discovery lane + one shared in-flight account request.
+# ---------------------------------------------------------------------------
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+
+
+def start_continuous_force_discovery() -> None:
+    # The normal bounded RSS+direct-X route already runs both sources and feeds
+    # the fast processing queue. A second direct-X scheduler duplicated requests.
+    logging.info("Single discovery lane active; duplicate continuous direct-X scheduler is disabled.")
+
+
+_V45_PRE_FETCH_POSTS = fetch_posts
+_V45_FETCH_FLIGHT_LOCK = RLock()
+_V45_FETCH_FLIGHTS: dict[str, dict[str, Any]] = {}
+
+
+def _v45_fetch_cached_fallback(username: str) -> list[Post]:
+    merged: dict[str, Post] = {}
+    for loader in (
+        lambda: _full_speed_rss_cache_get(username),
+        lambda: _full_speed_cache_get(username),
+        lambda: _stable_rss_cached_posts(username, limit=60),
+    ):
+        try:
+            _reliable_merge_posts(merged, list(loader() or []), username)
+        except Exception:
+            pass
+    return sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    owner = False
+    with _V45_FETCH_FLIGHT_LOCK:
+        flight = _V45_FETCH_FLIGHTS.get(key)
+        if flight is None:
+            flight = {"event": __import__("threading").Event(), "rows": None, "error": None}
+            _V45_FETCH_FLIGHTS[key] = flight
+            owner = True
+    if owner:
+        try:
+            rows = list(_V45_PRE_FETCH_POSTS(canonical) or [])
+            flight["rows"] = rows
+            return rows
+        except Exception as exc:
+            flight["error"] = exc
+            raise
+        finally:
+            flight["event"].set()
+            with _V45_FETCH_FLIGHT_LOCK:
+                _V45_FETCH_FLIGHTS.pop(key, None)
+    wait_seconds = max(2.0, float(FULL_SPEED_FETCH_BUDGET_SECONDS) + 2.0)
+    if flight["event"].wait(wait_seconds):
+        if flight.get("rows") is not None:
+            return list(flight.get("rows") or [])
+        if flight.get("error") is not None:
+            return _v45_fetch_cached_fallback(canonical)
+    return _v45_fetch_cached_fallback(canonical)
+
+
+# Only automatic account cycles are capped to 12. Manual latest/history controls
+# still call fetch_posts/fetch_control_posts and retain their larger history.
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+_V45_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical, rows = _V45_PRE_FETCH_POSTS_SAFELY(username)
+    ordered = sorted(
+        [post for post in (rows or []) if isinstance(post, Post)],
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return canonical, ordered[:12]
+
+
+# ---------------------------------------------------------------------------
+# 5) Poll error pause requested by the operator. Long-poll success remains instant.
+# ---------------------------------------------------------------------------
+CONTROL_POLL_SECONDS = 0.40
+
+
+# ---------------------------------------------------------------------------
+# 6) Local deterministic audit. No X, RSS, Telegram or Gemini request.
+# ---------------------------------------------------------------------------
+def _v45_test_post(username: str, text: str, post_id: str) -> Post:
+    return Post(
+        post_id=post_id,
+        username=username,
+        text=text,
+        link=f"https://x.com/{username}/status/{post_id}",
+        image_urls=[], video_urls=[], has_video=False, primary_has_video=False,
+        quoted_has_video=False, quoted_author="", quoted_text="",
+        published_ts=time.time(), dedupe_ids=[post_id], source_name=username,
+    )
+
+
+def _v45_self_audit() -> None:
+    suzuki_first = "פריז סן ז'רמן צפויה לשפר את הצעתה עבור ציון סוזוקי במבנה שונה מהצעה ראשונית של 28 מיליון אירו פלוס תוספות. סוזוקי עשוי להצטרף ליובנטוס בהשאלה."
+    suzuki_repeat = "פ.ס.ז' צפויה לשפר את הצעתה עבור ציון סוזוקי לאחר הצעה ראשונית של 28 מיליון אירו פלוס בונוסים. סוזוקי עשוי להיות מושאל ליובנטוס."
+    if not _v34_event_decision(suzuki_repeat, suzuki_first, CENTREGOALS_USERNAME, "FabrizioRomano").get("duplicate"):
+        raise RuntimeError("v45_suzuki_duplicate_failed")
+
+    cancelo_first = "ברצלונה שומרת על ביטחון מוחלט לסגור את עסקת ז'ואאו קנסלו עד תום החלון. המשא ומתן עם אל-הילאל בנוגע לדמי ההעברה נמשך."
+    cancelo_repeat = "ברצלונה נותרה בטוחה בסגירת עסקת זואאו קנסלו לפני תום חלון ההעברות. המשא ומתן עם אל-הילאל נמשך בנוגע לדמי ההעברה."
+    if not _v34_event_decision(cancelo_repeat, cancelo_first, CENTREGOALS_USERNAME, "FabrizioRomano").get("duplicate"):
+        raise RuntimeError("v45_cancelo_duplicate_failed")
+
+    signed = "ארסנל החתימה את ברונו גימראייש תמורת 75 מיליון פאונד."
+    medical = "ברונו גימאראיש קיבל אישור לעבור בדיקות רפואיות בארסנל. סוכם עקרונית על 75 מיליון ליש״ט."
+    if not _v34_event_decision(medical, signed, "JacobsBen", CENTREGOALS_USERNAME).get("duplicate"):
+        raise RuntimeError("v45_bruno_duplicate_failed")
+
+    hwg = "מוחמד סלאח לטרבזונספור HERE WE GO. סיכום מלא."
+    official = "רשמי: מוחמד סלאח חתם בטרבזונספור."
+    if _v34_event_decision(official, hwg, CENTREGOALS_USERNAME, "FabrizioRomano").get("duplicate"):
+        raise RuntimeError("v45_official_after_hwg_blocked")
+
+    new_amount = "פ.ס.ז' הגישה הצעה חדשה של 35 מיליון אירו עבור ציון סוזוקי."
+    if _v34_event_decision(new_amount, suzuki_first, "Reporter", "FabrizioRomano").get("duplicate"):
+        raise RuntimeError("v45_new_amount_blocked")
+
+    different_destination = "ברצלונה בטוחה לסגור את עסקת ז'ואאו קנסלו מול מנצ'סטר סיטי."
+    if _v34_event_decision(different_destination, cancelo_first, "Reporter", "FabrizioRomano").get("duplicate"):
+        raise RuntimeError("v45_different_destination_blocked")
+
+    if CONTINUOUS_FORCE_DISCOVERY_ENABLED:
+        raise RuntimeError("v45_second_discovery_lane_still_enabled")
+    if MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK != 12:
+        raise RuntimeError("v45_auto_limit_not_12")
+    if abs(float(CONTROL_POLL_SECONDS) - 0.40) > 0.001:
+        raise RuntimeError("v45_control_pause_not_040")
+
+    # Verify that 403 is attempted exactly once and enters a recoverable circuit.
+    original_urlopen = urllib.request.urlopen
+    calls = {"count": 0}
+    test_url = "https://v45-test.invalid/user/rss"
+    test_key = _v45_rss_source_key(test_url)
+    with _V45_RSS_CB_LOCK:
+        _V45_RSS_CB.pop(test_key, None)
+    def _raise_403(*args: Any, **kwargs: Any):
+        calls["count"] += 1
+        raise urllib.error.HTTPError(test_url, 403, "Forbidden", {}, None)
+    urllib.request.urlopen = _raise_403
+    try:
+        try:
+            http_get_feed(test_url, timeout=1)
+        except Exception:
+            pass
+    finally:
+        urllib.request.urlopen = original_urlopen
+    if calls["count"] != 1:
+        raise RuntimeError(f"v45_403_retried:{calls['count']}")
+    with _V45_RSS_CB_LOCK:
+        state = dict(_V45_RSS_CB.get(test_key) or {})
+        if float(state.get("blocked_until", 0.0) or 0.0) <= time.time():
+            raise RuntimeError("v45_403_circuit_not_set")
+        _V45_RSS_CB.pop(test_key, None)
+
+
+try:
+    _v45_self_audit()
+    logging.info(
+        "V45 active: smart cross-source event dedupe; one shared discovery lane; "
+        "RSS host circuit breakers with automatic recovery; 12 automatic rows; "
+        "no 403/404 retry; hourly repeated feed logs; 0.40s control error pause"
+    )
+except Exception as _v45_audit_exc:
+    logging.error("V45 self-audit failed: %s", short_error(_v45_audit_exc, 1800))
+
+# ====== END V45 SMART EVENT DEDUPE + SERVER SAVINGS ======
+
 if __name__ == "__main__":
     main()
+
+# ====== V46 PRINCIPLE-BASED POLICY ENGINE / FULL REGRESSION AUDIT (2026-08-05) ======
+# This layer replaces example-specific duplicate decisions with one general,
+# deterministic event model.  It preserves all established RSS, server-saving,
+# filtering, control-panel, media, translation and persistent-memory behavior.
+# No network/AI request is used by this policy layer.
+
+BOT_BUILD_ID = "winner-v47-accessible-history-principle-integrated-2026-08-05"
+
+from dataclasses import dataclass as _v46_dataclass
+from functools import lru_cache as _v46_lru_cache
+
+_V46_DIRECTION_RE = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+_V46_HTML_RE = re.compile(r"<[^>]+>")
+_V46_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
+_V46_WORD_RE = re.compile(r"[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת׳'’\-]{1,}", re.UNICODE)
+_V46_TRANSFER_RE = re.compile(
+    r"(?iu)(?:transfer|sign(?:ing|ed)?|join(?:ing|ed)?|move(?:d)?\s+to|loan|bid|offer|proposal|"
+    r"agreement|deal|medical|personal\s+terms|contract|option\s+to\s+buy|obligation\s+to\s+buy|"
+    r"העברה|עסק(?:ה|ת)|החתימ|החתמ|חתם|חתמה|יחתום|הצטרף|מצטרף|להצטרף|הצטרפות(?:ו|ה|ם)?|עובר|מעבר|השאל(?:ה|ת)|מושאל|"
+    r"הצעה|הציעה|הגישה|משא\s+ומתן|שיחות|סיכום|הסכם|בדיקות\s+רפואיות|תנאים\s+אישיים|"
+    r"אופציית?\s+רכישה|חובת\s+רכישה|דמי\s+העברה|שחקן\s+חופשי)"
+)
+_V46_REVERSAL_RE = re.compile(
+    r"(?iu)(?:deal\s+off|collapsed|collapse|failed|rejected|withdrawn|no\s+agreement|"
+    r"עסקה\s+(?:ירדה|נפלה)|העסקה\s+בוטלה|קרס|נכשל|נדחתה|דחה|נסוג|אין\s+הסכם|לא\s+יחתום)"
+)
+_V46_OFFICIAL_RE = re.compile(
+    r"(?iu)(?:(?:^|[\s🚨|])(?:official|רשמי|הודעה\s+רשמית)\s*[:：|]|"
+    r"has\s+signed|signed\s+(?:for|with)|joins?\s+[^.!?]{0,35}\s+officially|"
+    r"confirmed\s+(?:the\s+)?signing|announced\s+(?:the\s+)?signing|"
+    r"חתם\s+ב|חתמה\s+ב|החתימ(?:ה|ו)|הצטרף\s+רשמית|שחקנ(?:ו|ה)?\s+החדש(?:ה)?\s+של|"
+    r"המועדון\s+(?:אישר|הודיע)|(?:מאשר(?:ת|ים)?|אישר(?:ה|ו)?)\s+ש[^.!?]{0,80}(?:הצטרף|חתם|חתמה)|העסקה\s+הושלמה)"
+)
+_V46_AGREED_RE = re.compile(
+    r"(?iu)(?:#?HERE(?:_|\s)+WE(?:_|\s)+GO|deal\s+agreed|agreement\s+(?:reached|in\s+principle)|"
+    r"full\s+agreement|verbal\s+agreement|set\s+to\s+sign|close\s+to\s+signing|"
+    r"עסקה\s+סגורה|העסקה\s+סוכמה|הושג\s+הסכם|הסכם\s+מלא|סיכום\s+(?:מלא|עקרוני|בעל\s+פה)|"
+    r"סוכם\s+עקרונית|צפוי(?:ה)?\s+להיסגר|צפוי(?:ה)?\s+להושלם|קרוב(?:ה)?\s+לחתימה|בדיקות\s+רפואיות\s+נקבעו)"
+)
+_V46_TALKS_RE = re.compile(
+    r"(?iu)(?:talks?|negotiations?|bid|offer|proposal|approach|contact(?:ed)?|"
+    r"משא\s+ומתן|שיחות|הצעה|הציעה|הגישה|פנייה|יצר(?:ה)?\s+קשר|בוחנ(?:ת|ים)|"
+    r"צפוי(?:ה)?\s+לשפר\s+את\s+הצעת)"
+)
+_V46_INTEREST_RE = re.compile(
+    r"(?iu)(?:interest(?:ed)?|keen|monitoring|shortlist|target|considering|"
+    r"עניין|מעוניינ(?:ת|ים)|ברשימת\s+המועמדים|יעד|שוקל(?:ת|ים)|עוקב(?:ת|ים))"
+)
+_V46_QUOTE_RE = re.compile(r"(?iu)(?:🗣️|\b(?:said|says|told|according\s+to)\b|אומר(?:ת)?|אמר(?:ה)?|ציטוט|\"|״)")
+_V46_MEDICAL_RE = re.compile(r"(?iu)(?:medical(?:s)?|בדיקות\s+רפואיות|בדיקה\s+רפואית)")
+_V46_CONTRACT_END_RE = re.compile(r"(?iu)(?:until|through|עד)\s+(20\d{2})")
+_V46_DURATION_RE = re.compile(r"(?iu)(\d{1,2})\s*(?:year|years|שנה|שנים|עונות?)")
+_V46_AGE_RE = re.compile(r"(?iu)(?:בן|בת|aged?)\s*-?\s*(\d{1,2})")
+_V46_MATERIAL_NUMBER_CONTEXT_RE = re.compile(
+    r"(?iu)(?:fee|bid|offer|salary|wage|clause|contract|years?|months?|goals?|assists?|appearances?|"
+    r"דמי|הצעה|שכר|סעיף|חוזה|שנים?|עונות?|שערים|בישולים|הופעות|מיליון|אלף|€|£|\$|EUR|GBP|USD)"
+)
+
+_V46_FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("injury", re.compile(r"(?iu)injur|hamstring|ankle|knee|פציע|נפצע|ייעדר|כשירות")),
+    ("discipline", re.compile(r"(?iu)suspend|ban(?:ned)?|red\s+card|מושעה|הרחקה|כרטיס\s+אדום")),
+    ("lineup", re.compile(r"(?iu)starting\s+xi|lineup|squad|הרכב|סגל")),
+    ("match_result", re.compile(r"(?iu)full\s*time|final\s+score|ניצח(?:ה|ו)?|הפסיד(?:ה|ו)?|תיקו|תוצאה")),
+    ("match_incident", re.compile(r"(?iu)goal|penalty|assist|tackle|confrontation|fight|"
+                                  r"שער|פנדל|בישול|עבירה|תיקול|עימות|קטטה|בעט")),
+    ("statistics", re.compile(r"(?iu)record|stat(?:istic)?s?|goals?|assists?|appearances?|"
+                               r"שיא|סטטיסט|שערים|בישולים|הופעות|מאזן")),
+    ("manager", re.compile(r"(?iu)manager|head\s+coach|coach|מאמן|מנג'ר")),
+    ("donation", re.compile(r"(?iu)donat|תרם|תרומה")),
+    ("birthday", re.compile(r"(?iu)birthday|יום\s+הולדת|#יום_הולדת|#מזל_טוב")),
+    ("history", re.compile(r"(?iu)#היום_לפני|on\s+this\s+day|בתאריך\s+הזה|ביום\s+הזה")),
+)
+
+_V46_SYNONYM_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?iu)\b(?:add[- ]?ons?|bonuses?)\b|תוספות|בונוסים"), " add_ons "),
+    (re.compile(r"(?iu)\b(?:pounds?|sterling|gbp)\b|פאונד(?:ים)?|ליש[\"״']?ט"), " GBP "),
+    (re.compile(r"(?iu)\b(?:euros?|eur)\b|אירו|יורו"), " EUR "),
+    (re.compile(r"(?iu)\b(?:dollars?|usd)\b|דולר(?:ים)?"), " USD "),
+    (re.compile(r"(?iu)\b(?:on\s+loan|loaned?|loan)\b|בהשאלה|מושאל(?:ת|ים|ות)?"), " loan "),
+    (re.compile(r"(?iu)option\s+to\s+buy|אופצי(?:ה|ית)\s+רכישה|אופציית\s+קנייה"), " buy_option "),
+    (re.compile(r"(?iu)obligation\s+to\s+buy|חובת\s+רכישה"), " buy_obligation "),
+    (re.compile(r"(?iu)sell[- ]on|מכירה\s+עתידית|אחוזים?\s+ממכירה"), " sell_on "),
+    (re.compile(r"(?iu)free\s+agent|free\s+transfer|שחקן\s+חופשי|העברה\s+חופשית"), " free_transfer "),
+    (re.compile(r"(?iu)end\s+of\s+(?:the\s+)?window|before\s+the\s+window\s+closes|"
+                r"עד\s+תום\s+החלון|לפני\s+תום\s+חלון\s+ההעברות|עד\s+סגירת\s+החלון"), " window_end "),
+    (re.compile(r"(?iu)remains?\s+confident|full\s+confidence|שומר(?:ת)?\s+על\s+ביטחון|"
+                r"נותר(?:ה)?\s+בטוח(?:ה)?|ביטחון\s+מוחלט"), " confident "),
+)
+
+_V46_STOPWORDS = set(_V45_STOPWORDS) | {
+    "דיווח", "רשמי", "בלעדי", "חדש", "פרסום", "ראשון", "לפי", "המידע", "כעת", "היום",
+    "עוד", "גם", "שלו", "שלה", "שלהם", "לאחר", "במהלך", "בנוגע", "לגבי", "מול", "עבור",
+    "צפוי", "צפויה", "עשוי", "עשויה", "מועדון", "קבוצה", "שחקן", "שחקנה", "שחקנו",
+}
+
+
+def _v46_visible_text(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        text = html_message_to_plain_text(text)
+    except Exception:
+        text = html.unescape(_V46_HTML_RE.sub(" ", text))
+    text = html.unescape(text)
+    try:
+        text = _v30_remove_all_neto_footers(text)
+    except Exception:
+        pass
+    text = URL_RE.sub(" ", text)
+    text = BARE_EXTERNAL_DOMAIN_RE.sub(" ", text)
+    text = _V46_DIRECTION_RE.sub("", text)
+    text = text.replace("־", "-").replace("–", "-").replace("—", "-")
+    text = text.replace("׳", "'").replace("’", "'").replace("״", '"')
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"(?iu)(?:\s*[-–—]\s*)?(?:בן\s+ג['’]?ייקובס|Ben\s+Jacobs)\s*[.!]?\s*$", "", text)
+    text = re.sub(r"(?imu)^\s*(?:S\s*0?4|אס\s*0?4)\s*[.!]?\s*$", "", text)
+    text = re.sub(r"(?imu)^\s*העסקה\s+הושלמה\s+על\s+ידי\s+הסוכנ(?:ים|ת)?\b[^\n]*$", "", text)
+    text = text.replace("🎥", "")
+    text = re.sub(r"(?<![A-Za-z0-9_])@(?=\s|[.,;:!?]|$)", "", text)
+    for pattern, replacement in _V46_SYNONYM_PATTERNS:
+        text = pattern.sub(replacement, text)
+    try:
+        text = _v34_canonical_compare_text(text)
+    except Exception:
+        pass
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n[ \t]+|[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+_V46_NO_PREFIX_STRIP = {
+    "מיליון", "מיליארד", "מועדון", "מנצ'סטר", "מדריד", "משחק", "משחקים",
+    "משא", "מאמן", "מאמנים", "מכירה", "מחיר", "מדיקל", "מסי", "מרטין",
+}
+
+
+def _v46_token_form(token: str) -> str:
+    value = _v45_strip_latin_diacritics(str(token or "").casefold())
+    value = value.strip("'\".,;:!?()[]{}")
+    if re.search(r"[א-ת]", value) and len(value) >= 6 and value[0] in "ובלמשהכ" and value not in _V46_NO_PREFIX_STRIP:
+        value = value[1:]
+    # Conservative Hebrew plural normalization only for long content words.
+    if len(value) >= 7 and value.endswith("יים"):
+        value = value[:-3] + "י"
+    elif len(value) >= 7 and value.endswith("ים"):
+        value = value[:-2]
+    elif len(value) >= 7 and value.endswith("ות"):
+        value = value[:-2]
+    return value
+
+
+def _v46_semantic_tokens(value: Any) -> frozenset[str]:
+    text = _v46_visible_text(value)
+    result: set[str] = set()
+    for raw in _V46_WORD_RE.findall(text):
+        token = _v46_token_form(raw)
+        if len(token) < 3 or token in _V46_STOPWORDS:
+            continue
+        if token.isdigit():
+            continue
+        result.add(token)
+    return frozenset(result)
+
+
+
+# Precomputed entity matchers derived from all existing dictionaries. This turns
+# hundreds of per-post regex scans into one compiled search and keeps new aliases
+# added elsewhere in the file automatically available to the policy engine.
+def _v46_alias_norm(value: Any) -> str:
+    return _v34_phrase_norm(_v46_visible_text(value))
+
+
+def _v46_build_alias_matcher(raw_map: dict[str, str]) -> tuple[dict[str, str], re.Pattern[str] | None, re.Pattern[str] | None]:
+    lookup: dict[str, str] = {}
+    for raw_alias, raw_canonical in raw_map.items():
+        alias = _v46_alias_norm(raw_alias)
+        canonical = _v46_alias_norm(raw_canonical)
+        if alias and canonical:
+            lookup[alias] = canonical
+    hebrew = sorted((key for key in lookup if re.search(r"[א-ת]", key)), key=len, reverse=True)
+    latin = sorted((key for key in lookup if not re.search(r"[א-ת]", key)), key=len, reverse=True)
+    hebrew_re = re.compile(
+        r"(?iu)(?<![A-Za-zÀ-ÿא-ת0-9])(?:[ובלמשהכ])?(?P<alias>" + "|".join(re.escape(item) for item in hebrew) + r")(?![A-Za-zÀ-ÿא-ת0-9])"
+    ) if hebrew else None
+    latin_re = re.compile(
+        r"(?iu)(?<![A-Za-zÀ-ÿא-ת0-9])(?P<alias>" + "|".join(re.escape(item) for item in latin) + r")(?![A-Za-zÀ-ÿא-ת0-9])"
+    ) if latin else None
+    return lookup, hebrew_re, latin_re
+
+
+_V46_TEAM_LOOKUP, _V46_TEAM_HE_RE, _V46_TEAM_LATIN_RE = _v46_build_alias_matcher(dict(_v34_team_alias_map()))
+_V46_PERSON_LOOKUP, _V46_PERSON_HE_RE, _V46_PERSON_LATIN_RE = _v46_build_alias_matcher(dict(_v34_entity_alias_map()))
+
+
+def _v46_alias_matches(text: str, lookup: dict[str, str], patterns: tuple[re.Pattern[str] | None, ...]) -> list[tuple[str, int, int]]:
+    normalized = _v46_alias_norm(text)
+    result: list[tuple[str, int, int]] = []
+    for pattern in patterns:
+        if pattern is None:
+            continue
+        for match in pattern.finditer(normalized):
+            alias = _v46_alias_norm(match.group("alias"))
+            canonical = lookup.get(alias, alias)
+            if canonical:
+                result.append((canonical, match.start("alias"), match.end("alias")))
+    return result
+
+
+def _v46_extract_teams(text: str) -> tuple[set[str], list[tuple[str, int, int]]]:
+    matches = _v46_alias_matches(text, _V46_TEAM_LOOKUP, (_V46_TEAM_HE_RE, _V46_TEAM_LATIN_RE))
+    return {item[0] for item in matches}, matches
+
+
+def _v46_extract_destinations(text: str, team_matches: list[tuple[str, int, int]]) -> set[str]:
+    normalized = _v46_alias_norm(text)
+    result: set[str] = set()
+    marker_re = re.compile(r"(?iu)(?:להצטרף|מצטרף|הצטרף|יחתום|חתם|חתמה|עובר|עבר|move\s+to|join(?:s|ed|ing)?|sign(?:s|ed|ing)?\s+(?:for|with))\s+(?:אל\s+|ל|ב|עם\s+)?$")
+    for canonical, start, end in team_matches:
+        before = normalized[max(0, start - 45):start]
+        immediate = normalized[max(0, start - 2):start]
+        if marker_re.search(before) or (immediate and immediate[-1:] in {"ל", "ב"}):
+            result.add(canonical)
+    return result
+
+
+def _v46_subject_candidates(text: str, teams: set[str]) -> set[str]:
+    result: set[str] = set()
+    # One precompiled alias search replaces the old full dictionary scan.
+    for canonical, _start, _end in _v46_alias_matches(text, _V46_PERSON_LOOKUP, (_V46_PERSON_HE_RE, _V46_PERSON_LATIN_RE)):
+        result.add(canonical)
+    patterns = (
+        re.compile(r"(?iu)(?:עסקת|להחתים\s+את|עבור|בנוגע\s+ל|העברתו\s+של)\s+"
+                   r"(?P<name>[א-ת][א-ת'\-]{2,}(?:\s+[א-ת][א-ת'\-]{2,}){1,3})"),
+        re.compile(r"(?iu)(?P<name>[א-ת][א-ת'\-]{2,}(?:\s+[א-ת][א-ת'\-]{2,}){1,3})\s+"
+                   r"(?:צפוי|צפויה|עשוי|עשויה|קיבל|קיבלה|חתם|חתמה|הצטרף|מצטרף|עובר|עבר|אומר|אומרת|אמר|אמרה)"),
+        re.compile(r"(?iu)(?:מאשר(?:ת|ים)?|אישר(?:ה|ו)?)\s+ש(?P<name>[א-ת][א-ת'\-]{2,}(?:\s+[א-ת][א-ת'\-]{2,}){1,3})\s+"
+                   r"(?:הצטרף|חתם|חתמה|מצטרף|עובר)"),
+        re.compile(r"(?i)(?:sign|signing|signed|join|joining|transfer|move|bid\s+for|offer\s+for)\s+"
+                   r"(?P<name>[A-ZÀ-Ý][A-Za-zÀ-ÿ'\-]{2,}(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'\-]{2,}){1,3})"),
+    )
+    team_norms = {_v34_phrase_norm(item) for item in teams}
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            candidate = _v34_phrase_norm(match.group("name"))
+            words = candidate.split()
+            # Stop at common transfer-tail words accidentally captured by Hebrew.
+            while words and words[-1] in {"בחוזה", "בהשאלה", "כשחקן", "השבוע", "מיליון", "אירו", "gbp", "eur"}:
+                words.pop()
+            candidate = " ".join(words[:4]).strip()
+            if not candidate or candidate in team_norms or len(candidate) < 5:
+                continue
+            result.add(candidate)
+    return {item for item in result if item}
+
+
+def _v46_event_family(text: str, is_transfer: bool) -> str:
+    if is_transfer or _V46_TRANSFER_RE.search(text):
+        return "transfer"
+    for name, pattern in _V46_FAMILY_PATTERNS:
+        if pattern.search(text):
+            return name
+    if _V46_QUOTE_RE.search(text):
+        return "quote"
+    return "generic"
+
+
+def _v46_stage(text: str, family: str, source: str = "") -> int:
+    if family != "transfer":
+        return 0
+    if _V46_REVERSAL_RE.search(text):
+        return 5
+    if _V46_OFFICIAL_RE.search(text):
+        return 4
+    if _V46_AGREED_RE.search(text):
+        return 3
+    if _V46_TALKS_RE.search(text) or _V46_MEDICAL_RE.search(text):
+        return 2
+    if _V46_INTEREST_RE.search(text):
+        return 1
+    try:
+        return int(_v34_event_stage(text, source) or 0)
+    except Exception:
+        return 0
+
+
+def _v46_amounts(text: str) -> frozenset[str]:
+    found: set[str] = set()
+    normalized = _v46_visible_text(text)
+    patterns = (
+        re.compile(r"(?iu)(?P<cur>€|£|\$|EUR|GBP|USD)\s*(?P<num>\d+(?:[.,]\d+)?)\s*(?P<scale>m|mn|million|k|thousand|מיליון|אלף)?"),
+        re.compile(r"(?iu)(?P<num>\d+(?:[.,]\d+)?)\s*(?P<scale>m|mn|million|k|thousand|מיליון|אלף)?\s*(?P<cur>EUR|GBP|USD|אירו|יורו|ליש[\"']?ט|פאונד(?:ים)?|דולר(?:ים)?)"),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(normalized):
+            try:
+                number = float(match.group("num").replace(",", "."))
+            except Exception:
+                continue
+            scale = str(match.group("scale") or "").casefold()
+            if scale in {"m", "mn", "million", "מיליון"}:
+                number *= 1_000_000
+            elif scale in {"k", "thousand", "אלף"}:
+                number *= 1_000
+            currency = str(match.group("cur") or "").casefold()
+            unit = "EUR" if currency in {"€", "eur", "אירו", "יורו"} else "GBP" if currency in {"£", "gbp", 'ליש"ט', "פאונד", "פאונדים"} else "USD"
+            found.add(f"{unit}:{int(round(number))}")
+    return frozenset(found)
+
+
+def _v46_context_numbers(text: str) -> frozenset[str]:
+    result: set[str] = set()
+    for match in re.finditer(r"(?<!\d)(\d+(?:[.,]\d+)?)(?!\d)", text):
+        context = text[max(0, match.start() - 35): min(len(text), match.end() + 35)]
+        if _V46_MATERIAL_NUMBER_CONTEXT_RE.search(context):
+            result.add(match.group(1).replace(",", "."))
+    return frozenset(result)
+
+
+def _v46_fact_tags(text: str, stage: int) -> frozenset[str]:
+    patterns = {
+        "loan": r"(?iu)\bloan\b|\bהשאלה\b",
+        "buy_option": r"(?iu)buy_option|option\s+to\s+buy|אופצי(?:ה|ית)\s+רכישה",
+        "buy_obligation": r"(?iu)buy_obligation|obligation\s+to\s+buy|חובת\s+רכישה",
+        "sell_on": r"(?iu)sell_on|sell[- ]on|מכירה\s+עתידית|אחוזים?\s+ממכירה",
+        "release_clause": r"(?iu)release\s+clause|סעיף\s+שחרור",
+        "free_transfer": r"(?iu)free_transfer|free\s+agent|שחקן\s+חופשי|העברה\s+חופשית",
+        "permanent": r"(?iu)permanent\s+(?:deal|transfer)|העברה\s+קבועה",
+        "medical": r"(?iu)medical|בדיקות\s+רפואיות",
+        "add_ons": r"(?iu)add_ons|תוספות|בונוסים",
+        "salary": r"(?iu)salary|wages|שכר",
+        "bid_rejected": r"(?iu)bid\s+rejected|offer\s+rejected|ההצעה\s+נדחתה",
+        "bid_accepted": r"(?iu)bid\s+accepted|offer\s+accepted|ההצעה\s+התקבלה",
+    }
+    result = {name for name, pattern in patterns.items() if re.search(pattern, text)}
+    for year in _V46_CONTRACT_END_RE.findall(text):
+        result.add("contract_end:" + year)
+    for duration in _V46_DURATION_RE.findall(text):
+        # An age such as "בן 22" must not become a contract duration.
+        if not re.search(rf"(?iu)(?:בן|בת|aged?)\s*-?\s*{re.escape(duration)}\b", text):
+            result.add("duration:" + duration)
+    hebrew_duration_words = {
+        "שנה": "1", "שנה אחת": "1", "שנתיים": "2", "שתי שנים": "2", "שני שנים": "2",
+        "שלוש שנים": "3", "שלושה שנים": "3", "ארבע שנים": "4", "ארבעה שנים": "4",
+        "חמש שנים": "5", "חמישה שנים": "5", "שש שנים": "6", "שישה שנים": "6",
+    }
+    for phrase, duration in hebrew_duration_words.items():
+        if re.search(rf"(?iu)(?:חוזה|חתם|חתמה|הסכם)[^.?!\n]{{0,30}}(?:ל|למשך\s+)?{re.escape(phrase)}\b", text):
+            result.add("duration:" + duration)
+    for amount in _v46_amounts(text):
+        result.add("amount:" + amount)
+    return frozenset(result)
+
+
+def _v46_propositions(text: str) -> tuple[frozenset[str], ...]:
+    result: list[frozenset[str]] = []
+    for sentence in _V46_SENTENCE_SPLIT_RE.split(text):
+        tokens = _v46_semantic_tokens(sentence)
+        if len(tokens) >= 3:
+            result.append(tokens)
+    return tuple(result[:16])
+
+
+@_v46_dataclass(frozen=True)
+class _V46EventProfile:
+    text: str
+    source: str
+    family: str
+    people: frozenset[str]
+    teams: frozenset[str]
+    destinations: frozenset[str]
+    stage: int
+    facts: frozenset[str]
+    tokens: frozenset[str]
+    propositions: tuple[frozenset[str], ...]
+    quote_only: bool
+    has_hwg: bool
+
+
+@_v46_lru_cache(maxsize=8192)
+def _v46_profile_cached(text: str, source: str) -> _V46EventProfile:
+    canonical = _v46_visible_text(text)
+    teams, team_matches = _v46_extract_teams(canonical)
+    destinations = _v46_extract_destinations(canonical, team_matches)
+    people = _v46_subject_candidates(canonical, teams)
+    is_transfer = bool(_V46_TRANSFER_RE.search(canonical) or re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO", canonical))
+    family = _v46_event_family(canonical, is_transfer)
+    stage = _v46_stage(canonical, family, source)
+    facts = _v46_fact_tags(canonical, stage)
+    tokens = _v46_semantic_tokens(canonical)
+    quote_markers = len(_V46_QUOTE_RE.findall(canonical))
+    quote_only = bool(
+        quote_markers
+        and family in {"transfer", "quote", "generic"}
+        and stage <= 1
+        and not any(item.startswith(("amount:", "contract_end:", "duration:")) for item in facts)
+        and len(facts - {"medical"}) == 0
+    )
+    return _V46EventProfile(
+        text=canonical,
+        source=str(source or "").strip().lstrip("@").casefold(),
+        family=family,
+        people=frozenset(people),
+        teams=frozenset(teams),
+        destinations=frozenset(destinations),
+        stage=stage,
+        facts=facts,
+        tokens=tokens,
+        propositions=_v46_propositions(canonical),
+        quote_only=quote_only,
+        has_hwg=bool(_V27_EXPLICIT_HWG_RE.search(canonical) if "_V27_EXPLICIT_HWG_RE" in globals() else re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO", canonical)),
+    )
+
+
+def _v46_profile(value: Any, source: Any = "") -> _V46EventProfile:
+    return _v46_profile_cached(str(value or ""), str(source or ""))
+
+
+def _v46_set_fuzzy_overlap(left: frozenset[str], right: frozenset[str], threshold: float = 0.86) -> bool:
+    if set(left) & set(right):
+        return True
+    return any(_v45_name_similarity(a, b) >= threshold for a in left for b in right)
+
+
+def _v46_similarity(current: _V46EventProfile, previous: _V46EventProfile) -> dict[str, float]:
+    shared = set(current.tokens) & set(previous.tokens)
+    union = set(current.tokens) | set(previous.tokens)
+    containment = len(shared) / max(1, min(len(current.tokens), len(previous.tokens)))
+    jaccard = len(shared) / max(1, len(union))
+    seq = SequenceMatcher(None, " ".join(sorted(current.tokens)), " ".join(sorted(previous.tokens))).ratio()
+    proposition = 0.0
+    for cur in current.propositions:
+        for prev in previous.propositions:
+            overlap = len(set(cur) & set(prev)) / max(1, min(len(cur), len(prev)))
+            proposition = max(proposition, overlap)
+    return {"containment": containment, "jaccard": jaccard, "sequence": seq, "proposition": proposition}
+
+
+def _v46_identity(current: _V46EventProfile, previous: _V46EventProfile) -> tuple[bool, dict[str, Any]]:
+    if not current.text or not previous.text:
+        return False, {"reason": "empty"}
+    if current.text == previous.text:
+        return True, {"reason": "exact_text", "identity_score": 1.0}
+
+    people_match = _v46_set_fuzzy_overlap(current.people, previous.people) if current.people and previous.people else False
+    if current.people and previous.people and not people_match:
+        return False, {"reason": "different_people"}
+
+    shared_teams = set(current.teams) & set(previous.teams)
+    if current.destinations and previous.destinations and not (set(current.destinations) & set(previous.destinations)):
+        return False, {"reason": "different_destination"}
+
+    sim = _v46_similarity(current, previous)
+    shared_token_values = set(current.tokens) & set(previous.tokens)
+    team_token_values: set[str] = set()
+    for team in set(current.teams) | set(previous.teams):
+        team_token_values.update(_v46_semantic_tokens(team))
+    shared_distinctive = {
+        token for token in shared_token_values
+        if token not in team_token_values and token not in _V46_STOPWORDS
+        and token not in {"transfer", "loan", "free", "הצטרף", "הצטרפותו", "חתם", "חוזה", "הסכם", "עסקה"}
+    }
+    compatible_family = current.family == previous.family or {current.family, previous.family} <= {"transfer", "quote", "generic"}
+    if not compatible_family:
+        return False, {"reason": "different_family", **sim}
+
+    same = False
+    if current.family == "transfer" or previous.family == "transfer":
+        if people_match and (shared_teams or current.destinations or previous.destinations):
+            same = True
+        elif people_match and max(sim["containment"], sim["sequence"], sim["proposition"]) >= 0.34:
+            same = True
+        elif shared_teams and len(shared_distinctive) >= 2:
+            same = True
+        elif len(shared_teams) >= 2 and max(sim["containment"], sim["sequence"], sim["proposition"]) >= 0.46:
+            same = True
+        elif not current.people and not previous.people and len(shared_teams) >= 1 and sim["containment"] >= 0.72:
+            same = True
+    else:
+        entity_overlap = people_match or bool(shared_teams)
+        same = bool(entity_overlap and max(sim["containment"], sim["sequence"], sim["proposition"]) >= 0.68)
+        if not entity_overlap and sim["sequence"] >= 0.94 and sim["containment"] >= 0.88:
+            same = True
+
+    score = max(sim.values())
+    return same, {
+        "reason": "same_identity" if same else "identity_threshold_not_met",
+        "identity_score": score,
+        "people_match": people_match,
+        "shared_teams": sorted(shared_teams),
+        "shared_distinctive": sorted(shared_distinctive),
+        **sim,
+    }
+
+
+def _v46_material_delta(current: _V46EventProfile, previous: _V46EventProfile) -> list[str]:
+    current_facts = set(current.facts)
+    previous_facts = set(previous.facts)
+    delta = current_facts - previous_facts
+    result: list[str] = []
+    for fact in sorted(delta):
+        if fact == "medical" and previous.stage >= 3:
+            continue
+        if fact in {"bid_accepted"} and previous.stage >= 3:
+            continue
+        if fact in {"add_ons"} and any(item.startswith("amount:") for item in current_facts) and "add_ons" in previous_facts:
+            continue
+        result.append(fact)
+    return result
+
+
+def _v46_event_decision_profiles(current: _V46EventProfile, previous: _V46EventProfile) -> dict[str, Any]:
+    """One event-policy decision with an authoritative, non-overwritable reason."""
+    same, identity = _v46_identity(current, previous)
+
+    def result(*, duplicate: bool, reason: str, same_event: bool = True, **extra: Any) -> dict[str, Any]:
+        # identity contains its own diagnostic reason.  Put it first so the
+        # policy verdict below can never be overwritten by **identity.
+        return {
+            **identity,
+            **extra,
+            "same_event": same_event,
+            "duplicate": duplicate,
+            "reason": reason,
+        }
+
+    if not same:
+        return result(duplicate=False, reason="different_event_identity", same_event=False)
+
+    if current.family == "transfer" or previous.family == "transfer":
+        if current.stage == 5:
+            return result(duplicate=False, reason="reversal_or_failure")
+        if current.stage > previous.stage:
+            return result(
+                duplicate=False,
+                reason="stage_advanced",
+                current_stage=current.stage,
+                previous_stage=previous.stage,
+            )
+        delta = _v46_material_delta(current, previous)
+        if delta:
+            return result(
+                duplicate=False,
+                reason="new_material_fact",
+                new_facts=delta,
+                current_stage=current.stage,
+                previous_stage=previous.stage,
+            )
+        if current.stage < previous.stage:
+            return result(
+                duplicate=True,
+                reason="stage_regression_no_material_delta",
+                current_stage=current.stage,
+                previous_stage=previous.stage,
+            )
+        if current.quote_only and not previous.quote_only:
+            return result(duplicate=True, reason="quote_only_followup")
+        return result(
+            duplicate=True,
+            reason="same_transfer_event_no_material_delta",
+            current_stage=current.stage,
+            previous_stage=previous.stage,
+        )
+
+    general_delta = _v46_material_delta(current, previous)
+    if general_delta:
+        return result(duplicate=False, reason="new_material_fact", new_facts=general_delta)
+
+    current_numbers = _v46_context_numbers(current.text)
+    previous_numbers = _v46_context_numbers(previous.text)
+    new_numbers = set(current_numbers) - set(previous_numbers)
+    if new_numbers:
+        return result(
+            duplicate=False,
+            reason="new_context_number",
+            new_numbers=sorted(new_numbers),
+        )
+    if current.quote_only and not previous.quote_only:
+        return result(duplicate=True, reason="quote_only_followup")
+    return result(duplicate=True, reason="same_non_transfer_event")
+
+
+def _v46_event_decision(current_text: Any, previous_text: Any, current_source: Any = "", previous_source: Any = "") -> dict[str, Any]:
+    return _v46_event_decision_profiles(
+        _v46_profile(current_text, current_source),
+        _v46_profile(previous_text, previous_source),
+    )
+
+
+# All old callers use this dynamic name.  Replacing it makes the new principle
+# engine the single source of truth without changing persistent data structures.
+def _v34_event_decision(
+    current_text: Any,
+    previous_text: Any,
+    current_source: Any = "",
+    previous_source: Any = "",
+) -> dict[str, Any]:
+    return _v46_event_decision(current_text, previous_text, current_source, previous_source)
+
+
+_V46_DUPLICATE_MAX_ROWS = max(160, int(globals().get("_V42_DUPLICATE_MAX_ROWS", 160) or 160))
+
+
+def _v46_row_variants(item: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in (
+        "source_text", "original_text", "text", "translated", "rendered",
+        "channel_memory_text", "preview", "caption", "message", "ai_text",
+    ):
+        value = str(item.get(key) or "").strip()
+        if value and value not in values:
+            values.append(value)
+    signature = item.get("signature")
+    if isinstance(signature, dict):
+        value = str(signature.get("text") or "").strip()
+        if value and value not in values:
+            values.append(value)
+    # A later short source can be a subset of one paragraph in a multi-topic post.
+    # Compare paragraphs independently, but never split list lines into fake events.
+    expanded = list(values)
+    for value in values[:5]:
+        for block in re.split(r"\n\s*\n", value):
+            block = block.strip()
+            if len(block) >= 28 and block not in expanded:
+                expanded.append(block)
+    return expanded[:14]
+
+
+def _v46_exact_id_or_text(post: Post, item: dict[str, Any], current_text: str) -> dict[str, Any] | None:
+    current_id = str(getattr(post, "post_id", "") or getattr(post, "link", "") or "").strip()
+    previous_id = str(item.get("post_id") or item.get("link") or item.get("id") or "").strip()
+    if current_id and previous_id and current_id == previous_id:
+        result = dict(item)
+        result.update({"duplicate": True, "is_duplicate": True, "duplicate_score": 1.0, "duplicate_verdict": "V46_EXACT_ID"})
+        return result
+    current_norm = _v46_visible_text(current_text)
+    for previous_text in _v46_row_variants(item):
+        if current_norm and current_norm == _v46_visible_text(previous_text):
+            result = dict(item)
+            result.update({"duplicate": True, "is_duplicate": True, "duplicate_score": 1.0, "duplicate_verdict": "V46_EXACT_TEXT"})
+            return result
+    return None
+
+
+
+# ====== V47 BOUNDED EVENT-PROFILE / EXACT-DUPLICATE HELPERS ======
+_V47_PROFILE_CACHE_LOCK = RLock()
+_V47_PROFILE_CACHE: dict[tuple[str, str], _V46EventProfile] = {}
+_V47_PROFILE_CACHE_MAX = 4096
+
+
+def _v47_profile_cached(text: Any, source: Any = "") -> _V46EventProfile:
+    key = (str(source or "").strip().casefold(), _v46_visible_text(text))
+    with _V47_PROFILE_CACHE_LOCK:
+        cached = _V47_PROFILE_CACHE.get(key)
+        if cached is not None:
+            return cached
+    profile = _v46_profile(text, source)
+    with _V47_PROFILE_CACHE_LOCK:
+        if len(_V47_PROFILE_CACHE) >= _V47_PROFILE_CACHE_MAX:
+            for old_key in list(_V47_PROFILE_CACHE)[:512]:
+                _V47_PROFILE_CACHE.pop(old_key, None)
+        _V47_PROFILE_CACHE[key] = profile
+    return profile
+
+
+def _v47_exact_post_identity_duplicate(post: Post, item: dict[str, Any]) -> dict[str, Any] | None:
+    current_ids = {str(getattr(post, "post_id", "") or "").strip(), str(getattr(post, "link", "") or "").strip()}
+    previous_ids = {str(item.get("post_id") or "").strip(), str(item.get("link") or "").strip(), str(item.get("id") or "").strip()}
+    current_ids.discard(""); previous_ids.discard("")
+    if not current_ids.intersection(previous_ids):
+        return None
+    result = dict(item)
+    result.update({"duplicate": True, "is_duplicate": True, "duplicate_score": 1.0,
+                   "duplicate_verdict": "V47_EXACT_POST_ID_OR_LINK",
+                   "reason": "exact_post_id_or_link", "raw_reason": "exact_post_id_or_link"})
+    return result
+
+
+def _v47_exact_text_duplicate(post: Post, item: dict[str, Any], current_text: str) -> dict[str, Any] | None:
+    current_norm = _v46_visible_text(current_text)
+    if not current_norm:
+        return None
+    for previous_text in _v46_row_variants(item):
+        if current_norm == _v46_visible_text(previous_text):
+            result = dict(item)
+            result.update({"duplicate": True, "is_duplicate": True, "duplicate_score": 1.0,
+                           "duplicate_verdict": "V47_EXACT_TEXT",
+                           "reason": "exact_same_text", "raw_reason": "exact_same_text"})
+            return result
+    return None
+
+def _v46_local_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    """Sent-only, exact-first event dedupe with a trusted Fabrizio confirmation lane."""
+    current_text = str(text_override or _final_source_text(post) or getattr(post, "text", "")).strip()
+    if not current_text:
+        return None
+    current_source = str(getattr(post, "username", "") or "")
+    current_profile = _v47_profile_cached(current_text, current_source)
+    rows = [
+        item for item in list(_v9_recent_duplicate_rows(state) or [])[-_V46_DUPLICATE_MAX_ROWS:]
+        if isinstance(item, dict) and not is_pending_memory_item(item)
+    ]
+
+    # Phase 1: the same X/RSS item is always a duplicate, regardless of source policy.
+    for item in reversed(rows):
+        exact = _v47_exact_post_identity_duplicate(post, item)
+        if exact:
+            return exact
+
+    # Phase 2: a trusted earlier Schira/Di Marzio/Moretto report turns the later
+    # Fabrizio report into an explicit confirmation/reply, not a blocked duplicate.
+    confirmation_item = _v47_find_fabrizio_confirmation(post, rows)
+    if confirmation_item is not None:
+        post.fabrizio_confirmation = True
+        post.fabrizio_confirmation_source = str(
+            confirmation_item.get("username") or confirmation_item.get("source") or ""
+        )
+        post.v47_confirmation_item = confirmation_item
+        return None
+
+    # Phase 3: exact text and then the principle event engine.
+    for item in reversed(rows):
+        exact_text = _v47_exact_text_duplicate(post, item, current_text)
+        if exact_text:
+            return exact_text
+        previous_source = str(item.get("username") or item.get("source") or "")
+        best_decision: dict[str, Any] | None = None
+        for previous_text in _v46_row_variants(item):
+            decision = _v46_event_decision_profiles(
+                current_profile,
+                _v47_profile_cached(previous_text, previous_source),
+            )
+            if decision.get("duplicate"):
+                best_decision = decision
+                break
+        if best_decision:
+            reason = str(best_decision.get("reason") or "same_event_no_new_fact")
+            result = dict(item)
+            result.update({
+                "duplicate": True,
+                "is_duplicate": True,
+                "duplicate_score": float(best_decision.get("identity_score", 0.99) or 0.99),
+                "duplicate_verdict": "V47_PRINCIPLE_EVENT_ENGINE",
+                "duplicate_source": previous_source or "דיווח קודם",
+                "reason": reason,
+                "raw_reason": reason,
+                "duplicate_explanation": best_decision,
+            })
+            return result
+    return None
+
+
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v46_local_duplicate(post, state, text_override)
+
+
+def _v42_local_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v46_local_duplicate(post, state, text_override)
+
+
+def _v42_timed_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    started = time.perf_counter()
+    try:
+        return _v46_local_duplicate(post, state, text_override)
+    finally:
+        _v32_add_duplicate_timing(post, started)
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state, html_message_to_plain_text(translated_message))
+
+
+def _v44_event_serial_key(post: Post) -> str:
+    profile = _v46_profile(_final_source_text(post) or getattr(post, "text", ""), getattr(post, "username", ""))
+    people = sorted(profile.people)[:3]
+    destinations = sorted(profile.destinations)[:2]
+    teams = sorted(profile.teams)[:4]
+    material = "|".join([profile.family] + people + destinations + teams)
+    if not material.strip("|"):
+        material = str(getattr(post, "post_id", "") or getattr(post, "link", "") or profile.text)
+    return hashlib.sha1(material.casefold().encode("utf-8", errors="ignore")).hexdigest()
+
+
+# Paragraph-aware salvage: retain original paragraph/list structure.  Only a
+# complete paragraph that is independently a duplicate/blocked is removed.
+def split_clear_report_lines(post: Post) -> list[str]:
+    raw = html.unescape(str(getattr(post, "text", "") or "")).replace("\r\n", "\n").replace("\r", "\n")
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", raw) if block.strip()]
+    if len(blocks) >= 2:
+        return blocks
+    # A single dense paragraph can contain distinct news sentences. Split only
+    # when each resulting sentence is substantial; list-like text stays intact.
+    if re.search(r"(?:🏆|🏅|(?:^|\s)[•▪▫◦])", raw):
+        return [raw.strip()] if raw.strip() else []
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?…])\s+", raw) if len(item.strip()) >= 28]
+    return sentences if len(sentences) >= 2 else ([raw.strip()] if raw.strip() else [])
+
+
+def try_keep_non_duplicate_report_lines(post: Post, state: dict[str, Any]) -> bool:
+    units = split_clear_report_lines(post)
+    if len(units) < 2:
+        return False
+    kept: list[str] = []
+    dropped = 0
+    for unit in units:
+        unit_post = clone_post_with_text(post, unit)
+        if _v46_local_duplicate(unit_post, state):
+            dropped += 1
+            continue
+        hard_reason = ""
+        try:
+            hard_reason = pre_send_final_local_block_reason(unit_post)
+        except Exception:
+            hard_reason = ""
+        if hard_reason:
+            dropped += 1
+            continue
+        kept.append(unit)
+    if dropped and kept:
+        post.text = "\n\n".join(kept)
+        post.quoted_text = ""
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Translation integrity is concept-based rather than sentence-specific.
+# Missing both halves of a source relation (officials/staff AND supporters/fans),
+# or an invented HERE WE GO, schedules a normal retry instead of publishing a
+# damaged translation.
+# ---------------------------------------------------------------------------
+_V46_PRE_TRANSLATION_COMPLETENESS = _final_translation_completeness_issues
+_V46_TRANSLATION_CONCEPTS: tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...] = (
+    ("officials_or_staff", re.compile(r"(?iu)officials?|staff|club\s+personnel"), re.compile(r"(?u)אנשי\s+צוות|גורמי(?:ם)?|אנשי\s+המועדון|צוות")),
+    ("fans_or_supporters", re.compile(r"(?iu)fans?|supporters?"), re.compile(r"(?u)אוהדים?|קהל")),
+    ("agreement", re.compile(r"(?iu)agreement|deal\s+agreed"), re.compile(r"(?u)הסכם|סיכום|עסקה\s+סגורה")),
+    ("loan", re.compile(r"(?iu)\bloan\b"), re.compile(r"(?u)השאלה|מושאל")),
+    ("option", re.compile(r"(?iu)option\s+to\s+buy"), re.compile(r"(?u)אופצי(?:ה|ית)\s+רכישה")),
+    ("medical", re.compile(r"(?iu)medical(?:s)?"), re.compile(r"(?u)בדיקות?\s+רפואי")),
+    ("rejected", re.compile(r"(?iu)rejected|turned\s+down"), re.compile(r"(?u)נדח|דחה|סירב")),
+)
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    issues = list(_V46_PRE_TRANSLATION_COMPLETENESS(source, translated) or [])
+    src = clean_before_translation(str(source or ""))
+    out = clean_before_translation(str(translated or ""))
+    for label, source_pattern, output_pattern in _V46_TRANSLATION_CONCEPTS:
+        if source_pattern.search(src) and not output_pattern.search(out):
+            issues.append("חסר רכיב משמעותי מהמקור: " + label)
+    source_has_hwg = bool(re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO", src))
+    output_has_hwg = bool(re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO|היר\s+וי\s+גו|הנה\s+זה\s+קורה", out))
+    if output_has_hwg and not source_has_hwg:
+        issues.append("התרגום המציא HERE WE GO שלא הופיע במקור")
+    # A severe word-loss ratio is suspicious only on substantive source text.
+    src_words = _V46_WORD_RE.findall(src)
+    out_words = _V46_WORD_RE.findall(out)
+    if len(src_words) >= 16 and len(out_words) < max(6, int(len(src_words) * 0.42)):
+        issues.append("התרגום קצר מדי ביחס למקור ועלול להשמיט פרטים")
+    return list(dict.fromkeys(issues))
+
+
+# ---------------------------------------------------------------------------
+# One idempotent output invariant layer. It does not reflow normal paragraphs;
+# it only enforces rules already approved by the operator on every route.
+# ---------------------------------------------------------------------------
+_V46_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _v46_output_invariants(value: Any) -> str:
+    text = str(value or "")
+    text = text.replace("🎥", "")
+    text = _v37_fix_today_before_and_cule(text)
+    text = _v44_normalize_birthday_opening(text) if "_v44_normalize_birthday_opening" in globals() else text
+    text = re.sub(r"(?imu)^\s*(?:S\s*0?4|אס\s*0?4)\s*[.!]?\s*$", "", text)
+    text = re.sub(r"(?<![A-Za-z0-9_])@(?=\s|[.,;:!?]|$)", "", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    value = _V46_PRE_FINALIZE_OUTGOING(_v46_output_invariants(message))
+    value = _v46_output_invariants(value)
+    return _v37_exact_single_neto_footer(value)
+
+
+
+# ---------------------------------------------------------------------------
+# Regression corpus: examples are tests, never special-case production rules.
+# It covers the recurring classes reported across conversations.
+# ---------------------------------------------------------------------------
+def _v46_test_post(username: str, text: str, post_id: str = "v46-current") -> Post:
+    return Post(
+        post_id=post_id,
+        username=username,
+        text=text,
+        link=f"https://x.com/{username}/status/{post_id}",
+        image_urls=[], video_urls=[], has_video=False, primary_has_video=False,
+        quoted_has_video=False, quoted_author="", quoted_text="",
+        published_ts=time.time(), dedupe_ids=[post_id], source_name=username,
+    )
+
+
+def _v46_assert_duplicate(previous: str, current: str, expected: bool, label: str, previous_source: str = "Prev", current_source: str = "Current") -> None:
+    decision = _v46_event_decision(current, previous, current_source, previous_source)
+    if bool(decision.get("duplicate")) != bool(expected):
+        raise RuntimeError(f"{label}: expected_duplicate={expected} decision={decision}")
+
+
+def _v46_self_audit() -> None:
+    duplicate_cases = (
+        (
+            "פ.ס.ז' צפויה לשפר את הצעתה עבור ציון סוזוקי אחרי 28 מיליון אירו ותוספות. סוזוקי עשוי להצטרף ליובנטוס בהשאלה.",
+            "פ.ס.ז' צפויה לשפר את הצעתה עבור ציון סוזוקי לאחר 28 מיליון אירו ובונוסים. סוזוקי עשוי להיות מושאל ליובנטוס.",
+            "suzuki_paraphrase",
+        ),
+        (
+            "ברצלונה שומרת על ביטחון מוחלט לסגור את עסקת ז'ואאו קנסלו עד תום החלון. המשא ומתן עם אל-הילאל נמשך.",
+            "ברצלונה נותרה בטוחה בסגירת עסקת ז'ואאו קנסלו לפני תום חלון ההעברות. השיחות עם אל-הילאל נמשכות.",
+            "cancelo_paraphrase",
+        ),
+        (
+            "נוטינגהאם פורסט מגלה עניין בטיג'אני ריינדרס ממנצ'סטר סיטי.",
+            "נוטינגהאם פורסט מעוניינת להחתים את טיג'אני ריינדרס ממנצ'סטר סיטי.",
+            "reijnders_interest",
+        ),
+        (
+            "מעברו של יאן דיומאנדה לריאל מדריד צפוי להיסגר השבוע.",
+            "יאן דיומאנדה לריאל מדריד צפוי להיסגר השבוע. הסכם מלא קרוב.",
+            "diomande_same_close",
+        ),
+        (
+            "צ'לסי מאשרת שג'ורדן הנדרסון הצטרף כשחקן חופשי בחוזה לשנתיים.",
+            "ג'ורדן הנדרסון אומר שהמאמן היה גורם מרכזי בהצטרפותו לצ'לסי.",
+            "henderson_quote_only",
+        ),
+        (
+            "ארסנל החתימה את ברונו גימראייש תמורת 75 מיליון פאונד.",
+            "ברונו גימאראיש קיבל אישור לבדיקות רפואיות בארסנל. סוכם עקרונית על 75 מיליון ליש\"ט.",
+            "bruno_stage_regression",
+        ),
+    )
+    for previous, current, label in duplicate_cases:
+        _v46_assert_duplicate(previous, current, True, label)
+
+    allowed_cases = (
+        (
+            "מוחמד סלאח לטרבזונספור #HERE_WE_GO. חוזה לשנתיים.",
+            "רשמי: מוחמד סלאח חתם בטרבזונספור בחוזה לשנתיים.",
+            "official_after_hwg",
+        ),
+        (
+            "פ.ס.ז' הציעה 28 מיליון אירו עבור ציון סוזוקי.",
+            "פ.ס.ז' הציעה 35 מיליון אירו עבור ציון סוזוקי.",
+            "new_amount",
+        ),
+        (
+            "מוחמד סלאח צפוי להצטרף לטרבזונספור.",
+            "מוחמד סלאח צפוי להצטרף לאינטר.",
+            "different_destination",
+        ),
+        (
+            "ארסנל מעוניינת בברונו גימראייש.",
+            "ארסנל מעוניינת במרטין זובימנדי.",
+            "different_player",
+        ),
+        (
+            "ברצלונה סיכמה עם ז'ואאו קנסלו.",
+            "עסקת ז'ואאו קנסלו לברצלונה בוטלה.",
+            "reversal",
+        ),
+    )
+    for previous, current, label in allowed_cases:
+        _v46_assert_duplicate(previous, current, False, label)
+
+    # High paraphrase must never override a genuinely changed amount.
+    state = {"recent_news_events": [{
+        "post_id": "v46-prev", "source_text": "פ.ס.ז' הציעה 28 מיליון אירו עבור ציון סוזוקי.",
+        "username": "Prev", "sent_at": time.time(), "pending": False,
+    }]}
+    if _v46_local_duplicate(_v46_test_post("Current", "פ.ס.ז' הציעה 35 מיליון אירו עבור ציון סוזוקי."), state):
+        raise RuntimeError("new_amount_blocked_by_text_similarity")
+
+    # Footer/output invariants remain idempotent.
+    finalized = _finalize_outgoing_message_only("🚨 דיווח בדיקה\n\nנטו ספורט (https://t.me/neto_sport).📝\n\nנטו ספורט (https://t.me/neto_sport).📝")
+    if len(re.findall(r"(?iu)נטו\s+ספורט", finalized)) != 1:
+        raise RuntimeError("footer_not_exactly_once")
+    if "🎥" in _finalize_outgoing_message_only("🎥 בדיקה"):
+        raise RuntimeError("forbidden_camera_emoji_survived")
+
+    # Existing hard filters remain active.
+    nba = _v46_test_post("Any", "לוקה דונצ'יץ' מסר תגובה חדשה מה-NBA")
+    if not (is_other_sport_post(nba) or pre_send_final_local_block_reason(nba)):
+        raise RuntimeError("nba_filter_regressed")
+    instagram = _v46_test_post("Any", "דיווח דרך אינסטגרם על שחקן")
+    if not pre_send_final_local_block_reason(instagram):
+        raise RuntimeError("instagram_filter_regressed")
+
+    # Server-saving settings and RSS lane decisions must stay exactly as approved.
+    if CHECK_EVERY_SECONDS != 20 or MAX_PARALLEL_ACCOUNT_CHECKS != 4:
+        raise RuntimeError("server_limits_changed")
+    if MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK != 12:
+        raise RuntimeError("automatic_row_limit_changed")
+    if CONTINUOUS_FORCE_DISCOVERY_ENABLED:
+        raise RuntimeError("second_discovery_lane_reenabled")
+
+
+try:
+    _v46_self_audit()
+    logging.info(
+        "V46 active: one principle-based sent-only event engine; stage/material-delta rules; "
+        "paragraph-aware subset dedupe; concept translation integrity; global output invariants; "
+        "all prior RSS/server-saving/control/filter behavior preserved"
+    )
+except Exception as _v46_audit_exc:
+    logging.error("V46 self-audit failed: %s", short_error(_v46_audit_exc, 2200))
+    raise
+
+# ====== END V46 PRINCIPLE-BASED POLICY ENGINE / FULL REGRESSION AUDIT ======
