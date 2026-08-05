@@ -51207,5 +51207,897 @@ except Exception as _v36_rss_audit_exc:
 
 # ====== END V36 RESTORE THE LAST CONFIRMED MANUAL RSS CHECK ======
 
+
+# ====== V37 SOURCE-SAFE FILTERING / LIST / RTL / ALERT SILENCE (2026-08-05) ======
+# Narrow final layer requested after live operator examples. It does not modify
+# RSS fetch URLs, ordering, timeouts, scan cadence, Gemini limits, media limits,
+# buttons, persistent filenames or JSON keys.
+
+BOT_BUILD_ID = "winner-v37-source-safe-filter-list-rtl-2026-08-05"
+
+# ---------------------------------------------------------------------------
+# 1) RSS health warnings must never be sent to the quiet/control chat.
+# Keep diagnostics in Railway logs only, and enforce the rule both at the helper
+# functions and at the final Telegram API boundary so no older captured route can
+# bypass it.
+# ---------------------------------------------------------------------------
+_V37_RSS_CONTROL_ALERT_RE = re.compile(
+    r"(?iu)^\s*(?:[\u200e\u200f\u202a-\u202e\u2066-\u2069]\s*)*⚠️\s*(?:התראת\s+RSS|התראת\s+מקור\s+ישן)"
+)
+
+
+def _v37_is_suppressed_rss_alert_payload(method: Any, payload: Any) -> bool:
+    if str(method or "").casefold() != "sendmessage" or not isinstance(payload, dict):
+        return False
+    chat_id = str(payload.get("chat_id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        return False
+    return bool(_V37_RSS_CONTROL_ALERT_RE.search(str(payload.get("text", "") or "")))
+
+
+def send_rss_control_alert_if_needed(username: str, failures: int, checked_sources: int, issue_text: str) -> None:
+    logging.debug(
+        "RSS control alert suppressed by operator policy for @%s after %s checks; sources=%s; issue=%s",
+        username,
+        failures,
+        checked_sources,
+        trim(str(issue_text or ""), 500),
+    )
+    return None
+
+
+def send_rss_stale_latest_alert_if_needed(username: str, posts: list["Post"]) -> None:
+    logging.debug("RSS stale-source control alert suppressed by operator policy for @%s", username)
+    return None
+
+
+_V37_PRE_TELEGRAM_API = telegram_api
+
+
+def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    if _v37_is_suppressed_rss_alert_payload(method, payload):
+        logging.info("RSS warning was kept in server logs and not sent to the quiet channel")
+        return {"ok": True, "result": {"message_id": 0, "suppressed": True}}
+    return _V37_PRE_TELEGRAM_API(method, payload, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# 2) Troll Football Media is managed inside the Facts hub, but actual posts use
+# a dedicated reaction/meme filter rather than the statistics-only facts gate.
+# The account intentionally allows short, text-only and emoji-only football posts.
+# ---------------------------------------------------------------------------
+TROLL_FOOTBALL_USERNAME = "TrollFootball2"
+TROLL_FOOTBALL_DISPLAY_NAME = "טרול פוטבול"
+_TROLL_FOOTBALL_ALIASES = {
+    "trollfootball2", "troll football 2", "troll football media",
+    "טרול פוטבול", "טרול פוטבול מדיה",
+}
+
+_V37_PRE_FACTS_SOURCE_CANONICAL = _facts_source_canonical
+
+
+def _facts_source_canonical(value: Any) -> str:
+    raw = str(getattr(value, "username", value) or "").strip().lstrip("@")
+    if raw.casefold() in _TROLL_FOOTBALL_ALIASES:
+        return TROLL_FOOTBALL_USERNAME
+    return _V37_PRE_FACTS_SOURCE_CANONICAL(value)
+
+
+if TROLL_FOOTBALL_USERNAME not in FACTS_SOURCE_ORDER:
+    _v37_facts_order = list(FACTS_SOURCE_ORDER)
+    try:
+        _v37_insert_at = _v37_facts_order.index(POLYMARKET_SPORT_USERNAME) + 1
+    except Exception:
+        _v37_insert_at = len(_v37_facts_order)
+    _v37_facts_order.insert(_v37_insert_at, TROLL_FOOTBALL_USERNAME)
+    FACTS_SOURCE_ORDER = tuple(_v37_facts_order)
+
+FACTS_SOURCE_LABELS[TROLL_FOOTBALL_USERNAME] = TROLL_FOOTBALL_DISPLAY_NAME
+if not any(str(value or "").strip().lstrip("@").casefold() == TROLL_FOOTBALL_USERNAME.casefold() for value in X_ACCOUNTS):
+    X_ACCOUNTS.append(TROLL_FOOTBALL_USERNAME)
+PRIORITY_X_ACCOUNTS.add(TROLL_FOOTBALL_USERNAME)
+ACCOUNT_DISPLAY_NAMES[TROLL_FOOTBALL_USERNAME] = TROLL_FOOTBALL_DISPLAY_NAME
+HANDLE_REPLACEMENTS[TROLL_FOOTBALL_USERNAME] = TROLL_FOOTBALL_DISPLAY_NAME
+SELF_QUOTE_ALIASES.setdefault(
+    TROLL_FOOTBALL_USERNAME,
+    ["Troll Football", "Troll Football Media", TROLL_FOOTBALL_DISPLAY_NAME],
+)
+if "SOURCE_PRIORITY" in globals() and isinstance(SOURCE_PRIORITY, dict):
+    SOURCE_PRIORITY[TROLL_FOOTBALL_USERNAME] = max(
+        int(SOURCE_PRIORITY.get(TROLL_FOOTBALL_USERNAME, 0) or 0),
+        int(SOURCE_PRIORITY.get(CENTREGOALS_USERNAME, 0) or 0),
+    )
+
+
+def _v37_is_troll_football_post(post: Any) -> bool:
+    return bool(
+        isinstance(post, Post)
+        and str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+        == TROLL_FOOTBALL_USERNAME.casefold()
+    )
+
+
+# Keep the source in the Facts menu, but do not route actual posts through the
+# dedicated numerical/statistics-only fact filter.
+_V37_PRE_IS_FACTS_SOURCE = _is_facts_source
+
+
+def _is_facts_source(value: Any) -> bool:
+    if _v37_is_troll_football_post(value):
+        return False
+    return _V37_PRE_IS_FACTS_SOURCE(value)
+
+
+_V37_PRE_SHOULD_HIDE_WRITER_HEADER = should_hide_writer_header
+
+
+def should_hide_writer_header(post: Post, translated: str) -> bool:
+    if _v37_is_troll_football_post(post):
+        return True
+    return _V37_PRE_SHOULD_HIDE_WRITER_HEADER(post, translated)
+
+
+_V37_TROLL_GAMBLING_RE = re.compile(
+    r"(?iu)(?:"
+    r"\brain\s*bet\b|\brainbet\b|\bkeno\b|\bcasino\b|\bgambl(?:e|ing)\b|\bwager\b|"
+    r"\bjackpot\b|\bpayout\b|\bbet(?:ting)?\s+(?:slip|ticket|win|site|app)\b|\bparlay\b|"
+    r"\baccumulator\b|\bodds\b|\bstake\b|\bpaid\s+partnership\b|"
+    r"\b(?:won|wins?|turned|hit|landed)\b.{0,45}(?:[$€£]\s?\d|\d[\d,.]*\s*(?:dollars?|euros?|pounds?))|"
+    r"ריינ\s*בט|ריינבט|קנו|קזינו|הימור(?:ים)?|התערבות|זכייה|ג['׳]?קפוט|"
+    r"תלוש(?:ים)?|טופס(?:י)?\s+הימור|יחסי\s+הימור|"
+    r"(?:זכה|הפך|הרוויח|גרף).{0,45}(?:דולר|אירו|ליש[\"״׳']?ט|[$€£])"
+    r")"
+)
+_V37_TROLL_ENGAGEMENT_BAIT_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bhate\s*watch(?:ing)?\b|\bcount\s+me\s+in\b|"
+    r"\bname\s+one\s+thing\b.{0,80}\b100\s*%|"
+    r"\bone\s+thing\b.{0,40}\bguaranteed\b|"
+    r"\bi\s+heard\s+everyone\b.{0,60}\bso\b|"
+    r"\btonight\s+i(?:'m|\s+am|\s+will)\b.{0,35}\bwatch\b|"
+    r"\bfans?\b.{0,35}\bthought\b.{0,25}\bspare\b|"
+    r"\bagent\s*\d{1,3}\b.{0,45}\b(?:gone|dead|finished)\b|"
+    r"צפיית\s+שנאה|לצפות\s+בשנאה|שונא(?:ת|ים|ות)?\s+לצפות|לשנוא\s+לצפות|אני\s+בפנים|"
+    r"ת(?:ן|נו)\s+שם\s+של\s+דבר\s+אחד.{0,80}100\s*%|"
+    r"שמעתי\s+שכולם\s+הולכים\s+על|"
+    r"הערב\s+אני.{0,35}(?:אשנא|שונא).{0,20}לצפות|"
+    r"אוהדי\s+[^\n]{1,35}\s+חשבו\s+שאחסוך|"
+    r"סוכן\s*\d{1,3}\s+אינ(?:נו|ו)|"
+    r"זה\s+יום\s+[^\n]{1,25}\s+סימאונה"
+    r")"
+)
+_V37_TROLL_LIVE_TABLE_RE = re.compile(
+    r"(?iu)(?:extends?\s+(?:their|the|its)\s+lead\s+(?:at|on)\s+(?:the\s+)?top|"
+    r"moves?\s+top\s+of\s+the\s+table|"
+    r"מגדיל(?:ה|ים)?\s+את\s+היתרון\s+(?:שלה|שלהם)?\s*בראש\s+הטבלה|"
+    r"עול(?:ה|ים)?\s+לראש\s+הטבלה)"
+)
+
+
+def _v37_troll_source_text(post: Post) -> str:
+    return html.unescape("\n".join([
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "quoted_text", "") or ""),
+    ])).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _v37_troll_block_reason(post: Post) -> str:
+    text = _v37_troll_source_text(post)
+    if _V37_TROLL_GAMBLING_RE.search(text):
+        return "trollfootball_gambling_or_paid_promo"
+    if _V37_TROLL_ENGAGEMENT_BAIT_RE.search(text):
+        return "trollfootball_engagement_or_hatewatch_noise"
+    if _V37_TROLL_LIVE_TABLE_RE.search(text):
+        return "trollfootball_live_score_or_table_update"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# 3) Broaden the absolute NBA entity catalogue. A basketball personality story
+# is blocked even when the words NBA/basketball are absent.
+# ---------------------------------------------------------------------------
+_V37_NBA_ENTITY_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:Luka\s+Don(?:cic|čić)|Nikola\s+Jokic|Giannis\s+Antetokounmpo|Jayson\s+Tatum|"
+    r"Jaylen\s+Brown|Stephen\s+Curry|Steph\s+Curry|LeBron\s+James|Kevin\s+Durant|"
+    r"Joel\s+Embiid|James\s+Harden|Kyrie\s+Irving|Anthony\s+Edwards|Anthony\s+Davis|"
+    r"Shai\s+Gilgeous-Alexander|Damian\s+Lillard|Devin\s+Booker|Ja\s+Morant|"
+    r"Trae\s+Young|Donovan\s+Mitchell|Jimmy\s+Butler|Kawhi\s+Leonard|Paul\s+George|"
+    r"Victor\s+Wembanyama|Tyrese\s+Haliburton|Tyrese\s+Maxey|Jalen\s+Brunson|"
+    r"Zion\s+Williamson|Draymond\s+Green|Klay\s+Thompson|Russell\s+Westbrook|"
+    r"Chris\s+Paul|LaMelo\s+Ball|Lonzo\s+Ball|Bam\s+Adebayo|Karl-Anthony\s+Towns|"
+    r"Domantas\s+Sabonis|DeMar\s+DeRozan|Derrick\s+Rose|Bronny\s+James)\b|"
+    r"לוקה\s+דונצ['׳]?יץ|ניקולה\s+יוקיץ|יאניס\s+אנטטוקומפו|ג['׳]?ייסון\s+טייטום|"
+    r"ג['׳]?יילן\s+בראון|סטף(?:ן)?\s+קרי|לברון\s+ג['׳]?יימס|קווין\s+דוראנט|"
+    r"ג['׳]?ואל\s+אמביד|ג['׳]?יימס\s+הארדן|קיירי\s+אירווינג|אנתוני\s+אדוארדס|"
+    r"אנתוני\s+דייויס|שיי\s+גילג['׳]?ס[-־ ]?אלכסנדר|דמיאן\s+לילארד|דווין\s+בוקר|"
+    r"ג['׳]?ה\s+מוראנט|טריי\s+יאנג|דונובן\s+מיטשל|ג['׳]?ימי\s+באטלר|"
+    r"קוואי\s+לאונרד|פול\s+ג['׳]?ורג['׳]?|ויקטור\s+ומבניאמה|טייריס\s+הליברטון|"
+    r"טייריס\s+מקסי|ג['׳]?יילן\s+ברונסון|זאיון\s+וויליאמסון|דריימונד\s+גרין|"
+    r"קליי\s+תומפסון|ראסל\s+ווסטברוק|כריס\s+פול|לאמלו\s+בול|לונזו\s+בול|"
+    r"באם\s+אדבאיו|קארל[-־ ]?אנתוני\s+טאונס|דומנטאס\s+סאבוניס|דמאר\s+דרוזן|"
+    r"דריק\s+רוז|ברוני\s+ג['׳]?יימס"
+    r")"
+)
+_V37_OLD_NBA_PATTERN = re.sub(r"^\(\?[aiLmsux-]+\)", "", _V24_NBA_HARD_RE.pattern)
+_V37_NEW_NBA_PATTERN = re.sub(r"^\(\?[aiLmsux-]+\)", "", _V37_NBA_ENTITY_RE.pattern)
+_V24_NBA_HARD_RE = re.compile(
+    rf"(?:{_V37_OLD_NBA_PATTERN}|{_V37_NEW_NBA_PATTERN})",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+# ---------------------------------------------------------------------------
+# 4) CentreGoals: factual Messi/Ronaldo updates with a concrete action or number
+# are allowed through soft editorial gates. Hard safety, duplicate, age, live,
+# social-media and non-football-sport blocks remain untouched.
+# ---------------------------------------------------------------------------
+_V37_ICONIC_PLAYER_RE = re.compile(
+    r"(?iu)(?:\bLionel\s+Messi\b|\bLeo\s+Messi\b|\bCristiano\s+Ronaldo\b|"
+    r"ליאונל\s+מסי|ליונל\s+מסי|ליאו\s+מסי|כריסטיאנו\s+רונאלדו|רונאלדו)"
+)
+_V37_CONCRETE_FACT_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:donat(?:e|ed|es|ion)|announce(?:d|s)?|confirm(?:ed|s)?|sign(?:ed|s)?|"
+    r"win|won|award(?:ed)?|record|fine(?:d)?|ban(?:ned)?|return(?:ed|s)?|injur(?:y|ed)|"
+    r"pay|paid|raise(?:d|s)?|launch(?:ed|es)?|open(?:ed|s)?|help(?:ed|s)?)\b|"
+    r"תרם|תרומה|הודיע|אישר|חתם|זכה|פרס|שיא|נקנס|הורחק|חזר|פציעה|נפצע|שילם|"
+    r"גייס|השיק|פתח|סייע|עזר|"
+    r"(?:[$€£]|אירו|דולר|ליש[\"״׳']?ט)\s*\d|\d[\d,.]*\s*(?:אירו|דולר|ליש[\"״׳']?ט|[$€£])"
+    r")"
+)
+_V37_HARD_REASON_RE = re.compile(
+    r"(?iu)(?:duplicate|כפיל|old_post|too_old|ישן|women|wnba|נשים|other_sport|nba|basketball|"
+    r"instagram|tiktok|social|podcast|interview|live|match_result|match_update|lineup|poll|"
+    r"youth|academy|translation|media_error|video|gambling|nonfootball|blocked_source)"
+)
+
+
+def _v37_centregoals_iconic_concrete_fact(post: Post) -> bool:
+    if str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() != CENTREGOALS_USERNAME.casefold():
+        return False
+    text = html.unescape("\n".join([
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "quoted_text", "") or ""),
+    ]))
+    return bool(_V37_ICONIC_PLAYER_RE.search(text) and _V37_CONCRETE_FACT_RE.search(text))
+
+
+_V37_PRE_LOCAL_BLOCK_REASON = pre_send_final_local_block_reason
+
+
+def _v37_minimal_hard_reason(post: Post) -> str:
+    hard = _v24_hard_content_reason(post)
+    if hard:
+        return hard
+    try:
+        if is_too_old_post(post):
+            return "old_post"
+    except Exception:
+        pass
+    try:
+        if is_women_or_wnba_post(post):
+            return "women_or_wnba"
+    except Exception:
+        pass
+    try:
+        if is_other_sport_post(post):
+            return "other_sport"
+    except Exception:
+        pass
+    try:
+        if is_podcast_or_longform_post(post):
+            return "podcast"
+    except Exception:
+        pass
+    return ""
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v37_is_troll_football_post(post):
+        source_reason = _v37_troll_block_reason(post)
+        if source_reason:
+            return source_reason
+        # This source deliberately bypasses shortness, media-required, weak-news,
+        # contextless-copy and opinion gates. Only the small hard-safety set runs,
+        # avoiding the expensive full reporter policy for a two-word reaction.
+        return _v37_minimal_hard_reason(post)
+
+    if _v37_centregoals_iconic_concrete_fact(post):
+        # Concrete Messi/Ronaldo facts (such as a documented donation) are not
+        # transfer-fee stories. Run hard safety/age/sport gates only.
+        return _v37_minimal_hard_reason(post)
+
+    return str(_V37_PRE_LOCAL_BLOCK_REASON(post) or "")
+
+
+_V37_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "trollfootball_gambling_or_paid_promo" in raw:
+        return "טרול פוטבול: הימורים, קזינו או תוכן ממומן נחסמו"
+    if "trollfootball_engagement_or_hatewatch_noise" in raw:
+        return "טרול פוטבול: פוסט צפיית־שנאה, פיתיון תגובות או טקסט סתמי נחסם"
+    if "trollfootball_live_score_or_table_update" in raw:
+        return "טרול פוטבול: עדכון חי, תוצאה או שינוי טבלה נחסמו"
+    return _V37_PRE_HEBREW_BLOCK_REASON(reason)
+
+
+# ---------------------------------------------------------------------------
+# 5) General text repair: today-before opening, context-safe Cule correction,
+# inline club/value tables, trophy lists and a final RTL invariant.
+# ---------------------------------------------------------------------------
+_V37_DIRECTION_MARKS_RE = re.compile(r"^[\u200e\u200f\u202a-\u202e\u2066-\u2069]+")
+_V37_TODAY_BEFORE_RE = re.compile(
+    r"(?iu)^(?:📅\s*)?(?:בתאריך\s+הזה|ביום\s+הזה|היום\s+לפני)\s*[,—–-]?\s*(?P<body>לפני\s+\d+\s+שנים?\b.*)$"
+)
+_V37_VALUE_TOKEN = r"(?:[£€$]\s*\d[\d,.]*\s*(?:m|mn|k|b|bn|מיליון|אלף|מיליארד)?|\d[\d,.]*\s*(?:מיליון|אלף|מיליארד|%))"
+_V37_TEAM_LIST_ALIASES = sorted(
+    {
+        str(item or "").strip()
+        for item in list(TEAM_REPLACEMENTS.keys()) + list(TEAM_REPLACEMENTS.values())
+        if str(item or "").strip() and len(str(item or "").strip()) >= 2
+    },
+    key=len,
+    reverse=True,
+)
+_V37_TEAM_LIST_ALT = "|".join(re.escape(item) for item in _V37_TEAM_LIST_ALIASES)
+_V37_KEY_VALUE_PAIR_RE = re.compile(
+    rf"(?iu)(?P<label>{_V37_TEAM_LIST_ALT})\s*:\s*(?P<value>{_V37_VALUE_TOKEN})"
+)
+_V37_TROPHY_MARKER_RE = re.compile(r"(?:🏆+|🏅+|🥇+|🥈+|🥉+)")
+
+
+def _v37_fix_today_before_and_cule(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        prefix = ""
+        raw = line
+        while raw and raw[0] in "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069":
+            prefix += raw[0]
+            raw = raw[1:]
+        match = _V37_TODAY_BEFORE_RE.match(_v20_visible_html(raw).strip())
+        if match:
+            body = match.group("body").strip()
+            lines[index:index + 1] = [prefix + "#היום_לפני", prefix + body]
+            break
+    text = "\n".join(lines)
+    if re.search(r"(?iu)ברצלונה|בארסה|barcelona|barça|barca", _v20_visible_html(text)):
+        text = re.sub(r"(?iu)\bכל\s+קולה\b", "כל אוהד ברצלונה", text)
+        text = re.sub(r"(?iu)\bכל\s+קולֶה\b", "כל אוהד ברצלונה", text)
+    return text
+
+
+def _v37_repair_key_value_lists(value: Any) -> str:
+    text = str(value or "")
+    output_lines: list[str] = []
+    for line in text.split("\n"):
+        visible = _v20_visible_html(line)
+        matches = list(_V37_KEY_VALUE_PAIR_RE.finditer(visible))
+        if len(matches) < 3:
+            output_lines.append(line)
+            continue
+        # Preserve the text before the first pair as the heading, then place each
+        # club/value pair on a dedicated line. Remaining suffix stays below.
+        heading = visible[:matches[0].start()].strip()
+        if heading:
+            output_lines.append(heading)
+        for match in matches:
+            output_lines.append(f"{match.group('label').strip()}: {match.group('value').strip()}")
+        suffix = visible[matches[-1].end():].strip()
+        if suffix and suffix not in {".", "!", "?"}:
+            output_lines.append(suffix)
+    return "\n".join(output_lines)
+
+
+def _v37_repair_trophy_lists(value: Any) -> str:
+    text = str(value or "")
+    output: list[str] = []
+    for line in text.split("\n"):
+        visible = _v20_visible_html(line)
+        markers = list(_V37_TROPHY_MARKER_RE.finditer(visible))
+        if len(markers) < 3:
+            output.append(line)
+            continue
+        intro = visible[:markers[0].start()].strip()
+        if intro:
+            output.append(intro)
+        for index, marker in enumerate(markers):
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(visible)
+            item = visible[marker.start():end].strip()
+            if item:
+                output.append(item)
+    return "\n".join(output)
+
+
+def _v37_force_rtl_all_lines(value: Any) -> str:
+    lines: list[str] = []
+    for line in str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not line.strip():
+            lines.append("")
+            continue
+        clean = _V37_DIRECTION_MARKS_RE.sub("", line)
+        lines.append(RTL_MARK + clean)
+    return "\n".join(lines)
+
+
+def _v37_general_format(value: Any) -> str:
+    text = _v37_fix_today_before_and_cule(value)
+    text = _v37_repair_key_value_lists(text)
+    text = _v37_repair_trophy_lists(text)
+    text = _v34_repair_general_lists(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return _v37_force_rtl_all_lines(text)
+
+
+_V37_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V37_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _v37_general_format(rendered)
+
+
+def _v37_exact_single_neto_footer(value: Any) -> str:
+    body = _v30_remove_all_neto_footers(value)
+    body = _v37_general_format(body)
+    combined = (body + "\n\n" + _V31_SIGNATURE_HTML).strip() if body else _V31_SIGNATURE_HTML
+    return _v37_force_rtl_all_lines(combined)
+
+
+_v31_exact_single_neto_footer = _v37_exact_single_neto_footer
+_v34_exact_single_neto_footer = _v37_exact_single_neto_footer
+_finalize_outgoing_message_only = _v37_exact_single_neto_footer
+
+
+# Emoji-only posts from Troll Football contain no Hebrew to validate. Send them
+# through the same final media/footer boundary without spending a Gemini request.
+def _v37_is_emoji_only_troll_post(post: Any) -> bool:
+    if not _v37_is_troll_football_post(post):
+        return False
+    source = _v37_troll_source_text(post)
+    visible = URL_RE.sub(" ", source)
+    visible = re.sub(r"@[A-Za-z0-9_]+|#[A-Za-z0-9_א-ת]+", " ", visible)
+    visible = re.sub(r"[\s\u200e\u200f\u202a-\u202e\u2066-\u2069\W_]+", "", visible, flags=re.UNICODE)
+    return bool(source.strip() and not visible)
+
+
+_V37_PRE_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: dict[str, int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not _v37_is_emoji_only_troll_post(post):
+        return _V37_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+
+    started = time.perf_counter()
+    reason = pre_send_final_local_block_reason(post)
+    if reason:
+        return {"sent": False, "mode": f"pre_send_blocked:{reason}", "total_seconds": time.perf_counter() - started}
+
+    fingerprint = _requested_exact_text_fingerprint(post)
+    now = time.time()
+    if fingerprint:
+        with _REQUESTED_EXACT_TEXT_LOCK:
+            if fingerprint in _REQUESTED_EXACT_TEXT_INFLIGHT or fingerprint in _REQUESTED_EXACT_TEXT_SENT:
+                return {"sent": False, "mode": "pre_send_blocked:requested_exact_text_duplicate", "total_seconds": 0.0}
+            if _requested_exact_text_already_in_memory(post, fingerprint):
+                _REQUESTED_EXACT_TEXT_SENT[fingerprint] = now
+                return {"sent": False, "mode": "pre_send_blocked:requested_exact_text_duplicate", "total_seconds": 0.0}
+            _REQUESTED_EXACT_TEXT_INFLIGHT[fingerprint] = now
+
+    result: dict[str, Any] = {"sent": False, "mode": "emoji_only_failed"}
+    try:
+        message = _v37_exact_single_neto_footer(_v37_troll_source_text(post))
+        images: list[str] = []
+        message_ids, mode = send_prepared_message_to_main(
+            post,
+            message,
+            images,
+            video_url="",
+            reply_message_ids=reply_message_ids,
+        )
+        result = {
+            "sent": True,
+            "mode": mode,
+            "telegram_message_ids": message_ids,
+            "total_seconds": time.perf_counter() - started,
+            "translation_seconds": 0.0,
+        }
+        return result
+    finally:
+        if fingerprint:
+            with _REQUESTED_EXACT_TEXT_LOCK:
+                _REQUESTED_EXACT_TEXT_INFLIGHT.pop(fingerprint, None)
+                if result.get("sent"):
+                    _REQUESTED_EXACT_TEXT_SENT[fingerprint] = time.time()
+
+
+# ---------------------------------------------------------------------------
+# 6) Deterministic self-audit and simulations for the exact reported failures.
+# ---------------------------------------------------------------------------
+def _v37_test_post(username: str, text: str) -> Post:
+    current_snowflake = str(max(1, (int(time.time() * 1000) - 1288834974657) << 22))
+    return Post(
+        post_id=current_snowflake,
+        username=username,
+        text=text,
+        link=f"https://x.com/test/status/{current_snowflake}",
+        image_urls=[],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[],
+        source_name="self-test",
+    )
+
+
+def _v37_self_audit() -> None:
+    # Alerts are blocked at both helper and API-boundary levels.
+    if not _v37_is_suppressed_rss_alert_payload(
+        "sendMessage",
+        {"chat_id": CONTROL_CHAT_ID, "text": "⚠️ התראת RSS\n@Plettigoal לא מחזיר פוסטים"},
+    ):
+        raise RuntimeError("v37_rss_alert_boundary_failed")
+
+    # New source registration and filters.
+    if TROLL_FOOTBALL_USERNAME not in FACTS_SOURCE_ORDER:
+        raise RuntimeError("v37_troll_source_not_in_facts_hub")
+    blocked_examples = [
+        "Mitch Jones turned $4000 into $2 million on RainBet Keno and went wild!",
+        "Hatewatch Barcelona? Count me in",
+        "Name one thing that will 100% happen in this game",
+        "Palmeiras extends its lead at the top of the table",
+    ]
+    for sample in blocked_examples:
+        if not _v37_troll_block_reason(_v37_test_post(TROLL_FOOTBALL_USERNAME, sample)):
+            raise RuntimeError("v37_troll_bad_example_not_blocked:" + sample)
+    allowed_examples = [
+        "Tolisso with the best penalty you will see today. Gabriel needs to take notes.",
+        "In an Italian restaurant",
+        "Sky Sports knew what they were doing",
+        "Vinicius when he tries to improve in the Champions League at Arsenal",
+        "Paredes kicks the ball as hard as possible at a player who fell after a foul. Typical Argentine.",
+        "😂🔥",
+    ]
+    for sample in allowed_examples:
+        post = _v37_test_post(TROLL_FOOTBALL_USERNAME, sample)
+        if _v37_troll_block_reason(post):
+            raise RuntimeError("v37_troll_good_example_blocked:" + sample)
+
+    # NBA personal-story example is blocked solely by the player identity.
+    luka = _v37_test_post("centregoals", "ארוסתו לשעבר של לוקה דונצ'יץ' משכה את הבקשה שלה")
+    if not _V24_NBA_HARD_RE.search(_v24_hard_source_text(luka)):
+        raise RuntimeError("v37_luka_nba_entity_failed")
+
+    # CentreGoals concrete Messi charity item is rescued from soft gates.
+    messi = _v37_test_post("centregoals", "רשמי: ליאונל מסי תרם 20,000 אירו לקורבנות שריפות היער במדריד")
+    if not _v37_centregoals_iconic_concrete_fact(messi):
+        raise RuntimeError("v37_messi_concrete_fact_failed")
+
+    # List and opening simulations.
+    spend = _v37_repair_key_value_lists(
+        "ההוצאה הנטו: צ'לסי: £217m טוטנהאם: £154m מנצ'סטר סיטי: £121m ליברפול: £89m"
+    )
+    if not all(token in spend.splitlines() for token in ["צ'לסי: £217m", "טוטנהאם: £154m", "מנצ'סטר סיטי: £121m", "ליברפול: £89m"]):
+        raise RuntimeError("v37_net_spend_list_failed")
+    trophies = _v37_repair_trophy_lists(
+        "גם בגיל 22: 🏆 גביע העולם 🏆 ליגת האומות 🏆🏆🏆 לה ליגה 🏆 גביע המלך 🏅 פרס קופה"
+    )
+    if len([line for line in trophies.splitlines() if _V37_TROPHY_MARKER_RE.match(line)]) != 5:
+        raise RuntimeError("v37_trophy_list_failed")
+    today = _v37_fix_today_before_and_cule(
+        "📅 בתאריך הזה, לפני 5 שנים, ברצלונה שברה את הלב של כל קולה והודיעה על עזיבת מסי."
+    )
+    if "#היום_לפני\nלפני 5 שנים" not in today or "כל אוהד ברצלונה" not in today:
+        raise RuntimeError("v37_today_before_or_cule_failed")
+
+    rtl_sample = _v37_force_rtl_all_lines("🚨 דיווח\n😂🔥\nנטו ספורט")
+    if any(line and not line.startswith(RTL_MARK) for line in rtl_sample.splitlines()):
+        raise RuntimeError("v37_rtl_all_lines_failed")
+
+
+try:
+    _v37_self_audit()
+    logging.info(
+        "V37 active: RSS control alerts silenced, TrollFootball2 facts source registered with source-specific filters, "
+        "NBA entities broadened, CentreGoals Messi/Ronaldo concrete facts rescued, lists/Today-before/RTL repaired"
+    )
+except Exception as _v37_audit_exc:
+    logging.error("V37 self-audit failed: %s", short_error(_v37_audit_exc, 900))
+
+# ====== END V37 SOURCE-SAFE FILTERING / LIST / RTL / ALERT SILENCE ======
+
+
+# ====== V38 FINAL RTL AT EVERY TELEGRAM BOUNDARY (2026-08-05) ======
+# V37 already repairs the generated football message. This final layer makes the
+# invariant unavoidable for every Telegram route as well: normal text, photos,
+# videos, albums, edits, control-panel/status messages and quiet-channel previews.
+# It changes only visible text/captions; buttons, callback data, media references,
+# RSS, filters, timings and persistent state remain untouched.
+
+BOT_BUILD_ID = "winner-v38-rtl-all-telegram-routes-2026-08-05"
+
+_V38_TEXT_METHODS = {"sendmessage", "editmessagetext"}
+_V38_CAPTION_METHODS = {
+    "sendphoto", "sendvideo", "sendanimation", "senddocument", "sendaudio",
+    "editmessagecaption",
+}
+
+
+def _v38_rtl_visible_text(value: Any) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    return _v37_force_rtl_all_lines(value)
+
+
+def _v38_rtl_media_rows(value: Any) -> Any:
+    """Apply RTL to captions in a Telegram media-group list or JSON string."""
+    was_json = isinstance(value, str)
+    rows = value
+    if was_json:
+        try:
+            rows = json.loads(value)
+        except Exception:
+            return value
+    if not isinstance(rows, list):
+        return value
+    changed: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            changed.append(row)
+            continue
+        item = dict(row)
+        if isinstance(item.get("caption"), str) and item.get("caption"):
+            item["caption"] = _v38_rtl_visible_text(item["caption"])
+        changed.append(item)
+    if was_json:
+        return json.dumps(changed, ensure_ascii=False, separators=(",", ":"))
+    return changed
+
+
+def _v38_rtl_telegram_payload(method: Any, payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    normalized = dict(payload)
+    method_key = str(method or "").casefold()
+    if method_key in _V38_TEXT_METHODS:
+        if isinstance(normalized.get("text"), str):
+            normalized["text"] = _v38_rtl_visible_text(normalized["text"])
+    elif method_key in _V38_CAPTION_METHODS:
+        if isinstance(normalized.get("caption"), str):
+            normalized["caption"] = _v38_rtl_visible_text(normalized["caption"])
+    elif method_key == "sendmediagroup":
+        normalized["media"] = _v38_rtl_media_rows(normalized.get("media"))
+    return normalized
+
+
+# JSON Telegram route: covers normal posts, quiet-channel text/photos/videos,
+# control menus, status messages and caption edits.
+_V38_PRE_TELEGRAM_API = telegram_api
+
+
+def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return _V38_PRE_TELEGRAM_API(method, _v38_rtl_telegram_payload(method, payload), **kwargs)
+
+
+# Direct multipart photo/album route: this bypasses telegram_api, so enforce the
+# same invariant before the multipart body is constructed.
+_V38_PRE_CHANNEL_MULTIPART = _channel_multipart_telegram_api
+
+
+def _channel_multipart_telegram_api(
+    method: str,
+    fields: dict[str, Any],
+    files: list[tuple[str, str]],
+) -> dict[str, Any]:
+    return _V38_PRE_CHANNEL_MULTIPART(method, _v38_rtl_telegram_payload(method, fields), files)
+
+
+# Direct multipart video route: also bypasses telegram_api.
+_V38_PRE_FINAL_MULTIPART = _final_multipart_telegram_api
+
+
+def _final_multipart_telegram_api(
+    method: str,
+    fields: dict[str, Any],
+    file_field: str,
+    file_path: str,
+) -> dict[str, Any]:
+    return _V38_PRE_FINAL_MULTIPART(
+        method,
+        _v38_rtl_telegram_payload(method, fields),
+        file_field,
+        file_path,
+    )
+
+
+def _v38_rtl_boundary_self_audit() -> None:
+    sample = "🚨 דיווח:\nטקסט בעברית\n😂🔥"
+    text_payload = _v38_rtl_telegram_payload(
+        "sendMessage",
+        {"chat_id": CONTROL_CHAT_ID, "text": sample, "reply_markup": {"inline_keyboard": []}},
+    )
+    if any(line and not line.startswith(RTL_MARK) for line in text_payload["text"].splitlines()):
+        raise RuntimeError("v38_send_message_rtl_failed")
+    if text_payload.get("reply_markup") != {"inline_keyboard": []}:
+        raise RuntimeError("v38_reply_markup_changed")
+
+    photo_payload = _v38_rtl_telegram_payload(
+        "sendPhoto", {"chat_id": CONTROL_CHAT_ID, "caption": sample, "photo": "file-id"}
+    )
+    if any(line and not line.startswith(RTL_MARK) for line in photo_payload["caption"].splitlines()):
+        raise RuntimeError("v38_photo_caption_rtl_failed")
+
+    album_payload = _v38_rtl_telegram_payload(
+        "sendMediaGroup",
+        {"chat_id": CONTROL_CHAT_ID, "media": [{"type": "photo", "media": "x", "caption": sample}, {"type": "photo", "media": "y"}]},
+    )
+    album_caption = album_payload["media"][0]["caption"]
+    if any(line and not line.startswith(RTL_MARK) for line in album_caption.splitlines()):
+        raise RuntimeError("v38_album_caption_rtl_failed")
+
+    # Idempotence: repeated formatting must keep exactly one RLM per line.
+    twice = _v38_rtl_visible_text(_v38_rtl_visible_text(sample))
+    if any(line.startswith(RTL_MARK * 2) for line in twice.splitlines() if line):
+        raise RuntimeError("v38_rtl_not_idempotent")
+
+
+try:
+    _v38_rtl_boundary_self_audit()
+    logging.info("V38 active: RTL is enforced at every Telegram text/caption boundary, including the quiet channel")
+except Exception as _v38_audit_exc:
+    logging.error("V38 RTL boundary self-audit failed: %s", short_error(_v38_audit_exc, 900))
+
+# ====== END V38 FINAL RTL AT EVERY TELEGRAM BOUNDARY ======
+
+
+# ====== V39 SOURCE EDGE-CASES + EMOJI MEDIA PRESERVATION (2026-08-05) ======
+# Completes the V37/V38 source policy without touching RSS or any established
+# reporter/facts rule. It catches additional betting-slip/hatewatch phrasings and
+# preserves a Troll Football post's original media when its visible text is only
+# emoji, while still allowing a genuinely media-less emoji-only post.
+
+BOT_BUILD_ID = "winner-v39-smart-source-rtl-all-routes-2026-08-05"
+
+_V39_TROLL_EXTRA_NOISE_RE = re.compile(
+    r"(?iu)(?:"
+    r"תלושי(?:ו|י)?ת|תלושיות|מאבד\s+את\s+התלוש|"
+    r"אני\s+כשאני\s+רוצה\s+ש[^\n]{1,45}\s+תפסיד|"
+    r"(?:אני\s+)?(?:יכול|יכולה)\s+(?:אפילו\s+)?לשנוא\s+לצפות|"
+    r"(?:חראמבול|חרמבול)\s+סימאונה|"
+    r"\bwhen\s+i\s+want\s+.+\s+to\s+lose\b|"
+    r"\bi\s+always\s+lose\s+my\s+(?:bet(?:ting)?\s+)?slips?\b"
+    r")"
+)
+
+_V39_PRE_TROLL_BLOCK_REASON = _v37_troll_block_reason
+
+
+def _v37_troll_block_reason(post: Post) -> str:
+    existing = _V39_PRE_TROLL_BLOCK_REASON(post)
+    if existing:
+        return existing
+    if _V39_TROLL_EXTRA_NOISE_RE.search(_v37_troll_source_text(post)):
+        return "trollfootball_engagement_or_hatewatch_noise"
+    return ""
+
+
+# Replace only the emoji-only special route. Non-emoji posts continue through the
+# complete V38/V37/V36 pipeline. The media selection is the same exact selector
+# used elsewhere, so no image/video is discarded merely because the caption is emoji.
+_V39_PRE_SEND_POST = send_post
+
+
+def _v39_send_emoji_only_troll_post(
+    post: Post,
+    reply_message_ids: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    reason = pre_send_final_local_block_reason(post)
+    if reason:
+        return {"sent": False, "mode": f"pre_send_blocked:{reason}", "total_seconds": time.perf_counter() - started}
+
+    fingerprint = _requested_exact_text_fingerprint(post)
+    now = time.time()
+    if fingerprint:
+        with _REQUESTED_EXACT_TEXT_LOCK:
+            if fingerprint in _REQUESTED_EXACT_TEXT_INFLIGHT or fingerprint in _REQUESTED_EXACT_TEXT_SENT:
+                return {"sent": False, "mode": "pre_send_blocked:requested_exact_text_duplicate", "total_seconds": 0.0}
+            if _requested_exact_text_already_in_memory(post, fingerprint):
+                _REQUESTED_EXACT_TEXT_SENT[fingerprint] = now
+                return {"sent": False, "mode": "pre_send_blocked:requested_exact_text_duplicate", "total_seconds": 0.0}
+            _REQUESTED_EXACT_TEXT_INFLIGHT[fingerprint] = now
+
+    result: dict[str, Any] = {"sent": False, "mode": "emoji_only_failed"}
+    try:
+        message = _v37_exact_single_neto_footer(_v37_troll_source_text(post))
+        requires_video = bool(_acceptance_post_requires_video(post))
+        images = [] if requires_video else selected_post_images(post)
+        video_url = ""
+        if requires_video:
+            try:
+                video_url = str(_acceptance_video_url_for_post(post) or "")
+            except Exception:
+                video_url = str(sendable_video_url(post) or "")
+        message_ids, mode = send_prepared_message_to_main(
+            post,
+            message,
+            images,
+            video_url=video_url,
+            reply_message_ids=reply_message_ids,
+        )
+        result = {
+            "sent": True,
+            "mode": mode,
+            "telegram_message_ids": message_ids,
+            "total_seconds": time.perf_counter() - started,
+            "translation_seconds": 0.0,
+        }
+        return result
+    finally:
+        if fingerprint:
+            with _REQUESTED_EXACT_TEXT_LOCK:
+                _REQUESTED_EXACT_TEXT_INFLIGHT.pop(fingerprint, None)
+                if result.get("sent"):
+                    _REQUESTED_EXACT_TEXT_SENT[fingerprint] = time.time()
+
+
+def send_post(
+    post: Post,
+    reply_message_ids: dict[str, int] | None = None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if _v37_is_emoji_only_troll_post(post):
+        return _v39_send_emoji_only_troll_post(post, reply_message_ids=reply_message_ids)
+    return _V39_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+
+
+def _v39_source_edge_self_audit() -> None:
+    blocked = (
+        "*אני תמיד מאבד את התלושיות שלי* אני כשאני רוצה שליברפול תפסיד:",
+        "אני אפילו יכול לשנוא לצפות בריינג'רס",
+        "זה יום חראמבול סימאונה🔥",
+    )
+    for sample in blocked:
+        reason = _v37_troll_block_reason(_v37_test_post(TROLL_FOOTBALL_USERNAME, sample))
+        if not reason:
+            raise RuntimeError("v39_extra_troll_noise_not_blocked:" + sample)
+
+    # The allowed reactions remain allowed after the broader noise rules.
+    for sample in ("במסעדה איטלקית", "סקיי ספורטס ידעו מה הם עושים", "😂🔥"):
+        if _v37_troll_block_reason(_v37_test_post(TROLL_FOOTBALL_USERNAME, sample)):
+            raise RuntimeError("v39_good_reaction_blocked:" + sample)
+
+
+try:
+    _v39_source_edge_self_audit()
+    logging.info("V39 active: extra betting/hatewatch noise blocked; emoji-only source posts retain their original media")
+except Exception as _v39_audit_exc:
+    logging.error("V39 source-edge self-audit failed: %s", short_error(_v39_audit_exc, 900))
+
+# ====== END V39 SOURCE EDGE-CASES + EMOJI MEDIA PRESERVATION ======
+
+
 if __name__ == "__main__":
     main()
