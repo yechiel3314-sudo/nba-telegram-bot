@@ -57096,5 +57096,779 @@ except Exception as _v48_audit_exc:
 
 # ====== END V48 RSS REAL RECOVERY / PER-ENDPOINT CIRCUIT ======
 
+# ====== V49 PRINCIPLE FIXES: NO BLOCKED-DUPLICATE PREVIEWS / CLEAN LAYOUT / FAST DISCOVERY (2026-08-06) ======
+# General mechanisms only.  No RSS template/account/state filename is changed.
+# - a post blocked as duplicate after translation is stored in duplicate history but never auto-sent to quiet;
+# - promotional betting/market-platform campaigns are blocked while factual football reports may mention a platform;
+# - standalone emoji/punctuation rows are attached without flattening real paragraphs or lists;
+# - concrete TrollFootball match actions are approved even when a recurring engagement suffix is present;
+# - TrollFootball uses the established Google translation path (Gemini is only a safe fallback);
+# - live X and RSS jobs enqueue results on completion, fresh live lookup is started every scan,
+#   the fast lane is bounded but wider, and event locks can no longer collapse unrelated generic transfers;
+# - every duplicate route calls one cached local principle engine, never a legacy/network chain.
+
+BOT_BUILD_ID = "winner-v49-principle-speed-layout-troll-2026-08-06"
+
+# ---------------------------------------------------------------------------
+# 1) Duplicates remain visible under the duplicate/history buttons only. They are
+#    not borderline candidates and therefore never produce a full quiet preview.
+# ---------------------------------------------------------------------------
+_V49_PRE_SHOULD_NOTIFY_BORDERLINE = should_notify_control_borderline_item
+
+
+def should_notify_control_borderline_item(item: dict[str, Any]) -> bool:
+    if isinstance(item, dict):
+        raw = " ".join(
+            str(item.get(key) or "")
+            for key in ("raw_reason", "reason", "block_reason", "duplicate_verdict")
+        ).casefold()
+        if bool(item.get("is_duplicate")) or "duplicate" in raw or "כפיל" in raw:
+            return False
+    return bool(_V49_PRE_SHOULD_NOTIFY_BORDERLINE(item))
+
+
+_V49_PRE_BORDERLINE_NOTIFY = maybe_notify_control_borderline_item
+
+
+def maybe_notify_control_borderline_item(item: dict[str, Any]) -> None:
+    # Defensive second boundary: older captured callers cannot auto-send a
+    # translated duplicate even if they bypass the current predicate.
+    if isinstance(item, dict):
+        raw = " ".join(
+            str(item.get(key) or "")
+            for key in ("raw_reason", "reason", "block_reason", "duplicate_verdict")
+        ).casefold()
+        if bool(item.get("is_duplicate")) or "duplicate" in raw or "כפיל" in raw:
+            return
+    return _V49_PRE_BORDERLINE_NOTIFY(item)
+
+
+# ---------------------------------------------------------------------------
+# 2) Betting/platform promotion policy. Mentioning Polymarket as a source or a
+#    probability is allowed; calls to enter/register/deposit, prize-pool launches,
+#    marketplace/product launches and guaranteed competitions are not news.
+# ---------------------------------------------------------------------------
+_V49_PLATFORM_RE = re.compile(
+    r"(?iu)polymarket|polymarkets?|פולי\s*מרקט|פולימרקט|rainbet|keno|stake\.?com|"
+    r"sportsbook|bookmaker|betting\s+platform|פלטפורמת\s+הימורים|אתר\s+הימורים"
+)
+_V49_PROMO_MECHANIC_RE = re.compile(
+    r"(?iu)\b(?:we\s+(?:just\s+)?(?:launched?|released?|opened?)|launch(?:ed|es|ing)?|"
+    r"register|registration|sign[- ]?ups?|join\s+now|enter\s+now|deposit|promo\s*code|"
+    r"bonus\s*code|giveaway|competition|contest|prize\s+pool|guaranteed|marketplace|"
+    r"survivor|group\s+entries|cash\s+prize|win\s+up\s+to|bet\s+now)\b|"
+    r"השקנו|השקה|הרשמה|הרשמות|הירשמו|הצטרפו\s+עכשיו|הפקדה|קוד\s+קופון|"
+    r"קוד\s+בונוס|תחרות|פרס(?:ים)?\s+כספי|קופה\s+מובטחת|מובטח(?:ת)?|"
+    r"מרקטפלייס|שוק\s+חדש|כניסות\s+קבוצתיות|הרשמות\s+קבוצתיות"
+)
+_V49_BETTING_ACTION_RE = re.compile(
+    r"(?iu)\b(?:bet|bets|betting|odds|wager|jackpot|casino|roulette|slots?|payout|winnings?)\b|"
+    r"הימור|הימורים|יחס(?:ים)?|קזינו|זכייה|זכיות|קופה"
+)
+_V49_FOOTBALL_PROBABILITY_REPORT_RE = re.compile(
+    r"(?iu)(?:\b\d{1,3}(?:\.\d+)?\s*%\b|אחוז(?:ים)?)"
+    r".{0,180}(?:stay|leave|join|sign|transfer|win|qualify|remain|"
+    r"להישאר|לעזוב|להצטרף|לחתום|לעבור|לזכות|להעפיל)"
+)
+
+
+def _v49_promotional_gambling_reason(post: Post) -> str:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    if not text.strip():
+        return ""
+    source_name = str(getattr(post, "username", "") or getattr(post, "source_name", "") or "")
+    has_platform = bool(_V49_PLATFORM_RE.search(text) or _V49_PLATFORM_RE.search(source_name))
+    has_promo = bool(_V49_PROMO_MECHANIC_RE.search(text))
+    has_betting = bool(_V49_BETTING_ACTION_RE.search(text))
+    # A probability attributed to a market is a football report, provided there
+    # is no product/registration/prize-pool promotion in the same post.
+    if has_platform and _V49_FOOTBALL_PROBABILITY_REPORT_RE.search(text) and not has_promo:
+        return ""
+    if has_promo and (has_platform or has_betting):
+        return "betting_platform_promotion_not_football_news"
+    if has_platform and has_betting and re.search(
+        r"(?iu)\b(?:join|enter|deposit|play|win|claim|use\s+code)\b|"
+        r"הצטרפו|הפקידו|שחקו|זכו|ממשו|השתמשו\s+בקוד",
+        text,
+    ):
+        return "betting_platform_promotion_not_football_news"
+    return ""
+
+
+_V49_PRE_FINAL_BLOCK_REASON = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    _final_pipeline_set_processing_started(post)
+    started = time.perf_counter()
+    promo_reason = _v49_promotional_gambling_reason(post)
+    if promo_reason:
+        _pipeline_add_stage(post, "filter_wall_seconds", time.perf_counter() - started)
+        return promo_reason
+    return _V49_PRE_FINAL_BLOCK_REASON(post)
+
+
+_V49_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "betting_platform_promotion_not_football_news" in raw:
+        return "קידום תחרות, הרשמה, מוצר או הימורים של פלטפורמה אינו דיווח כדורגל"
+    return _V49_PRE_HEBREW_BLOCK_REASON(reason)
+
+
+# ---------------------------------------------------------------------------
+# 3) Output layout policy. Real paragraph boundaries remain; only detached
+#    emoji/punctuation lines and artificial blanks inside a list are repaired.
+# ---------------------------------------------------------------------------
+_V49_BIDI_EDGE_RE = re.compile(r"^[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+|[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+$")
+_V49_EMOJI_RE = re.compile(r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf]", re.UNICODE)
+_V49_ALNUM_RE = re.compile(r"[A-Za-z0-9א-תÀ-ÿ]", re.UNICODE)
+_V49_LIST_RE = re.compile(r"^\s*(?:[-–—•▪◦*]|\d{1,3}[.)]|[A-Za-zא-ת][.)])\s+", re.UNICODE)
+_V49_FOOTER_RE = re.compile(r"(?iu)t\.me/neto_sport|נטו\s+ספורט")
+_V49_OPENING_JOIN_RE = re.compile(
+    r"(?iu)^(?P<emoji>(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf\ufe0f\u200d])+)(?P<label>דיווח|חדש|רשמי|בלעדי|עדכון|פרסום\s+ראשון)\s*:",
+    re.UNICODE,
+)
+
+
+def _v49_line_visible(line: Any) -> str:
+    value = _V49_BIDI_EDGE_RE.sub("", str(line or "").strip())
+    try:
+        value = html_message_to_plain_text(value)
+    except Exception:
+        value = re.sub(r"(?is)<[^>]+>", " ", value)
+    value = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff\ufe0f\u200d]", "", value)
+    return html.unescape(value).strip()
+
+
+def _v49_is_emoji_only_line(line: Any) -> bool:
+    visible = _v49_line_visible(line)
+    return bool(visible and _V49_EMOJI_RE.search(visible) and not _V49_ALNUM_RE.search(visible))
+
+
+def _v49_is_punctuation_only_line(line: Any) -> bool:
+    visible = _v49_line_visible(line)
+    if not visible or _V49_EMOJI_RE.search(visible) or _V49_ALNUM_RE.search(visible):
+        return False
+    return bool(re.fullmatch(r"[\s.'’‘\"״׳…,:;!?()\[\]{}\-–—]+", visible))
+
+
+def _v49_clean_punctuation_tail(line: Any) -> str:
+    visible = _v49_line_visible(line)
+    if not visible:
+        return ""
+    if "." in visible or "…" in visible:
+        return "."
+    if "?" in visible:
+        return "?"
+    if "!" in visible:
+        return "!"
+    if ":" in visible:
+        return ":"
+    if ";" in visible:
+        return ";"
+    if "," in visible:
+        return ","
+    return ""
+
+
+def _v49_append_to_previous(lines: list[str], suffix: str, punctuation: bool = False) -> bool:
+    for index in range(len(lines) - 1, -1, -1):
+        if not lines[index].strip():
+            continue
+        if _V49_FOOTER_RE.search(_v49_line_visible(lines[index])):
+            return False
+        base = lines[index].rstrip()
+        if punctuation:
+            if suffix and not re.search(r"[.!?…,:;]\s*(?:</[^>]+>)*$", base):
+                lines[index] = base + suffix
+        else:
+            clean_suffix = _V49_BIDI_EDGE_RE.sub("", str(suffix or "").strip())
+            if clean_suffix:
+                lines[index] = base + " " + clean_suffix
+        return True
+    return False
+
+
+def _v49_normalize_message_layout(value: Any) -> str:
+    raw_lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    lines: list[str] = []
+    for raw in raw_lines:
+        line = _V49_BIDI_EDGE_RE.sub("", raw.rstrip())
+        line = line.replace("🎥", "")
+        line = _V49_OPENING_JOIN_RE.sub(lambda m: f"{m.group('emoji')} {m.group('label')}:", line)
+        if _v49_is_emoji_only_line(line):
+            if not _v49_append_to_previous(lines, line, punctuation=False):
+                lines.append(line.strip())
+            continue
+        if _v49_is_punctuation_only_line(line):
+            tail = _v49_clean_punctuation_tail(line)
+            if tail:
+                _v49_append_to_previous(lines, tail, punctuation=True)
+            continue
+        lines.append(line)
+
+    # Collapse blank rows, but remove blanks between consecutive list items.
+    compact: list[str] = []
+    for line in lines:
+        if not line.strip():
+            if compact and compact[-1].strip():
+                compact.append("")
+            continue
+        current_is_list = bool(_V49_LIST_RE.match(_v49_line_visible(line)))
+        previous_nonempty_index = next((i for i in range(len(compact) - 1, -1, -1) if compact[i].strip()), None)
+        previous_is_list = bool(
+            previous_nonempty_index is not None
+            and _V49_LIST_RE.match(_v49_line_visible(compact[previous_nonempty_index]))
+        )
+        if current_is_list and previous_is_list:
+            while compact and not compact[-1].strip():
+                compact.pop()
+        compact.append(line.strip())
+
+    while compact and not compact[-1].strip():
+        compact.pop()
+
+    # Exactly one blank row before the Neto Sport footer and none after it.
+    footer_index = next((i for i, line in enumerate(compact) if _V49_FOOTER_RE.search(_v49_line_visible(line))), None)
+    if footer_index is not None:
+        before = compact[:footer_index]
+        footer = compact[footer_index]
+        while before and not before[-1].strip():
+            before.pop()
+        compact = before + ([""] if before else []) + [footer]
+
+    result = "\n".join(compact)
+    result = re.sub(r"[ \t]+\n", "\n", result)
+    result = re.sub(r"\n[ \t]+", "\n", result)
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+    return result
+
+
+_V49_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V49_PRE_BUILD_MESSAGE(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+    return _v49_normalize_message_layout(rendered)
+
+
+_V49_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    rendered = _V49_PRE_FINALIZE_OUTGOING(message)
+    rendered = _v49_normalize_message_layout(rendered)
+    return _v41_strong_rtl_all_lines(rendered)
+
+
+# ---------------------------------------------------------------------------
+# 4) TrollFootball principle: a concrete goal/corner/debut/penalty/incident is a
+#    football reaction even if a generic recurring taunt follows it. Pure bait,
+#    hatewatch, live/table and gambling remain blocked.
+# ---------------------------------------------------------------------------
+_V49_TROLL_ACTION_RE = re.compile(
+    r"(?iu)\b(?:scores?|scored|goal|goals|corner|penalt(?:y|ies)|assist|save|debut|"
+    r"equalis(?:e|er)|equaliz(?:e|er)|winner|free[- ]?kick|red\s+card|sent\s+off|"
+    r"tackle|dribble|nutmeg|volley|header|miss(?:es|ed)?|kick(?:s|ed)?)\b|"
+    r"שער|כובש|כבש|קרן|פנדל|בישול|הצלה|בכורה|שוויון|שער\s+ניצחון|"
+    r"בעיטה\s+חופשית|כרטיס\s+אדום|הורחק|תיקול|דריבל|השחלה|וולה|נגיחה|החטיא|בעט"
+)
+_V49_TROLL_CONTEXT_RE = re.compile(
+    r"(?iu)\b(?:football|soccer|match|game|club|team|league|cup|champions\s+league|"
+    r"premier\s+league|la\s+liga|serie\s+a|bundesliga|ligue\s+1|debut|fans?)\b|"
+    r"כדורגל|משחק|קבוצה|מועדון|ליגה|גביע|ליגת\s+האלופות|אוהדים|בכורה"
+)
+_V49_TROLL_SCORE_RE = re.compile(r"(?iu)\b\d+\s*[-–:]\s*\d+\b|\b(?:first|1st|second|2nd|third|3rd)\s+(?:goal|corner)\b")
+
+
+def _v49_troll_has_concrete_event(text: Any) -> bool:
+    value = html.unescape(str(text or ""))
+    action = bool(_V49_TROLL_ACTION_RE.search(value) or _V49_TROLL_SCORE_RE.search(value))
+    context = bool(_V49_TROLL_CONTEXT_RE.search(value) or re.search(r"\b[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+){1,3}\b", value))
+    return bool(action and context)
+
+
+_V49_PRE_TROLL_BLOCK_REASON = _v37_troll_block_reason
+
+
+def _v37_troll_block_reason(post: Post) -> str:
+    if not _v37_is_troll_football_post(post):
+        return ""
+    text = _v37_troll_source_text(post)
+    if _V37_TROLL_GAMBLING_RE.search(text) or _V39_TROLL_EXTRA_NOISE_RE.search(text):
+        return "trollfootball_gambling_or_sponsored_noise"
+    if _V37_TROLL_LIVE_TABLE_RE.search(text):
+        return "trollfootball_live_or_table_noise"
+    concrete = _v49_troll_has_concrete_event(text)
+    if concrete:
+        return ""
+    if _V37_TROLL_ENGAGEMENT_BAIT_RE.search(text) or _V42_TROLL_VAGUE_NOISE_RE.search(text):
+        return "trollfootball_engagement_or_hatewatch_noise"
+    return _V49_PRE_TROLL_BLOCK_REASON(post)
+
+
+# Google translation for TrollFootball, with a bounded in-memory cache and the
+# existing Gemini route as fallback only when Google does not return Hebrew.
+_V49_TROLL_TRANSLATION_LOCK = RLock()
+_V49_TROLL_TRANSLATION_CACHE: dict[str, tuple[float, str]] = {}
+_V49_TROLL_TRANSLATION_TTL = 6 * 60 * 60
+
+
+def _v49_google_translate_layout(value: Any) -> str:
+    source = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not source:
+        return ""
+    key = hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()
+    now = time.time()
+    with _V49_TROLL_TRANSLATION_LOCK:
+        cached = _V49_TROLL_TRANSLATION_CACHE.get(key)
+        if cached and now - cached[0] <= _V49_TROLL_TRANSLATION_TTL:
+            return cached[1]
+    try:
+        translated = _google_translate_preserve_full_layout(source)
+    except Exception:
+        translated = ""
+    translated = _v49_normalize_message_layout(translated)
+    if translated:
+        with _V49_TROLL_TRANSLATION_LOCK:
+            _V49_TROLL_TRANSLATION_CACHE[key] = (now, translated)
+            if len(_V49_TROLL_TRANSLATION_CACHE) > 1000:
+                for stale_key in list(_V49_TROLL_TRANSLATION_CACHE)[:250]:
+                    _V49_TROLL_TRANSLATION_CACHE.pop(stale_key, None)
+    return translated
+
+
+_V49_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    if not _v37_is_troll_football_post(post) or _v37_is_emoji_only_troll_post(post):
+        return _V49_PRE_TRANSLATE_POST_FOR_SEND(post)
+    main_source = _final_corresponding_source_text(post, quoted=False) or _v37_troll_source_text(post)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+    main = _v49_google_translate_layout(main_source)
+    quote = _v49_google_translate_layout(quote_source) if quote_source else ""
+    if len(re.findall(r"[א-ת]", main)) >= 4:
+        return main, quote, ""
+    return _V49_PRE_TRANSLATE_POST_FOR_SEND(post)
+
+
+_V49_PRE_TROLL_DECISION_TEXT = _v43_decision_text
+
+
+def _v43_decision_text(item: dict[str, Any]) -> str:
+    text = _V49_PRE_TROLL_DECISION_TEXT(item)
+    if text and len(re.findall(r"[א-ת]", text)) < 4 and re.search(r"[A-Za-z]", text):
+        translated = _v49_google_translate_layout(text)
+        if len(re.findall(r"[א-ת]", translated)) >= 4:
+            return re.sub(r"\s+", " ", translated).strip()
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 5) One local/cached duplicate engine. This rebind occurs after every historical
+#    wrapper, so no legacy AI/network finder or duplicate telemetry double-count
+#    can be reached by the active pipeline.
+# ---------------------------------------------------------------------------
+_V49_DUPLICATE_CACHE_LOCK = RLock()
+_V49_DUPLICATE_CACHE: dict[str, tuple[float, Any]] = {}
+_V49_DUPLICATE_CACHE_TTL = 20.0
+
+
+def _v49_duplicate_cache_key(post: Post, state: dict[str, Any], text_override: str = "") -> str:
+    identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or _v40_post_claim_key(post))
+    text = str(text_override or _final_source_text(post) or getattr(post, "text", "") or "")
+    stamp = _v40_duplicate_state_stamp(state) if "_v40_duplicate_state_stamp" in globals() else str(len(state))
+    return hashlib.sha1(f"{identity}|{stamp}|{text}".encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _v49_duplicate_core(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    key = _v49_duplicate_cache_key(post, state, text_override)
+    now = time.time()
+    with _V49_DUPLICATE_CACHE_LOCK:
+        cached = _V49_DUPLICATE_CACHE.get(key)
+        if cached and now - cached[0] <= _V49_DUPLICATE_CACHE_TTL:
+            return dict(cached[1]) if isinstance(cached[1], dict) else None
+    result = _v46_local_duplicate(post, state, text_override)
+    with _V49_DUPLICATE_CACHE_LOCK:
+        _V49_DUPLICATE_CACHE[key] = (now, dict(result) if isinstance(result, dict) else None)
+        if len(_V49_DUPLICATE_CACHE) > 2500:
+            for stale_key in sorted(_V49_DUPLICATE_CACHE, key=lambda item: _V49_DUPLICATE_CACHE[item][0])[:500]:
+                _V49_DUPLICATE_CACHE.pop(stale_key, None)
+    return dict(result) if isinstance(result, dict) else None
+
+
+def _v49_timed_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    _final_pipeline_set_processing_started(post)
+    started = time.perf_counter()
+    try:
+        return _v49_duplicate_core(post, state, text_override)
+    finally:
+        _pipeline_add_stage(post, "duplicate_wall_seconds", time.perf_counter() - started)
+
+
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v49_duplicate_core(post, state, text_override)
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v49_timed_duplicate(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v49_timed_duplicate(post, state)
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v49_timed_duplicate(post, state)
+
+
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v49_timed_duplicate(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v49_timed_duplicate(post, state, html_message_to_plain_text(translated_message))
+
+
+# ---------------------------------------------------------------------------
+# 6) Event serialization must be precise. A generic word such as "transfer" can
+#    never serialize all unrelated reports behind one lock.
+# ---------------------------------------------------------------------------
+
+def _v44_event_serial_key(post: Post) -> str:
+    text = str(_final_source_text(post) or getattr(post, "text", "") or "")
+    try:
+        profile = _v47_profile_cached(text, getattr(post, "username", ""))
+        people = sorted(profile.people)[:3]
+        teams = sorted(profile.teams)[:4]
+        destinations = sorted(profile.destinations)[:2]
+        if people or len(teams) >= 2 or destinations:
+            material = "|".join([profile.family] + people + teams + destinations)
+        elif teams:
+            material = "|".join([profile.family] + teams + sorted(profile.tokens)[:8])
+        else:
+            # No identity: use semantic content, never the family alone.
+            semantic = sorted(profile.tokens)[:12]
+            material = "|".join([profile.family] + semantic)
+    except Exception:
+        material = ""
+    if not material or material in {"transfer", "generic", "quote", "match"}:
+        material = str(getattr(post, "post_id", "") or getattr(post, "link", "") or text)
+    return hashlib.sha1(material.casefold().encode("utf-8", errors="ignore")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# 7) Fresh discovery and immediate handoff. Caches are useful as an immediate
+#    fallback, but their existence must never suppress a new live lookup.
+# ---------------------------------------------------------------------------
+FULL_SPEED_LIVE_REFRESH_SECONDS = 20
+_V49_FETCH_WAIT_SECONDS = max(0.25, min(1.5, float(os.environ.get("V49_FETCH_WAIT_SECONDS", "0.8") or 0.8)))
+_V49_FETCH_FLIGHT_LOCK = RLock()
+_V49_FETCH_FLIGHTS: dict[str, dict[str, Any]] = {}
+
+
+def _v49_fresh_fetch_uncached(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    rss_rows = list(_full_speed_rss_cache_get(canonical) or [])
+    live_rows = list(_full_speed_cache_get(canonical) or [])
+    rss_future = _full_speed_start_rss(canonical)
+    live_future = _full_speed_start_live(canonical)  # always request a fresh live cycle
+
+    # A very fast future may already be complete before the pending set is built.
+    # Consume it immediately instead of waiting for a later cache refresh.
+    for future, kind in ((rss_future, "rss"), (live_future, "live")):
+        if future is None or not future.done():
+            continue
+        try:
+            completed_rows = list(future.result() or [])
+        except Exception:
+            completed_rows = []
+        if kind == "live" and completed_rows:
+            live_rows = completed_rows
+        elif kind == "rss" and completed_rows:
+            rss_rows = completed_rows
+
+    pending = {future for future in (rss_future, live_future) if future is not None and not future.done()}
+    deadline = time.perf_counter() + _V49_FETCH_WAIT_SECONDS
+    while pending and time.perf_counter() < deadline:
+        remaining = max(0.0, deadline - time.perf_counter())
+        done, still_pending = _rss_wait(pending, timeout=remaining, return_when=_RSS_FIRST_COMPLETED)
+        if not done:
+            break
+        for future in done:
+            try:
+                rows = list(future.result() or [])
+            except Exception:
+                rows = []
+            if future is live_future and rows:
+                live_rows = rows
+            elif future is rss_future and rows:
+                rss_rows = rows
+        pending = set(still_pending)
+        if live_future is None or live_future.done():
+            break
+
+    # Completed background work can have updated the caches during the wait.
+    # Merge rather than choose one side so a stale non-empty cache can never hide
+    # a just-completed fresh result.
+    live_merged: dict[str, Post] = {}
+    _reliable_merge_posts(live_merged, live_rows, canonical)
+    _reliable_merge_posts(live_merged, list(_full_speed_cache_get(canonical) or []), canonical)
+    live_rows = list(live_merged.values())
+    rss_merged: dict[str, Post] = {}
+    _reliable_merge_posts(rss_merged, rss_rows, canonical)
+    _reliable_merge_posts(rss_merged, list(_full_speed_rss_cache_get(canonical) or []), canonical)
+    rss_rows = list(rss_merged.values())
+    merged: dict[str, Post] = {}
+    _reliable_merge_posts(merged, rss_rows, canonical)
+    _reliable_merge_posts(merged, live_rows, canonical)
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        if isinstance(post, Post):
+            _pipeline_mark_seen(post, "automatic:v49_fresh_rss_live", observed, elapsed)
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+    return ordered[:60]
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    owner = False
+    with _V49_FETCH_FLIGHT_LOCK:
+        flight = _V49_FETCH_FLIGHTS.get(key)
+        if flight is None:
+            flight = {"event": __import__("threading").Event(), "rows": None, "error": None}
+            _V49_FETCH_FLIGHTS[key] = flight
+            owner = True
+    if owner:
+        try:
+            rows = _v49_fresh_fetch_uncached(canonical)
+            flight["rows"] = rows
+            return list(rows)
+        except Exception as exc:
+            flight["error"] = exc
+            fallback = _v45_fetch_cached_fallback(canonical)
+            if fallback:
+                return fallback
+            raise
+        finally:
+            flight["event"].set()
+            with _V49_FETCH_FLIGHT_LOCK:
+                _V49_FETCH_FLIGHTS.pop(key, None)
+    if flight["event"].wait(_V49_FETCH_WAIT_SECONDS + 0.5):
+        if flight.get("rows") is not None:
+            return list(flight.get("rows") or [])
+    return _v45_fetch_cached_fallback(canonical)
+
+
+# Background completion itself feeds the fast lane; no need to wait for the next
+# 20-second account cycle merely to notice the result.
+_V49_PRE_LIVE_JOB = _full_speed_live_job
+
+
+def _full_speed_live_job(username: str) -> list[Post]:
+    rows = list(_V49_PRE_LIVE_JOB(username) or [])
+    if rows:
+        _v40_enqueue_discovered_posts(username, rows)
+    return rows
+
+
+_V49_PRE_RSS_JOB = _full_speed_rss_job
+
+
+def _full_speed_rss_job(username: str) -> list[Post]:
+    rows = list(_V49_PRE_RSS_JOB(username) or [])
+    if rows:
+        _v40_enqueue_discovered_posts(username, rows)
+    return rows
+
+
+# A wider lightweight processing lane starts filters immediately. Existing global
+# send=4 and translation=2 semaphores remain the real resource limits.
+_V49_FAST_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="post-fast-v49")
+_V49_FAST_MAX_INFLIGHT_AND_QUEUED = 16
+_V49_FAST_MAX_PER_ACCOUNT = 4
+_V49_FAST_FRESH_SECONDS = 30 * 60
+
+
+def _v40_enqueue_discovered_posts(username: str, posts: list[Post]) -> None:
+    if getattr(_V40_FAST_LOCAL, "active", False) or not posts:
+        return
+    try:
+        state = load_state()
+    except Exception:
+        return
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical or canonical not in state or not any(state.values()):
+        return
+    seen = set(state.get(canonical, []))
+    now = time.time()
+    candidates: list[Post] = []
+    for post in posts:
+        if not isinstance(post, Post):
+            continue
+        published = float(getattr(post, "published_ts", 0.0) or 0.0)
+        if published and now - published > min(MAX_POST_AGE_SECONDS, _V49_FAST_FRESH_SECONDS):
+            continue
+        ids = _v40_post_ids(post)
+        if ids and any(item in seen for item in ids):
+            continue
+        candidates.append(post)
+    candidates = sorted(
+        candidates,
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )[:_V49_FAST_MAX_PER_ACCOUNT]
+    for post in candidates:
+        key = _v40_post_claim_key(post)
+        with _V40_FAST_LOCK:
+            if len(_V40_FAST_INFLIGHT) >= _V49_FAST_MAX_INFLIGHT_AND_QUEUED:
+                break
+            expiry = float(_V40_FAST_CLAIMED_UNTIL.get(key, 0.0) or 0.0)
+            if key in _V40_FAST_INFLIGHT or expiry > now:
+                continue
+            _V40_FAST_INFLIGHT.add(key)
+            _V40_FAST_CLAIMED_UNTIL[key] = now + 120.0
+        _V49_FAST_EXECUTOR.submit(_v40_fast_process_post, post)
+
+
+# Automatic rows remain capped to 12. Manual/history routes retain fetch_posts(60).
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+_V49_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical, rows = _V49_PRE_FETCH_POSTS_SAFELY(username)
+    ordered = sorted(
+        [post for post in (rows or []) if isinstance(post, Post)],
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return canonical, ordered[:12]
+
+
+# ---------------------------------------------------------------------------
+# 8) Local deterministic audit. No Telegram/X/RSS/Google/Gemini request.
+# ---------------------------------------------------------------------------
+def _v49_test_post(username: str, text: str, post_id: str = "v49") -> Post:
+    return Post(
+        post_id=post_id,
+        username=username,
+        text=text,
+        link=f"https://x.com/{username}/status/{post_id}",
+        image_urls=["https://example.invalid/photo.jpg"],
+        video_urls=[], has_video=False, primary_has_video=False, quoted_has_video=False,
+        quoted_author="", quoted_text="", published_ts=time.time(), dedupe_ids=[post_id],
+        source_name=username,
+    )
+
+
+def _v49_self_audit() -> None:
+    # Duplicates are never automatic quiet previews.
+    if should_notify_control_borderline_item({"is_duplicate": True, "raw_reason": "post_translation_duplicate"}):
+        raise RuntimeError("v49_duplicate_still_borderline")
+
+    # Platform promotion versus factual football probability.
+    promo = _v49_test_post("PolymarketSport", "We just launched the biggest guaranteed Survivor competition, $21m prize pool, group registrations and a new marketplace.", "promo")
+    if _v49_promotional_gambling_reason(promo) != "betting_platform_promotion_not_football_news":
+        raise RuntimeError("v49_platform_promo_not_blocked")
+    report = _v49_test_post("CentreGoals", "Polymarket gives Vinicius Junior a 59% chance to stay at Real Madrid next season.", "report")
+    if _v49_promotional_gambling_reason(report):
+        raise RuntimeError("v49_factual_probability_blocked")
+
+    # The two reported TrollFootball classes are concrete football events.
+    troll_examples = (
+        "Mason Greenwood scores a WORLD CLASS goal on his debut for Fenerbahce. Easily the best goal you will see all day. Chelsea fans thought I would spare them in pre season.",
+        "Arsenal's 1st corner of the game, Arsenal's 1st goal of the game. Corner FC is back! Chelsea fans thought I would spare them in pre season.",
+    )
+    for index, sample in enumerate(troll_examples):
+        if _v37_troll_block_reason(_v49_test_post(TROLL_FOOTBALL_USERNAME, sample, f"troll-{index}")):
+            raise RuntimeError("v49_concrete_troll_event_blocked:" + sample)
+    bad_troll = _v49_test_post(TROLL_FOOTBALL_USERNAME, "Turned $4000 into $2 million on RainBet Keno. Join now!", "troll-bad")
+    if not _v37_troll_block_reason(bad_troll):
+        raise RuntimeError("v49_troll_gambling_allowed")
+
+    # Layout: no standalone emoji/punctuation rows, list items stay contiguous.
+    samples = (
+        "🚨🚨 לויניסיוס ג'וניור יש 59% סיכוי להישאר בריאל מדריד.\n\n⚪🇧🇷\n\nהברזילאי מבקש שכר של 28 מיליון אירו.",
+        "🚨חדש:\nההצעה הסופית:\n\n- שכר של 22 מיליון\n- יכול לעלות ל-24 מיליון עם בונוסים\n'.\n\n- חוזה עד 2031\n\nארסנל מוכנה לתת לו הכל.",
+        "🚨 דיווח:\nויניסיוס צפוי להישאר.\n\n👀\n\nהוא לא יצטרף לארסנל.",
+        "מתיאס יאייסלה חתם עד 2029.\n\n🇩🇪\n\nכאן עם סוכנו.",
+        "חוליאן אלבארס רוצה לעזוב.\n\n👋🇦🇷\n\nהוא צפוי לחזור ב-10 באוגוסט.",
+    )
+    for sample in samples:
+        fixed = _v49_normalize_message_layout(sample)
+        for line in fixed.splitlines():
+            if _v49_is_emoji_only_line(line) or _v49_is_punctuation_only_line(line):
+                raise RuntimeError("v49_detached_symbol_survived:" + repr(fixed))
+    list_fixed = _v49_normalize_message_layout(samples[1])
+    if "🚨 חדש:" not in list_fixed or re.search(r"(?m)^- .+\n\n- ", list_fixed):
+        raise RuntimeError("v49_list_spacing_failed:" + repr(list_fixed))
+
+    # Generic unrelated transfer reports no longer share one global family lock.
+    key_a = _v44_event_serial_key(_v49_test_post("A", "A player could move after talks today.", "lock-a"))
+    key_b = _v44_event_serial_key(_v49_test_post("B", "A coach could join after negotiations tomorrow.", "lock-b"))
+    if key_a == key_b:
+        raise RuntimeError("v49_generic_event_lock_collision")
+
+    # Duplicate engine remains local and bounded.
+    state = {"recent_news_events": [
+        {"post_id": f"old-{i}", "source_text": f"שחקן {i} עשוי לעבור לקבוצה {i}.", "username": "Old", "sent_at": time.time(), "pending": False}
+        for i in range(160)
+    ]}
+    probe = _v49_test_post("Current", "שחקן חדש עשוי לעבור לקבוצה חדשה.", "dup-speed")
+    started = time.perf_counter()
+    _v49_duplicate_core(probe, state)
+    elapsed = time.perf_counter() - started
+    if elapsed > 1.0:
+        raise RuntimeError(f"v49_duplicate_engine_too_slow:{elapsed:.3f}")
+
+    if CONTINUOUS_FORCE_DISCOVERY_ENABLED:
+        raise RuntimeError("v49_second_discovery_lane_enabled")
+    if MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK != 12:
+        raise RuntimeError("v49_automatic_limit_changed")
+    if FULL_SPEED_LIVE_REFRESH_SECONDS != 20:
+        raise RuntimeError("v49_live_refresh_not_20")
+
+
+try:
+    _v49_self_audit()
+    logging.info(
+        "V49 active: translated duplicates stay history-only; platform promotions blocked; "
+        "emoji/list layout repaired; concrete TrollFootball events + Google translation; "
+        "fresh live/RSS immediate enqueue; precise event locks; one cached local duplicate engine"
+    )
+except Exception as _v49_audit_exc:
+    logging.error("V49 self-audit failed: %s", short_error(_v49_audit_exc, 2400))
+    raise
+
+# ====== END V49 PRINCIPLE FIXES ======
+
+
 if __name__ == "__main__":
     main()
