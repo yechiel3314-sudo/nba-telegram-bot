@@ -58011,5 +58011,348 @@ except Exception as _v50_audit_exc:
 
 # ====== END V50 EXACT RSS ROLLBACK ======
 
+# ====== V51 CANONICAL CONSISTENT POST SPACING (2026-08-06) ======
+# Scope: presentation only. RSS, discovery, filtering, duplicate detection,
+# translations, media selection, persistence and server limits are untouched.
+# Every Neto Sport news text/caption is normalized at the final Telegram
+# boundary, including routes that historically bypassed the normal finalizer.
+
+BOT_BUILD_ID = "winner-v51-v50-rss-canonical-post-spacing-2026-08-06"
+
+_V51_EDGE_BIDI_RE = re.compile(
+    r"^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+|"
+    r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+$"
+)
+_V51_FOOTER_RE = re.compile(r"(?iu)(?:נטו\s+ספורט|t\.me/neto_sport)")
+_V51_OPENING_ONLY_RE = re.compile(
+    r"(?iu)^(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf\ufe0f\u200d\s]*)"
+    r"(?:דיווח|חדש|רשמי|בלעדי|עדכון|פרסום\s+ראשון)\s*:\s*$"
+)
+
+
+def _v51_strip_outer_bidi(value: Any) -> str:
+    line = str(value or "")
+    previous = None
+    while line != previous:
+        previous = line
+        line = _V51_EDGE_BIDI_RE.sub("", line)
+    return line
+
+
+def _v51_visible_line(value: Any) -> str:
+    line = _v51_strip_outer_bidi(value).strip()
+    try:
+        line = html_message_to_plain_text(line)
+    except Exception:
+        line = re.sub(r"(?is)<[^>]+>", " ", line)
+    line = re.sub(r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff\ufe0f\u200d]", "", line)
+    return html.unescape(line).strip()
+
+
+def _v51_has_neto_footer(value: Any) -> bool:
+    return bool(_V51_FOOTER_RE.search(_v51_visible_line(value)))
+
+
+def _v51_is_list_line(value: Any) -> bool:
+    visible = _v51_visible_line(value)
+    matcher = globals().get("_V49_LIST_RE")
+    if matcher is not None:
+        return bool(matcher.match(visible))
+    return bool(re.match(r"^\s*(?:[-–—•▪◦*]|\d{1,3}[.)]|[A-Za-zא-ת][.)])\s+", visible))
+
+
+def _v51_is_opening_only(value: Any) -> bool:
+    return bool(_V51_OPENING_ONLY_RE.match(_v51_visible_line(value)))
+
+
+def _v51_canonical_post_layout(value: Any) -> str:
+    """Canonical news-post spacing, idempotent and HTML-safe.
+
+    Rules:
+    - one blank row between real paragraphs;
+    - no blank rows between list items;
+    - opening-only label is followed immediately by its text line;
+    - exactly one blank row before the Neto Sport footer;
+    - no blank rows after the footer;
+    - invisible-only rows are treated as blank rows;
+    - detached emoji/punctuation rows use the already-approved V49 repair.
+    """
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text:
+        return ""
+
+    # Remove outer direction wrappers before layout analysis. Internal controls
+    # remain untouched. Empty lines containing only bidi marks become real empty lines.
+    stripped_lines = [_v51_strip_outer_bidi(line).rstrip() for line in text.split("\n")]
+    text = "\n".join(stripped_lines)
+
+    # Reuse the proven emoji/list/punctuation repair, then enforce the final
+    # footer invariant again because some media routes used to bypass it.
+    normalizer = globals().get("_v49_normalize_message_layout")
+    if callable(normalizer):
+        text = normalizer(text)
+    else:
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    if not _v51_has_neto_footer(text):
+        return text.strip()
+
+    footer_normalizer = globals().get("_v37_exact_single_neto_footer")
+    if callable(footer_normalizer):
+        text = footer_normalizer(text)
+        # The footer helper may return direction-wrapped lines.
+        text = "\n".join(_v51_strip_outer_bidi(line).rstrip() for line in str(text).split("\n"))
+        if callable(normalizer):
+            text = normalizer(text)
+
+    raw_lines = text.split("\n")
+    footer_index = next(
+        (index for index, line in enumerate(raw_lines) if _V51_FOOTER_RE.search(_v51_visible_line(line))),
+        None,
+    )
+    if footer_index is None:
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    footer = raw_lines[footer_index].strip()
+    body_source = raw_lines[:footer_index]
+    body: list[str] = []
+
+    for raw in body_source:
+        line = raw.strip()
+        visible = _v51_visible_line(line)
+        if not visible:
+            if body and body[-1] != "":
+                body.append("")
+            continue
+
+        current_list = _v51_is_list_line(line)
+        previous_nonempty_index = next((i for i in range(len(body) - 1, -1, -1) if body[i]), None)
+        previous_list = bool(
+            previous_nonempty_index is not None and _v51_is_list_line(body[previous_nonempty_index])
+        )
+
+        # List items form one compact block.
+        if current_list and previous_list:
+            while body and body[-1] == "":
+                body.pop()
+
+        # "🚨 דיווח:" / "🚨 חדש:" uses one line break, not an empty row.
+        if previous_nonempty_index is not None and _v51_is_opening_only(body[previous_nonempty_index]):
+            while body and body[-1] == "":
+                body.pop()
+
+        body.append(line)
+
+    while body and body[-1] == "":
+        body.pop()
+
+    # Collapse any remaining repeated blank rows defensively.
+    canonical_body: list[str] = []
+    for line in body:
+        if line == "":
+            if canonical_body and canonical_body[-1] != "":
+                canonical_body.append("")
+        else:
+            canonical_body.append(line)
+    while canonical_body and canonical_body[-1] == "":
+        canonical_body.pop()
+
+    result_lines = canonical_body + ([""] if canonical_body else []) + [footer]
+    result = "\n".join(result_lines)
+    result = re.sub(r"[ \t]+\n", "\n", result)
+    result = re.sub(r"\n[ \t]+", "\n", result)
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+    return result
+
+
+def _v51_canonical_if_news(value: Any) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    if not _v51_has_neto_footer(value):
+        return value
+    return _v51_canonical_post_layout(value)
+
+
+# Apply to message construction and the finalizer.
+_V51_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V51_PRE_BUILD_MESSAGE(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+    return _v51_canonical_if_news(rendered)
+
+
+_V51_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    rendered = _V51_PRE_FINALIZE_OUTGOING(message)
+    if not _v51_has_neto_footer(rendered):
+        return rendered
+    canonical = _v51_canonical_post_layout(rendered)
+    return _v41_strong_rtl_all_lines(canonical)
+
+
+# Absolute Telegram boundary. This catches photo/video/album routes that have
+# historically passed a caption directly without calling the finalizer.
+def _v51_normalize_media_rows(value: Any) -> Any:
+    was_json = isinstance(value, str)
+    rows = value
+    if was_json:
+        try:
+            rows = json.loads(value)
+        except Exception:
+            return value
+    if not isinstance(rows, list):
+        return value
+    changed: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            changed.append(row)
+            continue
+        item = dict(row)
+        if isinstance(item.get("caption"), str):
+            item["caption"] = _v51_canonical_if_news(item.get("caption"))
+        changed.append(item)
+    if was_json:
+        return json.dumps(changed, ensure_ascii=False, separators=(",", ":"))
+    return changed
+
+
+def _v51_layout_payload(method: Any, payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    normalized = dict(payload)
+    method_key = str(method or "").casefold()
+    fields_by_method = globals().get("_V41_TEXT_FIELDS_BY_METHOD", {})
+    for field in fields_by_method.get(method_key, ()):
+        if isinstance(normalized.get(field), str):
+            normalized[field] = _v51_canonical_if_news(normalized[field])
+    if method_key == "sendmediagroup":
+        normalized["media"] = _v51_normalize_media_rows(normalized.get("media"))
+    return normalized
+
+
+_V51_PRE_TELEGRAM_API = telegram_api
+
+
+def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return _V51_PRE_TELEGRAM_API(method, _v51_layout_payload(method, payload), **kwargs)
+
+
+_V51_PRE_CHANNEL_MULTIPART = _channel_multipart_telegram_api
+
+
+def _channel_multipart_telegram_api(
+    method: str,
+    fields: dict[str, Any],
+    files: list[tuple[str, str]],
+) -> dict[str, Any]:
+    return _V51_PRE_CHANNEL_MULTIPART(method, _v51_layout_payload(method, fields), files)
+
+
+_V51_PRE_FINAL_MULTIPART = _final_multipart_telegram_api
+
+
+def _final_multipart_telegram_api(
+    method: str,
+    fields: dict[str, Any],
+    file_field: str,
+    file_path: str,
+) -> dict[str, Any]:
+    return _V51_PRE_FINAL_MULTIPART(
+        method, _v51_layout_payload(method, fields), file_field, file_path
+    )
+
+
+# Also normalize at the active photo-set function itself, before selecting JSON
+# or multipart transport.
+_V51_PRE_PHOTO_SET_SENDER = _channel_send_photo_set_to_chat
+
+
+def _channel_send_photo_set_to_chat(
+    chat_id: str,
+    images: list[str],
+    caption: str,
+    reply_markup: dict[str, Any] | None = None,
+    reply_id: int | None = None,
+) -> dict[str, Any]:
+    return _V51_PRE_PHOTO_SET_SENDER(
+        chat_id,
+        images,
+        _v51_canonical_if_news(caption),
+        reply_markup=reply_markup,
+        reply_id=reply_id,
+    )
+
+
+def _v51_spacing_self_audit() -> None:
+    footer = "נטו ספורט (https://t.me/neto_sport).📝"
+    screenshot_case = (
+        "🚨 אישור: מוחמד סלאח ילבש את החולצה מספר 10 בטרבזונספור.\n\n\n\u200f\n\n\n" + footer + "\n\n"
+    )
+    canonical_footer = '<a href="https://t.me/neto_sport">נטו ספורט</a>.📝'
+    expected = "🚨 אישור: מוחמד סלאח ילבש את החולצה מספר 10 בטרבזונספור.\n\n" + canonical_footer
+    actual = _v51_canonical_post_layout(screenshot_case)
+    if actual != expected:
+        raise RuntimeError(f"v51_screenshot_spacing:{actual!r}")
+
+    writer_case = "פבריציו רומאנו:\n\n\n🚨 דיווח חדש.\n\n\n" + footer
+    writer_expected = "פבריציו רומאנו:\n\n🚨 דיווח חדש.\n\n" + canonical_footer
+    if _v51_canonical_post_layout(writer_case) != writer_expected:
+        raise RuntimeError("v51_writer_spacing")
+
+    opening_case = "🚨 דיווח:\n\nהעסקה מתקדמת.\n\n\n" + footer
+    opening_expected = "🚨 דיווח:\nהעסקה מתקדמת.\n\n" + canonical_footer
+    if _v51_canonical_post_layout(opening_case) != opening_expected:
+        raise RuntimeError("v51_opening_spacing")
+
+    list_case = (
+        "🚨 חדש:\nההצעה הסופית:\n\n- 22 מיליון אירו\n\n- חוזה עד 2031\n\n\n" + footer
+    )
+    list_expected = (
+        "🚨 חדש:\nההצעה הסופית:\n\n- 22 מיליון אירו\n- חוזה עד 2031\n\n" + canonical_footer
+    )
+    if _v51_canonical_post_layout(list_case) != list_expected:
+        raise RuntimeError("v51_list_spacing")
+
+    emoji_case = "הוא יחתום במועדון.\n\n🇪🇬\n\n\n" + footer
+    emoji_expected = "הוא יחתום במועדון. 🇪🇬\n\n" + canonical_footer
+    if _v51_canonical_post_layout(emoji_case) != emoji_expected:
+        raise RuntimeError("v51_emoji_spacing")
+
+    once = _v51_canonical_post_layout(screenshot_case)
+    twice = _v51_canonical_post_layout(once)
+    if once != twice:
+        raise RuntimeError("v51_not_idempotent")
+
+    media = json.dumps([{"type": "photo", "media": "id", "caption": screenshot_case}], ensure_ascii=False)
+    repaired_media = json.loads(_v51_normalize_media_rows(media))
+    if repaired_media[0].get("caption") != expected:
+        raise RuntimeError("v51_media_caption_boundary")
+
+
+try:
+    _v51_spacing_self_audit()
+    logging.info(
+        "V51 active: canonical post spacing at every Telegram text/caption boundary; "
+        "one paragraph gap, compact lists, no detached emoji rows, exactly one gap before footer; "
+        "V50 RSS route and all operational settings unchanged"
+    )
+except Exception as _v51_audit_exc:
+    logging.error("V51 spacing self-audit failed: %s", short_error(_v51_audit_exc, 1800))
+    raise
+
+# ====== END V51 CANONICAL CONSISTENT POST SPACING ======
+
+
 if __name__ == "__main__":
     main()
