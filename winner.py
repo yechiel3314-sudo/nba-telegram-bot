@@ -52099,5 +52099,2234 @@ except Exception as _v39_audit_exc:
 # ====== END V39 SOURCE EDGE-CASES + EMOJI MEDIA PRESERVATION ======
 
 
+# ====== V40 POSITIVE SOURCE POLICY / FAST PROCESSING / TRANSLATION INTEGRITY (2026-08-05) ======
+# Final operator-requested layer. It leaves RSS URLs, mirror order, timeouts,
+# scan cadence, buttons, persistent filenames, media limits and existing good
+# filters unchanged. It adds only general protections at the active boundaries.
+
+BOT_BUILD_ID = "winner-v40-positive-source-fast-processing-integrity-2026-08-05"
+
+import functools as _v40_functools
+import threading as _v40_threading
+
+# ---------------------------------------------------------------------------
+# 1) #היום_לפני stays on the same line as the continuation.
+# ---------------------------------------------------------------------------
+_V40_PRE_TODAY_BEFORE_FIX = _v37_fix_today_before_and_cule
+
+
+def _v37_fix_today_before_and_cule(value: Any) -> str:
+    text = str(_V40_PRE_TODAY_BEFORE_FIX(value) or "")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        visible = _v20_visible_html(line).strip()
+        if visible == "#היום_לפני" and index + 1 < len(lines):
+            next_line = lines[index + 1]
+            next_visible = _v20_visible_html(next_line).strip()
+            if next_visible:
+                prefix_match = re.match(r"^[\u200e\u200f\u202a-\u202e\u2066-\u2069]*", line)
+                prefix = prefix_match.group(0) if prefix_match else ""
+                clean_next = _V37_DIRECTION_MARKS_RE.sub("", next_line).lstrip()
+                output.append(prefix + "#היום_לפני " + clean_next)
+                index += 2
+                continue
+        output.append(line)
+        index += 1
+    return "\n".join(output)
+
+
+# ---------------------------------------------------------------------------
+# 2) Reporter messages keep opening labels inline and unbolded. Only messages
+#    without a writer heading use the bold opening + immediate line break rule.
+# ---------------------------------------------------------------------------
+_V40_PRE_BUILD_MESSAGE = build_message
+_V40_OPENING_LABEL_ALT = "|".join(
+    sorted(
+        (re.escape(item) for item in globals().get("_V20_OPENING_LABELS", (
+            "דיווח", "רשמי", "בלעדי", "עדכון", "חשיפה", "פרסום ראשון", "פרסום בלעדי", "חדש"
+        ))),
+        key=len,
+        reverse=True,
+    )
+)
+_V40_BOLD_OPENING_RE = re.compile(
+    rf"(?iu)<b>\s*[\u200e\u200f\u202a-\u202e\u2066-\u2069]*\s*(?P<label>{_V40_OPENING_LABEL_ALT})\s*[:：]\s*</b>"
+)
+_V40_INLINE_OPENING_LINE_RE = re.compile(
+    rf"(?imu)^(?P<line>[\u200e\u200f\u202a-\u202e\u2066-\u2069]*[^\n]*?(?:{_V40_OPENING_LABEL_ALT})\s*[:：])[ \t]*\n(?:[ \t]*\n)*(?P<next>[\u200e\u200f\u202a-\u202e\u2066-\u2069]*)"
+)
+
+
+def _v40_message_has_writer_heading(post: Post, translated: str, rendered: str = "") -> bool:
+    # The final rendered message is the source of truth. Some established source
+    # rules intentionally return should_hide_writer_header=True while an earlier
+    # formatter has already inserted a reporter heading.
+    plain_lines = [
+        _V37_DIRECTION_MARKS_RE.sub("", line).strip()
+        for line in html_message_to_plain_text(str(rendered or "")).splitlines()
+        if _V37_DIRECTION_MARKS_RE.sub("", line).strip()
+    ]
+    if plain_lines:
+        first = plain_lines[0].rstrip()
+        labels = {
+            str(value or "").strip().rstrip(":：")
+            for value in list(ACCOUNT_DISPLAY_NAMES.values())
+            + list(CONTROLLED_BASE_ACCOUNT_LABELS.values())
+            + list(OPTIONAL_CONTROLLED_ACCOUNT_LABELS.values())
+            if str(value or "").strip()
+        }
+        if first.rstrip(":：") in labels and first.endswith((":", "：")):
+            return True
+    try:
+        return not bool(should_hide_writer_header(post, translated))
+    except Exception:
+        return False
+
+
+def _v40_inline_opening_for_writer(value: Any) -> str:
+    text = str(value or "")
+    text = _V40_BOLD_OPENING_RE.sub(lambda m: f"{m.group('label')}:", text)
+    # Join only the first true opening line. Writer heading remains separated by
+    # its existing blank line because it is not one of the opening labels.
+    text = _V40_INLINE_OPENING_LINE_RE.sub(
+        lambda m: m.group("line").rstrip() + " " + m.group("next"),
+        text,
+        count=1,
+    )
+    return text
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V40_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    if _v40_message_has_writer_heading(post, translated, rendered):
+        rendered = _v40_inline_opening_for_writer(rendered)
+    return rendered
+
+
+# ---------------------------------------------------------------------------
+# 3) The camera emoji is forbidden in every outgoing message/caption, and RTL
+#    remains enforced for every chat id and every Telegram text/media boundary.
+# ---------------------------------------------------------------------------
+_V40_FORBIDDEN_CAMERA_RE = re.compile(r"[ \t]*🎥[ \t]*")
+_V40_PRE_RTL_VISIBLE_TEXT = _v38_rtl_visible_text
+
+
+def _v40_remove_forbidden_camera(value: Any) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    text = _V40_FORBIDDEN_CAMERA_RE.sub(" ", value)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    return text.strip() if value.strip() else text
+
+
+def _v38_rtl_visible_text(value: Any) -> Any:
+    return _V40_PRE_RTL_VISIBLE_TEXT(_v40_remove_forbidden_camera(value))
+
+
+# ---------------------------------------------------------------------------
+# 4) Translation integrity: repair a known punctuation corruption, reject
+#    missing paired actors (officials/staff + fans/supporters), and let the
+#    established Gemini retry chain retry instead of publishing a broken line.
+# ---------------------------------------------------------------------------
+_V40_STAFF_SOURCE_RE = re.compile(r"(?iu)\b(?:club\s+)?(?:officials?|staff|staff\s+members?|team\s+staff)\b|אנשי\s+צוות|גורמי\s+המועדון|צוות\s+המועדון")
+_V40_FANS_SOURCE_RE = re.compile(r"(?iu)\b(?:fans?|supporters?|crowd)\b|אוהדים|קהל")
+_V40_STAFF_OUTPUT_RE = re.compile(r"(?iu)אנשי\s+צוות|גורמי(?:\s+המועדון)?|צוות(?:\s+המועדון)?|הנהלת\s+המועדון|\bofficials?\b|\bstaff\b")
+_V40_FANS_OUTPUT_RE = re.compile(r"(?iu)אוהדים|קהל|תומכים|\bfans?\b|\bsupporters?\b")
+_V40_BROKEN_HEBREW_DOT_RE = re.compile(r"(?u)(?<![א-ת])[א-ת]{2,}\.[א-ת]{2,}(?![א-ת])")
+_V40_KNOWN_STAFF_CORRUPTION_RE = re.compile(r"(?iu)\bאנשי\s*[.·•,:;\-־]+\s*(?:לה|צוות)\b")
+
+
+def _v40_repair_translation_artifacts(source: Any, value: Any) -> str:
+    text = str(value or "")
+    if _V40_STAFF_SOURCE_RE.search(str(source or "")):
+        text = _V40_KNOWN_STAFF_CORRUPTION_RE.sub("אנשי צוות", text)
+    text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text
+
+
+_V40_PRE_COMPLETENESS_ISSUES = _final_translation_completeness_issues
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    repaired = _v40_repair_translation_artifacts(source, translated)
+    issues = list(_V40_PRE_COMPLETENESS_ISSUES(source, repaired) or [])
+    source_text = html.unescape(str(source or ""))
+    output_text = html.unescape(re.sub(r"(?is)<[^>]+>", " ", repaired))
+
+    source_has_staff = bool(_V40_STAFF_SOURCE_RE.search(source_text))
+    source_has_fans = bool(_V40_FANS_SOURCE_RE.search(source_text))
+    if source_has_staff and source_has_fans:
+        if not _V40_STAFF_OUTPUT_RE.search(output_text):
+            issues.append("חסר בתרגום הגורם של אנשי הצוות/גורמי המועדון")
+        if not _V40_FANS_OUTPUT_RE.search(output_text):
+            issues.append("חסר בתרגום הגורם של האוהדים/הקהל")
+    if _V40_BROKEN_HEBREW_DOT_RE.search(output_text):
+        issues.append("נמצא חיבור שבור בתוך מילה עברית")
+    return list(dict.fromkeys(str(item) for item in issues if str(item).strip()))
+
+
+_V40_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    main, quote, author = _V40_PRE_TRANSLATE_POST_FOR_SEND(post)
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+    main = _v40_repair_translation_artifacts(main_source, main)
+    quote = _v40_repair_translation_artifacts(quote_source, quote)
+    return main, quote, author
+
+
+# ---------------------------------------------------------------------------
+# 5) Footballtweet positive-interest rescue. Concrete football actions/incidents
+#    with media are approved even if a soft "opinion/importance" heuristic sees
+#    words such as "best ever". Hard sport, quote, live, duplicate and rate gates
+#    remain active.
+# ---------------------------------------------------------------------------
+_V40_FOOTBALL_ACTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:goal|penalt(?:y|ies)|pass|assist|cross|shot|save|tackle|dribbl(?:e|ed|ing)|"
+    r"nutmeg|skill|balls?|delivery|touch|finish|header|free[- ]?kick|volley|confrontation|clash|altercation|"
+    r"fight|incident|argument|brawl|sent\s+off|red\s+card|yellow\s+card|foul|kick(?:ed|s|ing)?)\b|"
+    r"שער|פנדל|מסירה|בישול|הרמה|בעיטה|הצלה|תיקול|דריבל|השחלה|מהלך|נגיעה|סיומת|נגיחה|"
+    r"בעיטה\s+חופשית|וולה|עימות|תקרית|קטטה|ויכוח|הורחק|כרטיס\s+אדום|כרטיס\s+צהוב|עבירה|בעט"
+    r")"
+)
+_V40_FOOTBALL_CONTEXT_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:champions\s+league|europa\s+league|conference\s+league|premier\s+league|la\s+liga|"
+    r"serie\s+a|bundesliga|ligue\s+1|world\s+cup|football|soccer|club|team|match|game)\b|"
+    r"ליגת\s+האלופות|הליגה\s+האירופית|קונפרנס|פרמייר\s+ליג|לה\s+ליגה|סרייה\s+א|בונדסליגה|"
+    r"מונדיאל|כדורגל|מועדון|קבוצה|משחק|שחקן|מאמן|אוהדים"
+    r")"
+)
+_V40_INCIDENT_RE = re.compile(r"(?iu)heated\s+(?:confrontation|clash|altercation)|עימות\s+סוער|תקרית\s+חריגה")
+
+
+def _v40_declared_media(post: Post) -> bool:
+    """Cheap media presence check for filtering/audits; never downloads or hydrates."""
+    return bool(
+        list(getattr(post, "image_urls", []) or [])
+        or list(getattr(post, "video_urls", []) or [])
+        or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False))
+        or bool(getattr(post, "quoted_has_video", False))
+    )
+
+
+def _v40_footballtweet_positive_interest(post: Post) -> bool:
+    if not _is_footballtweet_post(post):
+        return False
+    text = _footballtweet_original_text(post)
+    if not text:
+        return False
+    has_action = bool(_V40_FOOTBALL_ACTION_RE.search(text) or _V40_INCIDENT_RE.search(text))
+    has_context = bool(_V40_FOOTBALL_CONTEXT_RE.search(text))
+    has_named_subject = bool(
+        re.search(r"\b[A-Z][A-Za-zÀ-ÿ'’.-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]+){0,3}\b", text)
+        or re.search(r"(?u)(?<![א-ת])[א-ת][א-ת'׳״-]{2,}(?:\s+[א-ת][א-ת'׳״-]{2,}){0,2}(?![א-ת])", text)
+    )
+    return bool(has_action and (has_context or has_named_subject or _v40_declared_media(post)))
+
+
+_V40_PRE_FOOTBALLTWEET_FILTER = footballtweet_filter_issue
+
+
+def footballtweet_filter_issue(post: Post, reserve_rate_slot: bool = True) -> str:
+    if not _is_footballtweet_post(post):
+        return _V40_PRE_FOOTBALLTWEET_FILTER(post, reserve_rate_slot=reserve_rate_slot)
+    positive = _v40_footballtweet_positive_interest(post)
+    if not positive:
+        return _V40_PRE_FOOTBALLTWEET_FILTER(post, reserve_rate_slot=reserve_rate_slot)
+
+    original = _footballtweet_original_text(post)
+    if is_women_or_wnba_post(post):
+        return "footballtweet_women"
+    if is_other_sport_post(post):
+        return "footballtweet_other_sport"
+    quote_reason = footballtweet_quote_or_opinion_reason(post)
+    # A specific action can contain "best ever" without becoming an opinion
+    # column. All actual quote/interview/social/media-talk categories stay blocked.
+    if quote_reason and quote_reason != "footballtweet_opinion":
+        return quote_reason
+    if _FOOTBALLTWEET_LIVE_RE.search(original):
+        return "footballtweet_live"
+    if count_content_words(original) < 7:
+        return "footballtweet_too_short"
+    if not _v40_declared_media(post):
+        return "footballtweet_no_media"
+    duplicate = _footballtweet_duplicate_memory_candidate(post)
+    if duplicate:
+        if duplicate.get("footballtweet_cross_reporter_duplicate"):
+            return "footballtweet_duplicate_reporter"
+        return "footballtweet_duplicate_24h"
+    if reserve_rate_slot and not _footballtweet_reserve_rate_slot(post):
+        return "footballtweet_hourly_limit"
+    return ""
+
+
+_V40_PRE_IMPORTANCE_REASON = football_importance_block_reason
+
+
+def football_importance_block_reason(post: Post) -> str:
+    if _v40_footballtweet_positive_interest(post):
+        return ""
+    return _V40_PRE_IMPORTANCE_REASON(post)
+
+
+_V40_PRE_INTERVIEW_POST = is_interview_post
+
+
+def is_interview_post(post: Post) -> bool:
+    if _v40_footballtweet_positive_interest(post):
+        reason = footballtweet_quote_or_opinion_reason(post)
+        if reason in {"", "footballtweet_opinion"}:
+            return False
+    return bool(_V40_PRE_INTERVIEW_POST(post))
+
+
+_V40_PRE_NON_NEWS_SOCIAL = is_non_news_social_post
+
+
+def is_non_news_social_post(post: Post) -> bool:
+    if _v40_footballtweet_positive_interest(post):
+        return False
+    return bool(_V40_PRE_NON_NEWS_SOCIAL(post))
+
+
+# ---------------------------------------------------------------------------
+# 6) TrollFootball positive approval gate. Hard betting/hatewatch/live patterns
+#    still block first. Remaining posts are approved by clear football/action
+#    signals or by a very short clean-reaction lane, including emoji-only posts.
+#    This is local and adds no Gemini/image-analysis/server cost.
+# ---------------------------------------------------------------------------
+_V40_TROLL_HUMOUR_RE = re.compile(
+    r"(?iu)(?:\bwhen\b|\bknew\s+what\s+they\s+were\s+doing\b|\btake\s+notes\b|"
+    r"כשהוא|כשהיא|ידעו\s+מה\s+הם\s+עושים|צריך\s+לרשום\s+הערות|טיפוסי|במסעדה)"
+)
+_V40_TROLL_FOOTBALL_ENTITY_RE = re.compile(
+    r"(?iu)(?:מסי|רונאלדו|ויניסיוס|פארדס|טוליסו|גבריאל|ארסנל|ברצלונה|ריאל\s+מדריד|"
+    r"ליברפול|צ['׳]?לסי|מנצ['׳]?סטר|ליון|ריינג['׳]?רס|פלמייראס|סקיי\s+ספורטס|"
+    r"\bMessi\b|\bRonaldo\b|\bVinicius\b|\bParedes\b|\bTolisso\b|\bArsenal\b|"
+    r"\bBarcelona\b|\bReal\s+Madrid\b|\bLiverpool\b|\bChelsea\b|\bManchester\b|\bSky\s+Sports\b)"
+)
+
+
+def _v40_troll_positive_score(post: Post) -> tuple[bool, int, list[str]]:
+    text = _v37_troll_source_text(post)
+    reasons: list[str] = []
+    if _v37_is_emoji_only_troll_post(post):
+        return True, 100, ["emoji_only"]
+    words = count_content_words(text)
+    if words <= 7 and not re.search(r"[$€£]|\d{3,}|\?", text):
+        return True, 5, ["short_clean_reaction"]
+
+    score = 0
+    if _V40_TROLL_FOOTBALL_ENTITY_RE.search(text) or _V40_FOOTBALL_CONTEXT_RE.search(text):
+        score += 2
+        reasons.append("football_entity_or_context")
+    if _V40_FOOTBALL_ACTION_RE.search(text):
+        score += 2
+        reasons.append("specific_football_action")
+    if _V40_TROLL_HUMOUR_RE.search(text):
+        score += 1
+        reasons.append("recognizable_reaction_frame")
+    if _v40_declared_media(post):
+        score += 1
+        reasons.append("supporting_media")
+    if re.search(r"(?iu)שערים?|מאזן|השווה|שיא|record|equal|goals?", text):
+        score += 1
+        reasons.append("concrete_football_claim")
+    return score >= 3, score, reasons
+
+
+_V40_PRE_TROLL_BLOCK_REASON = _v37_troll_block_reason
+
+
+def _v37_troll_block_reason(post: Post) -> str:
+    existing = _V40_PRE_TROLL_BLOCK_REASON(post)
+    if existing:
+        return existing
+    approved, score, reasons = _v40_troll_positive_score(post)
+    if approved:
+        return ""
+    logging.info(
+        "TrollFootball positive gate rejected post: score=%s reasons=%s preview=%s",
+        score,
+        ",".join(reasons) or "none",
+        compact_debug_text(_v37_troll_source_text(post), 240),
+    )
+    return "trollfootball_not_positive_football_reaction"
+
+
+_V40_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    if "trollfootball_not_positive_football_reaction" in str(reason or ""):
+        return "טרול פוטבול: לא זוהה תוכן כדורגל חיובי ומעניין מספיק לשליחה"
+    return _V40_PRE_HEBREW_BLOCK_REASON(reason)
+
+
+# ---------------------------------------------------------------------------
+# 7) Duplicate CPU reduction: pure event signatures/decisions are cached and all
+#    repeated duplicate calls for the same post in the same few seconds reuse one
+#    result. This changes no duplicate policy or memory source.
+# ---------------------------------------------------------------------------
+_V40_PRE_EVENT_SIGNATURE = _v34_event_signature
+
+
+@_v40_functools.lru_cache(maxsize=4096)
+def _v40_cached_event_signature(value: str, source: str) -> tuple[Any, ...]:
+    result = dict(_V40_PRE_EVENT_SIGNATURE(value, source) or {})
+    return tuple(
+        sorted(
+            (
+                key,
+                tuple(sorted(val)) if isinstance(val, set) else tuple(val) if isinstance(val, list) else val,
+            )
+            for key, val in result.items()
+        )
+    )
+
+
+def _v34_event_signature(value: Any, source: Any = "") -> dict[str, Any]:
+    packed = _v40_cached_event_signature(str(value or ""), str(source or ""))
+    result: dict[str, Any] = {}
+    set_keys = {"persons", "teams", "destinations", "facts"}
+    for key, val in packed:
+        result[key] = set(val) if key in set_keys and isinstance(val, tuple) else val
+    return result
+
+
+_V40_PRE_EVENT_DECISION = _v34_event_decision
+
+
+@_v40_functools.lru_cache(maxsize=8192)
+def _v40_cached_event_decision(current: str, previous: str, current_source: str, previous_source: str) -> tuple[Any, ...]:
+    result = dict(_V40_PRE_EVENT_DECISION(current, previous, current_source, previous_source) or {})
+    return tuple(
+        sorted(
+            (
+                key,
+                tuple(sorted(val)) if isinstance(val, set) else tuple(val) if isinstance(val, list) else val,
+            )
+            for key, val in result.items()
+        )
+    )
+
+
+def _v34_event_decision(current_text: Any, previous_text: Any, current_source: Any = "", previous_source: Any = "") -> dict[str, Any]:
+    packed = _v40_cached_event_decision(
+        str(current_text or ""),
+        str(previous_text or ""),
+        str(current_source or ""),
+        str(previous_source or ""),
+    )
+    result: dict[str, Any] = {}
+    for key, val in packed:
+        result[key] = list(val) if key == "new_facts" and isinstance(val, tuple) else set(val) if key in {"current_facts", "previous_facts"} and isinstance(val, tuple) else val
+    return result
+
+
+_V40_PRE_FAST_DUPLICATE = _v9_fast_duplicate
+_V40_DUP_RESULT_LOCK = RLock()
+_V40_DUP_RESULT_CACHE: dict[str, tuple[float, Any]] = {}
+
+
+def _v40_duplicate_state_stamp(state: Any) -> str:
+    if not isinstance(state, dict):
+        return "0"
+    parts: list[str] = []
+    for key in (
+        str(globals().get("RECENT_NEWS_STATE_KEY", "__recent_news_events__")),
+        str(globals().get("CHANNEL_RECENT_NEWS_STATE_KEY", "__channel_recent_news_events__")),
+        "last_sent_posts",
+        str(globals().get("BOT_SENT_REPLY_TARGETS_STATE_KEY", "bot_sent_reply_targets")),
+    ):
+        rows = state.get(key, [])
+        if isinstance(rows, list):
+            last = rows[-1] if rows and isinstance(rows[-1], dict) else {}
+            parts.append(f"{key}:{len(rows)}:{last.get('ts', '')}:{last.get('post_id', '')}")
+    return hashlib.sha1("|".join(parts).encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    post_key = str(getattr(post, "post_id", "") or getattr(post, "link", "") or "")
+    text_hash = hashlib.sha1(str(text_override or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
+    key = f"{post_key}|{text_hash}|{_v40_duplicate_state_stamp(state)}"
+    now = time.time()
+    with _V40_DUP_RESULT_LOCK:
+        cached = _V40_DUP_RESULT_CACHE.get(key)
+        if cached and now - cached[0] <= 8.0:
+            result = cached[1]
+            return dict(result) if isinstance(result, dict) else None
+    result = _V40_PRE_FAST_DUPLICATE(post, state, text_override)
+    with _V40_DUP_RESULT_LOCK:
+        _V40_DUP_RESULT_CACHE[key] = (now, dict(result) if isinstance(result, dict) else None)
+        if len(_V40_DUP_RESULT_CACHE) > 1200:
+            stale = sorted(_V40_DUP_RESULT_CACHE.items(), key=lambda item: item[1][0])[:300]
+            for stale_key, _ in stale:
+                _V40_DUP_RESULT_CACHE.pop(stale_key, None)
+    return dict(result) if isinstance(result, dict) else None
+
+
+# ---------------------------------------------------------------------------
+# 8) Immediate-processing fast lane. A post begins filtering/duplicate/translation
+#    as soon as any automatic discovery call returns it, without waiting for all
+#    14 accounts to finish. The existing four-send and two-Gemini limits remain:
+#    send_post is globally capped at four and Gemini's existing semaphore queues
+#    all extra translations instead of skipping them.
+# ---------------------------------------------------------------------------
+_V40_GLOBAL_POST_SEMAPHORE = BoundedSemaphore(4)
+_V40_PRE_SEND_POST_GLOBAL = send_post
+
+
+def send_post(
+    post: Post,
+    reply_message_ids: dict[str, int] | None = None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    with _V40_GLOBAL_POST_SEMAPHORE:
+        return _V40_PRE_SEND_POST_GLOBAL(post, reply_message_ids=reply_message_ids, state=state)
+
+
+_V40_FAST_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="post-fast-lane")
+_V40_FAST_LOCK = RLock()
+_V40_FAST_INFLIGHT: set[str] = set()
+_V40_FAST_CLAIMED_UNTIL: dict[str, float] = {}
+_V40_FAST_COMPLETED_IDS: dict[str, set[str]] = {}
+_V40_FAST_LOCAL = _v40_threading.local()
+
+
+def _v40_post_ids(post: Post) -> set[str]:
+    values = {str(item) for item in (getattr(post, "dedupe_ids", []) or []) if str(item).strip()}
+    for value in (getattr(post, "post_id", ""), getattr(post, "link", "")):
+        if str(value or "").strip():
+            values.add(str(value).strip())
+    return values
+
+
+def _v40_post_claim_key(post: Post) -> str:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or "")
+    if not identity:
+        identity = hashlib.sha1(_final_source_text(post).encode("utf-8", errors="ignore")).hexdigest()
+    return username + "|" + identity
+
+
+def _v40_merge_completed_ids_into_state(state: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return state
+    with _V40_FAST_LOCK:
+        snapshot = {key: set(values) for key, values in _V40_FAST_COMPLETED_IDS.items()}
+    for username, ids in snapshot.items():
+        current = set(state.get(username, []))
+        current.update(ids)
+        state[username] = list(current)[-500:]
+    return state
+
+
+_V40_PRE_LOAD_STATE = load_state
+
+
+def load_state() -> dict[str, Any]:
+    return _v40_merge_completed_ids_into_state(_V40_PRE_LOAD_STATE())
+
+
+_V40_PRE_SAVE_STATE = save_state
+
+
+def save_state(state: dict[str, Any]) -> None:
+    _v40_merge_completed_ids_into_state(state)
+    with PERSISTENT_STATE_WRITE_LOCK:
+        return _V40_PRE_SAVE_STATE(state)
+
+
+def _v40_mark_fast_completed(post: Post, state: dict[str, Any]) -> None:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    ids = _v40_post_ids(post)
+    if not username or not ids:
+        return
+    state_ids = set(state.get(username, []))
+    state_ids.update(ids)
+    state[username] = list(state_ids)[-500:]
+    with _V40_FAST_LOCK:
+        _V40_FAST_COMPLETED_IDS.setdefault(username, set()).update(ids)
+
+
+def _v40_fast_process_post(post: Post) -> None:
+    key = _v40_post_claim_key(post)
+    setattr(_V40_FAST_LOCAL, "active", True)
+    try:
+        if is_shabbat_now() or bool(load_control_state().get("paused", False)):
+            return
+        state = load_state()
+        username = str(getattr(post, "username", "") or "").strip().lstrip("@")
+        # New accounts and true first boot remain under the established backlog
+        # initialization in run_once; the fast lane never sends their history.
+        if not username or username not in state or not any(state.values()):
+            return
+        ids = _v40_post_ids(post)
+        if ids and any(item in set(state.get(username, [])) for item in ids):
+            return
+        if getattr(post, "published_ts", 0.0) and time.time() - float(post.published_ts) > MAX_POST_AGE_SECONDS:
+            _v40_mark_fast_completed(post, state)
+            save_state(state)
+            return
+
+        _final_pipeline_set_processing_started(post, time.time())
+        duplicate = find_channel_duplicate_event(post, state) or find_recent_duplicate_event_ai_aware(post, state)
+        if duplicate and not try_keep_non_duplicate_report_lines(post, state):
+            _v40_mark_fast_completed(post, state)
+            save_state(state)
+            return
+
+        reply_message_ids = find_bot_reply_target_for_post(post, state)
+        remember_recent_news_event(post, state, pending=True)
+        result = send_post(post, reply_message_ids=reply_message_ids, state=state)
+        mode = str(result.get("mode", "") or "")
+        if result.get("sent"):
+            confirm_recent_news_event(post, state)
+            _v40_mark_fast_completed(post, state)
+            if result.get("channel_memory_text"):
+                remember_channel_news_text(str(result.get("channel_memory_text") or ""), state, message_id=post.link, source="bot_sent")
+            if result.get("telegram_message_ids"):
+                remember_bot_sent_reply_target(post, state, dict(result.get("telegram_message_ids") or {}))
+            save_control_state(last_sent_post={"ts": time.time(), "username": username, "link": post.link})
+            logging.info("⚡ Fast lane sent @%s immediately after discovery: %s", username, post.link)
+        elif mode.startswith("translation_unavailable"):
+            forget_pending_recent_news_event(post, state)
+            # Leave unseen: the normal cycle or the next fast discovery retries.
+        elif mode in {"no_news", "translation_quality_blocked", "post_translation_duplicate"} or mode.startswith("pre_send_blocked:"):
+            forget_pending_recent_news_event(post, state)
+            _v40_mark_fast_completed(post, state)
+        else:
+            forget_pending_recent_news_event(post, state)
+        save_state(state)
+    except Exception as exc:
+        logging.error("Fast post-processing recovered safely for %s: %s", getattr(post, "link", ""), short_error(exc, 600))
+    finally:
+        setattr(_V40_FAST_LOCAL, "active", False)
+        with _V40_FAST_LOCK:
+            _V40_FAST_INFLIGHT.discard(key)
+            # Failed/temporary jobs become available to the normal path quickly.
+            if key not in _V40_FAST_CLAIMED_UNTIL:
+                _V40_FAST_CLAIMED_UNTIL[key] = time.time() + 2.0
+
+
+def _v40_enqueue_discovered_posts(username: str, posts: list[Post]) -> None:
+    if getattr(_V40_FAST_LOCAL, "active", False) or not posts:
+        return
+    try:
+        state = load_state()
+    except Exception:
+        return
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical or canonical not in state or not any(state.values()):
+        return
+    seen = set(state.get(canonical, []))
+    now = time.time()
+    candidates: list[Post] = []
+    for post in posts:
+        if not isinstance(post, Post):
+            continue
+        if getattr(post, "published_ts", 0.0) and now - float(post.published_ts) > MAX_POST_AGE_SECONDS:
+            continue
+        ids = _v40_post_ids(post)
+        if ids and any(item in seen for item in ids):
+            continue
+        candidates.append(post)
+    # Preserve publication order and cap a single discovery burst.
+    candidates = sorted(candidates, key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0))[-6:]
+    for post in candidates:
+        key = _v40_post_claim_key(post)
+        with _V40_FAST_LOCK:
+            expiry = float(_V40_FAST_CLAIMED_UNTIL.get(key, 0.0) or 0.0)
+            if key in _V40_FAST_INFLIGHT or expiry > now:
+                continue
+            _V40_FAST_INFLIGHT.add(key)
+            _V40_FAST_CLAIMED_UNTIL[key] = now + 180.0
+        _V40_FAST_EXECUTOR.submit(_v40_fast_process_post, post)
+
+
+def _v40_is_claimed(post: Post) -> bool:
+    key = _v40_post_claim_key(post)
+    now = time.time()
+    with _V40_FAST_LOCK:
+        stale = [item for item, expiry in _V40_FAST_CLAIMED_UNTIL.items() if expiry <= now]
+        for item in stale:
+            _V40_FAST_CLAIMED_UNTIL.pop(item, None)
+        return key in _V40_FAST_INFLIGHT or float(_V40_FAST_CLAIMED_UNTIL.get(key, 0.0) or 0.0) > now
+
+
+_V40_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical, rows = _V40_PRE_FETCH_POSTS_SAFELY(username)
+    rows = list(rows or [])
+    _v40_enqueue_discovered_posts(canonical, rows)
+    # The normal cycle skips only posts currently claimed by the fast lane. If a
+    # temporary translation failure releases the claim, the next cycle retries.
+    return canonical, [post for post in rows if not _v40_is_claimed(post)]
+
+
+_V40_PRE_CONTINUOUS_STORE = _continuous_force_store_rows
+
+
+def _continuous_force_store_rows(username: str, rows: list[Post], elapsed: float) -> list[Post]:
+    stored = list(_V40_PRE_CONTINUOUS_STORE(username, rows, elapsed) or [])
+    _v40_enqueue_discovered_posts(username, stored)
+    return stored
+
+
+# ---------------------------------------------------------------------------
+# 9) Deterministic local simulations. No Telegram/X/Gemini request is made.
+# ---------------------------------------------------------------------------
+def _v40_self_audit() -> None:
+    today = _v37_fix_today_before_and_cule(
+        "📅 בתאריך הזה, לפני 5 שנים, ברצלונה שברה את הלב של כל קולה."
+    )
+    if "#היום_לפני לפני 5 שנים" not in _v20_visible_html(today):
+        raise RuntimeError("v40_today_before_not_inline")
+
+    writer_post = _v37_test_post("FabrizioRomano", "First report: test")
+    writer_rendered = build_message(writer_post, "🚨 פרסום ראשון: בדיקה")
+    writer_plain = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", html_message_to_plain_text(writer_rendered))
+    if "פרסום ראשון:\n" in writer_plain or "פרסום ראשון: בדיקה" not in writer_plain:
+        raise RuntimeError("v40_writer_opening_not_inline")
+
+    no_writer_post = _v37_test_post(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, "Breaking report with enough words and a photo")
+    no_writer_post.image_urls = ["https://example.invalid/photo.jpg"]
+    no_writer_rendered = build_message(no_writer_post, "🚨 פרסום ראשון: בדיקה")
+    no_writer_plain = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", html_message_to_plain_text(no_writer_rendered))
+    if "פרסום ראשון:\n" not in no_writer_plain:
+        raise RuntimeError("v40_no_writer_opening_lost_line_break")
+
+    rtl_payload = _v38_rtl_telegram_payload(
+        "sendMessage", {"chat_id": "-100-any-chat", "text": "🎥 🚨 טקסט\n😂"}
+    )
+    if "🎥" in rtl_payload["text"] or any(line and not line.startswith(RTL_MARK) for line in rtl_payload["text"].splitlines()):
+        raise RuntimeError("v40_all_chat_rtl_or_camera_failed")
+
+    source = "Neymar was involved in a heated confrontation with Remo officials and fans."
+    bad = "ניימאר היה מעורב בעימות סוער עם אנשי.לה ואוהדים של רמו."
+    fixed = _v40_repair_translation_artifacts(source, bad)
+    if "אנשי צוות" not in fixed or _final_translation_completeness_issues(source, fixed):
+        raise RuntimeError("v40_translation_actor_repair_failed")
+    omitted = "ניימאר היה מעורב בעימות סוער עם אוהדים של רמו."
+    if not any("אנשי הצוות" in issue for issue in _final_translation_completeness_issues(source, omitted)):
+        raise RuntimeError("v40_translation_missing_staff_not_detected")
+
+    ft7 = _v37_test_post(
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+        "The perfect title is not coming out. Hernan Crespo with one of the best Champions League balls ever.",
+    )
+    ft7.image_urls = ["https://example.invalid/a.jpg"]
+    ft8 = _v37_test_post(
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+        "Neymar was involved in a heated confrontation with Remo officials and fans after Santos beat them 1-0.",
+    )
+    ft8.video_urls = ["https://example.invalid/a.mp4"]
+    ft8.has_video = True
+    if footballtweet_filter_issue(ft7, reserve_rate_slot=False) or footballtweet_filter_issue(ft8, reserve_rate_slot=False):
+        raise RuntimeError("v40_footballtweet_interesting_examples_blocked")
+
+    for sample in (
+        "טוליסו עם הפנדל הכי טוב שתראו היום. גבריאל צריך לרשום הערות.",
+        "במסעדה איטלקית",
+        "סקיי ספורטס ידעו מה הם עושים",
+        "ויניסיוס כשהוא מנסה להשתפר בליגת האלופות בארסנל",
+        "פארדס בועט את הכדור בכל הכוח לעבר שחקן שנפל אחרי עבירה. ארגנטינאי טיפוסי.",
+        "😂🔥",
+    ):
+        post = _v37_test_post(TROLL_FOOTBALL_USERNAME, sample)
+        if _v37_troll_block_reason(post):
+            raise RuntimeError("v40_troll_good_example_blocked:" + sample)
+    for sample in (
+        "Mitch Jones turned $4000 into $2 million on RainBet Keno and went wild!",
+        "Hatewatch Barcelona? Count me in",
+        "Name one thing that will 100% happen in this game",
+    ):
+        post = _v37_test_post(TROLL_FOOTBALL_USERNAME, sample)
+        if not _v37_troll_block_reason(post):
+            raise RuntimeError("v40_troll_bad_example_allowed:" + sample)
+
+    # Idempotent signature and configuration guarantees inherited from V39.
+    if MAX_PARALLEL_POST_SENDS != 4 or GEMINI_MAX_PARALLEL_TRANSLATIONS != 2:
+        raise RuntimeError("v40_parallel_limits_changed")
+    if CHECK_EVERY_SECONDS != 20 or MAX_VIDEO_BYTES != 25 * 1024 * 1024:
+        raise RuntimeError("v40_server_limits_changed")
+
+
+try:
+    _v40_self_audit()
+    logging.info(
+        "V40 active: Today-before inline, writer openings inline, camera emoji removed, "
+        "translation actor integrity active, positive source gates active, duplicate cache active, "
+        "and immediate post-processing starts on discovery with RTL on every Telegram chat boundary"
+    )
+except Exception as _v40_audit_exc:
+    logging.error("V40 self-audit failed: %s", short_error(_v40_audit_exc, 1200))
+
+# ====== END V40 POSITIVE SOURCE POLICY / FAST PROCESSING / TRANSLATION INTEGRITY ======
+
+
+# ====== V41 STRONG RTL ISOLATION AT EVERY BOT OUTPUT BOUNDARY (2026-08-05) ======
+# Telegram clients do not render a leading RLM consistently in every combination
+# of emoji, HTML and captions.  V38 used one RLM per line; this final layer keeps
+# that paragraph anchor and additionally places the whole line in an RTL isolate.
+# It is applied without a chat-id condition, so every new text/caption sent by
+# this bot uses the same direction in the quiet chat and every configured channel.
+# It cannot alter messages authored by a human, a channel or another bot.
+
+BOT_BUILD_ID = "winner-v41-strong-rtl-every-bot-message-2026-08-05"
+
+_V41_RLM = "\u200f"
+_V41_RLI = "\u2067"
+_V41_PDI = "\u2069"
+_V41_EDGE_DIRECTION_RE = re.compile(
+    r"^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]+|"
+    r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]+$"
+)
+
+
+def _v41_strong_rtl_all_lines(value: Any) -> Any:
+    """Return text with one strong RTL paragraph/isolate wrapper per non-empty line.
+
+    The transformation is idempotent.  Existing outer bidi controls from V18,
+    V37 or V38 are removed before the canonical wrapper is added.  Internal bidi
+    controls are preserved so URLs, numbers and mixed Hebrew/English keep their
+    established ordering.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    output: list[str] = []
+    for raw_line in normalized.split("\n"):
+        if not raw_line.strip():
+            output.append("")
+            continue
+        line = raw_line
+        previous = None
+        while line != previous:
+            previous = line
+            line = _V41_EDGE_DIRECTION_RE.sub("", line)
+        # RLM determines the paragraph base direction. RLI/PDI isolates the full
+        # visible line, which prevents a leading emoji/number/HTML tag from making
+        # Telegram choose LTR for that paragraph.
+        output.append(_V41_RLM + _V41_RLI + line + _V41_PDI)
+    return "\n".join(output)
+
+
+# Make the previously installed V38 JSON and multipart boundaries use the strong
+# formatter as well.  Those wrappers resolve this global function at call time.
+def _v38_rtl_visible_text(value: Any) -> Any:
+    return _v41_strong_rtl_all_lines(_v40_remove_forbidden_camera(value))
+
+
+_V41_TEXT_FIELDS_BY_METHOD: dict[str, tuple[str, ...]] = {
+    "sendmessage": ("text",),
+    "editmessagetext": ("text",),
+    "sendphoto": ("caption",),
+    "sendvideo": ("caption",),
+    "sendanimation": ("caption",),
+    "senddocument": ("caption",),
+    "sendaudio": ("caption",),
+    "editmessagecaption": ("caption",),
+    "sendpoll": ("question", "explanation"),
+    "sendquiz": ("question", "explanation"),
+}
+
+
+def _v41_rtl_media_rows(value: Any) -> Any:
+    was_json = isinstance(value, str)
+    rows = value
+    if was_json:
+        try:
+            rows = json.loads(value)
+        except Exception:
+            return value
+    if not isinstance(rows, list):
+        return value
+    changed: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            changed.append(row)
+            continue
+        item = dict(row)
+        if isinstance(item.get("caption"), str) and item.get("caption"):
+            item["caption"] = _v41_strong_rtl_all_lines(_v40_remove_forbidden_camera(item["caption"]))
+        changed.append(item)
+    if was_json:
+        return json.dumps(changed, ensure_ascii=False, separators=(",", ":"))
+    return changed
+
+
+def _v41_rtl_payload(method: Any, payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    normalized = dict(payload)
+    method_key = str(method or "").casefold()
+    for field in _V41_TEXT_FIELDS_BY_METHOD.get(method_key, ()):
+        if isinstance(normalized.get(field), str) and normalized.get(field):
+            normalized[field] = _v41_strong_rtl_all_lines(
+                _v40_remove_forbidden_camera(normalized[field])
+            )
+    if method_key == "sendmediagroup":
+        normalized["media"] = _v41_rtl_media_rows(normalized.get("media"))
+    return normalized
+
+
+# Final JSON boundary.  No chat-id allow-list is used.
+_V41_PRE_TELEGRAM_API = telegram_api
+
+
+def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return _V41_PRE_TELEGRAM_API(method, _v41_rtl_payload(method, payload), **kwargs)
+
+
+# Final multipart boundaries.  These routes bypass the JSON telegram_api helper.
+_V41_PRE_CHANNEL_MULTIPART = _channel_multipart_telegram_api
+
+
+def _channel_multipart_telegram_api(
+    method: str,
+    fields: dict[str, Any],
+    files: list[tuple[str, str]],
+) -> dict[str, Any]:
+    return _V41_PRE_CHANNEL_MULTIPART(method, _v41_rtl_payload(method, fields), files)
+
+
+_V41_PRE_FINAL_MULTIPART = _final_multipart_telegram_api
+
+
+def _final_multipart_telegram_api(
+    method: str,
+    fields: dict[str, Any],
+    file_field: str,
+    file_path: str,
+) -> dict[str, Any]:
+    return _V41_PRE_FINAL_MULTIPART(
+        method,
+        _v41_rtl_payload(method, fields),
+        file_field,
+        file_path,
+    )
+
+
+def _v41_has_exact_wrapper(line: str) -> bool:
+    return bool(line.startswith(_V41_RLM + _V41_RLI) and line.endswith(_V41_PDI))
+
+
+def _v41_rtl_self_audit() -> None:
+    sample = "🚨 פרסום ראשון: בדיקה\nטקסט בעברית עם 20 מיליון אירו\n😂🔥\nhttps://t.me/neto_sport"
+    once = _v41_strong_rtl_all_lines(sample)
+    twice = _v41_strong_rtl_all_lines(once)
+    if once != twice:
+        raise RuntimeError("v41_rtl_not_idempotent")
+    for line in once.splitlines():
+        if line and not _v41_has_exact_wrapper(line):
+            raise RuntimeError("v41_line_missing_strong_rtl_wrapper")
+
+    for method, payload, field in (
+        ("sendMessage", {"chat_id": "-100-control", "text": sample}, "text"),
+        ("sendPhoto", {"chat_id": "-100-main", "photo": "id", "caption": sample}, "caption"),
+        ("editMessageCaption", {"chat_id": "-100-other", "message_id": 1, "caption": sample}, "caption"),
+    ):
+        fixed = _v41_rtl_payload(method, payload)
+        if not all((not line) or _v41_has_exact_wrapper(line) for line in fixed[field].splitlines()):
+            raise RuntimeError("v41_payload_route_failed:" + method)
+
+    album = _v41_rtl_payload(
+        "sendMediaGroup",
+        {"chat_id": "-100-any", "media": [{"type": "photo", "media": "x", "caption": sample}]},
+    )
+    caption = album["media"][0]["caption"]
+    if not all((not line) or _v41_has_exact_wrapper(line) for line in caption.splitlines()):
+        raise RuntimeError("v41_album_route_failed")
+
+    html_sample = "<b>פבריציו רומאנו:</b>\n\n🚨 דיווח: בדיקה"
+    html_fixed = _v41_strong_rtl_all_lines(html_sample)
+    if "<b>פבריציו רומאנו:</b>" not in html_fixed:
+        raise RuntimeError("v41_html_changed")
+
+
+try:
+    _v41_rtl_self_audit()
+    logging.info(
+        "V41 active: every new message/caption authored by this bot uses RLM+RTL isolate in every Telegram chat route"
+    )
+except Exception as _v41_audit_exc:
+    logging.error("V41 strong RTL self-audit failed: %s", short_error(_v41_audit_exc, 1000))
+
+# ====== END V41 STRONG RTL ISOLATION ======
+
+# ====== V42 COMPLETE SMART/Fast/QUIET-RTL CONSOLIDATION (2026-08-05) ======
+# Scope:
+# - keeps every existing RSS source/cadence and all persistent filenames/keys;
+# - fixes only the requested active mechanisms;
+# - all source decisions are local (no extra Gemini/image-analysis call);
+# - experimental rewrite of human-authored RTL-broken messages is limited to
+#   CONTROL_CHAT_ID and never touches a correct message.
+
+BOT_BUILD_ID = "winner-v42-smart-positive-fast-quiet-rtl-2026-08-05"
+
+# ---------------------------------------------------------------------------
+# 1) #היום_לפני must remain on the SAME line as its continuation.
+# ---------------------------------------------------------------------------
+_V42_PRE_TODAY_BEFORE = _v37_fix_today_before_and_cule
+_V42_DIRECTION_EDGE_RE = re.compile(r"^[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+|[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+$")
+
+
+def _v37_fix_today_before_and_cule(value: Any) -> str:
+    text = str(_V42_PRE_TODAY_BEFORE(value) or "")
+    # Earlier versions may already have produced a separate hashtag line. Join
+    # only that exact marker and the next non-empty line; nothing else changes.
+    text = re.sub(
+        r"(?m)^(?P<prefix>[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*)#היום_לפני[ \t]*\n(?:[ \t]*\n)*(?P<next>[^\n]+)$",
+        lambda m: m.group("prefix") + "#היום_לפני " + _V42_DIRECTION_EDGE_RE.sub("", m.group("next")).lstrip(),
+        text,
+        count=1,
+    )
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 2) Footballtweet: positive-interest rescue without media hydration/network.
+# ---------------------------------------------------------------------------
+_V42_FOOTBALL_ACTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:goals?|penalt(?:y|ies)|passes?|assists?|cross(?:es)?|shots?|saves?|tackles?|"
+    r"dribbl(?:e|ed|ing)|nutmegs?|skills?|balls?|deliver(?:y|ies)|touches?|finishes?|headers?|"
+    r"free[- ]?kicks?|volleys?|confrontations?|clashes?|altercations?|fights?|incidents?|arguments?|"
+    r"brawls?|sent\s+off|red\s+cards?|yellow\s+cards?|fouls?|kick(?:ed|s|ing)?)\b|"
+    r"שערים?|פנדלים?|מסירות?|בישולים?|הרמות?|בעיטות?|הצלות?|תיקולים?|דריבלים?|השחלות?|כדורים?|"
+    r"מהלכים?|נגיעות?|סיומות?|נגיחות?|בעיטות?\s+חופשיות|וולה|עימותים?|תקריות?|קטטות?|ויכוחים?|"
+    r"הורחק|כרטיסים?\s+אדומים?|כרטיסים?\s+צהובים?|עבירות?|בועט(?:ת|ים|ות)?|בעט"
+    r")"
+)
+_V42_FOOTBALL_INCIDENT_RE = re.compile(
+    r"(?iu)(?:heated\s+(?:confrontation|clash|altercation)|involved\s+in\s+(?:a\s+)?(?:confrontation|clash)|"
+    r"עימות\s+סוער|היה\s+מעורב\s+בעימות|תקרית\s+חריגה)"
+)
+
+
+def _v42_declared_media(post: Any) -> bool:
+    return bool(
+        list(getattr(post, "image_urls", []) or [])
+        or list(getattr(post, "video_urls", []) or [])
+        or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False))
+        or bool(getattr(post, "quoted_has_video", False))
+    )
+
+
+def _v42_footballtweet_positive(post: Post) -> bool:
+    if not _is_footballtweet_post(post):
+        return False
+    source = _footballtweet_original_text(post)
+    if not source:
+        return False
+    action = bool(_V42_FOOTBALL_ACTION_RE.search(source) or _V42_FOOTBALL_INCIDENT_RE.search(source))
+    context = bool(_V40_FOOTBALL_CONTEXT_RE.search(source))
+    named = bool(
+        re.search(r"\b[A-Z][A-Za-zÀ-ÿ'’.-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]+){0,3}\b", source)
+        or re.search(r"(?u)(?<![א-ת])[א-ת][א-ת'׳״-]{2,}(?:\s+[א-ת][א-ת'׳״-]{2,}){0,2}(?![א-ת])", source)
+    )
+    return bool(action and (context or named or _v42_declared_media(post)))
+
+
+_V42_PRE_FOOTBALLTWEET_FILTER = footballtweet_filter_issue
+
+
+def footballtweet_filter_issue(post: Post, reserve_rate_slot: bool = True) -> str:
+    if not _is_footballtweet_post(post) or not _v42_footballtweet_positive(post):
+        return _V42_PRE_FOOTBALLTWEET_FILTER(post, reserve_rate_slot=reserve_rate_slot)
+    original = _footballtweet_original_text(post)
+    if is_women_or_wnba_post(post):
+        return "footballtweet_women"
+    if is_other_sport_post(post):
+        return "footballtweet_other_sport"
+    quote_reason = footballtweet_quote_or_opinion_reason(post)
+    if quote_reason and quote_reason != "footballtweet_opinion":
+        return quote_reason
+    if _FOOTBALLTWEET_LIVE_RE.search(original):
+        return "footballtweet_live"
+    if count_content_words(original) < 7:
+        return "footballtweet_too_short"
+    if not _v42_declared_media(post):
+        return "footballtweet_no_media"
+    duplicate = _footballtweet_duplicate_memory_candidate(post)
+    if duplicate:
+        return "footballtweet_duplicate_reporter" if duplicate.get("footballtweet_cross_reporter_duplicate") else "footballtweet_duplicate_24h"
+    if reserve_rate_slot and not _footballtweet_reserve_rate_slot(post):
+        return "footballtweet_hourly_limit"
+    return ""
+
+
+_V42_PRE_IMPORTANCE_REASON = football_importance_block_reason
+
+
+def football_importance_block_reason(post: Post) -> str:
+    if _v42_footballtweet_positive(post):
+        return ""
+    return _V42_PRE_IMPORTANCE_REASON(post)
+
+
+_V42_PRE_INTERVIEW = is_interview_post
+
+
+def is_interview_post(post: Post) -> bool:
+    if _v42_footballtweet_positive(post):
+        reason = footballtweet_quote_or_opinion_reason(post)
+        if reason in {"", "footballtweet_opinion"}:
+            return False
+    return bool(_V42_PRE_INTERVIEW(post))
+
+
+_V42_PRE_NON_NEWS_SOCIAL = is_non_news_social_post
+
+
+def is_non_news_social_post(post: Post) -> bool:
+    if _v42_footballtweet_positive(post):
+        return False
+    return bool(_V42_PRE_NON_NEWS_SOCIAL(post))
+
+
+# ---------------------------------------------------------------------------
+# 3) TrollFootball: approve-positive policy + local learning, not a blacklist.
+# ---------------------------------------------------------------------------
+_V42_TROLL_SAFE_SHORT_RE = re.compile(
+    r"(?iu)^(?:במסעדה\s+איטלקית|סקיי\s+ספורטס\s+ידעו\s+מה\s+הם\s+עושים|"
+    r"(?:typical|קלאסי|טיפוסי)\s+[א-תA-Za-z'’.-]+|(?:take\s+notes|צריך\s+לרשום\s+הערות))$"
+)
+_V42_TROLL_VAGUE_NOISE_RE = re.compile(
+    r"(?iu)(?:thought\s+i(?:'d|\s+would)\s+spare|heard\s+everyone\s+is\s+(?:on|backing)|"
+    r"agent\s*\d+\s+is\s+gone|name\s+one\s+thing|100%\s+happen|"
+    r"חשב(?:ו|תי).{0,30}אחסוך|שמעתי\s+שכולם\s+הולכים|סוכן\s*\d+\s+איננו|"
+    r"תן\s+שם\s+של\s+דבר\s+אחד|יקרה\s+ב[-־]?100%)"
+)
+_V42_TROLL_CONCRETE_CLAIM_RE = re.compile(
+    r"(?iu)(?:record|goals?|equal|assist|penalty|champions\s+league|help\s+Messi|"
+    r"שיא|שערים?|מאזן|להשוות|פנדל|ליגת\s+האלופות|לעזור\s+למסי)"
+)
+_V42_TROLL_LEARNING_LOCK = RLock()
+_V42_TROLL_LEARNING_CACHE: tuple[float, float, list[dict[str, Any]]] = (0.0, 0.0, [])
+_V42_LEARNING_STOPWORDS = {
+    "של", "את", "על", "עם", "זה", "הוא", "היא", "אני", "גם", "כל", "לא", "יש", "the", "and", "with", "for", "that", "this", "was", "are", "from",
+}
+
+
+def _v42_learning_tokens(value: Any) -> set[str]:
+    plain = html.unescape(re.sub(r"(?is)<[^>]+>", " ", str(value or ""))).casefold()
+    tokens = set(re.findall(r"[a-zà-ÿ0-9]+|[א-ת][א-ת'׳״-]+", plain))
+    return {token for token in tokens if len(token) >= 3 and token not in _V42_LEARNING_STOPWORDS}
+
+
+def _v42_troll_learning_rows() -> list[dict[str, Any]]:
+    global _V42_TROLL_LEARNING_CACHE
+    path = persistent_memory_path("football_learning_memory.json")
+    try:
+        mtime = path.stat().st_mtime if path.exists() else 0.0
+    except Exception:
+        mtime = 0.0
+    now = time.time()
+    with _V42_TROLL_LEARNING_LOCK:
+        cached_at, cached_mtime, rows = _V42_TROLL_LEARNING_CACHE
+        if now - cached_at <= 60.0 and cached_mtime == mtime:
+            return list(rows)
+    try:
+        raw = load_json_list_file(path)
+    except Exception:
+        raw = []
+    selected: list[dict[str, Any]] = []
+    for item in raw[-800:]:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("username") or item.get("source") or "")
+        text = str(item.get("text") or "")
+        if not (_v37_is_troll_football_post(source) or "טרול פוטבול" in text or "troll football" in text.casefold()):
+            continue
+        selected.append(item)
+    with _V42_TROLL_LEARNING_LOCK:
+        _V42_TROLL_LEARNING_CACHE = (now, mtime, selected)
+    return list(selected)
+
+
+def _v42_troll_learning_vote(text: str) -> tuple[str, float]:
+    current = _v42_learning_tokens(text)
+    if len(current) < 2:
+        return "", 0.0
+    best = {"approve": 0.0, "reject": 0.0}
+    for item in _v42_troll_learning_rows():
+        decision = str(item.get("decision") or "")
+        if decision not in best:
+            continue
+        previous = _v42_learning_tokens(item.get("text"))
+        if not previous:
+            continue
+        union = current | previous
+        score = len(current & previous) / max(1, len(union))
+        if score > best[decision]:
+            best[decision] = score
+    if best["approve"] >= 0.62 and best["approve"] >= best["reject"] + 0.08:
+        return "approve", best["approve"]
+    if best["reject"] >= 0.68 and best["reject"] >= best["approve"] + 0.08:
+        return "reject", best["reject"]
+    return "", max(best.values())
+
+
+def _v42_troll_positive_decision(post: Post) -> tuple[bool, int, list[str]]:
+    text = _v37_troll_source_text(post)
+    if _v37_is_emoji_only_troll_post(post):
+        return True, 100, ["emoji_only"]
+    learned, learned_score = _v42_troll_learning_vote(text)
+    if learned == "approve":
+        return True, 90, [f"learned_approve:{learned_score:.2f}"]
+    if learned == "reject":
+        return False, -90, [f"learned_reject:{learned_score:.2f}"]
+
+    words = count_content_words(text)
+    reasons: list[str] = []
+    score = 0
+    has_entity = bool(_V40_TROLL_FOOTBALL_ENTITY_RE.search(text) or _V40_FOOTBALL_CONTEXT_RE.search(text))
+    has_action = bool(_V42_FOOTBALL_ACTION_RE.search(text) or _V42_FOOTBALL_INCIDENT_RE.search(text))
+    has_humour = bool(_V40_TROLL_HUMOUR_RE.search(text))
+    has_claim = bool(_V42_TROLL_CONCRETE_CLAIM_RE.search(text))
+    has_media = _v42_declared_media(post)
+
+    if has_entity:
+        score += 3; reasons.append("football_entity_or_context")
+    if has_action:
+        score += 3; reasons.append("specific_action_or_incident")
+    if has_claim:
+        score += 2; reasons.append("concrete_football_claim")
+    if has_humour:
+        score += 1; reasons.append("recognizable_humour_frame")
+    if has_media:
+        score += 1; reasons.append("supporting_media")
+    if _V42_TROLL_VAGUE_NOISE_RE.search(text):
+        score -= 5; reasons.append("vague_or_engagement_noise")
+    if re.search(r"(?iu)\b(?:i|i'm|i’ll|i'd|me|my)\b|\bאני\b|\bלי\b", text) and not (has_action or has_claim):
+        score -= 2; reasons.append("first_person_without_football_event")
+
+    compact = re.sub(r"\s+", " ", text).strip(" .!?,;:")
+    if words <= 6 and _V42_TROLL_SAFE_SHORT_RE.fullmatch(compact):
+        return True, max(score, 8), reasons + ["safe_short_reaction"]
+    # Positive approval is intentional: at least one concrete football anchor is
+    # mandatory. Merely avoiding a blacklist is never sufficient.
+    approved = bool(score >= 5 and (has_entity or has_action or has_claim))
+    return approved, score, reasons
+
+
+def _v37_troll_block_reason(post: Post) -> str:
+    if not _v37_is_troll_football_post(post):
+        return ""
+    text = _v37_troll_source_text(post)
+    # Non-negotiable local blocks.
+    if _V37_TROLL_GAMBLING_RE.search(text) or _V39_TROLL_EXTRA_NOISE_RE.search(text):
+        return "trollfootball_gambling_or_sponsored_noise"
+    if _V37_TROLL_ENGAGEMENT_BAIT_RE.search(text) or _V42_TROLL_VAGUE_NOISE_RE.search(text):
+        return "trollfootball_engagement_or_hatewatch_noise"
+    if _V37_TROLL_LIVE_TABLE_RE.search(text):
+        return "trollfootball_live_or_table_noise"
+    approved, score, reasons = _v42_troll_positive_decision(post)
+    if approved:
+        return ""
+    logging.info(
+        "TrollFootball positive-only gate rejected score=%s reasons=%s preview=%s",
+        score, ",".join(reasons) or "none", compact_debug_text(text, 260),
+    )
+    return "trollfootball_not_positive_football_reaction"
+
+
+# ---------------------------------------------------------------------------
+# 4) Duplicate gate: deterministic/local only. No Gemini and no old slow chain.
+# ---------------------------------------------------------------------------
+_V42_DUPLICATE_MAX_ROWS = 160
+
+
+def _v42_normalized_duplicate_text(value: Any) -> str:
+    text = _v34_canonical_compare_text(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _v42_local_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    try:
+        if is_duplicate_false_positive_post(post):
+            return None
+    except Exception:
+        pass
+    try:
+        if _final_is_fabrizio_here_we_go(post):
+            return None
+    except Exception:
+        pass
+
+    current_text = str(text_override or _final_source_text(post) or getattr(post, "text", "")).strip()
+    if not current_text:
+        return None
+    current_norm = _v42_normalized_duplicate_text(current_text)
+    current_id = str(getattr(post, "post_id", "") or getattr(post, "link", "")).strip()
+    current_source = str(getattr(post, "username", "") or "")
+    rows = list(_v9_recent_duplicate_rows(state) or [])[-_V42_DUPLICATE_MAX_ROWS:]
+
+    for item in reversed(rows):
+        if not isinstance(item, dict):
+            continue
+        previous_id = str(item.get("post_id") or item.get("link") or item.get("id") or "").strip()
+        if current_id and previous_id and current_id == previous_id:
+            result = dict(item)
+            result.update({"duplicate": True, "is_duplicate": True, "duplicate_score": 1.0, "duplicate_verdict": "V42_EXACT_ID"})
+            return result
+        previous_text = _v34_item_event_text(item)
+        if not previous_text:
+            continue
+        previous_norm = _v42_normalized_duplicate_text(previous_text)
+        if current_norm and previous_norm and current_norm == previous_norm:
+            result = dict(item)
+            result.update({"duplicate": True, "is_duplicate": True, "duplicate_score": 1.0, "duplicate_verdict": "V42_EXACT_TEXT"})
+            return result
+
+        decision = _v34_event_decision(
+            current_text,
+            previous_text,
+            current_source,
+            item.get("username") or item.get("source") or "",
+        )
+        if decision.get("duplicate"):
+            result = dict(item)
+            result.update({
+                "duplicate": True,
+                "is_duplicate": True,
+                "duplicate_score": 0.99,
+                "duplicate_verdict": "V42_CAUSE_AWARE_LOCAL",
+                "duplicate_source": str(item.get("username") or item.get("source") or "דיווח קודם"),
+                "reason": "same_event_no_new_fact",
+                "raw_reason": "same_event_no_new_fact",
+                "duplicate_explanation": decision,
+            })
+            return result
+
+        # Conservative non-transfer paraphrase fallback: high textual identity is
+        # accepted only when a concrete person/team overlaps.
+        ratio = SequenceMatcher(None, current_norm, previous_norm).ratio() if current_norm and previous_norm else 0.0
+        if ratio >= 0.93:
+            cur_sig = _v34_event_signature(current_text, current_source)
+            prev_sig = _v34_event_signature(previous_text, item.get("username") or item.get("source") or "")
+            shared = bool(
+                set(cur_sig.get("persons", set())) & set(prev_sig.get("persons", set()))
+                or set(cur_sig.get("teams", set())) & set(prev_sig.get("teams", set()))
+            )
+            if shared:
+                result = dict(item)
+                result.update({
+                    "duplicate": True, "is_duplicate": True,
+                    "duplicate_score": ratio,
+                    "duplicate_verdict": "V42_HIGH_PARAPHRASE_LOCAL",
+                    "reason": "same_event_high_paraphrase",
+                })
+                return result
+    return None
+
+
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v42_local_duplicate(post, state, text_override)
+
+
+def _v42_timed_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    started = time.perf_counter()
+    try:
+        return _v42_local_duplicate(post, state, text_override)
+    finally:
+        _v32_add_duplicate_timing(post, started)
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v42_timed_duplicate(post, state, html_message_to_plain_text(translated_message))
+
+
+# ---------------------------------------------------------------------------
+# 5) Fast lane stays bounded: newest truly-fresh posts start within one/two waves.
+# ---------------------------------------------------------------------------
+_V42_FAST_MAX_INFLIGHT_AND_QUEUED = 8
+_V42_FAST_MAX_PER_ACCOUNT = 2
+_V42_FAST_FRESH_SECONDS = 30 * 60
+
+
+def _v40_enqueue_discovered_posts(username: str, posts: list[Post]) -> None:
+    if getattr(_V40_FAST_LOCAL, "active", False) or not posts:
+        return
+    try:
+        state = load_state()
+    except Exception:
+        return
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical or canonical not in state or not any(state.values()):
+        return
+    seen = set(state.get(canonical, []))
+    now = time.time()
+    candidates: list[Post] = []
+    for post in posts:
+        if not isinstance(post, Post):
+            continue
+        published = float(getattr(post, "published_ts", 0.0) or 0.0)
+        if published and now - published > min(MAX_POST_AGE_SECONDS, _V42_FAST_FRESH_SECONDS):
+            continue
+        ids = _v40_post_ids(post)
+        if ids and any(item in seen for item in ids):
+            continue
+        candidates.append(post)
+    # Newest first. Older posts remain untouched and are processed by the normal
+    # established path; they are never discarded.
+    candidates = sorted(candidates, key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)[:_V42_FAST_MAX_PER_ACCOUNT]
+    for post in candidates:
+        key = _v40_post_claim_key(post)
+        with _V40_FAST_LOCK:
+            if len(_V40_FAST_INFLIGHT) >= _V42_FAST_MAX_INFLIGHT_AND_QUEUED:
+                break
+            expiry = float(_V40_FAST_CLAIMED_UNTIL.get(key, 0.0) or 0.0)
+            if key in _V40_FAST_INFLIGHT or expiry > now:
+                continue
+            _V40_FAST_INFLIGHT.add(key)
+            _V40_FAST_CLAIMED_UNTIL[key] = now + 120.0
+        _V40_FAST_EXECUTOR.submit(_v40_fast_process_post, post)
+
+
+# ---------------------------------------------------------------------------
+# 6) Translation integrity: paired actors must survive and broken Hebrew repairs.
+# ---------------------------------------------------------------------------
+_V42_PRE_REPAIR_TRANSLATION = _v40_repair_translation_artifacts
+_V42_MORE_STAFF_CORRUPTION_RE = re.compile(r"(?iu)\bאנשי\s*[.·•,:;\-־]+\s*(?:לה|ה|צוות)?\b")
+
+
+def _v40_repair_translation_artifacts(source: Any, value: Any) -> str:
+    text = str(_V42_PRE_REPAIR_TRANSLATION(source, value) or "")
+    if _V40_STAFF_SOURCE_RE.search(str(source or "")):
+        text = _V42_MORE_STAFF_CORRUPTION_RE.sub("אנשי צוות", text)
+    text = re.sub(r"(?u)\bאנשי\s+צוות\s+ואואהדים\b", "אנשי צוות ואוהדים", text)
+    text = re.sub(r"(?u)\bאואהדים\b", "אוהדים", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# 7) Writer opening remains inline/unbolded; no-writer opening keeps old format.
+# ---------------------------------------------------------------------------
+_V42_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V42_PRE_BUILD_MESSAGE(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+    if _v40_message_has_writer_heading(post, translated, rendered):
+        rendered = _v40_inline_opening_for_writer(rendered)
+    return rendered
+
+
+# ---------------------------------------------------------------------------
+# 8) Stronger RTL for every BOT output: RLE/PDF works more consistently in clients.
+# ---------------------------------------------------------------------------
+_V42_RLM = "\u200f"
+_V42_RLE = "\u202b"
+_V42_PDF = "\u202c"
+_V42_RTL_EDGE_RE = re.compile(r"^[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+|[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+$")
+
+
+def _v41_strong_rtl_all_lines(value: Any) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    output: list[str] = []
+    for raw in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not raw.strip():
+            output.append("")
+            continue
+        clean = _V42_RTL_EDGE_RE.sub("", raw)
+        output.append(_V42_RLM + _V42_RLE + clean + _V42_PDF)
+    return "\n".join(output)
+
+
+def _v41_line_is_strong_rtl(line: str) -> bool:
+    return bool(line.startswith(_V42_RLM + _V42_RLE) and line.endswith(_V42_PDF))
+
+
+# ---------------------------------------------------------------------------
+# 9) EXPERIMENT: repair only genuinely bidi-risky HUMAN messages in quiet chat.
+#    Edit in place first. If Telegram forbids editing, copy -> edit -> delete.
+# ---------------------------------------------------------------------------
+CONTROL_HUMAN_RTL_REWRITE_ENABLED = os.environ.get("CONTROL_HUMAN_RTL_REWRITE_ENABLED", "1") == "1"
+_V42_HEBREW_RE = re.compile(r"[א-ת]")
+_V42_CONTROL_REWRITE_LOCK = RLock()
+_V42_CONTROL_REWRITE_INFLIGHT: set[str] = set()
+
+
+def _v42_utf16_len(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+def _v42_message_text_and_entities(message: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+    if isinstance(message.get("text"), str) and message.get("text"):
+        return "text", str(message.get("text") or ""), list(message.get("entities") or [])
+    if isinstance(message.get("caption"), str) and message.get("caption"):
+        return "caption", str(message.get("caption") or ""), list(message.get("caption_entities") or [])
+    return "", "", []
+
+
+def _v42_line_needs_rtl_repair(line: str) -> bool:
+    if not line.strip() or not _V42_HEBREW_RE.search(line):
+        return False
+    if _v41_line_is_strong_rtl(line):
+        return False
+    clean = _V42_RTL_EDGE_RE.sub("", line).lstrip()
+    if not clean:
+        return False
+    # Hebrew-first lines already render correctly in most Telegram clients. The
+    # problematic cases begin with emoji, number, Latin, link, hashtag or symbol.
+    first = clean[0]
+    return not bool(re.match(r"[א-ת]", first))
+
+
+def _v42_message_needs_rtl_repair(text: str) -> bool:
+    return any(_v42_line_needs_rtl_repair(line) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+
+
+def _v42_transform_text_entities(text: str, entities: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]] | None:
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    transformed_lines: list[str] = []
+    records: list[tuple[int, int, int]] = []  # orig_start, orig_end, new_content_start (UTF-16)
+    orig_cursor = 0
+    new_cursor = 0
+    for line in lines:
+        line_len = _v42_utf16_len(line)
+        if line.strip():
+            transformed_lines.append(_V42_RLM + _V42_RLE + line + _V42_PDF)
+            content_start = new_cursor + _v42_utf16_len(_V42_RLM + _V42_RLE)
+            records.append((orig_cursor, orig_cursor + line_len, content_start))
+            new_cursor += _v42_utf16_len(_V42_RLM + _V42_RLE + line + _V42_PDF)
+        else:
+            transformed_lines.append("")
+            records.append((orig_cursor, orig_cursor + line_len, new_cursor))
+            new_cursor += line_len
+        orig_cursor += line_len
+        # split() removed the newline; all but the last line have one UTF-16 unit.
+        if len(records) < len(lines):
+            orig_cursor += 1
+            new_cursor += 1
+
+    adjusted: list[dict[str, Any]] = []
+    for raw in entities:
+        if not isinstance(raw, dict):
+            continue
+        start = int(raw.get("offset", 0) or 0)
+        length = int(raw.get("length", 0) or 0)
+        end = start + length
+        record = next((row for row in records if row[0] <= start and end <= row[1]), None)
+        # A formatting entity crossing a newline is rare. Do not rewrite such a
+        # message because preserving its exact formatting is more important.
+        if record is None:
+            return None
+        orig_start, _orig_end, new_content_start = record
+        item = dict(raw)
+        item["offset"] = new_content_start + (start - orig_start)
+        item["length"] = length
+        adjusted.append(item)
+    return "\n".join(transformed_lines), adjusted
+
+
+def _v42_is_bot_authored_update(message: dict[str, Any], text: str) -> bool:
+    sender = message.get("from") or {}
+    if isinstance(sender, dict) and bool(sender.get("is_bot")):
+        return True
+    if message.get("via_bot"):
+        return True
+    # Channel posts authored by this bot may be represented as the channel. All
+    # bot output already has the V42 wrapper, so this also prevents loops.
+    nonempty = [line for line in text.splitlines() if line.strip()]
+    return bool(nonempty and all(_v41_line_is_strong_rtl(line) for line in nonempty))
+
+
+def _v42_control_pending_text_command() -> bool:
+    try:
+        state = load_control_state()
+        return bool(state.get("pending_team_action") or state.get("pending_team_tier"))
+    except Exception:
+        return False
+
+
+def _v42_edit_message_rtl(chat_id: str, message_id: int, kind: str, text: str, entities: list[dict[str, Any]]) -> None:
+    if kind == "text":
+        payload: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text}
+        if entities:
+            payload["entities"] = entities
+        telegram_api("editMessageText", payload, max_attempts=1, timeout=REQUEST_TIMEOUT_SECONDS)
+    else:
+        payload = {"chat_id": chat_id, "message_id": message_id, "caption": text}
+        if entities:
+            payload["caption_entities"] = entities
+        telegram_api("editMessageCaption", payload, max_attempts=1, timeout=REQUEST_TIMEOUT_SECONDS)
+
+
+def _v42_try_rewrite_control_human_message(update: dict[str, Any]) -> bool:
+    if not CONTROL_HUMAN_RTL_REWRITE_ENABLED or not CONTROL_CHAT_ID:
+        return False
+    message = (
+        update.get("message") or update.get("channel_post")
+        or update.get("edited_message") or update.get("edited_channel_post") or {}
+    )
+    if not isinstance(message, dict):
+        return False
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+    if chat_id != str(CONTROL_CHAT_ID):
+        return False
+    kind, original, entities = _v42_message_text_and_entities(message)
+    if not kind or not original or not _v42_message_needs_rtl_repair(original):
+        return False
+    if _v42_is_bot_authored_update(message, original):
+        return False
+    if original.lstrip().startswith("/") or _v42_control_pending_text_command():
+        return False
+    transformed = _v42_transform_text_entities(original, entities)
+    if transformed is None:
+        logging.info("Quiet RTL experiment skipped a multiline-entity message to preserve formatting")
+        return False
+    fixed_text, fixed_entities = transformed
+    message_id = int(message.get("message_id", 0) or 0)
+    if not message_id:
+        return False
+    key = f"{chat_id}:{message_id}"
+    with _V42_CONTROL_REWRITE_LOCK:
+        if key in _V42_CONTROL_REWRITE_INFLIGHT:
+            return True
+        _V42_CONTROL_REWRITE_INFLIGHT.add(key)
+    try:
+        # Best case for a channel admin bot: edit the human/channel post in place.
+        try:
+            _v42_edit_message_rtl(chat_id, message_id, kind, fixed_text, fixed_entities)
+            logging.info("Quiet RTL experiment edited message in place: %s", key)
+            return True
+        except Exception as edit_exc:
+            logging.info("Quiet RTL in-place edit unavailable for %s: %s", key, short_error(edit_exc, 300))
+
+        # Never split/rebuild an album as one item. Leave it untouched if the
+        # in-place caption edit is not permitted.
+        if message.get("media_group_id"):
+            logging.warning("Quiet RTL experiment left album untouched because in-place edit was unavailable: %s", key)
+            return False
+
+        copied_id = 0
+        try:
+            copy_payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "from_chat_id": chat_id,
+                "message_id": message_id,
+            }
+            if message.get("message_thread_id"):
+                copy_payload["message_thread_id"] = int(message.get("message_thread_id"))
+            copied = telegram_api("copyMessage", copy_payload, max_attempts=1, timeout=REQUEST_TIMEOUT_SECONDS)
+            result = copied.get("result") if isinstance(copied, dict) else None
+            copied_id = int((result or {}).get("message_id", 0) or 0) if isinstance(result, dict) else 0
+            if not copied_id:
+                raise RuntimeError("copyMessage_missing_message_id")
+            _v42_edit_message_rtl(chat_id, copied_id, kind, fixed_text, fixed_entities)
+            telegram_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id}, max_attempts=1, timeout=REQUEST_TIMEOUT_SECONDS)
+            logging.info("Quiet RTL experiment copied, repaired and deleted original: %s -> %s", key, copied_id)
+            return True
+        except Exception as fallback_exc:
+            if copied_id:
+                try:
+                    telegram_api("deleteMessage", {"chat_id": chat_id, "message_id": copied_id}, max_attempts=1, timeout=REQUEST_TIMEOUT_SECONDS)
+                except Exception:
+                    pass
+            logging.warning("Quiet RTL experiment could not safely replace %s; original kept: %s", key, short_error(fallback_exc, 450))
+            return False
+    finally:
+        with _V42_CONTROL_REWRITE_LOCK:
+            _V42_CONTROL_REWRITE_INFLIGHT.discard(key)
+
+
+_V42_PRE_PROCESS_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    if _v42_try_rewrite_control_human_message(update):
+        return
+    return _V42_PRE_PROCESS_CONTROL_TEXT_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 10) Local deterministic audit; absolutely no Telegram/X/Gemini request.
+# ---------------------------------------------------------------------------
+def _v42_test_post(username: str, text: str, media: bool = False) -> Post:
+    return Post(
+        post_id="v42-test-" + hashlib.sha1((username + text).encode("utf-8")).hexdigest()[:10],
+        username=username,
+        text=text,
+        link="https://x.com/test/status/42",
+        image_urls=["declared://photo"] if media else [],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[],
+        source_name=username,
+    )
+
+
+def _v42_self_audit() -> None:
+    today = _v37_fix_today_before_and_cule("📅 בתאריך הזה, לפני 5 שנים, ברצלונה שברה את הלב של כל קולה.")
+    visible_today = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", html_message_to_plain_text(today))
+    if "#היום_לפני לפני 5 שנים" not in visible_today or "#היום_לפני\n" in visible_today:
+        raise RuntimeError("v42_today_before_not_inline")
+
+    ft7 = _v42_test_post(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, "Hernan Crespo with one of the best Champions League balls ever.", True)
+    ft8 = _v42_test_post(FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME, "Neymar was involved in a heated confrontation with Remo officials and fans after Santos beat them 1-0.", True)
+    if not _v42_footballtweet_positive(ft7) or not _v42_footballtweet_positive(ft8):
+        raise RuntimeError("v42_footballtweet_positive_examples_failed")
+
+    for sample in (
+        "טוליסו עם הפנדל הכי טוב שתראו היום. גבריאל צריך לרשום הערות.",
+        "הליגה האמריקאית עושה כל מה שצריך כדי לעזור למסי להשוות את מאזן השערים של כריסטיאנו.",
+        "במסעדה איטלקית",
+        "סקיי ספורטס ידעו מה הם עושים",
+        "ויניסיוס כשהוא מנסה להשתפר בליגת האלופות בארסנל",
+        "פארדס בועט את הכדור בכל הכוח לעבר שחקן שנפל אחרי עבירה. ארגנטינאי טיפוסי.",
+        "😂🔥",
+    ):
+        post = _v42_test_post(TROLL_FOOTBALL_USERNAME, sample, False)
+        if _v37_troll_block_reason(post):
+            raise RuntimeError("v42_troll_good_blocked:" + sample)
+    for sample in (
+        "מיץ' ג'ונס הפך 4000 דולר ל-2 מיליון דולר ב-RainBet Keno והוא השתגע לגמרי!",
+        "Hatewatch ברצלונה? אני בפנים",
+        "תן שם של דבר אחד שיקרה ב-100% במשחק הזה",
+        "פלמייראס מגדילה את היתרון שלה בראש הטבלה",
+    ):
+        post = _v42_test_post(TROLL_FOOTBALL_USERNAME, sample, True)
+        if not _v37_troll_block_reason(post):
+            raise RuntimeError("v42_troll_bad_allowed:" + sample)
+
+    source = "Neymar was involved in a heated confrontation with Remo officials and fans."
+    repaired = _v40_repair_translation_artifacts(source, "ניימאר היה מעורב בעימות סוער עם אנשי.לה ואואהדים של רמו.")
+    if "אנשי צוות ואוהדים" not in repaired:
+        raise RuntimeError("v42_translation_repair_failed")
+
+    strong = _v41_strong_rtl_all_lines("🚨 הודעה בעברית\nשורה תקינה")
+    if not all(_v41_line_is_strong_rtl(line) for line in strong.splitlines() if line):
+        raise RuntimeError("v42_rle_rtl_failed")
+    transformed = _v42_transform_text_entities("🚨 קישור", [{"type": "bold", "offset": 3, "length": 5}])
+    if transformed is None or not _v42_message_needs_rtl_repair("🚨 קישור"):
+        raise RuntimeError("v42_quiet_rtl_transform_failed")
+    if _v42_message_needs_rtl_repair("הודעה שמתחילה בעברית"):
+        raise RuntimeError("v42_correct_human_message_would_be_touched")
+
+    writer = _v42_test_post("FabrizioRomano", "First report: test", True)
+    rendered = build_message(writer, "🚨 פרסום ראשון: בדיקה")
+    plain = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", html_message_to_plain_text(rendered))
+    if "פרסום ראשון:\n" in plain or "פרסום ראשון: בדיקה" not in plain:
+        raise RuntimeError("v42_writer_opening_not_inline")
+    if "🎥" in _v41_strong_rtl_all_lines(_v40_remove_forbidden_camera("🎥 בדיקה")):
+        raise RuntimeError("v42_camera_not_removed")
+
+
+try:
+    _v42_self_audit()
+    logging.info(
+        "V42 active: inline Today-before, positive-only learned TrollFootball policy, "
+        "Footballtweet rescue, local millisecond duplicate gate, bounded fast lane, "
+        "translation integrity, writer-inline openings, RLE RTL on every bot output, "
+        "and quiet-channel human RTL experiment"
+    )
+except Exception as _v42_audit_exc:
+    logging.error("V42 self-audit failed: %s", short_error(_v42_audit_exc, 1400))
+
+# ====== END V42 COMPLETE SMART/Fast/QUIET-RTL CONSOLIDATION ======
+
+# ====== V43 ALL-CHANNEL ADMIN RTL / BRUNO DUPLICATE / FACTS-TROLL CONTROL ======
+# Added 2026-08-05. Narrow scope:
+# - repair only directionally broken human/admin posts in every channel where
+#   Telegram grants this bot can_edit_messages;
+# - generalize the confirmed Bruno Guimaraes same-event duplicate case;
+# - restore Facts as a root control button;
+# - expose Troll Football latest/history and sent-vs-blocked decisions inside Facts.
+# RSS/feed functions, source order, polling cadence, translation, media limits,
+# persistent filenames and existing filters are not replaced here.
+
+BOT_BUILD_ID = "winner-v43-admin-channel-rtl-bruno-facts-troll-2026-08-05"
+
+# ---------------------------------------------------------------------------
+# 1) Direct RTL repair for posts by any administrator in every Telegram channel
+#    where the bot has can_edit_messages. Telegram does not permit a bot to edit
+#    another person's ordinary group/supergroup message, so those are never
+#    deleted/reposted by this mechanism.
+# ---------------------------------------------------------------------------
+V43_ALL_CHANNEL_RTL_EDIT_ENABLED = os.environ.get("V43_ALL_CHANNEL_RTL_EDIT_ENABLED", "1") == "1"
+_V43_CHANNEL_RTL_EDIT_LOCK = RLock()
+_V43_CHANNEL_RTL_EDIT_INFLIGHT: set[str] = set()
+
+
+def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
+    if not V43_ALL_CHANNEL_RTL_EDIT_ENABLED:
+        return False
+    message = update.get("channel_post") or update.get("edited_channel_post") or {}
+    if not isinstance(message, dict):
+        return False
+    chat = message.get("chat") or {}
+    if str(chat.get("type") or "") != "channel":
+        return False
+    chat_id = str(chat.get("id") or "")
+    message_id = int(message.get("message_id", 0) or 0)
+    if not chat_id or not message_id:
+        return False
+
+    kind, original, entities = _v42_message_text_and_entities(message)
+    if not kind or not original or not _v42_message_needs_rtl_repair(original):
+        return False
+    if _v42_is_bot_authored_update(message, original):
+        return False
+
+    transformed = _v42_transform_text_entities(original, entities)
+    if transformed is None:
+        logging.info(
+            "V43 channel RTL skipped to preserve a multiline formatting entity: chat=%s message=%s",
+            chat_id, message_id,
+        )
+        return False
+    fixed_text, fixed_entities = transformed
+    key = f"{chat_id}:{message_id}"
+    with _V43_CHANNEL_RTL_EDIT_LOCK:
+        if key in _V43_CHANNEL_RTL_EDIT_INFLIGHT:
+            return True
+        _V43_CHANNEL_RTL_EDIT_INFLIGHT.add(key)
+    try:
+        _v42_edit_message_rtl(chat_id, message_id, kind, fixed_text, fixed_entities)
+        logging.info("V43 repaired human/admin channel post RTL in place: %s", key)
+        return True
+    except Exception as exc:
+        # Do not delete or recreate a channel post when the direct admin edit is
+        # unavailable. This preserves media groups, views, reactions and links.
+        logging.warning(
+            "V43 could not edit channel post RTL (grant Edit Messages): %s error=%s",
+            key, short_error(exc, 420),
+        )
+        return False
+    finally:
+        with _V43_CHANNEL_RTL_EDIT_LOCK:
+            _V43_CHANNEL_RTL_EDIT_INFLIGHT.discard(key)
+
+
+_V43_PRE_PROCESS_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    if _v43_try_edit_any_admin_channel_post(update):
+        return
+    return _V43_PRE_PROCESS_CONTROL_TEXT_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 2) General same-event aliases/currency/stage rules learned from the Bruno
+#    Guimaraes example. This is not sentence-specific: all known spellings and
+#    GBP wordings converge before the existing cause-aware event engine runs.
+# ---------------------------------------------------------------------------
+_V34_EXPLICIT_ENTITY_ALIASES["ברונו גימראייש"] = (
+    "ברונו גימראייש", "ברונו גימאראיש", "ברונו גימארייש", "ברונו גימראיס",
+    "ברונו גימאראייס", "ברונו גימראייש", "Bruno Guimaraes", "Bruno Guimarães",
+    "Guimaraes", "Guimarães",
+)
+PLAYER_REPLACEMENTS.update({
+    "Bruno Guimaraes": "ברונו גימראייש",
+    "Bruno Guimarães": "ברונו גימראייש",
+})
+_V34_ALIAS_MAP_CACHE = None
+
+_V43_PRE_CANONICAL_COMPARE_TEXT = _v34_canonical_compare_text
+
+
+def _v34_canonical_compare_text(value: Any) -> str:
+    text = str(_V43_PRE_CANONICAL_COMPARE_TEXT(value) or "")
+    # Currency synonyms must not create a false "new fact".
+    text = re.sub(r"(?iu)\b(?:pounds?|gbp|פאונד(?:ים)?)\b", 'ליש"ט', text)
+    # Common translation typo; only the fixed football phrase is changed.
+    text = re.sub(r"(?u)בדיקות\s+רפואות\b", "בדיקות רפואיות", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_V43_PRE_EVENT_STAGE = _v34_event_stage
+_V43_OFFICIAL_SIGNED_RE = re.compile(
+    r"(?iu)(?:\bhas\s+signed\b|\bsigned\s+(?:for|with)\b|"
+    r"\b(?:ארסנל|מועדון|הקבוצה)\s+החתימ(?:ה|ו)\b|\bהחתימ(?:ה|ו)\s+את\b|"
+    r"\bחתם\s+ב\b|\bחתמה\s+ב\b|\bהצטרף\s+רשמית\b)"
+)
+_V43_MEDICAL_AGREED_RE = re.compile(
+    r"(?iu)(?:קיבל(?:ה)?\s+אישור\s+לעבור\s+בדיקות\s+רפואיות|"
+    r"בדיקות\s+רפואיות\s+(?:אושרו|נקבעו)|סוכם\s+עקרונית|"
+    r"agreement\s+in\s+principle|cleared\s+to\s+undergo\s+medical)"
+)
+
+
+def _v34_event_stage(value: Any, source: Any = "") -> int:
+    text = _v34_canonical_compare_text(value)
+    stage = int(_V43_PRE_EVENT_STAGE(text, source) or 0)
+    if _V43_OFFICIAL_SIGNED_RE.search(text):
+        return max(stage, 4)
+    if _V43_MEDICAL_AGREED_RE.search(text):
+        return max(stage, 3)
+    return stage
+
+
+# Clear caches built before the generalized aliases/stage/currency rules.
+for _v43_cached_fn_name in ("_v40_cached_event_signature", "_v40_cached_event_decision"):
+    _v43_cached_fn = globals().get(_v43_cached_fn_name)
+    if callable(getattr(_v43_cached_fn, "cache_clear", None)):
+        _v43_cached_fn.cache_clear()
+try:
+    _V40_DUP_RESULT_CACHE.clear()
+except Exception:
+    pass
+
+
+# A lower-stage follow-up cannot revive routine milestones already implied by a
+# completed higher-stage report. New price/contract/loan facts still pass.
+_V43_PRE_EVENT_DECISION = _v34_event_decision
+_V43_IMPLIED_BY_HIGHER_STAGE_FACTS = {
+    "medical", "medical_booked", "agreement", "agreed", "talks", "interest",
+}
+
+
+def _v34_event_decision(
+    current_text: Any,
+    previous_text: Any,
+    current_source: Any = "",
+    previous_source: Any = "",
+) -> dict[str, Any]:
+    result = dict(_V43_PRE_EVENT_DECISION(current_text, previous_text, current_source, previous_source) or {})
+    if not result.get("same_event") or result.get("duplicate"):
+        return result
+    current_stage = int(result.get("current_stage") or _v34_event_stage(current_text, current_source) or 0)
+    previous_stage = int(result.get("previous_stage") or _v34_event_stage(previous_text, previous_source) or 0)
+    if current_stage == 5 or current_stage >= previous_stage:
+        return result
+    new_facts = set(result.get("new_facts") or [])
+    if new_facts and not new_facts.issubset(_V43_IMPLIED_BY_HIGHER_STAGE_FACTS):
+        return result
+    result.update({
+        "duplicate": True,
+        "reason": "stage_regression_without_material_new_fact",
+        "current_stage": current_stage,
+        "previous_stage": previous_stage,
+        "new_facts": sorted(new_facts),
+    })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 3) Facts at the root + dedicated Troll Football operational hub.
+# ---------------------------------------------------------------------------
+_V43_PRE_QUICK_CONTROL_MARKUP = quick_control_reply_markup
+
+
+def quick_control_reply_markup() -> dict[str, Any]:
+    markup = _V43_PRE_QUICK_CONTROL_MARKUP()
+    rows = [
+        [dict(button) for button in row if isinstance(button, dict)]
+        for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])
+    ]
+    # Exactly one Facts root button, immediately below the bot on/off button.
+    rows = [
+        row for row in rows
+        if not any(str(button.get("callback_data") or "") == "football_menu_facts" for button in row)
+    ]
+    insert_at = 1 if rows else 0
+    rows.insert(insert_at, [{"text": "📊 מקורות עובדות", "callback_data": "football_menu_facts"}])
+    return stable_reply_markup(rows)
+
+
+def _v43_troll_facts_menu_reply_markup() -> dict[str, Any]:
+    enabled = not control_state_account_disabled(TROLL_FOOTBALL_USERNAME)
+    return stable_reply_markup([
+        [{"text": "👤 בדוק פוסט אחרון", "callback_data": f"football_test_latest_account:{TROLL_FOOTBALL_USERNAME}"}],
+        [{"text": "📚 10 פוסטים אחרונים", "callback_data": f"football_test_last_ten_account:{TROLL_FOOTBALL_USERNAME}"}],
+        [{"text": "🧾 מה נשלח ומה נחסם", "callback_data": "football_troll_decisions"}],
+        [{
+            "text": f"🎭 טרול פוטבול: {'פעיל' if enabled else 'כבוי'}",
+            "callback_data": f"football_facts_toggle:{TROLL_FOOTBALL_USERNAME}:{'off' if enabled else 'on'}",
+        }],
+        [{"text": "⬅️ חזרה לעובדות", "callback_data": "football_menu_facts"}],
+    ])
+
+
+_V43_PRE_FACTS_MAIN_MARKUP = facts_main_reply_markup
+
+
+def facts_main_reply_markup() -> dict[str, Any]:
+    markup = _V43_PRE_FACTS_MAIN_MARKUP()
+    rows = [
+        [dict(button) for button in row if isinstance(button, dict)]
+        for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])
+    ]
+    rows = [
+        row for row in rows
+        if not any(str(button.get("callback_data") or "") == "football_facts_troll" for button in row)
+    ]
+    back_index = next(
+        (index for index, row in enumerate(rows)
+         if any(str(button.get("callback_data") or "") == "football_quick_main" for button in row)),
+        len(rows),
+    )
+    rows.insert(back_index, [{"text": "🎭 טרול פוטבול", "callback_data": "football_facts_troll"}])
+    return stable_reply_markup(rows)
+
+
+_V43_PRE_FACTS_MONITOR_MARKUP = facts_monitor_reply_markup
+
+
+def facts_monitor_reply_markup() -> dict[str, Any]:
+    markup = _V43_PRE_FACTS_MONITOR_MARKUP()
+    rows = [
+        [dict(button) for button in row if isinstance(button, dict)]
+        for row in (markup.get("inline_keyboard", []) if isinstance(markup, dict) else [])
+    ]
+    if not any(
+        str(button.get("callback_data") or "") == "football_troll_decisions"
+        for row in rows for button in row
+    ):
+        back_index = next(
+            (index for index, row in enumerate(rows)
+             if any(str(button.get("callback_data") or "") == "football_menu_facts" for button in row)),
+            len(rows),
+        )
+        rows.insert(back_index, [{"text": "🎭 חסימות ואישורים — טרול פוטבול", "callback_data": "football_troll_decisions"}])
+    return stable_reply_markup(rows)
+
+
+def _v43_decision_text(item: dict[str, Any]) -> str:
+    for key in (
+        "source_text", "original_text", "text", "translated", "rendered",
+        "channel_memory_text", "preview", "caption", "message", "summary",
+    ):
+        value = str(item.get(key) or "").strip()
+        if value:
+            value = html_message_to_plain_text(value)
+            value = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", value)
+            value = re.sub(r"\s+", " ", value).strip()
+            if value:
+                return value
+    post = item.get("post")
+    if isinstance(post, Post):
+        return re.sub(r"\s+", " ", str(_final_source_text(post) or post.text or "")).strip()
+    if isinstance(post, dict):
+        return re.sub(r"\s+", " ", str(post.get("text") or post.get("source_text") or "")).strip()
+    return ""
+
+
+def _v43_troll_recent_decisions_text(limit: int = 20) -> str:
+    decisions: list[dict[str, Any]] = []
+    try:
+        sent_items = load_json_list_file(persistent_memory_path("football_sent_memory.json"))
+    except Exception:
+        sent_items = []
+    for item in sent_items:
+        if isinstance(item, dict) and _facts_item_canonical(item) == TROLL_FOOTBALL_USERNAME:
+            decisions.append({"status": "sent", "item": item, "ts": _facts_item_timestamp(item)})
+
+    try:
+        state = load_control_state()
+    except Exception:
+        state = {}
+    for key in ("last_blocked_posts", "last_duplicate_posts", "last_filtered_posts"):
+        rows = state.get(key, []) if isinstance(state, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for item in rows:
+            if isinstance(item, dict) and _facts_item_canonical(item) == TROLL_FOOTBALL_USERNAME:
+                decisions.append({"status": "blocked", "item": item, "ts": _facts_item_timestamp(item)})
+
+    # De-duplicate the same post appearing in more than one control-state list.
+    unique: dict[str, dict[str, Any]] = {}
+    for row in decisions:
+        item = row["item"]
+        identity = str(
+            item.get("post_id") or item.get("link") or item.get("id")
+            or hashlib.sha1(_v43_decision_text(item).encode("utf-8", errors="ignore")).hexdigest()
+        )
+        current = unique.get(identity)
+        if current is None or float(row.get("ts") or 0.0) >= float(current.get("ts") or 0.0):
+            unique[identity] = row
+    rows = sorted(unique.values(), key=lambda row: float(row.get("ts") or 0.0), reverse=True)[:max(1, int(limit))]
+
+    if not rows:
+        return "🎭 טרול פוטבול — מה נשלח ומה נחסם\n\nאין עדיין החלטות שמורות להצגה."
+
+    sent_count = sum(1 for row in rows if row["status"] == "sent")
+    blocked_count = len(rows) - sent_count
+    lines = [
+        "🎭 טרול פוטבול — מה נשלח ומה נחסם",
+        "",
+        f"מוצגות {len(rows)} החלטות אחרונות: {sent_count} נשלחו ו־{blocked_count} נחסמו.",
+        "",
+    ]
+    for index, row in enumerate(rows, 1):
+        item = row["item"]
+        sent = row["status"] == "sent"
+        text = _v43_decision_text(item) or "ללא תקציר זמין"
+        text = text[:260].rstrip()
+        timestamp = float(row.get("ts") or 0.0)
+        clock = _format_local_datetime(timestamp) if timestamp else "זמן לא ידוע"
+        lines.append(f"{index}. {'✅ נשלח' if sent else '⛔ נחסם'} · {clock}")
+        if not sent:
+            raw_reason = str(item.get("reason") or item.get("raw_reason") or item.get("block_reason") or "").strip()
+            if raw_reason:
+                try:
+                    reason = hebrew_block_reason(raw_reason)
+                except Exception:
+                    reason = raw_reason
+                lines.append("   סיבה: " + reason[:240])
+        lines.append("   " + text)
+        link = str(item.get("link") or item.get("url") or "").strip()
+        if link:
+            lines.append("   " + link)
+        lines.append("")
+    return "\n".join(lines).strip()[:4096]
+
+
+_V43_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data") or "") if isinstance(callback, dict) else ""
+    if data not in {"football_facts_troll", "football_troll_decisions"}:
+        return _V43_PRE_PROCESS_CONTROL_UPDATE(update)
+
+    callback_id = str(callback.get("id") or "")
+    message = callback.get("message") or {}
+    if not _final_control_authorized(message):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+    message_id = message.get("message_id")
+
+    if data == "football_facts_troll":
+        if callback_id:
+            answer_control_callback(callback_id, "פותח טרול פוטבול")
+        send_control_menu(
+            "🎭 טרול פוטבול\nבדיקה, היסטוריה והחלטות הסינון של המקור.",
+            _v43_troll_facts_menu_reply_markup(),
+            message_id,
+        )
+        return
+
+    _final_submit_control_result(
+        callback_id,
+        "מציג מה נשלח ומה נחסם בטרול פוטבול",
+        lambda: _v43_troll_recent_decisions_text(20),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4) Deterministic local audit. No network/Telegram/Gemini calls.
+# ---------------------------------------------------------------------------
+def _v43_self_audit() -> None:
+    root_callbacks = _final_control_markup_callbacks(quick_control_reply_markup())
+    if "football_menu_facts" not in root_callbacks:
+        raise RuntimeError("v43_facts_root_button_missing")
+    facts_callbacks = _final_control_markup_callbacks(facts_main_reply_markup())
+    if "football_facts_troll" not in facts_callbacks:
+        raise RuntimeError("v43_troll_facts_button_missing")
+    if TROLL_FOOTBALL_USERNAME not in FACTS_SOURCE_ORDER:
+        raise RuntimeError("v43_troll_not_in_facts_order")
+    latest_callbacks = _final_control_markup_callbacks(facts_latest_menu_reply_markup())
+    history_callbacks = _final_control_markup_callbacks(facts_history_menu_reply_markup())
+    if f"football_test_latest_account:{TROLL_FOOTBALL_USERNAME}" not in latest_callbacks:
+        raise RuntimeError("v43_troll_latest_missing")
+    if f"football_test_last_ten_account:{TROLL_FOOTBALL_USERNAME}" not in history_callbacks:
+        raise RuntimeError("v43_troll_history_missing")
+
+    first = "🚨🚨 ארסנל החתימה את ברונו גימראייש תמורת 75 מיליון פאונד."
+    second = '🚨 ברונו גימאראיש קיבל אישור לעבור בדיקות רפואות בארסנל. סוכם עקרונית על סך 75 מיליון ליש"ט.'
+    # Clear after defining the final globals so this exact test cannot reuse old data.
+    for name in ("_v40_cached_event_signature", "_v40_cached_event_decision"):
+        fn = globals().get(name)
+        if callable(getattr(fn, "cache_clear", None)):
+            fn.cache_clear()
+    decision = _v34_event_decision(second, first, "JacobsBen", "facts")
+    if not decision.get("duplicate"):
+        raise RuntimeError("v43_bruno_same_event_duplicate_failed:" + repr(decision))
+
+    mock_update = {
+        "channel_post": {
+            "message_id": 1,
+            "chat": {"id": -100123, "type": "channel"},
+            "text": "🚨 הודעה בעברית",
+            "entities": [],
+        }
+    }
+    message = mock_update["channel_post"]
+    kind, original, entities = _v42_message_text_and_entities(message)
+    if kind != "text" or not _v42_message_needs_rtl_repair(original):
+        raise RuntimeError("v43_channel_rtl_detection_failed")
+    transformed = _v42_transform_text_entities(original, entities)
+    if transformed is None or not _v41_line_is_strong_rtl(transformed[0]):
+        raise RuntimeError("v43_channel_rtl_transform_failed")
+
+
+try:
+    _v43_self_audit()
+    logging.info(
+        "V43 active: admin channel posts are repaired in place when direction is broken; "
+        "Bruno/GBP/medical duplicate identity generalized; Facts restored to root; "
+        "Troll Football latest/history/sent-vs-blocked controls active"
+    )
+except Exception as _v43_audit_exc:
+    logging.error("V43 self-audit failed: %s", short_error(_v43_audit_exc, 1400))
+
+# ====== END V43 ALL-CHANNEL ADMIN RTL / BRUNO DUPLICATE / FACTS-TROLL CONTROL ======
+
 if __name__ == "__main__":
     main()
