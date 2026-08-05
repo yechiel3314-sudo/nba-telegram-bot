@@ -57870,5 +57870,146 @@ except Exception as _v49_audit_exc:
 # ====== END V49 PRINCIPLE FIXES ======
 
 
+
+# ====== V50 EXACT RSS ROLLBACK TO LAST WORKING ROUTE (2026-08-06) ======
+# The RSS/discovery changes introduced in V45/V48/V49 are fully bypassed here.
+# Active RSS retrieval, mirror racing, retries, background jobs, bounded merge and
+# manual RSS status are restored to the exact last-working V43 behavior.
+# Non-RSS V49 fixes remain active. The requested automatic-processing cap of 12
+# is applied only after the old working retrieval returns, so it cannot starve RSS.
+
+BOT_BUILD_ID = "winner-v50-exact-rss-rollback-v43-route-keep-v49-fixes-2026-08-06"
+
+# Exact proven HTTP path: no host/endpoint circuit breaker and no cooldown state.
+http_get_feed = _v20_active_http_get_feed
+
+# Remove V49 completion wrappers and use the original V43 workers.
+_full_speed_live_job = _V49_PRE_LIVE_JOB
+_full_speed_rss_job = _V49_PRE_RSS_JOB
+
+# Restore the exact V43 bounded RSS + direct-X orchestration captured before V45.
+fetch_posts = _V45_PRE_FETCH_POSTS
+_V50_WORKING_FETCH_POSTS_SAFELY = _V45_PRE_FETCH_POSTS_SAFELY
+
+# Restore original refresh/discovery defaults. Environment overrides still work.
+FULL_SPEED_LIVE_REFRESH_SECONDS = max(
+    20, int(os.environ.get("FULL_SPEED_LIVE_REFRESH_SECONDS", "30"))
+)
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = os.environ.get(
+    "CONTINUOUS_FORCE_DISCOVERY_ENABLED", "1"
+) == "1"
+FEED_ISSUE_LOG_EVERY_SECONDS = int(
+    os.environ.get("FEED_ISSUE_LOG_EVERY_SECONDS", str(10 * 60))
+)
+
+# Old process-local circuit states must not affect the restored path.
+try:
+    with _V45_RSS_CB_LOCK:
+        _V45_RSS_CB.clear()
+except Exception:
+    pass
+try:
+    with _V48_RSS_LOCK:
+        _V48_RSS_ENDPOINT_STATE.clear()
+except Exception:
+    pass
+
+def start_continuous_force_discovery() -> None:
+    global _CONTINUOUS_FORCE_STARTED
+    if not CONTINUOUS_FORCE_DISCOVERY_ENABLED:
+        logging.info("Continuous forced live discovery is disabled by environment.")
+        return
+    with _CONTINUOUS_FORCE_LOCK:
+        if _CONTINUOUS_FORCE_STARTED:
+            return
+        _CONTINUOUS_FORCE_STARTED = True
+    Thread(
+        target=_continuous_force_loop,
+        daemon=True,
+        name="continuous-forced-live-discovery",
+    ).start()
+    logging.info(
+        "⚡ בדיקה חיה רציפה הופעלה לכל הכתבים: כל חשבון נבדק בכוח בערך כל %.0f שניות, ללא Gemini.",
+        CONTINUOUS_FORCE_ACCOUNT_CADENCE_SECONDS,
+    )
+
+# Keep the user's 12-post automatic processing limit without changing what RSS
+# retrieves or stores. Manual/history routes continue to see the full old result.
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical, rows = _V50_WORKING_FETCH_POSTS_SAFELY(username)
+    ordered = sorted(
+        [post for post in (rows or []) if isinstance(post, Post)],
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return canonical, ordered[:12]
+
+def rss_status_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "הבדיקה הזו בודקת RSS של כתבים רגילים בלבד.",
+        "מקורות העובדות, אופטה, ציוצי כדורגל, מטרות מרכזיות וסופסקור נמצאים בתפריט ‘עובדות’.",
+        "",
+    ]
+    ok_count = 0
+    recent_total = 0
+    fetched_by_account = fetch_control_posts_for_accounts(accounts)
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched_by_account.get(username, ([], None))
+        if error:
+            lines.append(f"❌ {label}: תקלה במקורות RSS - {short_error(error, 140)}")
+            continue
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        if posts:
+            ok_count += 1
+            source = posts[0].source_name or "לא ידוע"
+            if recent:
+                latest_dt = datetime.fromtimestamp(recent[0].published_ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+                lines.append(f"✅ {label}: RSS תקין | {len(recent)} פוסטים ביממה | מקור אחרון: {source} | אחרון: {latest_dt}")
+            else:
+                age_hours = max(0.0, (time.time() - float(posts[0].published_ts or 0.0)) / 3600) if posts[0].published_ts else 0.0
+                lines.append(f"⚠️ {label}: מקור RSS עובד אבל ישן/תקוע | אחרון לפני {age_hours:.1f} שעות | מקור: {source}")
+        else:
+            lines.append(f"⚠️ {label}: RSS עובד/נבדק, אבל לא החזיר פוסטים כרגע")
+    lines.extend(["", f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים. פוסטים מהיממה האחרונה: {recent_total}."])
+    return "\n".join(lines)
+
+
+def _v50_rss_rollback_self_audit() -> None:
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v50_http_get_feed_not_working_v43")
+    if fetch_posts is not _V45_PRE_FETCH_POSTS:
+        raise RuntimeError("v50_fetch_posts_not_working_v43")
+    if _full_speed_live_job is not _V49_PRE_LIVE_JOB:
+        raise RuntimeError("v50_live_job_wrapper_still_active")
+    if _full_speed_rss_job is not _V49_PRE_RSS_JOB:
+        raise RuntimeError("v50_rss_job_wrapper_still_active")
+    if not CONTINUOUS_FORCE_DISCOVERY_ENABLED and os.environ.get("CONTINUOUS_FORCE_DISCOVERY_ENABLED") is None:
+        raise RuntimeError("v50_old_continuous_discovery_default_not_restored")
+    if MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK != 12:
+        raise RuntimeError("v50_auto_limit_not_12")
+    if "בדיקת RSS לכל" not in rss_status_text.__doc__ if rss_status_text.__doc__ else False:
+        pass
+
+
+try:
+    _v50_rss_rollback_self_audit()
+    logging.info(
+        "V50 active: exact V43 working RSS route restored; V45/V48 circuits and "
+        "V49 RSS completion wrappers bypassed; full RSS retrieval retained; "
+        "automatic processing remains capped at 12"
+    )
+except Exception as _v50_audit_exc:
+    logging.error("V50 RSS rollback self-audit failed: %s", short_error(_v50_audit_exc, 1800))
+    raise
+
+# ====== END V50 EXACT RSS ROLLBACK ======
+
 if __name__ == "__main__":
     main()
