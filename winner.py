@@ -58354,5 +58354,1009 @@ except Exception as _v51_audit_exc:
 # ====== END V51 CANONICAL CONSISTENT POST SPACING ======
 
 
+
+# ====== V52 PRINCIPLE QUALITY / MEDIA RECOVERY / OPTA TIER-A / FAST BUTTONS (2026-08-06) ======
+# This layer deliberately leaves the restored V50 RSS route untouched.  It adds
+# only final content, media-recovery, filtering, anti-flood and control-button
+# mechanisms requested on 2026-08-06.
+
+BOT_BUILD_ID = "winner-v52-quality-media-opta-buttons-keep-v50-rss-2026-08-06"
+
+# ---------------------------------------------------------------------------
+# 1) Canonical entity spelling everywhere, including the recurring typo
+#    "מו שלאח".  The same aliases are also visible to player-tier and duplicate
+#    extraction so formatting and topic control agree on one identity.
+# ---------------------------------------------------------------------------
+_V52_SALAH_EXTRA_RE = re.compile(
+    r"(?iu)(?<![A-Za-zא-ת])(?P<prefix>[לבכמשוה]?)(?:מו\s+שלאח|מו\s+סלאח|מו\s+סאלח|מוחמד\s+סאלח|"
+    r"mo\s+salah|mohammad\s+salah|muhammad\s+salah)(?![A-Za-zא-ת])"
+)
+
+
+def _v52_normalize_entity_names(value: Any) -> str:
+    text = str(value or "")
+    text = _V52_SALAH_EXTRA_RE.sub(lambda m: (m.group("prefix") or "") + "מוחמד סלאח", text)
+    normalizer = globals().get("_v32_normalize_salah_name")
+    if callable(normalizer):
+        text = normalizer(text)
+    return text
+
+
+try:
+    _V32_SALAH_PATTERNS = tuple(_V32_SALAH_PATTERNS) + (_V52_SALAH_EXTRA_RE,)
+except Exception:
+    pass
+try:
+    for _v52_affiliation in CENTRAL_PLAYER_AFFILIATIONS:
+        _v52_aliases = list(_v52_affiliation.get("aliases", ()) or ())
+        if any("salah" in str(alias).casefold() or "סלאח" in str(alias) for alias in _v52_aliases):
+            for _v52_alias in ("מו שלאח", "מו סלאח", "מוחמד סאלח"):
+                if _v52_alias not in _v52_aliases:
+                    _v52_aliases.append(_v52_alias)
+            _v52_affiliation["aliases"] = tuple(_v52_aliases)
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# 2) Translation quality selection.  The established translation remains the
+#    primary candidate.  Google is consulted only when the primary candidate is
+#    incomplete or visibly broken.  The better complete Hebrew candidate wins.
+# ---------------------------------------------------------------------------
+_V52_AWKWARD_TRANSLATION_RE = re.compile(
+    r"(?iu)מצטלם\s+לתמונה\s+ראשונה|אנשי[.]לה|\bאואהדים\b|\bאואהד\b|"
+    r"\bהוא[.]\s+זכה\s+בה\b|\bמ-סהג\b|\bאקסא\b"
+)
+_V52_NUMBER_RE = re.compile(r"(?<!\w)\d+(?:[.,]\d+)?(?:%|m|bn|k)?", re.IGNORECASE)
+
+
+def _v52_polish_hebrew_translation(value: Any) -> str:
+    text = _v52_normalize_entity_names(value)
+    text = re.sub(r"(?iu)מצטלם\s+לתמונה\s+ראשונה\s+ב", "בתמונה ראשונה ב", text)
+    text = re.sub(r"(?iu)מצטלם\s+לתמונה\s+ראשונה", "בתמונה ראשונה", text)
+    text = re.sub(r"(?iu)יחד\s+עם\s+הסוכנים", "לצד סוכניו", text)
+    text = re.sub(r"(?iu)מרכז\s+האימונים\s+אקסא", "מרכז האימונים AXA", text)
+    text = re.sub(r"(?iu)אנשי[.]לה", "אנשי צוות", text)
+    text = re.sub(r"(?iu)\bאואהדים\b", "אוהדים", text)
+    text = re.sub(r"(?iu)\bאואהד\b", "אוהד", text)
+    text = re.sub(r"(?iu)\bהוא[.]\s+זכה\s+בה\b", "והוא זכה בה", text)
+    text = re.sub(r"(?iu)\bמ-סהג\b", "מ־SEG", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
+def _v52_translation_score(source: Any, candidate: Any) -> float:
+    src = str(source or "")
+    out = str(candidate or "")
+    if not out.strip():
+        return -1000.0
+    hebrew_chars = len(re.findall(r"[א-ת]", out))
+    latin_chars = len(re.findall(r"[A-Za-z]", out))
+    score = 100.0
+    if hebrew_chars < 4 and latin_chars:
+        score -= 120.0
+    try:
+        issues = list(_final_translation_completeness_issues(src, out) or [])
+    except Exception:
+        issues = []
+    score -= 28.0 * len(issues)
+    if _V52_AWKWARD_TRANSLATION_RE.search(out):
+        score -= 35.0
+    src_numbers = set(_V52_NUMBER_RE.findall(src))
+    out_numbers = set(_V52_NUMBER_RE.findall(out))
+    if src_numbers:
+        score += 12.0 * (len(src_numbers & out_numbers) / max(1, len(src_numbers)))
+        score -= 12.0 * (len(src_numbers - out_numbers) / max(1, len(src_numbers)))
+    src_words = re.findall(r"[A-Za-zא-תÀ-ÿ]+", src)
+    out_words = re.findall(r"[A-Za-zא-תÀ-ÿ]+", out)
+    if len(src_words) >= 10:
+        ratio = len(out_words) / max(1, len(src_words))
+        if ratio < 0.42:
+            score -= 35.0
+        elif ratio > 2.4:
+            score -= 15.0
+    score += min(8.0, hebrew_chars / 40.0)
+    return score
+
+
+# Source-aware repeated-marker restoration.  It fixes the exact general class
+# where trophy/medal markers are shifted one row down by a translator, while a
+# correctly translated list is left byte-for-byte unchanged.
+_V52_LIST_MARKER_RE = re.compile(
+    r"^\s*(?P<marker>(?:(?:🏆|🏅|🥇|🥈|🥉|⚽(?:️)?|🎯|🧤|✅|❌|⭐(?:️)?|"
+    r"[\U0001F1E6-\U0001F1FF]{2})\s*)+)(?P<body>.*)$",
+    re.UNICODE,
+)
+
+
+def _v52_marker_parts(line: Any) -> tuple[str, str]:
+    visible = _v49_line_visible(line) if "_v49_line_visible" in globals() else str(line or "").strip()
+    match = _V52_LIST_MARKER_RE.match(visible)
+    if not match:
+        return "", visible
+    return re.sub(r"\s+", "", match.group("marker")), match.group("body").strip()
+
+
+def _v52_short_list_label(value: Any) -> bool:
+    visible = _v49_line_visible(value) if "_v49_line_visible" in globals() else str(value or "").strip()
+    _marker, body = _v52_marker_parts(visible)
+    body = body or visible
+    words = re.findall(r"[A-Za-zא-תÀ-ÿ0-9]+", body)
+    return bool(1 <= len(words) <= 12 and not re.search(r"[.!?…]$", body))
+
+
+def _v52_preserve_source_list_markers(source: Any, translated: Any) -> str:
+    src = str(source or "").replace("\r\n", "\n").replace("\r", "\n")
+    out = str(translated or "").replace("\r\n", "\n").replace("\r", "\n")
+    source_markers: list[str] = []
+    for line in src.split("\n"):
+        marker, body = _v52_marker_parts(line)
+        if marker and body:
+            source_markers.append(marker)
+    if len(source_markers) < 2:
+        return out
+
+    lines = out.split("\n")
+    nonempty = [index for index, line in enumerate(lines) if _v49_line_visible(line)]
+    marked_positions = [index for index in nonempty if _v52_marker_parts(lines[index])[0]]
+    if not marked_positions:
+        return out
+
+    count = len(source_markers)
+    first_marked_pos = nonempty.index(marked_positions[0])
+    candidate_starts = {first_marked_pos, max(0, first_marked_pos - 1)}
+    best: tuple[float, list[int]] | None = None
+    for start in candidate_starts:
+        positions = nonempty[start:start + count]
+        if len(positions) != count:
+            continue
+        if not all(_v52_short_list_label(lines[index]) for index in positions):
+            continue
+        score = 0.0
+        for expected, index in zip(source_markers, positions):
+            current, _body = _v52_marker_parts(lines[index])
+            if current == expected:
+                score += 3.0
+            elif current:
+                score += 1.0
+            else:
+                score += 0.5
+        # The reported shifted-list shape: first label unmarked, subsequent rows
+        # marked, plus possibly one leftover marker on the following sentence.
+        if not _v52_marker_parts(lines[positions[0]])[0]:
+            score += 2.0
+        if best is None or score > best[0]:
+            best = (score, positions)
+    if best is None:
+        return out
+
+    positions = best[1]
+    current_sequence = [_v52_marker_parts(lines[index])[0] for index in positions]
+    if current_sequence == source_markers:
+        return out
+
+    for expected, index in zip(source_markers, positions):
+        _current, body = _v52_marker_parts(lines[index])
+        if body:
+            lines[index] = f"{expected} {body}"
+
+    # A shifted list commonly leaves the last source marker attached to the first
+    # prose sentence after the list.  Strip it only when the untouched source's
+    # next non-empty line has no marker and the output line is clearly prose.
+    final_nonempty_pos = nonempty.index(positions[-1])
+    if final_nonempty_pos + 1 < len(nonempty):
+        next_index = nonempty[final_nonempty_pos + 1]
+        next_marker, next_body = _v52_marker_parts(lines[next_index])
+        if next_marker and next_body and len(re.findall(r"[A-Za-zא-תÀ-ÿ]+", next_body)) >= 4:
+            source_nonempty = [line for line in src.split("\n") if _v49_line_visible(line)]
+            source_marker_positions = [i for i, line in enumerate(source_nonempty) if _v52_marker_parts(line)[0]]
+            source_next_marked = False
+            if source_marker_positions:
+                source_after = source_marker_positions[-1] + 1
+                source_next_marked = bool(
+                    source_after < len(source_nonempty)
+                    and _v52_marker_parts(source_nonempty[source_after])[0]
+                )
+            if not source_next_marked:
+                lines[next_index] = next_body
+    return "\n".join(lines)
+
+
+_V52_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    main, quote, author = _V52_PRE_TRANSLATE_POST_FOR_SEND(post)
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+
+    main = _v52_polish_hebrew_translation(main)
+    quote = _v52_polish_hebrew_translation(quote)
+
+    primary_score = _v52_translation_score(main_source, main)
+    need_fallback = bool(
+        primary_score < 72.0
+        or _V52_AWKWARD_TRANSLATION_RE.search(main)
+        or _final_translation_completeness_issues(main_source, main)
+    )
+    if need_fallback and main_source:
+        try:
+            google_candidate = _v52_polish_hebrew_translation(
+                _google_translate_preserve_full_layout(main_source)
+            )
+        except Exception:
+            google_candidate = ""
+        if _v52_translation_score(main_source, google_candidate) > primary_score:
+            main = google_candidate
+
+    if quote_source and quote:
+        quote_score = _v52_translation_score(quote_source, quote)
+        if quote_score < 72.0 or _final_translation_completeness_issues(quote_source, quote):
+            try:
+                google_quote = _v52_polish_hebrew_translation(
+                    _google_translate_preserve_full_layout(quote_source)
+                )
+            except Exception:
+                google_quote = ""
+            if _v52_translation_score(quote_source, google_quote) > quote_score:
+                quote = google_quote
+
+    main = _v52_preserve_source_list_markers(main_source, main)
+    quote = _v52_preserve_source_list_markers(quote_source, quote) if quote_source else quote
+    return main, quote, author
+
+
+# ---------------------------------------------------------------------------
+# 3) Hard advertisement policy and temporary Opta policy requested by the user.
+#    Opta is accepted only when the text explicitly contains a tier-A club or a
+#    known player whose current catalog affiliation is tier A.
+# ---------------------------------------------------------------------------
+_V52_BETTING_AD_RE = re.compile(
+    r"(?iu)(?:free\s+bets?|bet\s*[£€$]?\s*\d+\s*(?:get|receive)\s*[£€$]?\s*\d+|"
+    r"new\s+customers?|terms\s+(?:and|&)\s+conditions|gamble\s+responsibly|"
+    r"claim\s+(?:here|now)|redeem\s+(?:here|now)|18\+|boylesports|bet365|william\s+hill|"
+    r"paddy\s+power|sky\s+bet|ladbrokes|coral|sportsbook|"
+    r"הימורים?\s+חינם|המר\s*[£€$]?\s*\d+\s+קבל\s*[£€$]?\s*\d+|"
+    r"למימוש\s+(?:כאן|עכשיו)|לקוחות\s+חדשים|תנאים\s+והתניות|המר\s+באחריות|"
+    r"פרסומת\s*18\+|בוילה\s+ספורטס|בويلה\s+ספורטס)"
+)
+_V52_BETTING_CALL_RE = re.compile(
+    r"(?iu)(?:bet|wager|odds|free\s+bet|bonus|claim|redeem|join|sign\s*up|deposit|"
+    r"המר|הימור|יחס|בונוס|מימוש|הצטרפו|הירשמו|הפקדה)"
+)
+
+
+def _v52_betting_ad_reason(post: Post) -> str:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    if _V52_BETTING_AD_RE.search(text):
+        return "betting_advertisement_hard_block"
+    # Multi-signal fallback catches new bookmakers without depending on a brand.
+    signals = 0
+    signals += int(bool(_V52_BETTING_CALL_RE.search(text)))
+    signals += int(bool(re.search(r"(?iu)18\+|new\s+customers?|לקוחות\s+חדשים", text)))
+    signals += int(bool(re.search(r"(?iu)terms|conditions|תנאים|התניות|responsibly|באחריות", text)))
+    signals += int(bool(re.search(r"[£€$]\s*\d+|\d+\s*[£€$]", text)))
+    return "betting_advertisement_hard_block" if signals >= 3 else ""
+
+
+def _v52_opta_tier1_allowed(post: Post) -> bool:
+    if not _is_optajoe_post(post):
+        return True
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    if matches_managed_team_tier("tier1", text):
+        return True
+    return "tier1" in central_player_affiliation_tiers(text)
+
+
+_V52_PRE_FINAL_BLOCK_REASON = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    started = time.perf_counter()
+    ad_reason = _v52_betting_ad_reason(post)
+    if ad_reason:
+        _final_pipeline_set_processing_started(post)
+        _pipeline_add_stage(post, "filter_wall_seconds", time.perf_counter() - started)
+        return ad_reason
+    if _is_optajoe_post(post) and not _v52_opta_tier1_allowed(post):
+        _final_pipeline_set_processing_started(post)
+        _pipeline_add_stage(post, "filter_wall_seconds", time.perf_counter() - started)
+        return "opta_non_tier1_context"
+    return str(_V52_PRE_FINAL_BLOCK_REASON(post) or "")
+
+
+_V52_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "betting_advertisement_hard_block" in raw:
+        return "פרסומת, הטבת הצטרפות או קידום הימורים נחסמו"
+    if "opta_non_tier1_context" in raw:
+        return "אופטה: הפוסט אינו מזכיר קבוצת דרג א׳ או שחקן של קבוצת דרג א׳"
+    if "player_topic_flood_no_material_delta" in raw:
+        return "עומס דיווחים על אותו שחקן ללא התקדמות מהותית חדשה"
+    return _V52_PRE_HEBREW_BLOCK_REASON(reason)
+
+
+# ---------------------------------------------------------------------------
+# 4) Topic-flood control.  Duplicates remain governed by the principle engine.
+#    This adds a conservative second gate only after several recently sent posts
+#    on the same named player, and always permits a material/stage/reversal update.
+# ---------------------------------------------------------------------------
+_V52_PLAYER_FLOOD_SHORT_SECONDS = 30 * 60
+_V52_PLAYER_FLOOD_LONG_SECONDS = 90 * 60
+_V52_PLAYER_FLOOD_SHORT_LIMIT = 2
+_V52_PLAYER_FLOOD_LONG_LIMIT = 3
+_V52_FLOOD_IMPORTANT_RE = re.compile(
+    r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO|רשמי|official|חתם|signed|agreement|הסכם|"
+    r"בדיקות\s+רפואיות|medical|בוטל|קרס|collapsed|rejected|נדחתה|פציעה\s+קשה|"
+    r"serious\s+injury|out\s+for|ייעדר|חוזה\s+עד\s+20\d{2}|until\s+20\d{2}"
+)
+
+
+def _v52_item_timestamp(item: dict[str, Any]) -> float:
+    for key in ("ts", "sent_at", "created_at", "timestamp"):
+        try:
+            value = float(item.get(key, 0) or 0)
+        except Exception:
+            value = 0.0
+        if value:
+            return value
+    return 0.0
+
+
+def _v52_player_flood_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    current_text = _v52_normalize_entity_names(_final_source_text(post))
+    current = _v47_profile_cached(current_text, getattr(post, "username", ""))
+    if not current.people:
+        return None
+    now = time.time()
+    matches: list[tuple[float, dict[str, Any], _V46EventProfile]] = []
+    for item in reversed(_v20_recent_duplicate_rows(state)):
+        if not isinstance(item, dict) or bool(item.get("pending", False)):
+            continue
+        timestamp = _v52_item_timestamp(item)
+        if timestamp and now - timestamp > _V52_PLAYER_FLOOD_LONG_SECONDS:
+            continue
+        previous_text = _v52_normalize_entity_names(_v9_item_text(item))
+        if not previous_text:
+            continue
+        previous = _v47_profile_cached(previous_text, item.get("username", ""))
+        if not previous.people or not _v46_set_fuzzy_overlap(current.people, previous.people):
+            continue
+        if current.family != previous.family and {current.family, previous.family} - {"transfer", "quote", "generic"}:
+            continue
+        matches.append((timestamp or now, item, previous))
+
+    short_count = sum(1 for timestamp, _item, _profile in matches if now - timestamp <= _V52_PLAYER_FLOOD_SHORT_SECONDS)
+    long_count = len(matches)
+    if short_count < _V52_PLAYER_FLOOD_SHORT_LIMIT and long_count < _V52_PLAYER_FLOOD_LONG_LIMIT:
+        return None
+
+    # Important language, a trusted confirmation, a new destination or an actual
+    # policy delta always passes. The flood gate must never hide real movement.
+    if (
+        _V52_FLOOD_IMPORTANT_RE.search(current.text)
+        or current.has_hwg
+        or current.stage >= 4
+        or bool(getattr(post, "fabrizio_confirmation", False))
+    ):
+        return None
+    for _timestamp, _item, previous in matches[:4]:
+        if current.destinations and previous.destinations and not (set(current.destinations) & set(previous.destinations)):
+            return None
+        if current.teams and previous.teams and current.family == "transfer":
+            if not (set(current.teams) & set(previous.teams)):
+                return None
+            if set(current.teams) - set(previous.teams):
+                return None
+        decision = _v46_event_decision_profiles(current, previous)
+        if not decision.get("duplicate") and decision.get("reason") in {
+            "stage_advanced", "new_material_fact", "reversal_or_failure", "new_context_number"
+        }:
+            return None
+
+    if not matches:
+        return None
+    blocked = dict(matches[0][1])
+    blocked["v52_reason"] = "player_topic_flood_no_material_delta"
+    blocked["v52_same_player_short_count"] = short_count
+    blocked["v52_same_player_long_count"] = long_count
+    return blocked
+
+
+# Preserve the one local duplicate engine, then apply the conservative flood gate.
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    duplicate = _v49_duplicate_core(post, state)
+    if duplicate:
+        return duplicate
+    return _v52_player_flood_event(post, state)
+
+
+# ---------------------------------------------------------------------------
+# 5) Robust original-media recovery.  Existing URLs are preferred.  If they are
+#    missing, the exact tweet is rehydrated from the established official,
+#    syndication, FX/VX and external-article providers.  In the quiet/manual path
+#    only, an exhausted photo lookup degrades to a complete text candidate rather
+#    than emitting the obsolete "not prepared without logo" dead end.
+# ---------------------------------------------------------------------------
+_V52_MEDIA_CACHE_LOCK = RLock()
+_V52_MEDIA_RECOVERY_CACHE: dict[str, tuple[float, list[str], list[str]]] = {}
+_V52_MEDIA_POSITIVE_TTL = 30 * 60
+_V52_MEDIA_NEGATIVE_TTL = 45
+
+
+def _v52_media_identity(post: Any) -> str:
+    try:
+        tweet_id = str(_acceptance_tweet_id(post) or "")
+    except Exception:
+        tweet_id = ""
+    return tweet_id or str(getattr(post, "post_id", "") or getattr(post, "link", "") or id(post))
+
+
+def _v52_merge_media(post: Post, images: Any, videos: Any) -> tuple[list[str], list[str]]:
+    exact_images = _final_dedupe_exact_photos([
+        *(getattr(post, "image_urls", []) or []),
+        *(getattr(post, "exact_image_urls", []) or []),
+        *(images or []),
+    ])
+    exact_videos = list(dict.fromkeys(
+        str(value or "").strip()
+        for value in [*(getattr(post, "video_urls", []) or []), *(videos or [])]
+        if str(value or "").strip()
+    ))
+    post.image_urls = exact_images
+    post.exact_image_urls = list(exact_images)
+    post.video_urls = exact_videos
+    if exact_images:
+        post.photo_expected = True
+    if exact_videos:
+        post.has_video = True
+    return exact_images, exact_videos
+
+
+def _v52_recover_original_media(post: Post, force: bool = False) -> tuple[list[str], list[str]]:
+    existing = _final_dedupe_exact_photos([
+        *(getattr(post, "image_urls", []) or []),
+        *(getattr(post, "exact_image_urls", []) or []),
+        *(getattr(post, "external_preview_image_urls", []) or []),
+    ])
+    videos = list(getattr(post, "video_urls", []) or [])
+    if existing or videos:
+        return _v52_merge_media(post, existing, videos)
+
+    key = _v52_media_identity(post)
+    now = time.time()
+    with _V52_MEDIA_CACHE_LOCK:
+        cached = _V52_MEDIA_RECOVERY_CACHE.get(key)
+        if cached:
+            ttl = _V52_MEDIA_POSITIVE_TTL if (cached[1] or cached[2]) else _V52_MEDIA_NEGATIVE_TTL
+            if not force and now - cached[0] <= ttl:
+                return _v52_merge_media(post, cached[1], cached[2])
+
+    recovered_images: list[str] = []
+    recovered_videos: list[str] = []
+    try:
+        # Clear only process-local hydration flags; persistent state is untouched.
+        for attr in ("exact_media_checked", "media_hydrated", "exact_details_checked"):
+            if hasattr(post, attr):
+                setattr(post, attr, False)
+        details = _acceptance_fetch_exact_details(post)
+        if isinstance(details, dict):
+            recovered_images.extend(details.get("images") or [])
+            recovered_videos.extend(details.get("videos") or [])
+            complete_text = str(details.get("text") or "").strip()
+            if complete_text and len(complete_text) > len(str(getattr(post, "text", "") or "")):
+                post.original_text = complete_text
+    except Exception as exc:
+        logging.debug("V52 exact media recovery provider failed safely: %s", short_error(exc, 320))
+
+    if not recovered_images and not recovered_videos:
+        try:
+            tweet_id = str(_acceptance_tweet_id(post) or "")
+            payload = _final_syndication_payload(tweet_id) if tweet_id else {}
+            if payload:
+                node = _acceptance_exact_node(payload, tweet_id) or payload
+                images, videos = _precise_tweet_media(node if isinstance(node, dict) else payload)
+                recovered_images.extend(images or [])
+                recovered_videos.extend(videos or [])
+        except Exception as exc:
+            logging.debug("V52 syndication media recovery failed safely: %s", short_error(exc, 320))
+
+    if not recovered_images:
+        try:
+            recovered_images.extend(_v27_recover_external_article_image(post) or [])
+        except Exception as exc:
+            logging.debug("V52 article-card media recovery failed safely: %s", short_error(exc, 320))
+
+    images, videos = _v52_merge_media(post, recovered_images, recovered_videos)
+    with _V52_MEDIA_CACHE_LOCK:
+        _V52_MEDIA_RECOVERY_CACHE[key] = (now, list(images), list(videos))
+        if len(_V52_MEDIA_RECOVERY_CACHE) > 2000:
+            for old_key in list(_V52_MEDIA_RECOVERY_CACHE)[:400]:
+                _V52_MEDIA_RECOVERY_CACHE.pop(old_key, None)
+    return images, videos
+
+
+_V52_PRE_SELECTED_POST_IMAGES = selected_post_images
+
+
+def selected_post_images(post: Post) -> list[str]:
+    rows = _final_dedupe_exact_photos(_V52_PRE_SELECTED_POST_IMAGES(post) or [])
+    if rows:
+        return rows[:MAX_IMAGES_PER_POST]
+    recovered, _videos = _v52_recover_original_media(post)
+    return recovered[:MAX_IMAGES_PER_POST]
+
+
+_V52_PRE_SEND_FULL_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    images, videos = _v52_recover_original_media(post)
+    if images or videos or not bool(getattr(post, "photo_expected", False)):
+        return _V52_PRE_SEND_FULL_CONTROL_CANDIDATE(post, token, message_html)
+
+    # No-logo mode: never dead-end the operator.  Prepare the complete text and
+    # action buttons; the manual-send boundary retries exact media once more.
+    previous_expected = bool(getattr(post, "photo_expected", False))
+    setattr(post, "photo_expected", False)
+    setattr(post, "v52_media_recovery_pending", True)
+    try:
+        return _V52_PRE_SEND_FULL_CONTROL_CANDIDATE(post, token, message_html)
+    finally:
+        setattr(post, "photo_expected", previous_expected)
+
+
+_V52_PRE_MANUAL_FORCE_SEND = manual_force_send_prepared_message
+
+
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    recovered_images = _final_dedupe_exact_photos(images or [])
+    recovered_videos: list[str] = []
+    if not recovered_images and not video_url and bool(getattr(post, "photo_expected", False)):
+        recovered_images, recovered_videos = _v52_recover_original_media(post, force=True)
+    if recovered_images or video_url or recovered_videos or not bool(getattr(post, "photo_expected", False)):
+        return _V52_PRE_MANUAL_FORCE_SEND(
+            post, message, recovered_images, video_url=video_url, reply_message_ids=reply_message_ids
+        )
+    previous_expected = bool(getattr(post, "photo_expected", False))
+    setattr(post, "photo_expected", False)
+    try:
+        ids, mode = _V52_PRE_MANUAL_FORCE_SEND(
+            post, message, [], video_url="", reply_message_ids=reply_message_ids
+        )
+        return ids, mode + "+text_fallback_after_media_recovery"
+    finally:
+        setattr(post, "photo_expected", previous_expected)
+
+
+_base_send_prepared_message_to_main = manual_force_send_prepared_message
+
+
+# ---------------------------------------------------------------------------
+# 6) Canonical final layout:
+#    - "חדש:" is removed completely at the start of a report;
+#    - with a writer heading, report/exclusive labels are plain and inline;
+#    - accidental sentence wraps are joined, while paragraphs/lists stay intact;
+#    - no standalone trophy marker is left behind.
+# ---------------------------------------------------------------------------
+_V52_OPENING_RE = re.compile(
+    r"(?iu)^\s*(?P<emoji>(?:(?:[\U0001F1E6-\U0001F1FF]{2}|"
+    r"[\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf]\ufe0f?\u200d?)+)\s*)?"
+    r"(?P<label>דיווח\s+בלעדי|פרסום\s+ראשון|דיווח|רשמי|עדכון|חדש)\s*:\s*(?P<rest>.*)$"
+)
+
+
+def _v52_visible_line(value: Any) -> str:
+    if "_v49_line_visible" in globals():
+        return _v49_line_visible(value)
+    return html.unescape(re.sub(r"(?is)<[^>]+>", "", str(value or ""))).strip()
+
+
+def _v52_is_writer_heading(value: Any) -> bool:
+    visible = _v52_visible_line(value)
+    if not visible.endswith(":") or _V52_OPENING_RE.match(visible):
+        return False
+    words = re.findall(r"[A-Za-zא-תÀ-ÿ]+", visible[:-1])
+    return 1 <= len(words) <= 7
+
+
+def _v52_line_is_list_or_marker(value: Any) -> bool:
+    visible = _v52_visible_line(value)
+    return bool(
+        _V49_LIST_RE.match(visible)
+        or _V52_LIST_MARKER_RE.match(visible)
+        or re.match(r"^\s*(?:[•▪◦]|\d+[.)])", visible)
+    )
+
+
+def _v52_strip_unmatched_formatting_tags(value: Any) -> str:
+    """Remove only orphan simple-format tags; preserve every balanced tag/link."""
+    text = str(value or "")
+    token_re = re.compile(r"(?is)</?(?:b|strong|i|em|u|s)>")
+    stack: list[tuple[str, int, int]] = []
+    remove_spans: list[tuple[int, int]] = []
+    for match in token_re.finditer(text):
+        raw = match.group(0)
+        name_match = re.search(r"(?i)(?:b|strong|i|em|u|s)", raw)
+        if not name_match:
+            continue
+        name = name_match.group(0).casefold()
+        if not raw.lstrip().startswith("</"):
+            stack.append((name, match.start(), match.end()))
+            continue
+        if stack and stack[-1][0] == name:
+            stack.pop()
+        else:
+            remove_spans.append((match.start(), match.end()))
+    remove_spans.extend((start, end) for _name, start, end in stack)
+    for start, end in sorted(remove_spans, reverse=True):
+        text = text[:start] + text[end:]
+    return text
+
+
+def _v52_join_accidental_sentence_lines(lines: list[str]) -> list[str]:
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        current = lines[index]
+        if index + 1 < len(lines) and current.strip() and lines[index + 1].strip():
+            nxt = lines[index + 1]
+            cur_visible = _v52_visible_line(current)
+            next_visible = _v52_visible_line(nxt)
+            cur_words = re.findall(r"[A-Za-zא-תÀ-ÿ0-9]+", cur_visible)
+            can_join = bool(
+                2 <= len(cur_words) <= 8
+                and not re.search(r"[.!?…:;]\s*$", cur_visible)
+                and not _v52_is_writer_heading(current)
+                and not _v52_line_is_list_or_marker(current)
+                and not _v52_line_is_list_or_marker(nxt)
+                and not _V52_OPENING_RE.match(cur_visible)
+                and not _V52_OPENING_RE.match(next_visible)
+                and not _V49_FOOTER_RE.search(next_visible)
+                and not (_v49_is_emoji_only_line(nxt) if "_v49_is_emoji_only_line" in globals() else False)
+            )
+            if can_join:
+                output.append(current.rstrip() + " " + nxt.lstrip())
+                index += 2
+                continue
+        output.append(current)
+        index += 1
+    return output
+
+
+def _v52_canonical_news_layout(value: Any) -> str:
+    text = _v52_normalize_entity_names(value)
+    text = _v51_canonical_post_layout(text) if "_v51_canonical_post_layout" in globals() else text
+    lines = [(_v51_strip_outer_bidi(line) if "_v51_strip_outer_bidi" in globals() else line).rstrip() for line in text.split("\n")]
+    # Removing a bold opening label can expose a historical standalone closing
+    # tag on the following row. Such rows have no visible content and are never
+    # meaningful Telegram text.
+    for _v52_index, _v52_line in enumerate(lines):
+        if not _v52_visible_line(_v52_line) and re.fullmatch(
+            r"(?is)\s*(?:</?(?:b|strong|i|em|u|s)>\s*)+", _v52_line
+        ):
+            lines[_v52_index] = ""
+
+    nonempty = [i for i, line in enumerate(lines) if _v52_visible_line(line)]
+    writer_index = nonempty[0] if nonempty and _v52_is_writer_heading(lines[nonempty[0]]) else None
+    content_pos = 1 if writer_index is not None else 0
+    nonempty = [i for i, line in enumerate(lines) if _v52_visible_line(line)]
+    if content_pos < len(nonempty):
+        opening_index = nonempty[content_pos]
+        opening_visible = _v52_visible_line(lines[opening_index])
+        opening = _V52_OPENING_RE.match(opening_visible)
+        if opening:
+            label = re.sub(r"\s+", " ", opening.group("label").strip())
+            emoji = (opening.group("emoji") or "").strip()
+            rest = (opening.group("rest") or "").strip()
+            if label == "חדש":
+                if rest:
+                    lines[opening_index] = rest
+                else:
+                    lines.pop(opening_index)
+            elif writer_index is not None:
+                prefix = " ".join(part for part in (emoji, label + ":") if part)
+                if rest:
+                    lines[opening_index] = f"{prefix} {rest}".strip()
+                else:
+                    next_index = next((i for i in range(opening_index + 1, len(lines)) if _v52_visible_line(lines[i])), None)
+                    if next_index is not None and not _V49_FOOTER_RE.search(_v52_visible_line(lines[next_index])):
+                        lines[opening_index] = f"{prefix} {lines[next_index].strip()}".strip()
+                        lines.pop(next_index)
+                    else:
+                        lines[opening_index] = prefix
+                # The line is reconstructed as plain HTML text; only the writer
+                # heading remains bold through the established builder.
+
+    # A trophy-only row is a marker for the following list label, unlike a
+    # reaction/flag row which V49 correctly attaches to the previous sentence.
+    index = 0
+    while index < len(lines):
+        marker, body = _v52_marker_parts(lines[index])
+        if marker and not body:
+            next_index = next((i for i in range(index + 1, len(lines)) if _v52_visible_line(lines[i])), None)
+            if next_index is not None and _v52_short_list_label(lines[next_index]):
+                _next_marker, next_body = _v52_marker_parts(lines[next_index])
+                lines[next_index] = f"{marker} {next_body or _v52_visible_line(lines[next_index])}"
+                lines.pop(index)
+                continue
+        index += 1
+
+    lines = _v52_join_accidental_sentence_lines(lines)
+    text = "\n".join(lines)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    # Re-apply the proven spacing/footer invariant after the structural repairs.
+    text = _v51_canonical_post_layout(text) if "_v51_canonical_post_layout" in globals() else text
+    text = _v52_strip_unmatched_formatting_tags(text)
+    return _v52_normalize_entity_names(text)
+
+
+_V52_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+    translated = _v52_preserve_source_list_markers(source, _v52_polish_hebrew_translation(translated))
+    quoted_translated = _v52_preserve_source_list_markers(
+        quote_source, _v52_polish_hebrew_translation(quoted_translated)
+    ) if quoted_translated else ""
+    rendered = _V52_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _v52_canonical_news_layout(rendered)
+
+
+_V52_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    rendered = _V52_PRE_FINALIZE_OUTGOING(_v52_normalize_entity_names(message))
+    if not _v51_has_neto_footer(rendered):
+        return rendered
+    return _v41_strong_rtl_all_lines(_v52_canonical_news_layout(rendered))
+
+
+# Absolute Telegram text/caption boundary, including albums and direct captions.
+def _v52_normalize_media_rows(value: Any) -> Any:
+    was_json = isinstance(value, str)
+    rows = value
+    if was_json:
+        try:
+            rows = json.loads(value)
+        except Exception:
+            return value
+    if not isinstance(rows, list):
+        return value
+    output: list[Any] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            output.append(raw)
+            continue
+        item = dict(raw)
+        if isinstance(item.get("caption"), str) and _v51_has_neto_footer(item["caption"]):
+            item["caption"] = _v52_canonical_news_layout(item["caption"])
+        output.append(item)
+    return json.dumps(output, ensure_ascii=False, separators=(",", ":")) if was_json else output
+
+
+def _v52_layout_payload(method: Any, payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    result = dict(payload)
+    method_key = str(method or "").casefold()
+    fields = globals().get("_V41_TEXT_FIELDS_BY_METHOD", {}).get(method_key, ())
+    for field in fields:
+        if isinstance(result.get(field), str) and _v51_has_neto_footer(result[field]):
+            result[field] = _v52_canonical_news_layout(result[field])
+    if method_key == "sendmediagroup":
+        result["media"] = _v52_normalize_media_rows(result.get("media"))
+    return result
+
+
+_V52_PRE_TELEGRAM_API = telegram_api
+
+
+def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return _V52_PRE_TELEGRAM_API(method, _v52_layout_payload(method, payload), **kwargs)
+
+
+_V52_PRE_CHANNEL_MULTIPART = _channel_multipart_telegram_api
+
+
+def _channel_multipart_telegram_api(method: str, fields: dict[str, Any], files: list[tuple[str, str]]) -> dict[str, Any]:
+    return _V52_PRE_CHANNEL_MULTIPART(method, _v52_layout_payload(method, fields), files)
+
+
+_V52_PRE_FINAL_MULTIPART = _final_multipart_telegram_api
+
+
+def _final_multipart_telegram_api(method: str, fields: dict[str, Any], file_field: str, file_path: str) -> dict[str, Any]:
+    return _V52_PRE_FINAL_MULTIPART(method, _v52_layout_payload(method, fields), file_field, file_path)
+
+
+# ---------------------------------------------------------------------------
+# 7) Final callback boundary: acknowledge immediately, process in a dedicated
+#    bounded worker pool and never hold the getUpdates loop behind a slow menu.
+# ---------------------------------------------------------------------------
+_V52_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+_V52_BUTTON_EXECUTOR = ThreadPoolExecutor(max_workers=12, thread_name_prefix="control-v52")
+_V52_CALLBACK_LOCK = RLock()
+_V52_CALLBACK_SEEN: dict[str, float] = {}
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    if not isinstance(callback, dict) or not callback:
+        return _V52_PRE_PROCESS_CONTROL_UPDATE(update)
+    callback_id = str(callback.get("id") or "")
+    if callback_id:
+        answer_control_callback(callback_id, "")
+        now = time.time()
+        with _V52_CALLBACK_LOCK:
+            for old_id, timestamp in list(_V52_CALLBACK_SEEN.items()):
+                if now - timestamp > 120:
+                    _V52_CALLBACK_SEEN.pop(old_id, None)
+            if callback_id in _V52_CALLBACK_SEEN:
+                return
+            _V52_CALLBACK_SEEN[callback_id] = now
+    try:
+        _V52_BUTTON_EXECUTOR.submit(_V52_PRE_PROCESS_CONTROL_UPDATE, update)
+    except RuntimeError:
+        Thread(target=_V52_PRE_PROCESS_CONTROL_UPDATE, args=(update,), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# 8) Offline regression audit for every reported class.  No network, Telegram,
+#    RSS, Google or Gemini call is performed here.
+# ---------------------------------------------------------------------------
+def _v52_test_post(username: str, text: str, post_id: str = "v52") -> Post:
+    return Post(
+        post_id=post_id,
+        username=username,
+        text=text,
+        link=f"https://x.com/{username}/status/{post_id}",
+        image_urls=[], video_urls=[], has_video=False, primary_has_video=False,
+        quoted_has_video=False, quoted_author="", quoted_text="",
+        published_ts=time.time(), dedupe_ids=[post_id], source_name=username,
+    )
+
+
+def _v52_self_audit() -> None:
+    # Betting advertisement versus factual market probability.
+    ad = _v52_test_post("Any", "Free bets with BoyleSports. Bet £10 get £40. New customers, 18+, terms apply, gamble responsibly.", "ad")
+    if _v52_betting_ad_reason(ad) != "betting_advertisement_hard_block":
+        raise RuntimeError("v52_betting_ad_not_blocked")
+    factual = _v52_test_post("CentreGoals", "Polymarket gives Vinicius a 59% chance to stay at Real Madrid.", "fact")
+    if _v52_betting_ad_reason(factual):
+        raise RuntimeError("v52_factual_probability_blocked")
+
+    # Opta currently requires explicit tier-A team/player context.
+    opta_allowed = _v52_test_post(OPTAJOE_DEFAULT_ACTIVE_USERNAME, "Mohamed Salah has created 12 chances for Liverpool.", "opta-a")
+    opta_blocked = _v52_test_post(OPTAJOE_DEFAULT_ACTIVE_USERNAME, "A player at Wrexham has created 12 chances.", "opta-b")
+    if not _v52_opta_tier1_allowed(opta_allowed) or _v52_opta_tier1_allowed(opta_blocked):
+        raise RuntimeError("v52_opta_tier1_policy")
+
+    # Canonical name.
+    if _v52_normalize_entity_names("כל הכבוד למו שלאח") != "כל הכבוד למוחמד סלאח":
+        raise RuntimeError("v52_salah_normalization")
+
+    footer = '<a href="https://t.me/neto_sport">נטו ספורט</a>.📝'
+    writer = f"<b>פבריציו רומאנו:</b>\n\n<b>🚨🇦🇷 דיווח בלעדי:</b>\nמעברו של רולי קרוב.\n\n{footer}"
+    writer_fixed = _v52_canonical_news_layout(writer)
+    if "דיווח בלעדי:</b>\n" in writer_fixed or "דיווח בלעדי:\n" in writer_fixed:
+        raise RuntimeError("v52_writer_opening_not_inline")
+    if "🚨🇦🇷 דיווח בלעדי: מעברו של רולי קרוב." not in _v52_visible_line(writer_fixed.replace("\n", " ")):
+        raise RuntimeError("v52_writer_opening_content_lost")
+    builder_probe = _v52_test_post("FabrizioRomano", "Geronimo Rulli move is closer.", "builder-probe")
+    builder_rendered = build_message(
+        builder_probe, "🚨🇦🇷 דיווח בלעדי:\nמעברו של חרונימו רולי קרוב יותר להשלמה."
+    )
+    if re.search(r"(?im)^\s*</?(?:b|strong|i|em)>\s*$", builder_rendered):
+        raise RuntimeError("v52_orphan_writer_format_tag")
+
+    new_case = f"🚨🚨 חדש:\nמילאן דחתה את ההצעה.\n\n{footer}"
+    new_fixed = _v52_canonical_news_layout(new_case)
+    if "חדש:" in _v52_visible_line(new_fixed) or not _v52_visible_line(new_fixed).startswith("מילאן"):
+        raise RuntimeError("v52_new_opening_not_removed")
+
+    broken = f"🚨 דיווח:\nהתאחדות הכדורגל הקוריאנית\nהואשמה במתן שירותים לשופטים.\n\n{footer}"
+    broken_fixed = _v52_canonical_news_layout(broken)
+    if "הקוריאנית\nהואשמה" in broken_fixed or "הקוריאנית הואשמה" not in _v52_visible_line(broken_fixed):
+        raise RuntimeError("v52_accidental_sentence_break")
+
+    source_list = (
+        "🏆🏆🏆🏆🏆 Premier League\n🏆🏆🏆 FA Cup\n🏆 League Cup\n"
+        "🏆🏆🏆🏆 Community Shield\n🏆 Champions League\n🏆 Super Cup\nOne of the greatest goalkeepers."
+    )
+    shifted = (
+        "פרמייר ליג\n🏆🏆🏆🏆🏆 הגביע האנגלי\n🏆🏆🏆 גביע הליגה\n"
+        "🏆 מגן הקהילה\n🏆🏆🏆🏆 ליגת האלופות\n🏆 הסופר קאפ\n🏆 אחד השוערים הטובים בהיסטוריה."
+    )
+    restored = _v52_preserve_source_list_markers(source_list, shifted)
+    expected_sequence = ["🏆🏆🏆🏆🏆", "🏆🏆🏆", "🏆", "🏆🏆🏆🏆", "🏆", "🏆"]
+    actual_sequence = [_v52_marker_parts(line)[0] for line in restored.splitlines()[:6]]
+    if actual_sequence != expected_sequence or restored.splitlines()[-1].startswith("🏆"):
+        raise RuntimeError("v52_shifted_trophy_list")
+    correct = "🏆 פרמייר ליג\n🏆 גביע אנגלי\n🏆🏆 מגן הקהילה"
+    if _v52_preserve_source_list_markers(correct, correct) != correct:
+        raise RuntimeError("v52_correct_list_changed")
+
+    polished = _v52_polish_hebrew_translation(
+        "ויקטור מוניוס מצטלם לתמונה ראשונה בליברפול יחד עם הסוכנים במרכז האימונים אקסא"
+    )
+    if "מצטלם לתמונה ראשונה" in polished or "יחד עם הסוכנים" in polished or "אקסא" in polished:
+        raise RuntimeError("v52_translation_polish")
+
+    # Flood: three recent non-material posts on the same player are suppressed;
+    # an official material update remains allowed.
+    state = {RECENT_NEWS_STATE_KEY: []}
+    for index in range(3):
+        old = _v52_test_post("Old", f"מוחמד סלאח עשוי להישאר בליברפול לפי דיווח {index}.", f"old-{index}")
+        remember_recent_news_event(old, state, pending=False)
+    probe = _v52_test_post("Current", "מוחמד סלאח עדיין עשוי להישאר בליברפול.", "probe")
+    # Durable rows are not available in an isolated audit; feed the current
+    # recent rows through the same extractor shape used by V20.
+    original_rows = globals().get("_v20_recent_duplicate_rows")
+    try:
+        def _v52_audit_rows(_state: dict[str, Any]) -> list[dict[str, Any]]:
+            return list(_state.get(RECENT_NEWS_STATE_KEY, []))
+        globals()["_v20_recent_duplicate_rows"] = _v52_audit_rows
+        if not _v52_player_flood_event(probe, state):
+            raise RuntimeError("v52_player_flood_not_blocked")
+        official = _v52_test_post("Current", "רשמי: מוחמד סלאח חתם בליברפול עד 2031.", "official")
+        if _v52_player_flood_event(official, state):
+            raise RuntimeError("v52_material_update_flood_blocked")
+        destination = _v52_test_post("Current", "מוחמד סלאח עשוי להצטרף לאינטר במקום להישאר בליברפול.", "destination")
+        if _v52_player_flood_event(destination, state):
+            raise RuntimeError("v52_new_destination_flood_blocked")
+    finally:
+        globals()["_v20_recent_duplicate_rows"] = original_rows
+
+    # No operational settings are altered here.
+    if CHECK_EVERY_SECONDS != 20 or MAX_PARALLEL_ACCOUNT_CHECKS != 4:
+        raise RuntimeError("v52_operational_settings_changed")
+    if MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK != 12:
+        raise RuntimeError("v52_automatic_limit_changed")
+    if abs(float(CONTROL_POLL_SECONDS) - 0.40) > 0.001:
+        raise RuntimeError("v52_control_error_wait_changed")
+
+
+try:
+    _v52_self_audit()
+    logging.info(
+        "V52 active: robust exact-media recovery with quiet/manual text fallback; "
+        "translation candidate scoring and source-marker preservation; betting-ad hard block; "
+        "Opta tier-A-only policy; same-player flood control; canonical writer/opening/layout rules; "
+        "dedicated immediate callback executor; restored V50 feed route untouched"
+    )
+except Exception as _v52_audit_exc:
+    logging.error("V52 self-audit failed: %s", short_error(_v52_audit_exc, 2600))
+    raise
+
+# ====== END V52 PRINCIPLE QUALITY / MEDIA RECOVERY / OPTA TIER-A / FAST BUTTONS ======
+
+
 if __name__ == "__main__":
     main()
