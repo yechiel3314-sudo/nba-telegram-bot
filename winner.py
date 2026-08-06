@@ -59358,5 +59358,649 @@ except Exception as _v52_audit_exc:
 # ====== END V52 PRINCIPLE QUALITY / MEDIA RECOVERY / OPTA TIER-A / FAST BUTTONS ======
 
 
+
+# ====== V53 PRINCIPLE DEDUPE / TRANSLATION INTEGRITY / STRUCTURED LISTS (2026-08-07) ======
+# Scope is intentionally narrow: preserve the exact V50/V43 RSS route and every
+# persistent filename/key; strengthen only duplicate decisions, translation
+# integrity, final structure/name cleanup, and quiet/manual media recovery.
+
+BOT_BUILD_ID = "winner-v53-principle-dedupe-translation-lists-keep-v50-rss-2026-08-07"
+
+# ---------------------------------------------------------------------------
+# 1) Canonical football spellings. These run through the existing global V52
+#    normalizer so every route (translation, duplicate memory and Telegram
+#    boundary) sees the same identity.
+# ---------------------------------------------------------------------------
+_V53_PRE_NORMALIZE_ENTITY_NAMES = _v52_normalize_entity_names
+_V53_PUSKAS_RE = re.compile(
+    r"(?iu)(?<![A-Za-zא-ת])(?:ה[־-]?)?(?:פוסקאס|פוסקאש|פושקאס|puskas)(?![A-Za-zא-ת])"
+)
+
+
+def _v52_normalize_entity_names(value: Any) -> str:
+    text = _V53_PRE_NORMALIZE_ENTITY_NAMES(value)
+    return _V53_PUSKAS_RE.sub("פושקאש", text)
+
+
+# ---------------------------------------------------------------------------
+# 2) Translation integrity: a damaged/truncated translation is never published.
+#    The established translator remains primary. Google is retried only when
+#    concrete damage is detected; if no complete Hebrew candidate exists the
+#    normal TranslationUnavailable path keeps the post for a later retry.
+# ---------------------------------------------------------------------------
+_V53_BROKEN_TRANSLATION_RE = re.compile(
+    r"(?iu)(?:ל[.]לת|אנשי[.]לה|אואהדים|אואהד|\bגמר\s+ה[.]?$|"
+    r"\b(?:ה|ו|ל|של|את)\s*[.…]?$|(?:^|\s)[.][\s.]*$|\.{2,}\s*[א-ת]?$)"
+)
+_V53_SOURCE_SENTENCE_RE = re.compile(r"[.!?…]+(?:\s|$)|\n\s*\n")
+
+
+def _v53_translation_damage_issues(source: Any, candidate: Any) -> list[str]:
+    src = str(source or "").strip()
+    out = str(candidate or "").strip()
+    issues: list[str] = []
+    if not out:
+        return ["empty_translation"]
+    try:
+        issues.extend(list(_final_translation_completeness_issues(src, out) or []))
+    except Exception:
+        pass
+    visible = clean_before_translation(out)
+    if _V53_BROKEN_TRANSLATION_RE.search(visible):
+        issues.append("broken_or_truncated_hebrew_fragment")
+    # Odd quotes on a substantial report usually mean a quote was cut midway.
+    quote_count = visible.count('\"')
+    if quote_count % 2 and len(re.findall(r"[א-תA-Za-z]+", visible)) >= 14:
+        issues.append("unclosed_quote")
+    src_words = re.findall(r"[A-Za-zÀ-ÿא-ת]+", clean_before_translation(src))
+    out_words = re.findall(r"[A-Za-zÀ-ÿא-ת]+", visible)
+    if len(src_words) >= 20 and len(out_words) < max(8, int(len(src_words) * 0.50)):
+        issues.append("severe_word_loss")
+    src_sentences = len(_V53_SOURCE_SENTENCE_RE.findall(src))
+    out_sentences = len(_V53_SOURCE_SENTENCE_RE.findall(visible))
+    if src_sentences >= 3 and out_sentences <= 1 and len(out_words) < int(len(src_words) * 0.72):
+        issues.append("lost_paragraph_or_sentence_structure")
+    return list(dict.fromkeys(issues))
+
+
+_V53_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    main, quote, author = _V53_PRE_TRANSLATE_POST_FOR_SEND(post)
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+
+    def choose(source: str, primary: str) -> str:
+        primary = _v52_polish_hebrew_translation(primary)
+        primary_issues = _v53_translation_damage_issues(source, primary)
+        best = primary
+        best_issues = primary_issues
+        best_score = _v52_translation_score(source, primary) - 40.0 * len(primary_issues)
+        if source and primary_issues:
+            try:
+                google = _v52_polish_hebrew_translation(_google_translate_preserve_full_layout(source))
+            except Exception:
+                google = ""
+            google_issues = _v53_translation_damage_issues(source, google) if google else ["empty_translation"]
+            google_score = _v52_translation_score(source, google) - 40.0 * len(google_issues)
+            if google and (len(google_issues), -google_score) < (len(best_issues), -best_score):
+                best, best_issues, best_score = google, google_issues, google_score
+        best = _v52_preserve_source_list_markers(source, best)
+        remaining = _v53_translation_damage_issues(source, best)
+        if remaining:
+            raise TranslationUnavailable(
+                "התרגום הסופי עדיין פגום או חסר: " + "; ".join(remaining[:6])
+            )
+        return best
+
+    main = choose(str(main_source or ""), str(main or ""))
+    if quote_source and quote:
+        quote = choose(str(quote_source or ""), str(quote or ""))
+    return main, quote, author
+
+
+# ---------------------------------------------------------------------------
+# 3) Structured layout. Lists are treated as units: marker/value continuations
+#    remain on the same row, list rows remain contiguous, while real paragraph
+#    gaps and the single footer gap are preserved.
+# ---------------------------------------------------------------------------
+_V53_ARROW_RE = re.compile(r"^\s*(?:➡️?|→|⟶|➜)\s*")
+_V53_BULLET_RE = re.compile(r"^\s*(?:[•▪▫◦‣]|[-–—]\s+|\d+[.)]\s+)")
+_V53_VALUE_CONTINUATION_RE = re.compile(
+    r"(?iu)^\s*(?:[£€$]?\s*\d[\d,.]*(?:\s*(?:מיליון|אלף|פאונד|אירו|יורו|דולר|%|בשבוע|בשנה))?|"
+    r"כמעט\s+\d|עד\s+20\d{2})"
+)
+
+
+def _v53_is_structured_row(line: Any) -> bool:
+    visible = _v52_visible_line(line)
+    marker, body = _v52_marker_parts(visible)
+    return bool(marker or _V53_BULLET_RE.match(visible) or _V53_ARROW_RE.match(visible))
+
+
+def _v53_compact_structured_lists(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip()
+        visible = _v52_visible_line(line)
+        if visible and _V53_BULLET_RE.match(visible):
+            # Join a value/arrow continuation to the bullet row.
+            probe = index + 1
+            while probe < len(lines) and not _v52_visible_line(lines[probe]):
+                probe += 1
+            if probe < len(lines):
+                next_visible = _v52_visible_line(lines[probe])
+                if _V53_ARROW_RE.match(next_visible) or (
+                    visible.endswith(":") and _V53_VALUE_CONTINUATION_RE.match(next_visible)
+                ):
+                    line = line.rstrip() + " " + lines[probe].strip()
+                    index = probe
+            output.append(line)
+            index += 1
+            continue
+        output.append(line)
+        index += 1
+
+    # Remove blank rows only between consecutive structured list rows.
+    compact: list[str] = []
+    for idx, line in enumerate(output):
+        if not _v52_visible_line(line):
+            previous = next((_v52_visible_line(compact[j]) for j in range(len(compact) - 1, -1, -1) if _v52_visible_line(compact[j])), "")
+            following = next((_v52_visible_line(output[j]) for j in range(idx + 1, len(output)) if _v52_visible_line(output[j])), "")
+            if previous and following and _v53_is_structured_row(previous) and _v53_is_structured_row(following):
+                continue
+        compact.append(line)
+    return "\n".join(compact)
+
+
+def _v53_join_wrapped_prose(value: Any) -> str:
+    lines = str(value or "").split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        current = lines[i]
+        if i + 1 < len(lines) and current.strip() and lines[i + 1].strip():
+            cur = _v52_visible_line(current)
+            nxt = _v52_visible_line(lines[i + 1])
+            cur_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", cur)
+            safe = bool(
+                2 <= len(cur_words) <= 14
+                and not re.search(r"[.!?…:;]\s*$", cur)
+                and not _v52_is_writer_heading(current)
+                and not _v53_is_structured_row(current)
+                and not _v53_is_structured_row(lines[i + 1])
+                and not _V52_OPENING_RE.match(cur)
+                and not _V49_FOOTER_RE.search(nxt)
+                and not (_v49_is_emoji_only_line(lines[i + 1]) if "_v49_is_emoji_only_line" in globals() else False)
+            )
+            if safe:
+                out.append(current.rstrip() + " " + lines[i + 1].lstrip())
+                i += 2
+                continue
+        out.append(current)
+        i += 1
+    return "\n".join(out)
+
+
+def _v53_canonical_news_layout(value: Any) -> str:
+    text = _v52_normalize_entity_names(value)
+    text = _v52_canonical_news_layout(text)
+    text = _v53_join_wrapped_prose(text)
+    text = _v53_compact_structured_lists(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = _v51_canonical_post_layout(text)
+    return _v52_normalize_entity_names(text)
+
+
+_V53_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V53_PRE_BUILD_MESSAGE(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+    return _v53_canonical_news_layout(rendered)
+
+
+_V53_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    rendered = _V53_PRE_FINALIZE_OUTGOING(_v52_normalize_entity_names(message))
+    if not _v51_has_neto_footer(rendered):
+        return rendered
+    return _v41_strong_rtl_all_lines(_v53_canonical_news_layout(rendered))
+
+
+# Rebind the absolute Telegram boundary added in V52 to the stricter V53 layout.
+def _v53_layout_payload(method: Any, payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    result = dict(payload)
+    method_key = str(method or "").casefold()
+    fields = globals().get("_V41_TEXT_FIELDS_BY_METHOD", {}).get(method_key, ())
+    for field in fields:
+        if isinstance(result.get(field), str) and _v51_has_neto_footer(result[field]):
+            result[field] = _v53_canonical_news_layout(result[field])
+    if method_key == "sendmediagroup":
+        rows = result.get("media")
+        was_json = isinstance(rows, str)
+        if was_json:
+            try:
+                rows = json.loads(rows)
+            except Exception:
+                rows = None
+        if isinstance(rows, list):
+            normalized = []
+            for raw in rows:
+                item = dict(raw) if isinstance(raw, dict) else raw
+                if isinstance(item, dict) and isinstance(item.get("caption"), str) and _v51_has_neto_footer(item["caption"]):
+                    item["caption"] = _v53_canonical_news_layout(item["caption"])
+                normalized.append(item)
+            result["media"] = json.dumps(normalized, ensure_ascii=False, separators=(",", ":")) if was_json else normalized
+    return result
+
+
+_V53_PRE_TELEGRAM_API = telegram_api
+
+
+def telegram_api(method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return _V53_PRE_TELEGRAM_API(method, _v53_layout_payload(method, payload), **kwargs)
+
+
+_V53_PRE_CHANNEL_MULTIPART = _channel_multipart_telegram_api
+
+
+def _channel_multipart_telegram_api(method: str, fields: dict[str, Any], files: list[tuple[str, str]]) -> dict[str, Any]:
+    return _V53_PRE_CHANNEL_MULTIPART(method, _v53_layout_payload(method, fields), files)
+
+
+_V53_PRE_FINAL_MULTIPART = _final_multipart_telegram_api
+
+
+def _final_multipart_telegram_api(method: str, fields: dict[str, Any], file_field: str, file_path: str) -> dict[str, Any]:
+    return _V53_PRE_FINAL_MULTIPART(method, _v53_layout_payload(method, fields), file_field, file_path)
+
+
+# ---------------------------------------------------------------------------
+# 4) Principle duplicate engine. The examples are regression tests only. The
+#    policy works on event identity, stage and material delta. Same-stage source
+#    confirmations are duplicates; only genuine advancement/new facts pass.
+# ---------------------------------------------------------------------------
+_V53_PRE_FABRIZIO_CONFIRMATION = _v47_find_fabrizio_confirmation
+
+
+def _v47_find_fabrizio_confirmation(post: Post, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    item = _V53_PRE_FABRIZIO_CONFIRMATION(post, rows)
+    if not isinstance(item, dict):
+        return None
+    current = _v46_profile(_final_source_text(post), getattr(post, "username", ""))
+    previous_source = str(item.get("username") or item.get("source") or "")
+    for previous_text in _v46_row_variants(item):
+        previous = _v46_profile(previous_text, previous_source)
+        decision = _v46_event_decision_profiles(current, previous)
+        if (current.has_hwg and not previous.has_hwg) or (current.stage >= 4 and previous.stage < 4):
+            return item
+        if decision.get("reason") in {"new_material_fact", "reversal_or_failure"}:
+            return item
+    # Same event and same stage is not republished merely because the later
+    # source is Fabrizio. This is the recurring duplicate class reported by the
+    # operator; HERE WE GO/official/material progress still passes above.
+    return None
+
+
+_V53_TOPIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("contract_extension", re.compile(r"(?iu)new\s+contract|contract\s+extension|renewal|חוזה\s+חדש|הארכת\s+חוזה|חידוש\s+חוזה")),
+    ("agreement", re.compile(r"(?iu)full\s+agreement|deal\s+agreed|agreement|הסכם\s+מלא|הגיע(?:ה)?\s+להסכם|סיכום\s+מלא|סוכם")),
+    ("flight_travel", re.compile(r"(?iu)flight|flying|on\s+his\s+way|travelling|בטיסה|טיסה\s+ל|בדרכו|ממריא|המריא")),
+    ("arrival_photo", re.compile(r"(?iu)arriv|first\s+photo|pictured|lands?|נחת|מגיע|הגיע|תמונה\s+ראשונה|מצטלם")),
+    ("medical", _V46_MEDICAL_RE),
+    ("salary", re.compile(r"(?iu)salary|wage|שכר")),
+    ("offer", _V46_TALKS_RE),
+    ("official", _V46_OFFICIAL_RE),
+    ("reversal", _V46_REVERSAL_RE),
+)
+
+
+def _v53_topic_tags(text: Any) -> frozenset[str]:
+    visible = _v46_visible_text(text)
+    return frozenset(name for name, pattern in _V53_TOPIC_PATTERNS if pattern.search(visible))
+
+
+_V53_PRE_LOCAL_DUPLICATE = _v46_local_duplicate
+
+
+def _v53_extended_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    primary = _V53_PRE_LOCAL_DUPLICATE(post, state, text_override)
+    if primary:
+        return primary
+
+    current_text = str(text_override or _final_source_text(post) or getattr(post, "text", "") or "")
+    current = _v46_profile(current_text, getattr(post, "username", ""))
+    current_topics = _v53_topic_tags(current_text)
+    if not current.text or not current_topics:
+        return None
+    rows = [
+        item for item in list(_v9_recent_duplicate_rows(state) or [])[-_V46_DUPLICATE_MAX_ROWS:]
+        if isinstance(item, dict) and not is_pending_memory_item(item)
+    ]
+    for item in reversed(rows):
+        previous_source = str(item.get("username") or item.get("source") or "")
+        for previous_text in _v46_row_variants(item):
+            previous = _v46_profile(previous_text, previous_source)
+            previous_topics = _v53_topic_tags(previous_text)
+            shared_topics = set(current_topics) & set(previous_topics)
+            if not shared_topics:
+                continue
+            people_match = bool(current.people and previous.people and _v46_set_fuzzy_overlap(current.people, previous.people))
+            shared_teams = set(current.teams) & set(previous.teams)
+            shared_tokens = set(current.tokens) & set(previous.tokens)
+            generic_tokens = {
+                "בטיסה", "טיסה", "flight", "flying", "סוכנים", "סוכן", "agent", "agents",
+                "מדריד", "לקראת", "מעבר", "העברה", "יחד", "שלו", "שלו", "כעת",
+            }
+            rare_entity_overlap = {
+                token for token in shared_tokens
+                if len(token) >= 3 and token not in generic_tokens and token not in _V46_STOPWORDS
+            }
+            fallback_subject_match = len(rare_entity_overlap) >= 2
+            if not people_match and not fallback_subject_match and len(shared_teams) < 2:
+                continue
+            if current.destinations and previous.destinations and not (set(current.destinations) & set(previous.destinations)):
+                continue
+            decision = _v46_event_decision_profiles(current, previous)
+            if decision.get("reason") in {"stage_advanced", "new_material_fact", "reversal_or_failure", "new_context_number"}:
+                continue
+            if current.stage > previous.stage:
+                continue
+            similarity = _v46_similarity(current, previous)
+            containment = float(similarity.get("containment", 0.0) or 0.0)
+            proposition = float(similarity.get("proposition", 0.0) or 0.0)
+            sequence = float(similarity.get("sequence", 0.0) or 0.0)
+            special_identity = bool(
+                (people_match or fallback_subject_match) and (
+                    shared_teams
+                    or (set(current.destinations) & set(previous.destinations))
+                    or "flight_travel" in shared_topics
+                    or "arrival_photo" in shared_topics
+                ) and (
+                    "contract_extension" in shared_topics
+                    or "flight_travel" in shared_topics
+                    or "arrival_photo" in shared_topics
+                    or "medical" in shared_topics
+                )
+            )
+            if not special_identity and max(containment, proposition, sequence) < 0.52:
+                continue
+            result = dict(item)
+            result.update({
+                "duplicate": True,
+                "is_duplicate": True,
+                "duplicate_score": max(containment, proposition, sequence, 0.91 if special_identity else 0.0),
+                "duplicate_verdict": "V53_PRINCIPLE_EVENT_ENGINE",
+                "duplicate_source": previous_source or "דיווח קודם",
+                "reason": "same_principle_event_no_material_delta",
+                "raw_reason": "same_principle_event_no_material_delta",
+                "duplicate_explanation": {
+                    "shared_topics": sorted(shared_topics),
+                    "shared_teams": sorted(shared_teams),
+                    "people_match": people_match,
+                    **similarity,
+                },
+            })
+            return result
+    return None
+
+
+def _v46_local_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v53_extended_duplicate(post, state, text_override)
+
+
+def _v42_local_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v53_extended_duplicate(post, state, text_override)
+
+
+# Clear the old 20-second result cache and keep one fast local/cached route.
+try:
+    with _V49_DUPLICATE_CACHE_LOCK:
+        _V49_DUPLICATE_CACHE.clear()
+except Exception:
+    pass
+
+
+def _v49_duplicate_core(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    key = _v49_duplicate_cache_key(post, state, text_override)
+    now = time.time()
+    with _V49_DUPLICATE_CACHE_LOCK:
+        cached = _V49_DUPLICATE_CACHE.get(key)
+        if cached and now - cached[0] <= _V49_DUPLICATE_CACHE_TTL:
+            return dict(cached[1]) if isinstance(cached[1], dict) else None
+    result = _v53_extended_duplicate(post, state, text_override)
+    with _V49_DUPLICATE_CACHE_LOCK:
+        _V49_DUPLICATE_CACHE[key] = (now, dict(result) if isinstance(result, dict) else None)
+        if len(_V49_DUPLICATE_CACHE) > 2500:
+            for stale_key in sorted(_V49_DUPLICATE_CACHE, key=lambda item: _V49_DUPLICATE_CACHE[item][0])[:500]:
+                _V49_DUPLICATE_CACHE.pop(stale_key, None)
+    return dict(result) if isinstance(result, dict) else None
+
+
+def _v53_timed_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    _final_pipeline_set_processing_started(post)
+    started = time.perf_counter()
+    try:
+        return _v49_duplicate_core(post, state, text_override)
+    finally:
+        _pipeline_add_stage(post, "duplicate_wall_seconds", time.perf_counter() - started)
+
+
+def _v9_fast_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v49_duplicate_core(post, state, text_override)
+
+
+def find_recent_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v53_timed_duplicate(post, state)
+
+
+def find_channel_duplicate_event(post: Post, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v53_timed_duplicate(post, state)
+
+
+def find_recent_duplicate_event_ai_aware(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v53_timed_duplicate(post, state)
+
+
+def find_recent_burst_spam_event(post: Post, state: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    return _v53_timed_duplicate(post, state)
+
+
+def find_post_translation_duplicate_event(post: Post, translated_message: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    return _v53_timed_duplicate(post, state, html_message_to_plain_text(translated_message))
+
+
+_V53_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    if "same_principle_event_no_material_delta" in str(reason or ""):
+        return "אותו אירוע כבר נשלח, ללא התקדמות או פרט מהותי חדש"
+    return _V53_PRE_HEBREW_BLOCK_REASON(reason)
+
+
+# ---------------------------------------------------------------------------
+# 5) Quiet/manual media recovery is fail-open to a complete text preparation.
+#    Automatic main-channel media policy is unchanged.
+# ---------------------------------------------------------------------------
+_V53_PRE_SEND_FULL_CONTROL_CANDIDATE = _send_full_control_candidate
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    images, videos = _v52_recover_original_media(post, force=True)
+    if images or videos or not bool(getattr(post, "photo_expected", False)):
+        return _V53_PRE_SEND_FULL_CONTROL_CANDIDATE(post, token, message_html)
+    old_expected = bool(getattr(post, "photo_expected", False))
+    setattr(post, "photo_expected", False)
+    setattr(post, "v53_media_text_fallback", True)
+    try:
+        return _V53_PRE_SEND_FULL_CONTROL_CANDIDATE(post, token, message_html)
+    finally:
+        setattr(post, "photo_expected", old_expected)
+
+
+_V53_PRE_MANUAL_FORCE_SEND = manual_force_send_prepared_message
+
+
+def manual_force_send_prepared_message(
+    post: Post,
+    message: str,
+    images: list[str],
+    video_url: str = "",
+    reply_message_ids: dict[str, int] | None = None,
+) -> tuple[dict[str, int], str]:
+    exact_images = _final_dedupe_exact_photos(images or [])
+    recovered_videos: list[str] = []
+    if not exact_images and not video_url and bool(getattr(post, "photo_expected", False)):
+        exact_images, recovered_videos = _v52_recover_original_media(post, force=True)
+    if exact_images or video_url or recovered_videos or not bool(getattr(post, "photo_expected", False)):
+        return _V53_PRE_MANUAL_FORCE_SEND(
+            post, message, exact_images, video_url=video_url, reply_message_ids=reply_message_ids
+        )
+    old_expected = bool(getattr(post, "photo_expected", False))
+    setattr(post, "photo_expected", False)
+    try:
+        ids, mode = _V53_PRE_MANUAL_FORCE_SEND(
+            post, message, [], video_url="", reply_message_ids=reply_message_ids
+        )
+        return ids, mode + "+v53_text_fallback"
+    finally:
+        setattr(post, "photo_expected", old_expected)
+
+
+_base_send_prepared_message_to_main = manual_force_send_prepared_message
+
+
+# ---------------------------------------------------------------------------
+# 6) Offline regression corpus. Examples prove principles; production code has
+#    no player-specific/club-specific duplicate conditions.
+# ---------------------------------------------------------------------------
+def _v53_test_post(username: str, text: str, post_id: str = "v53") -> Post:
+    return Post(
+        post_id=post_id, username=username, text=text,
+        link=f"https://x.com/{username}/status/{post_id}",
+        image_urls=[], video_urls=[], has_video=False, primary_has_video=False,
+        quoted_has_video=False, quoted_author="", quoted_text="",
+        published_ts=time.time(), dedupe_ids=[post_id], source_name=username,
+    )
+
+
+def _v53_memory_item(username: str, text: str, post_id: str) -> dict[str, Any]:
+    return {
+        "username": username, "source": username, "post_id": post_id,
+        "link": f"https://x.com/{username}/status/{post_id}",
+        "source_text": text, "text": text, "translated": text,
+        "ts": time.time() - 30, "pending": False,
+    }
+
+
+def _v53_self_audit() -> None:
+    # Three same contract-agreement reports: only the first is publishable.
+    vini_a = "הסיפור אושר: חוזה חדש לויניסיוס ג'וניור לשש שנים בריאל מדריד, שצפוי להיחתם ולהתפרסם בקרוב."
+    vini_b = "ויניסיוס ז'וניור הגיע להסכם מלא עם ריאל מדריד על חוזה חדש ויחתום לשש שנים."
+    vini_c = "ריאל מדריד הגיעה להסכם עם ויניסיוס ג'וניור על הארכת חוזה חדש."
+    if not _v46_event_decision(vini_b, vini_a, "CentreGoals", "FabrizioRomano").get("duplicate"):
+        raise RuntimeError("v53_vinicius_contract_duplicate_b")
+    if not _v46_event_decision(vini_c, vini_a, "David_Ornstein", "FabrizioRomano").get("duplicate"):
+        raise RuntimeError("v53_vinicius_contract_duplicate_c")
+
+    # Cancelo paraphrase remains a duplicate.
+    cancelo_a = "ברצלונה שומרת על ביטחון מוחלט לסגור את עסקת ז'ואאו קנסלו עד תום החלון. המשא ומתן עם אל-הילאל נמשך."
+    cancelo_b = "ברצלונה נותרה בטוחה בסגירת עסקת ז'ואאו קנסלו לפני תום חלון ההעברות. השיחות עם אל-הילאל נמשכות."
+    if not _v46_event_decision(cancelo_b, cancelo_a, "CentreGoals", "FabrizioRomano").get("duplicate"):
+        raise RuntimeError("v53_cancelo_paraphrase")
+
+    # A genuine new term and an official stage must pass.
+    if _v46_event_decision("רשמי: ויניסיוס חתם בריאל מדריד עד 2032.", vini_a).get("duplicate"):
+        raise RuntimeError("v53_official_update_blocked")
+    if _v46_event_decision("ריאל מדריד העלתה את השכר ל-30 מיליון אירו בשנה עבור ויניסיוס.", vini_a).get("duplicate"):
+        raise RuntimeError("v53_new_salary_blocked")
+
+    # Same flight/arrival event from a later source is suppressed by the general
+    # topic engine even if the wording is different.
+    state = {RECENT_NEWS_STATE_KEY: [
+        _v53_memory_item("FabrizioRomano", "יאן דיומאנדה המריא למדריד עם סוכניו לקראת השלמת המעבר.", "d1")
+    ]}
+    original_rows = globals().get("_v9_recent_duplicate_rows")
+    try:
+        globals()["_v9_recent_duplicate_rows"] = lambda _state: list(_state.get(RECENT_NEWS_STATE_KEY, []))
+        probe = _v53_test_post("CentreGoals", "יאן דיומאנדה בטיסה למדריד יחד עם הסוכנים שלו.", "d2")
+        if not _v53_extended_duplicate(probe, state):
+            raise RuntimeError("v53_same_flight_not_duplicate")
+    finally:
+        globals()["_v9_recent_duplicate_rows"] = original_rows
+
+    if _v52_normalize_entity_names("תנו לו את הפוסקאס") != "תנו לו את פושקאש":
+        raise RuntimeError("v53_puskas_normalization")
+
+    # Salary list becomes one consistent row per player, no blank gap between rows.
+    footer = '<a href="https://t.me/neto_sport">נטו ספורט</a>.📝'
+    salary = (
+        "▪️ מרקוס ראשפורד: 244,000 פאונד בשבוע\n➡️ 325,000 פאונד בשבוע.\n\n"
+        "▪️ אנדרה אונאנה: 150,000 פאונד בשבוע ➡️ כמעט 200,000 פאונד בשבוע.\n\n" + footer
+    )
+    fixed_salary = _v53_canonical_news_layout(salary)
+    if "ראשפורד: 244,000 פאונד בשבוע ➡️ 325,000" not in fixed_salary:
+        raise RuntimeError("v53_salary_arrow_not_joined")
+    if re.search(r"אונאנה[^\n]*\n\n\s*▪", fixed_salary):
+        raise RuntimeError("v53_salary_list_gap")
+
+    broken = '"תודה ל.לת פיפ"א שהעבירה את מה שהיה מגיע, על העפלת ירדן לגמר ה.'
+    if not _v53_translation_damage_issues("Jordan reached the Arab Cup final and FIFA transferred the money owed to players and staff.", broken):
+        raise RuntimeError("v53_broken_translation_not_detected")
+
+    # RSS route and operational settings must remain the exact restored route.
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v53_rss_http_route_changed")
+    if fetch_posts is not _V45_PRE_FETCH_POSTS:
+        raise RuntimeError("v53_rss_fetch_route_changed")
+    if fetch_control_posts is not _v36_fetch_control_posts_exact_manual_rss:
+        raise RuntimeError("v53_manual_rss_route_changed")
+    expected_sources = [
+        "https://nitter.net/{username}/rss",
+        "https://twiiit.com/{username}/rss",
+        "https://lightbrd.com/{username}/rss",
+        "https://rsshub.rssforever.com/twitter/user/{username}",
+        "https://rsshub.app/twitter/user/{username}",
+    ]
+    if list(active_feed_templates())[:5] != expected_sources:
+        raise RuntimeError("v53_rss_source_order_changed")
+    if CHECK_EVERY_SECONDS != 20 or MAX_PARALLEL_ACCOUNT_CHECKS != 4 or MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK != 12:
+        raise RuntimeError("v53_operational_settings_changed")
+
+
+try:
+    _v53_self_audit()
+    logging.info(
+        "V53 active: principle same-event duplicate control; same-stage Fabrizio confirmations suppressed; "
+        "damaged translations retried/blocked; Puskas/Salah canonical names; structured trophy/salary lists; "
+        "quiet/manual media text fallback; exact restored V50/V43 RSS route unchanged"
+    )
+except Exception as _v53_audit_exc:
+    logging.error("V53 self-audit failed: %s", short_error(_v53_audit_exc, 2600))
+    raise
+
+# ====== END V53 PRINCIPLE DEDUPE / TRANSLATION INTEGRITY / STRUCTURED LISTS ======
+
+
 if __name__ == "__main__":
     main()
