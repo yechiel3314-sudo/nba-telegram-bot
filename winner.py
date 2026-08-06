@@ -60002,5 +60002,330 @@ except Exception as _v53_audit_exc:
 # ====== END V53 PRINCIPLE DEDUPE / TRANSLATION INTEGRITY / STRUCTURED LISTS ======
 
 
+# ====== V54 OPTA NATIONALS / CANONICAL NAMES / SOURCE-AWARE HEBREW / NEW-OPENING CLEANUP (2026-08-07) ======
+# Scope is intentionally narrow.  RSS, duplicate policy, scan cadence, media,
+# control buttons, persistent files/keys and every V53 operational setting stay
+# untouched.  This layer only expands the requested Opta allowance and performs
+# deterministic final-language/layout repairs.
+
+BOT_BUILD_ID = "winner-v54-opta-nationals-canonical-names-source-hebrew-new-opening-keep-v53-rss-2026-08-07"
+
+# ---------------------------------------------------------------------------
+# 1) Canonical football names.  These are spelling/translation aliases only;
+#    they do not change source eligibility.  The normalizer is used by the
+#    translation, duplicate and Telegram-boundary paths, so one spelling is seen
+#    everywhere rather than fixing only the rendered message.
+# ---------------------------------------------------------------------------
+_V54_PRE_NORMALIZE_ENTITY_NAMES = _v52_normalize_entity_names
+
+_V54_CANONICAL_NAME_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:Ousmane\s+Demb(?:e|é)l(?:e|é)|אוסמן\s+דמבלהה|עוסמן\s+דמבלה)(?![A-Za-zא-ת])"), "אוסמן דמבלה"),
+    (re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:Bradley\s+Barcola|ברדלי\s+ברקולה|בראדלי\s+בארקולה)(?![A-Za-zא-ת])"), "בראדלי ברקולה"),
+    (re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:D[eé]sir[eé]\s+Dou[eé]|דזירה\s+דואי)(?![A-Za-zא-ת])"), "דזירה דואה"),
+    (re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:Maghnes\s+Akliouche|Magnus\s+Akliouche|מאגנס\s+אקליוש|מגנאס\s+אקליוש)(?![A-Za-zא-ת])"), "מגנס אקליוש"),
+    (re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:Warren\s+Za(?:ï|i)re[- ]Emery|וורן\s+זאיר\s+אמרי)(?![A-Za-zא-ת])"), "וורן זאיר-אמרי"),
+    (re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:Lucas\s+Hernandez|Lucas\s+Hernández)(?![A-Za-zא-ת])"), "לוקאס הרננדז"),
+    (re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:Lucas\s+Chevalier|לוקאס\s+שבליה|לוקאס\s+שבאלייה|לוקא\s+שבלייה|לוקה\s+שבלייה)(?![A-Za-zא-ת])"), "לוקאס שבלייה"),
+    (re.compile(r"(?iu)(?<![A-Za-zא-ת])(?:Lucas\s+Digne|לוקא\s+דין)(?![A-Za-zא-ת])"), "לוקה דין"),
+)
+
+
+def _v54_repair_missing_team_initial_after_kshe(value: Any) -> str:
+    """Repair translator typos like 'כשרצלונה' -> 'כשברצלונה'.
+
+    This is catalog-driven: for each canonical Hebrew club/national-team name we
+    accept only the exact form 'כש' + the name with its first Hebrew letter
+    accidentally dropped.  Long names and word boundaries keep it conservative.
+    """
+    text = str(value or "")
+    try:
+        catalog = globals().get("TEAM_CATALOG", {}) or {}
+        names = {
+            str(info.get("name") or "").strip()
+            for info in catalog.values()
+            if isinstance(info, dict) and str(info.get("name") or "").strip()
+        }
+        for name in sorted(names, key=len, reverse=True):
+            if len(name) < 5 or not re.match(r"^[א-ת]", name):
+                continue
+            damaged = name[1:]
+            if len(damaged) < 4:
+                continue
+            pattern = re.compile(r"(?<![א-ת])כש" + re.escape(damaged) + r"(?![א-ת])")
+            text = pattern.sub("כש" + name, text)
+    except Exception:
+        pass
+    return text
+
+
+def _v52_normalize_entity_names(value: Any) -> str:
+    text = _V54_PRE_NORMALIZE_ENTITY_NAMES(value)
+    for pattern, canonical in _V54_CANONICAL_NAME_RULES:
+        text = pattern.sub(canonical, text)
+    text = _v54_repair_missing_team_initial_after_kshe(text)
+    return text
+
+
+# Make the same canonical aliases visible to the established English->Hebrew
+# replacement layer without deleting or changing any old mapping.
+try:
+    PLAYER_REPLACEMENTS.update({
+        "Maghnes Akliouche": "מגנס אקליוש",
+        "Bradley Barcola": "בראדלי ברקולה",
+        "Désiré Doué": "דזירה דואה",
+        "Desire Doue": "דזירה דואה",
+        "Warren Zaïre-Emery": "וורן זאיר-אמרי",
+        "Warren Zaire-Emery": "וורן זאיר-אמרי",
+        "Lucas Hernandez": "לוקאס הרננדז",
+        "Lucas Hernández": "לוקאס הרננדז",
+        "Lucas Chevalier": "לוקאס שבלייה",
+        "Lucas Digne": "לוקה דין",
+    })
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# 2) Source-aware football wording.  'goal' must not become the literal Hebrew
+#    'מטרה' in a goal/Puskas sentence.  The repair is activated only when the
+#    English/source text itself contains an actual goal-scoring/Puskas signal,
+#    so transfer 'targets' and ordinary objectives are untouched.
+# ---------------------------------------------------------------------------
+_V54_GOAL_SOURCE_RE = re.compile(
+    r"(?iu)(?:\bpusk(?:a|á)s\b|\bgoal(?:s)?\b|\bscores?\b|\bscored\b|\bscoring\b|\bworld[- ]class\s+goal\b)"
+)
+_V54_TRANSFER_TARGET_SOURCE_RE = re.compile(r"(?iu)\b(?:transfer\s+target|targeted\s+by|targeting)\b")
+
+
+def _v54_source_aware_language_cleanup(source: Any, translated: Any) -> str:
+    src = str(source or "")
+    text = _v52_normalize_entity_names(translated)
+    if _V54_GOAL_SOURCE_RE.search(src) and not _V54_TRANSFER_TARGET_SOURCE_RE.search(src):
+        text = re.sub(r"(?iu)עבור\s+ה?מטרה\s+(?:הזו|הזאת)", "עבור השער הזה", text)
+        text = re.sub(r"(?iu)עבור\s+ה?מטרה\b", "עבור השער", text)
+        text = re.sub(r"(?iu)\bהמטרה\s+(?:הזו|הזאת)\b", "השער הזה", text)
+        # Puskas contexts are unambiguously about a scored goal.
+        if re.search(r"(?iu)\bpusk(?:a|á)s\b", src):
+            text = re.sub(r"(?iu)(?<![א-ת])מטרה(?![א-ת])", "שער", text)
+    return _v52_normalize_entity_names(text)
+
+
+_V54_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    main, quote, author = _V54_PRE_TRANSLATE_POST_FOR_SEND(post)
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+    main = _v54_source_aware_language_cleanup(main_source, main)
+    if quote:
+        quote = _v54_source_aware_language_cleanup(quote_source, quote)
+    return main, quote, author
+
+
+# ---------------------------------------------------------------------------
+# 3) Opta temporary policy: tier-A clubs/players OR allowed senior national-team
+#    context.  The old hard filters (women/youth/other sports/etc.) remain intact.
+# ---------------------------------------------------------------------------
+_V54_PRE_OPTA_TIER1_ALLOWED = _v52_opta_tier1_allowed
+
+
+def _v52_opta_tier1_allowed(post: Post) -> bool:
+    if not _is_optajoe_post(post):
+        return True
+    if _V54_PRE_OPTA_TIER1_ALLOWED(post):
+        return True
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    try:
+        if matches_managed_team_tier("national", text):
+            return True
+    except Exception:
+        pass
+    try:
+        if _matches_any(ALLOWED_NATIONAL_TEAM_PATTERNS, text) and _matches_any(NATIONAL_TEAM_CONTEXT_PATTERNS, text):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# Keep the Hebrew diagnostic truthful after expanding the Opta rule.
+_V54_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "opta_non_tier1_context" in raw:
+        return "אופטה: הפוסט אינו מזכיר קבוצת דרג א׳, שחקן של קבוצת דרג א׳ או נבחרת מותרת"
+    return _V54_PRE_HEBREW_BLOCK_REASON(reason)
+
+
+# ---------------------------------------------------------------------------
+# 4) Remove ONLY the standalone opening label 'חדש:'.
+#    Phrases such as 'פרסום חדש:', 'דיווח חדש:', 'עדכון חדש:' and 'חוזה חדש'
+#    must remain exactly as written. Only the first content line is eligible.
+# ---------------------------------------------------------------------------
+_V54_NEW_OPENING_RE = re.compile(
+    r"(?iu)^\s*(?:(?:[\U0001F1E6-\U0001F1FF]{2}|[\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf]\ufe0f?\u200d?)+\s*)*"
+    r"חדש\s*:\s*(?P<rest>.*)$"
+)
+_V54_STATUS_LIST_RE = re.compile(r"^\s*(?:✅|☑️?|⏳|❌|✔️?|🔹|🔸)\s*")
+
+
+def _v54_strip_new_opening_and_compact_status_list(value: Any) -> str:
+    text = str(value or "")
+    lines = text.split("\n")
+    visible = globals().get("_v52_visible_line", lambda x: html.unescape(re.sub(r"(?is)<[^>]+>", "", str(x or ""))).strip())
+    nonempty = [i for i, line in enumerate(lines) if visible(line)]
+    content_pos = 0
+    if nonempty and globals().get("_v52_is_writer_heading") and _v52_is_writer_heading(lines[nonempty[0]]):
+        content_pos = 1
+    nonempty = [i for i, line in enumerate(lines) if visible(line)]
+    if content_pos < len(nonempty):
+        idx = nonempty[content_pos]
+        match = _V54_NEW_OPENING_RE.match(visible(lines[idx]))
+        if match:
+            rest = (match.group("rest") or "").strip()
+            if rest:
+                lines[idx] = rest
+            else:
+                lines.pop(idx)
+
+    # Status-icon lists are list rows too.  Remove empty rows only when they sit
+    # between two such rows; genuine paragraph gaps before/after the list remain.
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        if line.strip():
+            out.append(line)
+            continue
+        prev_visible = visible(out[-1]) if out else ""
+        next_visible = ""
+        for nxt in lines[i + 1:]:
+            if visible(nxt):
+                next_visible = visible(nxt)
+                break
+        if prev_visible and next_visible and _V54_STATUS_LIST_RE.match(prev_visible) and _V54_STATUS_LIST_RE.match(next_visible):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+_V54_PRE_CANONICAL_LAYOUT = _v53_canonical_news_layout
+
+
+def _v53_canonical_news_layout(value: Any) -> str:
+    text = _v52_normalize_entity_names(value)
+    # Strip the 'new' editorial prefix before V53's paragraph/list canonicalizer
+    # so it cannot be mistaken for a real heading.
+    text = _v54_strip_new_opening_and_compact_status_list(text)
+    text = _V54_PRE_CANONICAL_LAYOUT(text)
+    text = _v54_strip_new_opening_and_compact_status_list(text)
+    return _v52_normalize_entity_names(text)
+
+
+# ---------------------------------------------------------------------------
+# 5) Offline regression audit.  It deliberately performs no RSS/network call.
+# ---------------------------------------------------------------------------
+def _v54_test_post(username: str, text: str, post_id: str = "v54") -> Post:
+    return Post(
+        post_id=post_id, username=username, text=text,
+        link=f"https://x.com/{username}/status/{post_id}",
+        image_urls=[], video_urls=[], has_video=False, primary_has_video=False,
+        quoted_has_video=False, quoted_author="", quoted_text="",
+        published_ts=time.time(), dedupe_ids=[post_id], source_name=username,
+    )
+
+
+def _v54_self_audit() -> None:
+    # Opta: tier-A remains allowed, configured/allowed senior nationals are now allowed,
+    # unrelated lower-tier club remains blocked by this temporary policy.
+    if not _v52_opta_tier1_allowed(_v54_test_post(OPTAJOE_DEFAULT_ACTIVE_USERNAME, "Mohamed Salah created 8 chances for Liverpool.", "o1")):
+        raise RuntimeError("v54_opta_tier1_regression")
+    if not _v52_opta_tier1_allowed(_v54_test_post(OPTAJOE_DEFAULT_ACTIVE_USERNAME, "France national team have won six straight World Cup qualifiers.", "o2")):
+        raise RuntimeError("v54_opta_national_blocked")
+    if not _v52_opta_tier1_allowed(_v54_test_post(OPTAJOE_DEFAULT_ACTIVE_USERNAME, "נבחרת צרפת ניצחה משחק שישי ברציפות במוקדמות המונדיאל.", "o3")):
+        raise RuntimeError("v54_opta_hebrew_national_blocked")
+    if _v52_opta_tier1_allowed(_v54_test_post(OPTAJOE_DEFAULT_ACTIVE_USERNAME, "A Wrexham player completed 97 passes.", "o4")):
+        raise RuntimeError("v54_opta_lower_tier_allowed")
+
+    names = (
+        "אוסמן דמבלהה, ברדלי ברקולה, דזירה דואי, לוקא דין, "
+        "Maghnes Akliouche, Lucas Chevalier, Warren Zaire-Emery"
+    )
+    normalized = _v52_normalize_entity_names(names)
+    for expected in ("אוסמן דמבלה", "בראדלי ברקולה", "דזירה דואה", "לוקה דין", "מגנס אקליוש", "לוקאס שבלייה", "וורן זאיר-אמרי"):
+        if expected not in normalized:
+            raise RuntimeError("v54_name_normalization:" + expected)
+    if "כשרצלונה" in _v52_normalize_entity_names("עם זאת, כשרצלונה וריאל מדריד פעילות"):
+        raise RuntimeError("v54_barcelona_prefix_not_repaired")
+    if "כשברצלונה" not in _v52_normalize_entity_names("עם זאת, כשרצלונה וריאל מדריד פעילות"):
+        raise RuntimeError("v54_barcelona_prefix_missing")
+
+    goal = _v54_source_aware_language_cleanup(
+        "Give Jean Roberto the Puskas for this goal in the Gaucho second division.",
+        "תן לז'אן רוברטו את פושקאש עבור המטרה הזו בליגה השנייה."
+    )
+    if "עבור השער הזה" not in goal or "מטרה" in goal:
+        raise RuntimeError("v54_goal_literal_not_fixed")
+    transfer_target = _v54_source_aware_language_cleanup(
+        "Arsenal are targeting the player as a transfer target.",
+        "השחקן הוא מטרה של ארסנל."
+    )
+    if "מטרה" not in transfer_target:
+        raise RuntimeError("v54_transfer_target_overcorrected")
+
+    footer = '<a href="https://t.me/neto_sport">נטו ספורט</a>.📝'
+    new_inline = _v53_canonical_news_layout("🚨פרסום חדש: נאפולי יצרה קשר עם מחנהו של גבריאל ז'סוס.\n\n" + footer)
+    if "פרסום חדש:" not in new_inline:
+        raise RuntimeError("v55_publication_new_was_removed")
+    new_separate = _v53_canonical_news_layout("🚨🚨 חדש:\nמילאן דחתה את ההצעה.\n\n" + footer)
+    if "חדש:" in new_separate or not _v52_visible_line(new_separate).startswith("מילאן דחתה"):
+        raise RuntimeError("v54_new_separate_not_removed")
+    real_new_contract = _v53_canonical_news_layout("ריאל מדריד סיכמה על חוזה חדש לשחקן.\n\n" + footer)
+    if "חוזה חדש" not in real_new_contract:
+        raise RuntimeError("v54_real_new_word_removed")
+
+    status_list = _v53_canonical_news_layout(
+        "✅ אוסמן דמבלהה\n\n✅ ברדלי ברקולה\n\n✅ דזירה דואי\n⏳ לוקא דין.\n\n" + footer
+    )
+    if re.search(r"(?m)^(?:✅|⏳).+\n\n(?:✅|⏳)", status_list):
+        raise RuntimeError("v54_status_list_has_blank_gaps")
+    if any(bad in status_list for bad in ("דמבלהה", "ברדלי", "דואי", "לוקא דין")):
+        raise RuntimeError("v54_status_list_name_regression")
+
+    # Exact restored V50/V43 RSS route and V53 operating values must not change.
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v54_rss_http_route_changed")
+    if fetch_posts is not _V45_PRE_FETCH_POSTS:
+        raise RuntimeError("v54_rss_fetch_route_changed")
+    if fetch_control_posts is not _v36_fetch_control_posts_exact_manual_rss:
+        raise RuntimeError("v54_manual_rss_route_changed")
+    expected_sources = [
+        "https://nitter.net/{username}/rss",
+        "https://twiiit.com/{username}/rss",
+        "https://lightbrd.com/{username}/rss",
+        "https://rsshub.rssforever.com/twitter/user/{username}",
+        "https://rsshub.app/twitter/user/{username}",
+    ]
+    if list(active_feed_templates())[:5] != expected_sources:
+        raise RuntimeError("v54_rss_source_order_changed")
+    if CHECK_EVERY_SECONDS != 20 or MAX_PARALLEL_ACCOUNT_CHECKS != 4 or MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK != 12:
+        raise RuntimeError("v54_operational_settings_changed")
+
+
+try:
+    _v54_self_audit()
+    logging.info(
+        "V54 active: Opta tier-A + allowed senior national teams; canonical player spellings; "
+        "source-aware goal wording; catalog-driven 'כש'+team typo repair; only standalone leading 'חדש:' removed; "
+        "V53 duplicate/media/buttons and exact restored V50/V43 RSS route unchanged"
+    )
+except Exception as _v54_audit_exc:
+    logging.error("V54 self-audit failed: %s", short_error(_v54_audit_exc, 2600))
+    raise
+
+# ====== END V55 EXACT-STANDALONE-NEW CLEANUP; ALL OTHER V54 BEHAVIOR UNCHANGED ======
+
+
 if __name__ == "__main__":
     main()
