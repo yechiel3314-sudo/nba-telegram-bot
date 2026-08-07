@@ -61907,5 +61907,69 @@ except Exception as _v58_exc:
 # ====== END V58 ROOT FIXES ======
 
 
+# ====== V59 HARD FINAL RSS RESTORE: EXACT USER WORKING V35/V57 ROUTE (2026-08-07) ======
+# The user explicitly requested that RSS be returned to the exact route from the
+# uploaded working build. Keep this boundary AFTER all policy fixes so no later
+# wrapper can accidentally alter RSS retrieval, control RSS, or the 10-last reader.
+# This does NOT change persistent files, Telegram sending, filters, translation,
+# dedupe, RTL, or source policy.
+
+# Exact proven HTTP/RSS execution boundary from the uploaded working code.
+http_get_feed = _v20_active_http_get_feed
+fetch_posts = _v35_fetch_posts
+fetch_control_posts = _v35_fetch_control_posts
+
+# Exact working scan knobs from the uploaded build's V57 final boundary.
+FEED_REQUEST_TIMEOUT_SECONDS = 6.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 8.0
+RSS_PRIMARY_SOURCE_COUNT = 3
+RSS_ENABLE_FALLBACK = True
+RSS_FALLBACK_SOURCE_COUNT = 2
+RSS_ENABLE_STALE_FALLBACK = False
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+
+# Freeze the exact pre-V58 10-last implementation. It was already the working
+# implementation in the user's uploaded build; the explicit alias below makes
+# that guarantee visible at the final runtime boundary.
+_V59_WORKING_FETCH_LAST_TEN = fetch_last_ten_control_isolated
+fetch_last_ten_control_isolated = _V59_WORKING_FETCH_LAST_TEN
+
+
+def _v59_rss_restore_self_audit() -> None:
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v59_http_feed_not_old_good")
+    if fetch_posts is not _v35_fetch_posts:
+        raise RuntimeError("v59_fetch_posts_not_v35")
+    if fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v59_control_rss_not_v35")
+    if fetch_last_ten_control_isolated is not _V59_WORKING_FETCH_LAST_TEN:
+        raise RuntimeError("v59_last_ten_route_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0 or float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v59_rss_timeouts_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v59_rss_source_counts_changed")
+    if not bool(RSS_ENABLE_FALLBACK) or bool(RSS_ENABLE_STALE_FALLBACK):
+        raise RuntimeError("v59_rss_fallback_mode_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v59_post_cap_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v59_scan_cadence_changed")
+
+
+try:
+    _v59_rss_restore_self_audit()
+    logging.info(
+        "V59 RSS restore active: exact uploaded old-good V35/V57 RSS route is the final runtime boundary; "
+        "policy/RTL/dedupe fixes remain active and RSS is not wrapped by them."
+    )
+except Exception as _v59_rss_exc:
+    logging.error("V59 RSS restore self-audit failed: %s", short_error(_v59_rss_exc, 1200))
+    raise
+
+# ====== END V59 HARD FINAL RSS RESTORE ======
+
+
 if __name__ == "__main__":
     main()
