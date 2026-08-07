@@ -61049,11 +61049,23 @@ def _v57_process_control_text(update: dict[str, Any]) -> None:
 
 
 def _v57_process_channel_post(update: dict[str, Any]) -> None:
-    """Run RTL/channel editing independently of button and control-text work."""
+    """Run the exact pre-V57 channel flow off the long-poll thread.
+
+    Before V57, every channel_post/edited_channel_post passed through BOTH
+    process_control_text_update() (where V43 performs the proven admin RTL
+    in-place repair) and process_channel_post_update() (channel duplicate
+    memory). V57 accidentally routed channel updates only to the second handler,
+    disconnecting the already-working RTL repair. Preserve the old order here
+    without changing the RTL implementation itself.
+    """
+    try:
+        process_control_text_update(update)
+    except Exception as exc:
+        logging.debug("V57 channel RTL/control update failed safely: %s", short_error(exc, 300))
     try:
         process_channel_post_update(update)
     except Exception as exc:
-        logging.debug("V57 channel post update failed safely: %s", short_error(exc, 300))
+        logging.debug("V57 channel post memory update failed safely: %s", short_error(exc, 300))
 
 
 def _v57_save_control_offset(offset: int) -> None:
@@ -61195,6 +61207,704 @@ except Exception as _v57_exc:
     raise
 
 # ====== END V57 FINAL BOUNDARY ======
+
+
+# ====== V58 ROOT FIXES: SOURCE POLICY / QUOTES / KITS / AGE / DELIVERY DEDUPE (2026-08-07) ======
+# Narrow final-boundary patch requested by the operator.  It preserves the exact
+# V35/V57 RSS route, Telegram control routing, Gemini configuration and every
+# persistent filename/key.  All new editorial blocks are local and run before
+# translation/media work whenever possible.
+
+BOT_BUILD_ID = "winner-v58-root-fixes-2026-08-07"
+
+# ---------------------------------------------------------------------------
+# 1) Permanently remove Fernando Polo and Carlos Monfort from every scan/test
+#    account route without deleting historical labels or persistent memory.
+# ---------------------------------------------------------------------------
+_V58_DISABLED_WRITERS = {"ffpolo", "monfortcarlos"}
+
+
+def _v58_writer_disabled(value: Any) -> bool:
+    return str(value or "").strip().lstrip("@").casefold() in _V58_DISABLED_WRITERS
+
+
+try:
+    X_ACCOUNTS[:] = [value for value in X_ACCOUNTS if not _v58_writer_disabled(value)]
+except Exception:
+    pass
+try:
+    OPTIONAL_CONTROLLED_ACCOUNTS[:] = [value for value in OPTIONAL_CONTROLLED_ACCOUNTS if not _v58_writer_disabled(value)]
+except Exception:
+    pass
+try:
+    PRIORITY_X_ACCOUNTS.difference_update({"ffpolo", "MonfortCarlos"})
+    PRIORITY_X_ACCOUNTS.difference_update({value for value in list(PRIORITY_X_ACCOUNTS) if _v58_writer_disabled(value)})
+except Exception:
+    pass
+for _v58_optional_set_name in (
+    "DEFAULT_ENABLED_OPTIONAL_ACCOUNTS", "ALWAYS_ENABLED_OPTIONAL_ACCOUNTS",
+):
+    _v58_optional_set = globals().get(_v58_optional_set_name)
+    if isinstance(_v58_optional_set, set):
+        for _v58_value in list(_v58_optional_set):
+            if _v58_writer_disabled(_v58_value):
+                _v58_optional_set.discard(_v58_value)
+try:
+    LOCKED_DISABLED_BASE_ACCOUNTS.update({"ffpolo", "MonfortCarlos"})
+except Exception:
+    pass
+
+
+def _v58_filter_writer_list(values: Any) -> list[str]:
+    return [str(value) for value in list(values or []) if not _v58_writer_disabled(value)]
+
+
+_V58_PRE_ACTIVE_X_ACCOUNTS = active_x_accounts
+_V58_PRE_ALL_X_ACCOUNTS = all_x_accounts
+_V58_PRE_ALL_CONTROL_TEST_ACCOUNTS = all_control_test_accounts
+_V58_PRE_ORDERED_ACCOUNTS = ordered_accounts
+
+
+def active_x_accounts() -> list[str]:
+    return _v58_filter_writer_list(_V58_PRE_ACTIVE_X_ACCOUNTS())
+
+
+def all_x_accounts() -> list[str]:
+    return _v58_filter_writer_list(_V58_PRE_ALL_X_ACCOUNTS())
+
+
+def all_control_test_accounts() -> list[str]:
+    return _v58_filter_writer_list(_V58_PRE_ALL_CONTROL_TEST_ACCOUNTS())
+
+
+def ordered_accounts() -> list[str]:
+    return _v58_filter_writer_list(_V58_PRE_ORDERED_ACCOUNTS())
+
+
+_V58_PRE_CONTROL_STATE_ACCOUNT_DISABLED = control_state_account_disabled
+
+
+def control_state_account_disabled(username: str) -> bool:
+    if _v58_writer_disabled(username):
+        return True
+    return bool(_V58_PRE_CONTROL_STATE_ACCOUNT_DISABLED(username))
+
+
+# ---------------------------------------------------------------------------
+# 2) Betting advertising: transfer language such as "join", "personal terms"
+#    and a transfer fee must never add up to a gambling block.  Only explicit
+#    betting/promotion signals count.
+# ---------------------------------------------------------------------------
+_V58_BETTING_CORE_RE = re.compile(
+    r"(?iu)(?:\bbet(?:ting)?\b|\bwager(?:ing)?\b|\bodds\b|\bsportsbook\b|\bcasino\b|"
+    r"\bbookmaker\b|\bfree\s+bets?\b|\bbet\s+boost\b|\bacca\b|\bparlay\b|\bstake\b|"
+    r"\bbet365\b|\bboylesports\b|\bwilliam\s+hill\b|\bpaddy\s+power\b|\bsky\s+bet\b|"
+    r"\bladbrokes\b|\bcoral\b|הימור(?:ים)?|הימורים?|התערבות|יחס(?:י)?\s+הימור|"
+    r"קזינו|טופס\s+הימור|אתר\s+הימורים|חברת\s+הימורים)"
+)
+_V58_BETTING_PROMO_RE = re.compile(
+    r"(?iu)(?:\bsign\s*up\b|\bregister\s+now\b|\bnew\s+customers?\b|\bdeposit\b|"
+    r"\bclaim\s+(?:now|here)\b|\bredeem\s+(?:now|here)\b|\bpromo\s*code\b|"
+    r"\bwelcome\s+bonus\b|\bbonus\s+bet\b|\bgamble\s+responsibly\b|\b18\+\b|"
+    r"הירשמו|הרשמה|לקוחות\s+חדשים|הפקדה|קוד\s+קופון|קוד\s+הטבה|בונוס\s+הימור|"
+    r"המר\s+באחריות|למימוש\s+(?:כאן|עכשיו))"
+)
+_V58_BETTING_RETURN_RE = re.compile(
+    r"(?iu)(?:\bbet\s*[£€$]?\s*\d+\s*(?:get|win|receive)\s*[£€$]?\s*\d+|"
+    r"\b\d+(?:\.\d+)?\s*(?:/|to)\s*1\b|המר\s*[£€$]?\s*\d+\s+קבל\s*[£€$]?\s*\d+)"
+)
+
+
+def _v52_betting_ad_reason(post: Post) -> str:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    if _V52_BETTING_AD_RE.search(text):
+        return "betting_advertisement_hard_block"
+    core = bool(_V58_BETTING_CORE_RE.search(text))
+    promo = bool(_V58_BETTING_PROMO_RE.search(text))
+    explicit_return = bool(_V58_BETTING_RETURN_RE.search(text))
+    # A genuine gambling noun/brand is mandatory for the generic fallback.
+    # Transfer words (join/terms/fee) intentionally contribute zero signals.
+    return "betting_advertisement_hard_block" if core and (promo or explicit_return) else ""
+
+
+# ---------------------------------------------------------------------------
+# 3) Football false-positive rescue.  A post explicitly saying football/soccer
+#    cannot be classified as another sport unless a clear other-sport entity is
+#    also present.  NBA/basketball hard blocks remain absolute.
+# ---------------------------------------------------------------------------
+_V58_EXPLICIT_FOOTBALL_RE = re.compile(
+    r"(?iu)(?:\bassociation\s+football\b|\bprofessional\s+football\b|\bfootballer\b|"
+    r"\bfootball\b|\bsoccer\b|כדורגל\s+מקצועני|כדורגלן|כדורגל)"
+)
+_V58_CLEAR_OTHER_SPORT_RE = re.compile(
+    r"(?iu)(?:\bNBA\b|\bWNBA\b|\bbasketball\b|\bNFL\b|\bAmerican\s+football\b|"
+    r"\btennis\b|\bATP\b|\bWTA\b|\bgolf\b|\bPGA\b|\bFormula\s*1\b|\bF1\b|"
+    r"\bcricket\b|\bbaseball\b|\bMLB\b|\bice\s+hockey\b|\bNHL\b|"
+    r"כדורסל|פוטבול\s+אמריקאי|טניס|גולף|פורמולה\s*1|קריקט|בייסבול|הוקי)"
+)
+_V58_PRE_OTHER_SPORT_POST = is_other_sport_post
+
+
+def is_other_sport_post(post: Post) -> bool:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    # Preserve the existing explicit NBA hard wall exactly.
+    try:
+        if _V24_NBA_HARD_RE.search(_v24_hard_source_text(post)):
+            return True
+    except Exception:
+        pass
+    previous = bool(_V58_PRE_OTHER_SPORT_POST(post))
+    if previous and _V58_EXPLICIT_FOOTBALL_RE.search(text) and not _V58_CLEAR_OTHER_SPORT_RE.search(text):
+        return False
+    return previous
+
+
+# ---------------------------------------------------------------------------
+# 4) Home/away/third kit launches are merchandising/design content, not news.
+#    Shirt-number reports are deliberately not matched by this rule.
+# ---------------------------------------------------------------------------
+_V58_KIT_NEWS_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:new|official|revealed?|unveil(?:ed|s)?|launch(?:ed|es)?)\s+(?:202\d[/-]\d{2,4}\s+)?"
+    r"(?:home|away|third)\s+(?:kit|shirt|jersey)s?\b|"
+    r"\b(?:home|away|third)\s+(?:kit|shirt|jersey)s?\s+(?:for\s+)?(?:202\d[/-]\d{2,4}|is|are|has\s+been|have\s+been|revealed|launched|unveiled)\b|"
+    r"\bnew\s+(?:season\s+)?kits?\b|"
+    r"מדי\s+(?:ה)?בית\s+(?:ה)?חדשים?|מדי\s+(?:ה)?חוץ\s+(?:ה)?חדשים?|"
+    r"מדי\s+(?:ה)?שלישי(?:ים)?\s+(?:ה)?חדשים?|המדים\s+החדשים|"
+    r"חשפ(?:ה|ו)?\s+את\s+מדי\s+(?:ה)?(?:בית|חוץ)|"
+    r"השיק(?:ה|ו)?\s+את\s+מדי\s+(?:ה)?(?:בית|חוץ)|"
+    r"חולצת\s+(?:ה)?(?:בית|חוץ)\s+החדשה"
+    r")"
+)
+
+
+def _v58_is_kit_launch(post: Post) -> bool:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    return bool(_V58_KIT_NEWS_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
+# 5) Explicit minors/very-young players: block when the story is not connected
+#    to a tier-A first team or a senior national team.  Youth national teams do
+#    not count as the senior-national exception.
+# ---------------------------------------------------------------------------
+_V58_MINOR_AGE_RE = re.compile(
+    r"(?iu)(?:\b(?:aged?|age)\s*(?P<age1>1[0-8])\b|\b(?P<age2>1[0-8])[- ]year[- ]old\b|"
+    r"בן\s+(?P<age3>1[0-8])\b|בת\s+(?P<age4>1[0-8])\b)"
+)
+_V58_BIRTH_YEAR_RE = re.compile(
+    r"(?iu)(?:\bborn\s+(?:in\s+)?(?P<year1>20\d{2})\b|\(\s*b\.?\s*(?P<year2>20\d{2})\s*\)|"
+    r"יליד\s+(?P<year3>20\d{2})\b|נולד\s+ב[-־]?(?P<year4>20\d{2})\b)"
+)
+_V58_YOUTH_NATIONAL_RE = re.compile(
+    r"(?iu)(?:\bU[- ]?(?:15|16|17|18|19|20|21|23)\b|under[- ]?(?:15|16|17|18|19|20|21|23)|"
+    r"נבחרת\s+(?:ה)?(?:נוער|צעירה)|עד\s+גיל\s+(?:15|16|17|18|19|20|21|23))"
+)
+
+
+def _v58_explicit_minor(text: Any) -> bool:
+    value = str(text or "")
+    if _V58_MINOR_AGE_RE.search(value):
+        return True
+    current_year = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).year
+    for match in _V58_BIRTH_YEAR_RE.finditer(value):
+        years = [int(group) for group in match.groups() if group and group.isdigit()]
+        if years and min(years) >= current_year - 18:
+            return True
+    return False
+
+
+def _v58_tier1_or_senior_national(text: str) -> bool:
+    try:
+        if matches_managed_team_tier("tier1", text):
+            return True
+    except Exception:
+        pass
+    if _V58_YOUTH_NATIONAL_RE.search(text):
+        return False
+    try:
+        if matches_managed_team_tier("national", text):
+            return True
+    except Exception:
+        pass
+    try:
+        if _matches_any(ALLOWED_NATIONAL_TEAM_PATTERNS, text) and _matches_any(NATIONAL_TEAM_CONTEXT_PATTERNS, text):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _v58_minor_low_tier_reason(post: Post) -> str:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    if _v58_explicit_minor(text) and not _v58_tier1_or_senior_national(text):
+        return "minor_player_non_tier1_or_senior_national"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# 6) Facts-source quotes: commentary/interviews stay blocked, but a substantial
+#    quote containing actual new reporting may pass.  Length alone never rescues
+#    a quote; it also needs multiple concrete news/report signals.
+# ---------------------------------------------------------------------------
+_V58_QUOTE_LIKE_RE = re.compile(
+    r"(?iu)(?:🎙️|🎤|🗣️|\binterview\b|\bdiscuss(?:ed|es|ing)?\b|\bspeaking\s+to\b|"
+    r"\basked\s+about\b|\bsaid\s*:\s*[\"“]|\baccording\s+to\s+my\s+source\b|\bmy\s+source\b|"
+    r"ראיון|בראיון|דן\s+ב|נשאל\s+על|אמר\s*:\s*[\"״“]|המקור\s+שלי)"
+)
+_V58_QUOTE_NEWS_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?iu)\bsource\b|\breport(?:ed|s|ing)?\b|\bupdate\b|מקור|דיווח|עדכון"),
+    re.compile(r"(?iu)\bbid\b|\boffer\b|\bproposal\b|הצעה|הגיש(?:ה|ו)?\s+הצעה"),
+    re.compile(r"(?iu)\bagreement\b|\bpersonal\s+terms\b|\bterms\s+agreed\b|סיכום|הסכם|תנאים\s+אישיים"),
+    re.compile(r"(?iu)\bnegotiat|\btalks\b|משא\s+ומתן|מגעים|שיחות"),
+    re.compile(r"(?iu)\bwants?\s+to\s+join\b|\bwanted\s+to\s+join\b|\bmove\s+to\b|\btransfer\b|רצה\s+להצטרף|רוצה\s+להצטרף|מעבר|העברה"),
+    re.compile(r"(?iu)\bmedical\b|\bcontract\b|\bsign(?:ed|ing)?\b|בדיקות\s+רפואיות|חוזה|חתם|חתימה"),
+    re.compile(r"(?iu)\breject(?:ed)?\b|\baccept(?:ed)?\b|\bdecision\b|\brefus(?:ed|al)?\b|דחה|נדחתה|קיבל|החלטה|סירב"),
+    re.compile(r"(?iu)\bnever\s+wanted\b|\bonly\s+wanted\b|\bused\s+.+\s+to\s+secure\b|מעולם\s+לא\s+רצה|רצה\s+רק|השתמש\s+ב.+כדי"),
+)
+
+
+def _v58_facts_canonical(post: Any) -> str:
+    try:
+        return str(_facts_source_canonical(getattr(post, "username", "")) or "").strip()
+    except Exception:
+        return ""
+
+
+def _v58_is_non_troll_facts_post(post: Any) -> bool:
+    raw = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    if not raw or raw.casefold() == str(TROLL_FOOTBALL_USERNAME).casefold():
+        return False
+    if any(raw.casefold() == str(source).strip().lstrip("@").casefold() for source in tuple(FACTS_SOURCE_ORDER)):
+        return True
+    canonical = _v58_facts_canonical(post)
+    if not canonical or canonical.casefold() == str(TROLL_FOOTBALL_USERNAME).casefold():
+        return False
+    return any(canonical.casefold() == str(source).strip().lstrip("@").casefold() for source in tuple(FACTS_SOURCE_ORDER))
+
+
+def _v58_quote_source_text(post: Post) -> str:
+    return html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+
+
+def _v58_news_quote_allowed(post: Post) -> bool:
+    if not _v58_is_non_troll_facts_post(post):
+        return False
+    text = _v58_quote_source_text(post)
+    if not _V58_QUOTE_LIKE_RE.search(text):
+        return False
+    words = count_regular_words(URL_RE.sub(" ", text))
+    if words < 45:
+        return False
+    signals = sum(1 for pattern in _V58_QUOTE_NEWS_PATTERNS if pattern.search(text))
+    return signals >= 2
+
+
+_V58_PRE_INTERVIEW_POST = is_interview_post
+
+
+def is_interview_post(post: Post) -> bool:
+    if _v58_news_quote_allowed(post):
+        return False
+    return bool(_V58_PRE_INTERVIEW_POST(post))
+
+
+_V58_FOOTBALL_CAREER_STORY_RE = re.compile(
+    r"(?iu)(?:first\s+professional\s+contract|professional\s+contract|first-team\s+contract|"
+    r"professional\s+debut|made\s+his\s+professional\s+debut|signed\s+his\s+first\s+contract|"
+    r"חוזה\s+מקצועני\s+ראשון|החוזה\s+המקצועני\s+הראשון|חוזה\s+מקצועני|בכורה\s+מקצוענית)"
+)
+
+
+def _v58_footballtweet_concrete_career_story(post: Post) -> bool:
+    try:
+        if not _is_footballtweet_post(post):
+            return False
+    except Exception:
+        return False
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    named = bool(
+        re.search(r"\b[A-Z][A-Za-zÀ-ÿ'’.-]+(?:\s+[A-Z][A-Za-zÀ-ÿ'’.-]+){1,3}\b", text)
+        or re.search(r"(?u)(?<![א-ת])[א-ת][א-ת'׳״-]{2,}(?:\s+[א-ת][א-ת'׳״-]{2,}){1,2}(?![א-ת])", text)
+    )
+    return bool(_V58_EXPLICIT_FOOTBALL_RE.search(text) and _V58_FOOTBALL_CAREER_STORY_RE.search(text) and named)
+
+
+_V58_PRE_FOOTBALLTWEET_FILTER = footballtweet_filter_issue
+
+
+def footballtweet_filter_issue(post: Post, reserve_rate_slot: bool = True) -> str:
+    reason = str(_V58_PRE_FOOTBALLTWEET_FILTER(post, reserve_rate_slot=reserve_rate_slot) or "")
+    if reason and _v58_news_quote_allowed(post) and any(token in reason.casefold() for token in ("quote", "opinion", "interview")):
+        return ""
+    if reason and _v58_footballtweet_concrete_career_story(post):
+        soft = ("other_sport", "no_media", "opinion", "importance", "not_meaningful", "unclear", "weak", "context")
+        if any(token in reason.casefold() for token in soft):
+            return ""
+    return reason
+
+
+# Polymarket social/quote gate keeps social-media posts blocked, but uses the same
+# substantial-news quote principle for genuine reporting interviews/quotes.
+_V58_PRE_POLYMARKET_SOCIAL_OR_INTERVIEW = _user_v7_polymarket_social_or_interview
+
+
+def _user_v7_polymarket_social_or_interview(post: Post) -> bool:
+    text = _user_v7_polymarket_source_text(post)
+    social_platform = bool(re.search(
+        r"(?iu)instagram|tiktok|facebook|snapchat|threads|social\s+media|twitter\s+post|x\s+post|"
+        r"אינסטגרם|טיקטוק|פייסבוק|רשת(?:ות)?\s+חברת(?:ית|יות)|פוסט\s+(?:בטוויטר|ב[-־]?X|באינסטגרם)",
+        text,
+    ))
+    if not social_platform and _v58_news_quote_allowed(post):
+        return False
+    return bool(_V58_PRE_POLYMARKET_SOCIAL_OR_INTERVIEW(post))
+
+
+# ---------------------------------------------------------------------------
+# 7) Football-governance stories in Polymarket (federations, FIFA/UEFA officials,
+#    endorsements/support/official letters) are concrete football stories and do
+#    not need a tracked club to pass the soft relevance filter.
+# ---------------------------------------------------------------------------
+_V58_GOVERNANCE_CONTEXT_RE = re.compile(
+    r"(?iu)(?:football\s+association|football\s+federation|national\s+association|"
+    r"\bFIFA\b|\bUEFA\b|\bIFAB\b|\bAFA\b|\bInfantino\b|"
+    r"התאחדות\s+הכדורגל|פדרציית\s+הכדורגל|פיפ[\"״׳']?א|אופ[\"״׳']?א|אינפנטינו)"
+)
+_V58_GOVERNANCE_ACTION_RE = re.compile(
+    r"(?iu)(?:support(?:ed|s)?|back(?:ed|s)?|endorse(?:d|s)?|oppose(?:d|s)?|"
+    r"official\s+letter|statement|announce(?:d|s)?|confirm(?:ed|s)?|vote(?:d|s)?|"
+    r"תמכ(?:ה|ו)?|גיבוי|הביע(?:ה|ו)?\s+תמיכה|התנגד(?:ה|ו)?|מכתב\s+רשמי|הודעה\s+רשמית|הצהרה|הצביע(?:ה|ו)?)"
+)
+
+
+def _v58_polymarket_governance_story(post: Post) -> bool:
+    if not _user_v7_is_polymarket_post(post):
+        return False
+    text = _user_v7_polymarket_source_text(post)
+    return bool(
+        _user_v7_polymarket_word_count(post) >= 15
+        and _V58_GOVERNANCE_CONTEXT_RE.search(text)
+        and _V58_GOVERNANCE_ACTION_RE.search(text)
+        and not _user_v7_polymarket_social_or_interview(post)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8) Final pre-translation policy boundary.  New hard/cheap filters execute here
+#    before the older chain can spend translation/media work.  The Polymarket
+#    governance rescue is soft-only and never overrides hard safety/content gates.
+# ---------------------------------------------------------------------------
+_V58_PRE_FINAL_BLOCK_REASON = pre_send_final_local_block_reason
+_V58_HARD_REASON_RE = re.compile(
+    r"(?iu)(?:duplicate|old_post|too_old|women|wnba|other_sport|nba|basketball|golf|"
+    r"podcast|instagram|tiktok|live|match_result|match_update|lineup|poll|youth|academy|"
+    r"translation|media_error|video|gambling|betting|nonfootball)"
+)
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    # Snapshot all V58 classifications BEFORE the legacy filter chain runs.
+    # Some older filters normalize/mutate Post fields while inspecting them; recomputing
+    # the V58 decision afterwards can therefore produce a different answer for the same
+    # tweet.  Taking one immutable snapshot makes the final policy deterministic.
+    news_quote_allowed = bool(_v58_news_quote_allowed(post))
+    governance_story = bool(_v58_polymarket_governance_story(post))
+    career_story = bool(_v58_footballtweet_concrete_career_story(post))
+    declared_media = bool(_v42_declared_media(post)) if "_v42_declared_media" in globals() else bool(
+        getattr(post, "image_urls", None) or getattr(post, "video_urls", None)
+    )
+
+    if _v58_is_kit_launch(post):
+        return "kit_home_away_third_launch"
+    minor_reason = _v58_minor_low_tier_reason(post)
+    if minor_reason:
+        return minor_reason
+    if _v58_is_non_troll_facts_post(post):
+        text = _v58_quote_source_text(post)
+        if _V58_QUOTE_LIKE_RE.search(text) and not news_quote_allowed:
+            return "facts_interview_or_commentary"
+
+    reason = str(_V58_PRE_FINAL_BLOCK_REASON(post) or "")
+    if reason and governance_story and not _V58_HARD_REASON_RE.search(reason):
+        return ""
+    if reason and news_quote_allowed:
+        # A substantial reporting quote may rescue only soft editorial/media-context
+        # failures. Old/duplicate/women/other-sport/live/youth/etc. remain absolute.
+        hard = bool(_V58_HARD_REASON_RE.search(reason))
+        if not hard and declared_media:
+            return ""
+    if reason and career_story:
+        hard = bool(_V58_HARD_REASON_RE.search(reason))
+        if not hard:
+            return ""
+    return reason
+
+
+_V58_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "kit_home_away_third_launch" in raw:
+        return "מדי בית/חוץ/מדים חדשים הם תוכן לבוש ולא חדשות כדורגל לפרסום"
+    if "minor_player_non_tier1_or_senior_national" in raw:
+        return "שחקן צעיר מאוד שאינו קשור לדרג א׳ או לנבחרת הבוגרת"
+    if "facts_interview_or_commentary" in raw:
+        return "מקור עובדות: ראיון, ציטוט או פרשנות ללא מידע חדשותי מהותי מספיק"
+    if "delivery_same_post_already_sent" in raw:
+        return "אותו ציוץ כבר נשלח; משלוח כפול של מדיה/אלבום נמנע"
+    translated = str(_V58_PRE_HEBREW_BLOCK_REASON(reason) or "").strip()
+    # Never collapse an unknown internal classifier into the opaque text
+    # 'סיבת מערכת'.  Keep the original code visible so a future false block can
+    # be diagnosed from the control channel instead of losing its root cause.
+    if translated == "סיבת מערכת" or translated.startswith("סיבת מערכת:"):
+        base = raw.split(";", 1)[0].strip()
+        if base.startswith("importance:"):
+            base = base.split(":", 1)[1].strip()
+        readable = re.sub(r"[_:-]+", " ", base).strip()
+        return f"סיבת חסימה פנימית לא ממופה: {readable}" if readable else "סיבת חסימה פנימית לא ממופה"
+    return translated
+
+
+# ---------------------------------------------------------------------------
+# 9) Troll Football quote output.  RSS already preserves quoted_text and the
+#    Troll translation route already translates it.  The final message builder
+#    now guarantees the translated quote is actually rendered, once, before the
+#    Neto Sport footer.
+# ---------------------------------------------------------------------------
+_V58_PRE_BUILD_MESSAGE = build_message
+_V58_BIDI_STRIP_RE = re.compile(r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+
+
+def _v58_plain_compare(value: Any) -> str:
+    text = html.unescape(re.sub(r"(?is)<[^>]+>", " ", str(value or "")))
+    text = _V58_BIDI_STRIP_RE.sub("", text)
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _v58_insert_before_footer(rendered: str, block: str) -> str:
+    lines = str(rendered or "").split("\n")
+    footer_index = next(
+        (index for index, line in enumerate(lines) if "t.me/neto_sport" in line or "נטו ספורט" in _v58_plain_compare(line)),
+        len(lines),
+    )
+    before = lines[:footer_index]
+    after = lines[footer_index:]
+    while before and not before[-1].strip():
+        before.pop()
+    while after and not after[0].strip():
+        after.pop(0)
+    result = before + ([""] if before else []) + [block.strip()] + ([""] if after else []) + after
+    return "\n".join(result).strip()
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    rendered = _V58_PRE_BUILD_MESSAGE(
+        post, translated, quoted_translated, quoted_author_translated, include_video_link
+    )
+    if _v37_is_troll_football_post(post) and str(quoted_translated or "").strip():
+        quote = str(quoted_translated or "").strip()
+        rendered_cmp = _v58_plain_compare(rendered)
+        quote_cmp = _v58_plain_compare(quote)
+        probe = quote_cmp[:120]
+        if probe and probe not in rendered_cmp:
+            author = str(quoted_author_translated or getattr(post, "quoted_author", "") or "").strip()
+            block = (f"{author}:\n{quote}" if author else quote).strip()
+            rendered = _v58_insert_before_footer(rendered, block)
+            rendered = _v53_canonical_news_layout(rendered)
+            rendered = _v41_strong_rtl_all_lines(rendered)
+    return rendered
+
+
+# ---------------------------------------------------------------------------
+# 10) Same-tweet delivery lock.  This is below every discovery lane and above
+#     every automatic send_post call, so two media/album representations of the
+#     same X status cannot both reach Telegram concurrently.  Failed sends are
+#     released immediately; only a successful send creates the short sent guard.
+# ---------------------------------------------------------------------------
+_V58_PRE_SEND_POST = send_post
+_V58_DELIVERY_LOCK = RLock()
+_V58_DELIVERY_INFLIGHT: set[str] = set()
+_V58_DELIVERY_SENT_UNTIL: dict[str, float] = {}
+_V58_DELIVERY_SENT_TTL_SECONDS = 15 * 60
+
+
+def _v58_delivery_key(post: Post) -> str:
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    # The canonical X status id is stronger than a mirror-generated post_id.
+    # Two RSS mirrors can represent the same album differently while the /status/
+    # id remains identical, so use it first to close that duplicate-delivery race.
+    link = str(getattr(post, "link", "") or "").strip()
+    match = re.search(r"/status/(\d+)", link)
+    identity = match.group(1) if match else ""
+    if not identity:
+        identity = str(getattr(post, "post_id", "") or "").strip()
+    if not identity:
+        ids = [str(item).strip() for item in (getattr(post, "dedupe_ids", []) or []) if str(item).strip()]
+        identity = ids[0] if ids else ""
+    if not identity:
+        identity = link
+    if not identity:
+        identity = post_content_signature(username, getattr(post, "text", ""), getattr(post, "quoted_text", ""))
+    return username + "|" + identity
+
+
+def _v58_delivery_claim(post: Post) -> tuple[str, bool]:
+    key = _v58_delivery_key(post)
+    now = time.time()
+    with _V58_DELIVERY_LOCK:
+        for stale_key, expiry in list(_V58_DELIVERY_SENT_UNTIL.items()):
+            if expiry <= now:
+                _V58_DELIVERY_SENT_UNTIL.pop(stale_key, None)
+        if key in _V58_DELIVERY_INFLIGHT or float(_V58_DELIVERY_SENT_UNTIL.get(key, 0.0) or 0.0) > now:
+            return key, False
+        _V58_DELIVERY_INFLIGHT.add(key)
+        return key, True
+
+
+def send_post(
+    post: Post,
+    reply_message_ids: dict[str, int] | None = None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    key, claimed = _v58_delivery_claim(post)
+    if not claimed:
+        return {"sent": False, "mode": "pre_send_blocked:delivery_same_post_already_sent", "total_seconds": 0.0}
+    result: dict[str, Any] = {"sent": False, "mode": "delivery_failed"}
+    try:
+        result = _V58_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+        return result
+    finally:
+        with _V58_DELIVERY_LOCK:
+            _V58_DELIVERY_INFLIGHT.discard(key)
+            if bool(result.get("sent")):
+                _V58_DELIVERY_SENT_UNTIL[key] = time.time() + _V58_DELIVERY_SENT_TTL_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# 11) Deterministic, network-free regression audit for the reported root classes.
+# ---------------------------------------------------------------------------
+def _v58_test_post(username: str, text: str, post_id: str = "v58", quoted_text: str = "") -> Post:
+    return Post(
+        post_id=post_id, username=username, text=text,
+        link=f"https://x.com/{username}/status/{post_id}",
+        image_urls=[], video_urls=[], has_video=False, primary_has_video=False,
+        quoted_has_video=False, quoted_author="", quoted_text=quoted_text,
+        published_ts=time.time(), dedupe_ids=[post_id], source_name=username,
+    )
+
+
+def _v58_self_audit() -> None:
+    # Removed reporters cannot return through any active/test account surface.
+    for rows in (active_x_accounts(), all_x_accounts(), all_control_test_accounts(), ordered_accounts()):
+        if any(_v58_writer_disabled(value) for value in rows):
+            raise RuntimeError("v58_disabled_writer_still_active")
+
+    # Transfer language + money is not a betting advertisement.
+    transfer = _v58_test_post(
+        "FabrizioRomano",
+        "Manchester City want €60-70m compensation to give the green light. Rodri agreed personal terms and wants to join Barcelona.",
+        "bet-transfer",
+    )
+    if _v52_betting_ad_reason(transfer):
+        raise RuntimeError("v58_transfer_false_betting")
+    real_bet = _v58_test_post("TrollFootball2", "Bet365: new customers sign up now for a free bet. 18+.", "bet-real")
+    if not _v52_betting_ad_reason(real_bet):
+        raise RuntimeError("v58_real_betting_not_blocked")
+
+    # Explicit football must not become an other-sport false positive.
+    football = _v58_test_post(
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+        "At 30, Marvin Emmanuel signed his first professional contract after joining Le Puy. His journey to professional football is incredible.",
+        "football-rescue",
+    )
+    if is_other_sport_post(football):
+        raise RuntimeError("v58_explicit_football_other_sport")
+
+    # Kits blocked; shirt-number transfer wording is not.
+    if not _v58_is_kit_launch(_v58_test_post(TROLL_FOOTBALL_USERNAME, "Salford City revealed their new home kit for 2026/27.", "kit")):
+        raise RuntimeError("v58_kit_not_detected")
+    if _v58_is_kit_launch(_v58_test_post("FabrizioRomano", "The new signing will wear shirt number 10.", "shirt-number")):
+        raise RuntimeError("v58_shirt_number_false_kit")
+
+    # 2008 low-tier professional contract blocked by the age root rule.
+    minor = _v58_test_post("NicoSchira", "Lapo Fodde (born 2008) has signed his first professional contract with Venezia until 2029.", "minor")
+    if _v58_minor_low_tier_reason(minor) != "minor_player_non_tier1_or_senior_national":
+        raise RuntimeError("v58_minor_low_tier_not_blocked")
+
+    # Carragher-style analysis stays blocked; substantial sourced transfer quote passes.
+    commentary = _v58_test_post(
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+        '🎙️ Jamie Carragher discusses the signings: "Chelsea went from one extreme to another. The squad was too young and now they buy older players. They need players in the middle who can play every week. It feels like an overcorrection rather than a smart plan."',
+        "quote-commentary",
+    )
+    if _v58_news_quote_allowed(commentary):
+        raise RuntimeError("v58_commentary_quote_rescued")
+    news_quote = _v58_test_post(
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+        '🚨 Update from the source: "My source kept telling me everyone saying Rodri wanted Real Madrid was wrong. Rodri never wanted Real Madrid and only wanted Barcelona. Real Madrid made an offer, but he did not want to join them. He used Madrid to secure the Barcelona move. The source says personal terms with Barcelona were agreed and the transfer was always his preferred outcome."',
+        "quote-news",
+    )
+    if not _v58_news_quote_allowed(news_quote):
+        raise RuntimeError("v58_news_quote_not_rescued")
+
+    # Governance story is concrete Polymarket football news.
+    governance = _v58_test_post(
+        POLYMARKET_SPORT_USERNAME,
+        'The Argentine Football Association publicly supported FIFA president Gianni Infantino. In an official letter, the association expressed its support for the FIFA president and his leadership on behalf of its executive committee.',
+        "poly-gov",
+    )
+    if not _v58_polymarket_governance_story(governance):
+        raise RuntimeError("v58_polymarket_governance_not_recognized")
+
+    # Troll quote must appear once in the final rendered message.
+    troll = _v58_test_post(TROLL_FOOTBALL_USERNAME, "Main Troll Football line.", "troll-quote", "Quoted report with important football context.")
+    rendered = build_message(troll, "שורת טרול ראשית.", "דיווח מצוטט עם תוכן כדורגל חשוב.")
+    if _v58_plain_compare(rendered).count(_v58_plain_compare("דיווח מצוטט עם תוכן כדורגל חשוב.")) != 1:
+        raise RuntimeError("v58_troll_quote_not_rendered_once")
+
+    # Unknown reasons must remain diagnosable instead of collapsing to an opaque
+    # generic 'system reason'.
+    unknown_diag = hebrew_block_reason("v58_unknown_classifier_test")
+    if unknown_diag.strip() == "סיבת מערכת" or "v58 unknown classifier test" not in unknown_diag:
+        raise RuntimeError("v58_unknown_reason_became_opaque")
+
+    # Different mirror-local ids for the exact same X status must share one
+    # delivery key, which prevents album/media split double-sends.
+    mirror_a = _v58_test_post("FabrizioRomano", "Mirror A", "mirror-local-a")
+    mirror_b = _v58_test_post("FabrizioRomano", "Mirror B", "mirror-local-b")
+    mirror_a.link = "https://x.com/FabrizioRomano/status/1234567890123456789"
+    mirror_b.link = "https://nitter.net/FabrizioRomano/status/1234567890123456789"
+    if _v58_delivery_key(mirror_a) != _v58_delivery_key(mirror_b):
+        raise RuntimeError("v58_same_x_status_different_delivery_keys")
+
+    # Exact V57 RSS settings/boundary remain untouched.
+    if fetch_posts is not _v35_fetch_posts or fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v58_rss_boundary_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v58_scan_settings_changed")
+
+
+try:
+    _v58_self_audit()
+    logging.info(
+        "V58 active: Polo/Monfort fully removed from scans; betting false positives fixed; "
+        "explicit-football rescue, kit/young-player policy, substantial-news quote policy, "
+        "Polymarket governance rescue, Troll quoted-post output and exact same-tweet delivery guard active; "
+        "V57/V35 RSS and persistent memory remain unchanged."
+    )
+except Exception as _v58_exc:
+    logging.error("V58 final self-audit failed: %s", short_error(_v58_exc, 1800))
+    raise
+
+# ====== END V58 ROOT FIXES ======
 
 
 if __name__ == "__main__":
