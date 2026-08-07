@@ -60850,5 +60850,352 @@ except Exception as _v56_rss_audit_exc:
 # ====== END V56 ACTUAL V23 RSS RESTORE ======
 
 
+# ====== V35 EXACT OLD-GOOD RSS EXECUTION RESTORE (2026-08-05) ======
+# The RSS constants, source order and mirror implementation below were already
+# identical to the known working build. The actual regression was orchestration:
+# the later bounded/background wrapper could return an empty list before the
+# proven synchronous RSS collection had finished, so the 14-writer control test
+# reported 0/14 even while RSS work was still running in the background.
+#
+# Restore the old-good behavior at the active boundary:
+# - use the existing _working_shared_rss_fetch implementation directly;
+# - preserve its exact primary(3)-then-fallback(2), 6s request, 8s collection,
+#   two-attempt behavior and the existing source order;
+# - merge any already-available direct-X cache without waiting for it;
+# - keep all filters, formatting, buttons, 20-second scan, four account workers,
+#   media/server limits and persistent memory untouched.
+
+_V35_PRE_FETCH_POSTS = fetch_posts
+_V35_PRE_FETCH_CONTROL_POSTS = fetch_control_posts
+_V35_RSS_ROUTE_LOCKS: dict[str, Lock] = {}
+_V35_RSS_ROUTE_LOCKS_GUARD = Lock()
+
+
+def _v35_rss_lock(username: str) -> Lock:
+    key = str(username or '').strip().lstrip('@').casefold()
+    with _V35_RSS_ROUTE_LOCKS_GUARD:
+        lock = _V35_RSS_ROUTE_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _V35_RSS_ROUTE_LOCKS[key] = lock
+        return lock
+
+
+def _v35_exact_old_good_rss_rows(username: str) -> list[Post]:
+    """Run the proven RSS path once per account and return real rows or cache."""
+    canonical = str(username or '').strip().lstrip('@')
+    if not canonical:
+        return []
+    lock = _v35_rss_lock(canonical)
+    with lock:
+        try:
+            rows = list(_working_shared_rss_fetch(canonical) or [])
+        except Exception as exc:
+            logging.warning(
+                '⚠️ RSS old-good route failed for @%s: %s',
+                canonical,
+                short_error(exc, 500),
+            )
+            rows = []
+        if not rows:
+            try:
+                rows = list(_working_rss_cached(canonical, limit=60) or [])
+            except Exception:
+                rows = []
+        return rows
+
+
+def _v35_fetch_posts(username: str) -> list[Post]:
+    """Active automatic route: exact working RSS plus non-blocking live cache."""
+    canonical = str(username or '').strip().lstrip('@')
+    started = time.perf_counter()
+    rss_rows = _v35_exact_old_good_rss_rows(canonical)
+
+    # Preserve the already-existing direct public-X safety lane, but never let it
+    # delay or replace RSS. Only consume a result that is already cached/ready.
+    live_rows: list[Post] = []
+    try:
+        live_rows = list(_full_speed_cache_get(canonical) or [])
+        _full_speed_start_live(canonical)
+    except Exception:
+        live_rows = []
+
+    merged: dict[str, Post] = {}
+    try:
+        _reliable_merge_posts(merged, rss_rows, canonical)
+        _reliable_merge_posts(merged, live_rows, canonical)
+    except Exception:
+        for post in list(rss_rows) + list(live_rows):
+            if not isinstance(post, Post):
+                continue
+            identity = str(post.post_id or post.link or '').strip()
+            if identity:
+                merged.setdefault(identity, post)
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, 'published_ts', 0.0) or 0.0),
+        reverse=True,
+    )
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        try:
+            _pipeline_mark_seen(post, 'automatic:exact_old_good_rss_v35', observed, elapsed)
+        except Exception:
+            pass
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+def _v35_fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    """Control RSS tests wait for the real old-good RSS result, never a placeholder."""
+    canonical = str(username or '').strip().lstrip('@')
+    try:
+        rows = _v35_exact_old_good_rss_rows(canonical)
+        return canonical, rows, None
+    except Exception as exc:
+        try:
+            cached = list(_working_rss_cached(canonical, limit=60) or [])
+        except Exception:
+            cached = []
+        return canonical, cached, None if cached else exc
+
+
+# Activate by assignment rather than another duplicate public definition.
+fetch_posts = _v35_fetch_posts
+fetch_control_posts = _v35_fetch_control_posts
+
+
+def _v35_rss_restore_audit() -> None:
+    expected_templates = [
+        'https://nitter.net/{username}/rss',
+        'https://twiiit.com/{username}/rss',
+        'https://lightbrd.com/{username}/rss',
+        'https://rsshub.rssforever.com/twitter/user/{username}',
+        'https://rsshub.app/twitter/user/{username}',
+    ]
+    active = list(active_feed_templates())
+    if active[:5] != expected_templates:
+        raise RuntimeError('v35_rss_source_order_changed')
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError('v35_rss_retry_count_changed')
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError('v35_rss_request_timeout_changed')
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError('v35_rss_collection_timeout_changed')
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError('v35_rss_primary_fallback_counts_changed')
+    if fetch_posts is not _v35_fetch_posts or fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError('v35_rss_active_boundary_not_installed')
+
+
+try:
+    _v35_rss_restore_audit()
+    logging.info(
+        'V35 RSS restored: exact old-good synchronous RSS route is active; '
+        'control tests wait for real RSS results instead of returning early.'
+    )
+except Exception as _v35_rss_audit_exc:
+    logging.error('V35 RSS restore audit failed: %s', short_error(_v35_rss_audit_exc, 700))
+
+# ====== END V35 EXACT OLD-GOOD RSS EXECUTION RESTORE ======
+
+# ====== V57 FINAL BOUNDARY: EXACT V35 RSS + ULTRA-FAST CONTROL BUTTONS (2026-08-07) ======
+# RSS note: the exact V35 active boundary above is intentionally installed *after*
+# every V36-V56 layer.  It uses the already byte-identical old-good helpers and
+# therefore cannot be replaced by the later bounded/background RSS wrappers.
+# Button note: callbacks are prioritized ahead of text/channel work; heavy button
+# actions remain on a dedicated executor and control-message/channel processing is
+# moved off the long-poll thread.  News sending executors are untouched.
+
+BOT_BUILD_ID = "winner-v57-exact-v35-rss-ultrafast-buttons-2026-08-07"
+
+# V35 used this exact HTTP boundary. Restore it too so the synchronous old-good
+# route is not silently fed through a later RSS wrapper.
+http_get_feed = _v20_active_http_get_feed
+fetch_posts = _v35_fetch_posts
+fetch_control_posts = _v35_fetch_control_posts
+
+# Keep the user's current automatic-processing cap. V35 itself still retrieves
+# the old-good result; the existing account loop applies this cap downstream.
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+
+# More headroom for control-only work. This pool is completely separate from
+# account checks, translations and Telegram report-send workers.
+try:
+    _V52_BUTTON_EXECUTOR.shutdown(wait=False, cancel_futures=False)
+except Exception:
+    pass
+_V52_BUTTON_EXECUTOR = ThreadPoolExecutor(max_workers=20, thread_name_prefix="control-v57")
+_V57_CONTROL_TEXT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="control-text-v57")
+_V57_CHANNEL_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="control-channel-v57")
+_V57_CONTROL_STATE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="control-state-v57")
+
+
+def _v57_process_control_text(update: dict[str, Any]) -> None:
+    """Preserve control-text ordering without holding the getUpdates thread."""
+    try:
+        process_control_text_update(update)
+    except Exception as exc:
+        logging.debug("V57 control text update failed safely: %s", short_error(exc, 300))
+
+
+def _v57_process_channel_post(update: dict[str, Any]) -> None:
+    """Run RTL/channel editing independently of button and control-text work."""
+    try:
+        process_channel_post_update(update)
+    except Exception as exc:
+        logging.debug("V57 channel post update failed safely: %s", short_error(exc, 300))
+
+
+def _v57_save_control_offset(offset: int) -> None:
+    try:
+        save_control_state(control_update_offset=int(offset))
+    except Exception as exc:
+        logging.debug("V57 async control offset save failed safely: %s", short_error(exc, 240))
+
+
+def control_loop() -> None:
+    """Priority control loop: button clicks never wait behind channel/message work."""
+    if not CONTROL_CHAT_ID:
+        return
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    if CONTROL_SEND_PANEL_ON_STARTUP:
+        try:
+            send_quick_control_panel(force_new=True)
+        except Exception as exc:
+            logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
+    else:
+        try:
+            ensure_control_panel_once_if_requested()
+        except Exception as exc:
+            logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+
+    while True:
+        try:
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "20")),
+                    "allowed_updates": [
+                        "callback_query",
+                        "message",
+                        "edited_message",
+                        "channel_post",
+                        "edited_channel_post",
+                    ],
+                },
+            )
+            updates = list(response.get("result", []) or [])
+            if not updates:
+                continue
+
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+                    callbacks.append(update)
+                else:
+                    noncallbacks.append(update)
+
+            # Highest priority: acknowledge/queue every button before touching a
+            # human message, RTL edit, channel post or disk state.
+            for update in callbacks:
+                process_control_update(update)
+
+            # Everything else runs outside the long-poll thread, so a slow RTL
+            # edit or control text command cannot make the next button feel stuck.
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try:
+                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+
+            if batch_offset != offset:
+                offset = batch_offset
+                try:
+                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
+                except RuntimeError:
+                    pass
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+                    except Exception as cleanup_exc:
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+
+def _v57_final_self_audit() -> None:
+    # Exact old-good active RSS boundary.
+    if fetch_posts is not _v35_fetch_posts:
+        raise RuntimeError("v57_fetch_posts_not_exact_v35")
+    if fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v57_control_rss_not_exact_v35")
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v57_http_get_not_old_good")
+    expected = [
+        "https://nitter.net/{username}/rss",
+        "https://twiiit.com/{username}/rss",
+        "https://lightbrd.com/{username}/rss",
+        "https://rsshub.rssforever.com/twitter/user/{username}",
+        "https://rsshub.app/twitter/user/{username}",
+    ]
+    if list(active_feed_templates())[:5] != expected:
+        raise RuntimeError("v57_rss_source_order_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0 or float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v57_rss_timeout_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v57_rss_primary_fallback_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v57_auto_cap_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v57_scan_settings_changed")
+    if abs(float(CONTROL_POLL_SECONDS) - 0.40) > 0.001:
+        raise RuntimeError("v57_control_error_wait_changed")
+
+
+try:
+    _v57_final_self_audit()
+    logging.info(
+        "V57 active: exact V35 old-good synchronous RSS boundary restored at the final boundary; "
+        "callbacks prioritized before all non-button control work; 20 dedicated button workers; "
+        "ordered control text, parallel channel RTL work and offset persistence no longer block getUpdates."
+    )
+except Exception as _v57_exc:
+    logging.error("V57 final self-audit failed: %s", short_error(_v57_exc, 1600))
+    raise
+
+# ====== END V57 FINAL BOUNDARY ======
+
+
 if __name__ == "__main__":
     main()
