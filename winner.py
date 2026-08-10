@@ -61971,5 +61971,1408 @@ except Exception as _v59_rss_exc:
 # ====== END V59 HARD FINAL RSS RESTORE ======
 
 
+# ====== V60 USER ROOT FIXES / COST SAVINGS / FINAL POLICY (2026-08-10) ======
+# Scope: only the user's requested policy, Hebrew cleanup, duplicate behavior,
+# control history presentation, Sabbath hard-stop and one safe server-cost saving.
+# V59's exact old-good RSS functions/templates/timeouts remain untouched.
+
+BOT_BUILD_ID = "winner-v60-user-root-fixes-cost-savings-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# 1) Permanently remove the additional reporters from every active scan surface.
+# Keep display aliases for historical/control records, but never scan them.
+# ---------------------------------------------------------------------------
+_V60_DISABLED_WRITERS = {"ffpolo", "monfortcarlos", "jlsanchez78", "jfelixdiaz"}
+try:
+    _V58_DISABLED_WRITERS.update(_V60_DISABLED_WRITERS)
+except Exception:
+    pass
+
+
+def _v60_disabled_writer(value: Any) -> bool:
+    return str(value or "").strip().lstrip("@").casefold() in _V60_DISABLED_WRITERS
+
+
+for _v60_list_name in ("X_ACCOUNTS", "OPTIONAL_CONTROLLED_ACCOUNTS"):
+    _v60_values = globals().get(_v60_list_name)
+    if isinstance(_v60_values, list):
+        _v60_values[:] = [value for value in _v60_values if not _v60_disabled_writer(value)]
+for _v60_set_name in (
+    "PRIORITY_X_ACCOUNTS", "DEFAULT_ENABLED_OPTIONAL_ACCOUNTS",
+    "ALWAYS_ENABLED_OPTIONAL_ACCOUNTS",
+):
+    _v60_values = globals().get(_v60_set_name)
+    if isinstance(_v60_values, set):
+        for _v60_name in list(_v60_values):
+            if _v60_disabled_writer(_v60_name):
+                _v60_values.discard(_v60_name)
+
+
+# ---------------------------------------------------------------------------
+# 2) One truthful 12-word threshold for the source lanes that previously used 15.
+# The ordinary reporter floor remains seven words exactly as before.
+# ---------------------------------------------------------------------------
+SOURCE_REPORT_MIN_WORDS = 12
+FOOTBALL_FACTLY_MIN_WORDS = SOURCE_REPORT_MIN_WORDS
+FOOTBALL_FACTLY_AUTO_MIN_WORDS = SOURCE_REPORT_MIN_WORDS
+OPTAJOE_AUTO_MIN_WORDS = SOURCE_REPORT_MIN_WORDS
+FOOTBALLTWEET_MIN_WORDS = SOURCE_REPORT_MIN_WORDS
+REQUESTED_MIN_REPORT_WORDS = SOURCE_REPORT_MIN_WORDS
+
+_V60_WORD_RE = re.compile(
+    r"[^\W_]+(?:[\u05f3\u05f4'’`\-־][^\W_]+)*",
+    re.UNICODE,
+)
+
+
+def count_regular_words(value: Any) -> int:
+    """Count reader-visible words without losing words attached to emoji/punctuation.
+
+    URLs/HTML/bidi controls do not count. Unicode letters and ordinary numbers do;
+    apostrophe/hyphen compounds count as one visible word, matching Telegram reading.
+    """
+    text = unicodedata.normalize("NFKC", html.unescape(str(value or "")))
+    text = re.sub(r"https?://\S+|www\.\S+", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = re.sub(r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", text)
+    text = re.sub(r"([0-9])\ufe0f?\u20e3", r"\1", text)
+    return len(_V60_WORD_RE.findall(text))
+
+
+# Polymarket's older code hardcoded 15 internally; use the same 12-word truth.
+def _v60_polymarket_word_ok(post: Post) -> bool:
+    try:
+        return int(_user_v7_polymarket_word_count(post)) >= SOURCE_REPORT_MIN_WORDS
+    except Exception:
+        return count_regular_words(_final_source_text(post)) >= SOURCE_REPORT_MIN_WORDS
+
+
+# ---------------------------------------------------------------------------
+# 3) Promotion/betting root fix. "launch an investigation" is governance news,
+# not a product launch. Promotion requires a real commercial mechanic/object.
+# ---------------------------------------------------------------------------
+_V60_INVESTIGATION_LAUNCH_RE = re.compile(
+    r"(?iu)\b(?:launch|launches|launched|launching|open|opens|opened|opening)\s+(?:an?\s+)?"
+    r"(?:investigation|inquiry|probe|disciplinary\s+case|proceedings?)\b|"
+    r"(?:פותח|פתחה|פתחו|תפתח|תפתחנה|פתיחת)\s+(?:ב)?(?:חקירה|בדיקה|הליך\s+משמעתי)"
+)
+_V60_TRUE_PROMO_RE = re.compile(
+    r"(?iu)(?:\bregister\b|\bregistration\b|\bsign[- ]?up\b|\bjoin\s+now\b|"
+    r"\benter\s+now\b|\bdeposit\b|\bpromo\s*code\b|\bbonus\s*code\b|"
+    r"\bgiveaway\b|\bprize\s+pool\b|\bcash\s+prize\b|\bbet\s+now\b|"
+    r"\bclaim\s+(?:now|here)\b|\bredeem\s+(?:now|here)\b|\b18\+\b|"
+    r"\b(?:launch|launches|launched|launching|released|opened)\b.{0,45}"
+    r"\b(?:market|marketplace|product|feature|app|service|competition|contest|survivor|pool)\b|"
+    r"הרשמה|הירשמו|הצטרפו\s+עכשיו|הפקדה|קוד\s+(?:קופון|בונוס|הטבה)|"
+    r"פרס(?:ים)?\s+כספי|קופה\s+מובטחת|מרקטפלייס|שוק\s+חדש|המר\s+עכשיו)"
+)
+
+
+def _v49_promotional_gambling_reason(post: Post) -> str:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    if not text.strip() or _V60_INVESTIGATION_LAUNCH_RE.search(text):
+        return ""
+    source_name = str(getattr(post, "username", "") or getattr(post, "source_name", "") or "")
+    has_platform = bool(_V49_PLATFORM_RE.search(text) or _V49_PLATFORM_RE.search(source_name))
+    has_betting = bool(_V49_BETTING_ACTION_RE.search(text) or _V58_BETTING_CORE_RE.search(text))
+    has_promo = bool(_V60_TRUE_PROMO_RE.search(text))
+    if has_platform and _V49_FOOTBALL_PROBABILITY_REPORT_RE.search(text) and not has_promo:
+        return ""
+    if has_promo and (has_platform or has_betting):
+        return "betting_platform_promotion_not_football_news"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# 4) Football-governance reports: FIFA/UEFA/federation investigations, official
+# statements, votes, sanctions and support are concrete football news. They may
+# rescue soft relevance/promo false positives, never hard women/other-sport/live.
+# ---------------------------------------------------------------------------
+_V60_GOVERNANCE_CONTEXT_RE = re.compile(
+    r"(?iu)(?:\bFIFA\b|\bUEFA\b|\bIFAB\b|\bCAS\b|\bCONMEBOL\b|\bCONCACAF\b|"
+    r"\bAFA\b|football\s+(?:association|federation|confederation)|national\s+association|"
+    r"Infantino|פיפ[\"״׳']?א|אופ[\"״׳']?א|התאחדות\s+הכדורגל|פדרציית\s+הכדורגל|"
+    r"קונמבול|קונקאקאף|אינפנטינו)"
+)
+_V60_GOVERNANCE_ACTION_RE = re.compile(
+    r"(?iu)(?:investigation|investigate|inquiry|probe|official\s+statement|statement|"
+    r"official\s+letter|support(?:ed|s)?|back(?:ed|s)?|endorse(?:d|s)?|oppose(?:d|s)?|"
+    r"sanction(?:ed|s)?|suspend(?:ed|s)?|disciplinary|vote(?:d|s)?|rule(?:d|s)?|"
+    r"announce(?:d|s)?|confirm(?:ed|s)?|חקירה|בדיקה|הצהרה|הודעה\s+רשמית|מכתב\s+רשמי|"
+    r"תמכ(?:ה|ו)?|גיבוי|התנגד(?:ה|ו)?|סנקצי|השע(?:ה|יה)|משמעתי|הצביע(?:ה|ו)?|החליט(?:ה|ו)?)"
+)
+_V60_ABSOLUTE_HARD_REASON_RE = re.compile(
+    r"(?iu)(?:duplicate|old_post|too_old|women|wnba|other_sport|nba|basketball|golf|"
+    r"podcast|instagram|tiktok|live|match_result|match_update|lineup|poll|youth|academy|"
+    r"minor_player|young_player|translation|media_error|video|nonfootball)"
+)
+
+
+def _v60_governance_story(post: Post) -> bool:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    return bool(
+        count_regular_words(text) >= SOURCE_REPORT_MIN_WORDS
+        and _V60_GOVERNANCE_CONTEXT_RE.search(text)
+        and _V60_GOVERNANCE_ACTION_RE.search(text)
+    )
+
+
+def _v58_polymarket_governance_story(post: Post) -> bool:
+    return bool(_user_v7_is_polymarket_post(post) and _v60_governance_story(post))
+
+
+# ---------------------------------------------------------------------------
+# 5) Troll Football: block future score/winner/goal predictions, not all future
+# references. A concrete played match event remains governed by existing rules.
+# ---------------------------------------------------------------------------
+_V60_TROLL_FUTURE_PREDICTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bhow\s+many\s+goals?\b.{0,100}\b(?:will|today|tonight|tomorrow)\b|"
+    r"\b(?:who\s+wins?|who\s+will\s+win|predict(?:ion)?|score\s*prediction|predicted\s+score|"
+    r"what\s+will\s+the\s+score\s+be|will\s+.*\s+score)\b|"
+    r"כמה\s+שערים?.{0,100}(?:היום|הלילה|מחר|תבקיע|יכבוש|תכבוש)|"
+    r"(?:מי\s+תנצח|מי\s+ינצח|מי\s+תזכה|מי\s+יזכה|מה\s+תהיה\s+התוצאה|תחזית\s+תוצאה|"
+    r"כמה\s+ייגמר|כמה\s+תיגמר)"
+    r")"
+)
+
+
+def _v60_troll_future_prediction(post: Post) -> bool:
+    if not _v37_is_troll_football_post(post):
+        return False
+    text = html.unescape(str(_v37_troll_source_text(post) or ""))
+    return bool(_V60_TROLL_FUTURE_PREDICTION_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
+# 6) Young-player root rule. Explicit age <=19 or birth year making the player
+# <=19 is blocked unless the report is tied to a tier-A first team or senior NT.
+# ---------------------------------------------------------------------------
+_V60_YOUNG_AGE_RE = re.compile(
+    r"(?iu)(?:\b(?:aged?|age)\s*(?P<a1>1[0-9])\b|\b(?P<a2>1[0-9])[- ]year[- ]old\b|"
+    r"בן\s+(?P<a3>1[0-9])\b|בת\s+(?P<a4>1[0-9])\b)"
+)
+_V60_BIRTH_RE = re.compile(
+    r"(?iu)(?:\bborn\s+(?:in\s+)?(?P<y1>20\d{2})\b|\(\s*b\.?\s*(?P<y2>20\d{2})\s*\)|"
+    r"יליד(?:ת)?\s+(?P<y3>20\d{2})\b|נולד(?:ה)?\s+ב[-־]?(?P<y4>20\d{2})\b)"
+)
+
+
+def _v60_explicit_young(text: Any) -> bool:
+    value = str(text or "")
+    if _V60_YOUNG_AGE_RE.search(value):
+        return True
+    current_year = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).year
+    for match in _V60_BIRTH_RE.finditer(value):
+        years = [int(v) for v in match.groups() if v and str(v).isdigit()]
+        if years and min(years) >= current_year - 19:
+            return True
+    return False
+
+
+def _v60_young_low_tier_reason(post: Post) -> str:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    if _v60_explicit_young(text) and not _v58_tier1_or_senior_national(text):
+        return "young_player_under20_non_tier1_or_senior_national"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# 7) Final local policy wrapper: cheap blocks first, then rescue only the exact
+# soft false-positive classes requested by the user.
+# ---------------------------------------------------------------------------
+_V60_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v60_troll_future_prediction(post):
+        return "trollfootball_future_match_prediction"
+    young_reason = _v60_young_low_tier_reason(post)
+    if young_reason:
+        return young_reason
+
+    reason = str(_V60_PRE_FINAL_LOCAL_BLOCK(post) or "")
+    raw = reason.casefold()
+
+    # Legacy 15-word reason names may still be emitted by captured old layers.
+    # If the post genuinely has 12+ reader-visible words, that reason is obsolete.
+    if reason:
+        source_text = _final_source_text(post)
+        words = count_regular_words(source_text)
+        legacy_15 = bool(
+            "less_than_15" in raw or "under_15" in raw or "too_short" in raw
+            or "15_words" in raw or "15 words" in raw
+            or ("נדרשות לפחות 15" in reason)
+        )
+        if legacy_15 and words >= SOURCE_REPORT_MIN_WORDS:
+            reason = ""
+            raw = ""
+
+    if reason and _v60_governance_story(post):
+        # A real betting call-to-action remains blocked even inside a football story.
+        real_bet = bool(_v52_betting_ad_reason(post) or (
+            _V58_BETTING_CORE_RE.search(_final_source_text(post))
+            and _V58_BETTING_PROMO_RE.search(_final_source_text(post))
+        ))
+        if not real_bet and not _V60_ABSOLUTE_HARD_REASON_RE.search(reason):
+            return ""
+    return reason
+
+
+_V60_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "trollfootball_future_match_prediction" in raw:
+        return "טרול פוטבול: תחזית עתידית על שערים/תוצאה/מנצחת היא תוכן הימורי ולא דיווח"
+    if "young_player_under20_non_tier1_or_senior_national" in raw:
+        return "שחקן צעיר עד גיל 19 שאינו קשור לדרג א׳ או לנבחרת הבוגרת"
+    translated = str(_V60_PRE_HEBREW_BLOCK_REASON(reason) or "").strip()
+    if translated == "סיבת חסימה פנימית לא ממופה":
+        base = raw.split(";", 1)[0].strip() or "internal_unknown"
+        return "סיבת חסימה פנימית לא ממופה: " + re.sub(r"[_:-]+", " ", base).strip()
+    return translated
+
+
+# ---------------------------------------------------------------------------
+# 8) Translation/name cleanup. These are deterministic spelling/display repairs;
+# they do not consume another Gemini request.
+# ---------------------------------------------------------------------------
+TEAM_REPLACEMENTS.update({
+    "VfB Stuttgart": "שטוטגרט",
+    "VFB Stuttgart": "שטוטגרט",
+    "VfL Wolfsburg": "וולפסבורג",
+    "VFL Wolfsburg": "וולפסבורג",
+})
+PLAYER_REPLACEMENTS.update({
+    "Hansi Flick": "האנזי פליק",
+    "Enzo Maresca": "אנזו מארסקה",
+    "Enzo Fernandez": "אנזו פרננדס",
+    "Enzo Fernández": "אנזו פרננדס",
+})
+_V60_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _v60_balance_parentheses(value: Any) -> str:
+    lines: list[str] = []
+    for line in str(value or "").split("\n"):
+        if line.count("(") == line.count(")") + 1:
+            match = re.search(r"(?P<punc>[.!?…]+)(?P<tail>[\"'״׳»”’\s]*)$", line)
+            if match:
+                line = line[:match.start("punc")] + ")" + line[match.start("punc"):]
+            else:
+                line = line.rstrip() + ")"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _v60_translation_cleanup(source: Any, translated: Any) -> str:
+    src = html.unescape(str(source or ""))
+    text = str(translated or "")
+
+    # Common foreign-character contamination: ה綠 (ירוק) -> הירוק.
+    text = re.sub(r"(?u)ה[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+\s*\((ירוק)\)", r"ה\1", text)
+    if re.search(r"[א-ת]", text) and _V60_CJK_RE.search(text):
+        text = _V60_CJK_RE.sub("", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+
+    # User spelling standard.
+    text = re.sub(r"(?u)(?<![א-ת])אנצו(?![א-ת])", "אנזו", text)
+    if re.search(r"(?iu)\bHansi\s+Flick\b", src):
+        text = re.sub(r"(?u)(?:הנס|האנס|האנצי|הנזי)\s+פליק", "האנזי פליק", text)
+
+    # Club-prefix normalization is source-aware, including later shorthand in the
+    # same tweet: VfB -> Stuttgart and VfL -> Wolfsburg.
+    if re.search(r"(?iu)\bVfB(?:\s+Stuttgart)?\b", src):
+        text = re.sub(r"(?iu)(?:ופב|ו\.פ\.ב\.?|VfB)(?:\s+שטוטגרט)?", "שטוטגרט", text)
+    if re.search(r"(?iu)\bVfL(?:\s+Wolfsburg)?\b", src):
+        text = re.sub(r"(?iu)(?:ופל|ו\.פ\.ל\.?|VfL)(?:\s+וולפסבורג)?", "וולפסבורג", text)
+    text = re.sub(r"(?u)(?<![א-ת])([בלמכהו])[-־]\s*(שטוטגרט|וולפסבורג)(?![א-ת])", r"\1\2", text)
+    text = re.sub(r"(?u)\b(שטוטגרט|וולפסבורג)\s+\1\b", r"\1", text)
+
+    text = _v60_balance_parentheses(text)
+    return text
+
+
+_V60_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    main, quote, author = _V60_PRE_TRANSLATE_POST_FOR_SEND(post)
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+    main = _v60_translation_cleanup(main_source, main)
+    if quote:
+        quote = _v60_translation_cleanup(quote_source, quote)
+    return main, quote, author
+
+
+# ---------------------------------------------------------------------------
+# 9) Footer link: include the dot INSIDE the Telegram link (blue), pen outside.
+# ---------------------------------------------------------------------------
+_V31_SIGNATURE_HTML = (
+    RTL_MARK
+    + f'<a href="{html.escape(SIGNATURE_LINK, quote=True)}">נטו ספורט.</a>📝'
+)
+
+
+# ---------------------------------------------------------------------------
+# 10) All-channel RTL: every human/admin channel post containing Hebrew is edited
+# in place once. Never copy/delete/repost a channel post as a fallback.
+# ---------------------------------------------------------------------------
+def _v42_message_needs_rtl_repair(text: str) -> bool:
+    for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line.strip() and _V42_HEBREW_RE.search(line) and not _v41_line_is_strong_rtl(line):
+            return True
+    return False
+
+
+_V60_PRE_QUIET_RTL_REWRITE = _v42_try_rewrite_control_human_message
+
+
+def _v42_try_rewrite_control_human_message(update: dict[str, Any]) -> bool:
+    # Channel posts are handled by V43's direct edit only. If Telegram refuses
+    # that edit, leave the original untouched: never copy/delete and visually
+    # "disappear/reappear" an admin channel post.
+    if update.get("channel_post") or update.get("edited_channel_post"):
+        return False
+    return bool(_V60_PRE_QUIET_RTL_REWRITE(update))
+
+
+# ---------------------------------------------------------------------------
+# 11) Lead-event duplicate rule. If the lead paragraph is the same transfer at
+# the same stage, unrelated secondary notes do not make the whole post new.
+# ---------------------------------------------------------------------------
+_V60_PRE_EXTENDED_DUPLICATE = _v53_extended_duplicate
+
+
+def _v60_lead_paragraph(value: Any) -> str:
+    text = html.unescape(str(value or "")).replace("\r\n", "\n").replace("\r", "\n")
+    blocks = [re.sub(r"\s+", " ", block).strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
+    return blocks[0] if blocks else re.sub(r"\s+", " ", text).strip()
+
+
+def _v60_lead_event_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    current_text = str(text_override or _final_source_text(post) or getattr(post, "text", "") or "")
+    current_lead = _v60_lead_paragraph(current_text)
+    if count_regular_words(current_lead) < 5:
+        return None
+    current_profile = _v46_profile(current_lead, getattr(post, "username", ""))
+    if current_profile.family != "transfer":
+        return None
+    rows = [
+        item for item in list(_v9_recent_duplicate_rows(state) or [])[-_V46_DUPLICATE_MAX_ROWS:]
+        if isinstance(item, dict) and not is_pending_memory_item(item)
+    ]
+    for item in reversed(rows):
+        previous_source = str(item.get("username") or item.get("source") or "")
+        for previous_text in _v46_row_variants(item):
+            previous_lead = _v60_lead_paragraph(previous_text)
+            if count_regular_words(previous_lead) < 5:
+                continue
+            decision = _v46_event_decision(current_lead, previous_lead, getattr(post, "username", ""), previous_source)
+            if not decision.get("same_event"):
+                continue
+            if str(decision.get("reason") or "") in {"stage_advanced", "reversal_or_failure", "new_material_fact"}:
+                continue
+            result = dict(item)
+            result.update({
+                "duplicate": True,
+                "is_duplicate": True,
+                "duplicate_score": max(float(decision.get("identity_score", 0.0) or 0.0), 0.93),
+                "duplicate_verdict": "V60_SAME_LEAD_TRANSFER_EVENT",
+                "duplicate_source": previous_source or "דיווח קודם",
+                "reason": "same_lead_transfer_event_secondary_notes_ignored",
+                "raw_reason": "same_lead_transfer_event_secondary_notes_ignored",
+            })
+            return result
+    return None
+
+
+def _v53_extended_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    primary = _V60_PRE_EXTENDED_DUPLICATE(post, state, text_override)
+    if primary:
+        return primary
+    return _v60_lead_event_duplicate(post, state, text_override)
+
+
+# Clear result cache created by the previous duplicate engine.
+try:
+    with _V49_DUPLICATE_CACHE_LOCK:
+        _V49_DUPLICATE_CACHE.clear()
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# 12) "20 blocks": last 20 stored blocks regardless of the two-hour analytics
+# window, with the ORIGINAL X publication clock shown on every row.
+# ---------------------------------------------------------------------------
+def _v60_last_stored_blocks(facts_only: bool = False, limit: int = 20) -> list[dict[str, Any]]:
+    state = load_control_state()
+    rows = state.get("last_blocked_posts", [])
+    rows = [dict(item) for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
+    if facts_only:
+        rows = [item for item in rows if _facts_item_canonical(item) in set(FACTS_SOURCE_ORDER)]
+    unique: dict[str, dict[str, Any]] = {}
+    for item in rows:
+        identity = str(item.get("id") or item.get("post_id") or item.get("link") or "").strip()
+        if not identity:
+            identity = hashlib.sha1(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        unique[identity] = item
+    ordered = sorted(unique.values(), key=lambda item: float(item.get("ts", 0.0) or 0.0))
+    return ordered[-max(1, int(limit)):]
+
+
+def _v60_publication_clock(item: dict[str, Any]) -> str:
+    ts = _final_record_published_ts(item)
+    if ts <= 0:
+        return "לא ידועה"
+    try:
+        return datetime.fromtimestamp(ts, ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return "לא ידועה"
+
+
+def _v60_control_block_list_text(title: str, items: list[dict[str, Any]], empty: str, limit: int = 20) -> str:
+    lines = [title, ""]
+    shown = list(items)[-max(1, int(limit)):]
+    if not shown:
+        return title + "\n\n" + empty
+    for index, item in enumerate(shown, 1):
+        source = _hebrew_account_label(str(item.get("source", "") or item.get("username", "") or ""))
+        reason = hebrew_block_reason(str(item.get("raw_reason") or item.get("reason") or "סיבה לא ידועה"))
+        preview = str(item.get("preview", "") or "")
+        if preview and GOOGLE_TRANSLATE_CONTROL_PREVIEWS:
+            preview = google_translate_hebrew_safe(preview, 220)
+        link = str(item.get("link", "") or "")
+        lines.append(f"{index}. כתב: {source}")
+        lines.append(f"   שעת פרסום: {_v60_publication_clock(item)}")
+        lines.append(f"   סיבה: {reason}")
+        if preview:
+            lines.append(f"   תקציר: {trim(preview, 180)}")
+        if link:
+            lines.append(f"   קישור לפוסט: {link}")
+        if index != len(shown):
+            lines.append("")
+    return "\n".join(lines)
+
+
+def _final_recent_block_report() -> str:
+    rows = _v60_last_stored_blocks(False, 20)
+    return _v60_control_block_list_text(
+        "📋 20 חסימות אחרונות", rows, "אין חסימות שמורות כרגע.", 20
+    )
+
+
+def facts_recent_blocks_text(limit: int = 20) -> str:
+    requested = 20 if int(limit or 20) >= 20 else max(1, int(limit or 20))
+    rows = _v60_last_stored_blocks(True, requested)
+    return _v60_control_block_list_text(
+        "📋 20 חסימות אחרונות — מקורות העובדות", rows,
+        "אין חסימות שמורות כרגע למקורות העובדות.", requested,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 13) Sabbath hard-stop. Main scanning and continuous discovery already pause;
+# make the V57 control loop pause too so buttons/messages/RTL do nothing on Shabbat.
+# ---------------------------------------------------------------------------
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    startup_panel_done = False
+    while True:
+        try:
+            if is_shabbat_now():
+                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
+                continue
+            if not startup_panel_done:
+                startup_panel_done = True
+                if CONTROL_SEND_PANEL_ON_STARTUP:
+                    try:
+                        send_quick_control_panel(force_new=True)
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
+                else:
+                    try:
+                        ensure_control_panel_once_if_requested()
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "20")),
+                    "allowed_updates": [
+                        "callback_query", "message", "edited_message",
+                        "channel_post", "edited_channel_post",
+                    ],
+                },
+            )
+            updates = list(response.get("result", []) or [])
+            if not updates:
+                continue
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+                    callbacks.append(update)
+                else:
+                    noncallbacks.append(update)
+            for update in callbacks:
+                process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try:
+                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+            if batch_offset != offset:
+                offset = batch_offset
+                try:
+                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
+                except RuntimeError:
+                    pass
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+                    except Exception as cleanup_exc:
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+
+_V60_PRE_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: list[int] | None = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    if is_shabbat_now():
+        return {"sent": False, "mode": "shabbat_hard_stop", "total_seconds": 0.0}
+    return _V60_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+
+
+# ---------------------------------------------------------------------------
+# 14) Safe server-credit saving: disable the extra continuous forced-live scanner
+# by default. The exact V59 old-good RSS still scans every 20 seconds and its own
+# established live fallback remains untouched. Railway can explicitly set 1.
+# ---------------------------------------------------------------------------
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = os.environ.get("CONTINUOUS_FORCE_DISCOVERY_ENABLED", "0") == "1"
+
+
+# ---------------------------------------------------------------------------
+# 15) Offline regression audit for every reported root case. No RSS/network call.
+# ---------------------------------------------------------------------------
+def _v60_test_post(username: str, text: str, post_id: str = "v60", quoted_text: str = "") -> Post:
+    return Post(
+        post_id=post_id, username=username, text=text,
+        link=f"https://x.com/{username}/status/{post_id}",
+        image_urls=[], video_urls=[], has_video=False, primary_has_video=False,
+        quoted_has_video=False, quoted_author="", quoted_text=quoted_text,
+        published_ts=time.time(), dedupe_ids=[post_id], source_name=username,
+    )
+
+
+def _v60_self_audit() -> None:
+    if SOURCE_REPORT_MIN_WORDS != 12 or FOOTBALLTWEET_MIN_WORDS != 12 or OPTAJOE_AUTO_MIN_WORDS != 12:
+        raise RuntimeError("v60_12_word_threshold_not_active")
+    if count_regular_words("🚨 The generation of legends that made us fall in love with the beautiful game. ❤️⚽") < 12:
+        raise RuntimeError("v60_word_counter_under_count")
+
+    for rows in (active_x_accounts(), all_x_accounts(), all_control_test_accounts(), ordered_accounts()):
+        if any(_v60_disabled_writer(value) for value in rows):
+            raise RuntimeError("v60_removed_writer_still_active")
+
+    poly = _v60_test_post(
+        POLYMARKET_SPORT_USERNAME,
+        "JUST IN: UEFA is preparing to launch an investigation into all 16 years of Gianni Infantino's work at the organisation.",
+        "poly-investigation",
+    )
+    if _v49_promotional_gambling_reason(poly):
+        raise RuntimeError("v60_investigation_false_promo")
+    if pre_send_final_local_block_reason(poly):
+        raise RuntimeError("v60_governance_polymarket_blocked")
+
+    fifa = _v60_test_post(
+        "JacobsBen",
+        'FIFA publishes an official statement claiming there is a coordinated and sustained effort by some to undermine FIFA and its president, echoing recent statements from CONMEBOL.',
+        "fifa-statement",
+    )
+    if pre_send_final_local_block_reason(fifa):
+        raise RuntimeError("v60_fifa_statement_blocked")
+
+    troll = _v60_test_post(
+        TROLL_FOOTBALL_USERNAME,
+        "How many goals will Man City score today against Atletico Madrid?",
+        "troll-future",
+    )
+    if pre_send_final_local_block_reason(troll) != "trollfootball_future_match_prediction":
+        raise RuntimeError("v60_troll_future_prediction_not_blocked")
+
+    young = _v60_test_post(
+        "NicoSchira",
+        "Lapo Fodde (born 2008) has signed his first professional contract with Venezia until 2029.",
+        "young-2008",
+    )
+    if not _v60_young_low_tier_reason(young):
+        raise RuntimeError("v60_young_2008_not_blocked")
+
+    cleaned = _v60_translation_cleanup(
+        "The only thing missing is the final green light from Roberto De Zerbi.",
+        "הדבר היחיד שחסר הוא האור ה綠 (ירוק) הסופי מרוברטו דה זרבי.",
+    )
+    if "綠" in cleaned or "הירוק" not in cleaned:
+        raise RuntimeError("v60_cjk_green_not_fixed")
+    if "האנזי פליק" not in _v60_translation_cleanup("Hansi Flick said goodbye.", "הנס פליק נפרד."):
+        raise RuntimeError("v60_hansi_not_fixed")
+    if "אנזו מארסקה" not in _v60_translation_cleanup("Enzo Maresca said", "אנצו מארסקה אמר"):
+        raise RuntimeError("v60_enzo_not_fixed")
+    clubs = _v60_translation_cleanup(
+        "VfB Stuttgart still have no full agreement with VfL Wolfsburg. VfB are missing one detail.",
+        "עבור ופב שטוטגרט אין הסכם עם ופל וולפסבורג. ל-ופב עדיין חסר פרט אחד.",
+    )
+    if "ופב" in clubs or "ופל" in clubs or "לשטוטגרט" not in clubs or "וולפסבורג" not in clubs:
+        raise RuntimeError("v60_vfb_vfl_not_fixed")
+    balanced = _v60_balance_parentheses("יצרה 5.6 xG מול קילמרנוק (מאז 2019-20.")
+    if balanced.count("(") != balanced.count(")"):
+        raise RuntimeError("v60_parenthesis_not_balanced")
+
+    if "נטו ספורט.</a>📝" not in _V31_SIGNATURE_HTML:
+        raise RuntimeError("v60_footer_dot_not_linked")
+    if not _v42_message_needs_rtl_repair("הודעה בעברית רגילה"):
+        raise RuntimeError("v60_all_hebrew_channel_rtl_not_enabled")
+    if _v42_try_rewrite_control_human_message({"channel_post": {"chat": {"id": "1", "type": "channel"}, "message_id": 1, "text": "הודעה"}}):
+        raise RuntimeError("v60_channel_copy_delete_fallback_still_possible")
+
+    # V59 RSS boundary must stay exact.
+    if http_get_feed is not _v20_active_http_get_feed or fetch_posts is not _v35_fetch_posts or fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v60_rss_boundary_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v60_scan_settings_changed")
+
+
+try:
+    _v60_self_audit()
+    logging.info(
+        "V60 active: 12-word source threshold, truthful word count, governance rescue, "
+        "future-score Troll block, under-20 low-tier block, Hansi/Enzo/VfB/VfL/CJK/parenthesis cleanup, "
+        "linked footer dot, in-place-only all-channel RTL, lead-event duplicate guard, full 20-block history with publication time, "
+        "hard Sabbath control stop and continuous forced scanner disabled by default; V59 RSS unchanged."
+    )
+except Exception as _v60_exc:
+    logging.error("V60 self-audit failed: %s", short_error(_v60_exc, 2400))
+    raise
+
+# ====== END V60 USER ROOT FIXES ======
+
+
+# ====== V61 FINAL SOURCE-LANE / DUPLICATE-STAGE HARDENING ======
+# Narrow follow-up to V60, based on regression tests:
+# 1) Footballtweet must never leak into an old Opta/FootballFactly diagnostic lane.
+#    Its authoritative minimum is 12 reader-visible words, using the same counter.
+# 2) A later report that contains a genuinely higher transfer milestone (medical
+#    completed / HERE WE GO / official signing) must never be swallowed by an
+#    older same-event duplicate classifier that over-ranked "ready to be completed".
+
+BOT_BUILD_ID = "winner-v61-root-fixes-2026-08-10"
+
+_V61_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+_V61_SPECIAL_LANE_LEAK_RE = re.compile(
+    r"(?iu)^(?:אופטה|עובדות\s+כדורגל)\s*:|^(?:opta|footballfactly)[_ :.-]"
+)
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    is_ft = bool(_is_footballtweet_post(post))
+    ft_issue_before = ""
+    ft_words = 0
+    ft_declared_media = False
+    if is_ft:
+        ft_text = str(_footballtweet_original_text(post) or _final_source_text(post) or "")
+        ft_words = count_regular_words(ft_text)
+        ft_declared_media = bool(_v42_declared_media(post))
+        # One authoritative 12-word rule for Footballtweet.  This runs before
+        # legacy wrappers can mutate media fields while inspecting the post.
+        if ft_words < SOURCE_REPORT_MIN_WORDS:
+            return "footballtweet_too_short"
+        try:
+            ft_issue_before = str(footballtweet_filter_issue(post, reserve_rate_slot=False) or "")
+        except Exception:
+            ft_issue_before = ""
+        if ft_issue_before == "footballtweet_too_short" and ft_words >= SOURCE_REPORT_MIN_WORDS:
+            ft_issue_before = ""
+        if ft_issue_before == "footballtweet_no_media" and ft_declared_media:
+            ft_issue_before = ""
+        if ft_issue_before:
+            return ft_issue_before
+
+    reason = str(_V61_PRE_FINAL_LOCAL_BLOCK(post) or "")
+
+    if is_ft and reason:
+        # Historical captured fact-source wrappers sometimes label Footballtweet
+        # as Opta. If Footballtweet's own lane passed before mutation, that old
+        # source-specific result is not authoritative and must not block it.
+        if _V61_SPECIAL_LANE_LEAK_RE.search(reason.strip()):
+            return ""
+        low = reason.casefold()
+        if (
+            ("15" in low and ("word" in low or "מילים" in reason))
+            and ft_words >= SOURCE_REPORT_MIN_WORDS
+        ):
+            return ""
+    return reason
+
+
+# Explicit transfer milestones independent of the older broad stage detector.
+# "ready to be completed" is agreement/finalization language, not the same as
+# a completed medical or an official signed contract.
+_V61_MILESTONE_PATTERNS: tuple[tuple[int, re.Pattern[str]], ...] = (
+    (7, re.compile(r"(?iu)(?:officially\s+(?:signed|joins?|joined)|official\s+announcement|"
+                   r"has\s+signed\b|contract\s+(?:has\s+been\s+)?signed|"
+                   r"חתם\s+(?:רשמית|על\s+החוזה)|חתמה\s+(?:רשמית|על\s+החוזה)|"
+                   r"החוזה\s+נחתם|הצטרף\s+רשמית|הצטרפה\s+רשמית)")),
+    (6, re.compile(r"(?iu)(?:completed\s+(?:his|her|the)?\s*medical|passed\s+(?:his|her|the)?\s*medical|"
+                   r"medical\s+(?:completed|passed)|בדיקות\s+רפואיות\s+(?:הושלמו|עברו)|"
+                   r"עבר\s+(?:את\s+)?הבדיקות\s+הרפואיות|עברה\s+(?:את\s+)?הבדיקות\s+הרפואיות)")),
+    (5, re.compile(r"(?iu)(?:HERE\s+WE\s+GO|הנה\s+זה\s+קורה)")),
+    (4, re.compile(r"(?iu)(?:medical\s+(?:booked|scheduled)|בדיקות\s+רפואיות\s+(?:נקבעו|נקבעו\s+ל)|"
+                   r"documents?\s+(?:signed|completed)|מסמכים\s+(?:נחתמו|הושלמו))")),
+    (3, re.compile(r"(?iu)(?:full\s+agreement|deal\s+agreed|agreement\s+reached|"
+                   r"סיכום\s+מלא|העסקה\s+סוכמה|הושג\s+סיכום|סוכמו\s+התנאים)")),
+)
+
+
+def _v61_explicit_milestone_rank(value: Any) -> int:
+    text = html.unescape(str(value or ""))
+    for rank, pattern in _V61_MILESTONE_PATTERNS:
+        if pattern.search(text):
+            return rank
+    return 0
+
+
+def _v61_duplicate_is_true_advancement(post: Post, duplicate_row: dict[str, Any]) -> bool:
+    current_text = str(_final_source_text(post) or getattr(post, "text", "") or "")
+    current_rank = _v61_explicit_milestone_rank(current_text)
+    if current_rank < 4:
+        return False
+    previous_ranks = [
+        _v61_explicit_milestone_rank(text)
+        for text in _v46_row_variants(duplicate_row)
+        if str(text or "").strip()
+    ]
+    previous_rank = max(previous_ranks or [0])
+    return current_rank > previous_rank
+
+
+_V61_PRE_EXTENDED_DUPLICATE = _v53_extended_duplicate
+
+
+def _v53_extended_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    result = _V61_PRE_EXTENDED_DUPLICATE(post, state, text_override)
+    if isinstance(result, dict) and result.get("duplicate"):
+        if _v61_duplicate_is_true_advancement(post, result):
+            return None
+    return result
+
+
+# Keep every historical duplicate entry point on the same corrected engine.
+def _v46_local_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v53_extended_duplicate(post, state, text_override)
+
+
+def _v42_local_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    return _v53_extended_duplicate(post, state, text_override)
+
+
+try:
+    with _V49_DUPLICATE_CACHE_LOCK:
+        _V49_DUPLICATE_CACHE.clear()
+except Exception:
+    pass
+
+
+def _v61_self_audit() -> None:
+    # Footballtweet 12-word policy and lane identity.
+    ft = _v60_test_post(
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+        "The generation of legends that made us fall in love with the beautiful game. ❤️⚽",
+        "v61-ft",
+    )
+    ft.image_urls = ["https://pbs.twimg.com/media/v61-test.jpg"]
+    if count_regular_words(ft.text) < 12:
+        raise RuntimeError("v61_footballtweet_counter_under_12")
+    # Do not call the full network-hydrating chain in startup audit; the source
+    # lane itself must accept the content and the direct media declaration.
+    if footballtweet_filter_issue(ft, reserve_rate_slot=False):
+        raise RuntimeError("v61_footballtweet_lane_rejected_valid_12plus")
+
+    prev = "Philipp Jorgensen loan move from Chelsea to Strasbourg is now agreed and ready to be completed."
+    advanced = "Philipp Jorgensen has officially signed for Strasbourg on loan from Chelsea after completing his medical and signing the contract."
+    row = {"post_id": "v61-prev", "username": "FabrizioRomano", "original_text": prev, "text": prev, "ts": time.time() - 60}
+    if _v61_explicit_milestone_rank(advanced) <= _v61_explicit_milestone_rank(prev):
+        raise RuntimeError("v61_transfer_advancement_rank_failed")
+    advanced_post = _v60_test_post("JacobsBen", advanced, "v61-advanced")
+    if not _v61_duplicate_is_true_advancement(advanced_post, row):
+        raise RuntimeError("v61_true_advancement_not_recognized")
+
+    # V59 RSS identity is still an absolute invariant.
+    if http_get_feed is not _v20_active_http_get_feed or fetch_posts is not _v35_fetch_posts or fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v61_rss_boundary_changed")
+
+
+try:
+    _v61_self_audit()
+    logging.info("V61 active: Footballtweet has one 12-word lane; genuine transfer milestone advances bypass stale duplicate stages; V59 RSS unchanged.")
+except Exception as _v61_exc:
+    logging.error("V61 self-audit failed: %s", short_error(_v61_exc, 2400))
+    raise
+
+# ====== END V61 FINAL SOURCE-LANE / DUPLICATE-STAGE HARDENING ======
+
+
+# ====== V62 WORD-COUNT TRUTH / SABBATH EDGE HARDENING ======
+# Final narrow hardening:
+# - ordinary-reporter word counts include all original text that the Post carries
+#   (main + quoted source text) so a long quote cannot be falsely reported as
+#   "under 7 words"; quote/interview policy still decides whether it is publishable.
+# - if Shabbat begins while Telegram long-poll getUpdates is already waiting,
+#   discard that returned batch instead of processing one last button/RTL update.
+
+BOT_BUILD_ID = "winner-v62-complete-2026-08-10"
+
+
+def _v20_regular_report_word_count(post: Post) -> int:
+    parts: list[str] = []
+    for value in (
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "original_text", "") or ""),
+        _post_original_text(post) if "_post_original_text" in globals() else "",
+        str(getattr(post, "quoted_text", "") or ""),
+        str(getattr(post, "original_quoted_text", "") or ""),
+        _post_original_text(post, quoted=True) if "_post_original_text" in globals() else "",
+    ):
+        cleaned = html.unescape(str(value or "")).strip()
+        if cleaned and cleaned not in parts:
+            parts.append(cleaned)
+    combined = "\n\n".join(parts)
+    combined = URL_RE.sub(" ", combined)
+    combined = BARE_EXTERNAL_DOMAIN_RE.sub(" ", combined)
+    try:
+        combined = _REQUESTED_HANDLE_RE.sub(" ", combined)
+    except Exception:
+        pass
+    return count_regular_words(combined)
+
+
+# Re-declare only the V57/V60 control loop with an extra Sabbath check after
+# long-poll returns. The threading/executor/button behavior is otherwise identical.
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    startup_panel_done = False
+    while True:
+        try:
+            if is_shabbat_now():
+                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
+                continue
+            if not startup_panel_done:
+                startup_panel_done = True
+                if CONTROL_SEND_PANEL_ON_STARTUP:
+                    try:
+                        send_quick_control_panel(force_new=True)
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
+                else:
+                    try:
+                        ensure_control_panel_once_if_requested()
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "20")),
+                    "allowed_updates": [
+                        "callback_query", "message", "edited_message",
+                        "channel_post", "edited_channel_post",
+                    ],
+                },
+            )
+            # Candle-lighting can begin while getUpdates is waiting.  Process
+            # absolutely nothing from that batch once Shabbat is active.
+            if is_shabbat_now():
+                continue
+            updates = list(response.get("result", []) or [])
+            if not updates:
+                continue
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+                    callbacks.append(update)
+                else:
+                    noncallbacks.append(update)
+            for update in callbacks:
+                process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try:
+                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+            if batch_offset != offset:
+                offset = batch_offset
+                try:
+                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
+                except RuntimeError:
+                    pass
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+                    except Exception as cleanup_exc:
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+
+def _v62_self_audit() -> None:
+    quote_post = _v60_test_post("gerardromero", "Take the stick TV", "v62-count")
+    quote_post.quoted_text = (
+        "Jose Mourinho says he liked the first half more than the second because his team had more control "
+        "and explains that several players still need to improve physically every week."
+    )
+    if _v20_regular_report_word_count(quote_post) < 7:
+        raise RuntimeError("v62_regular_quote_word_count_still_false_short")
+    if http_get_feed is not _v20_active_http_get_feed or fetch_posts is not _v35_fetch_posts or fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v62_rss_boundary_changed")
+
+
+try:
+    _v62_self_audit()
+    logging.info("V62 active: ordinary word counts use main+quote truth; Shabbat post-long-poll batch is discarded; V59 RSS unchanged.")
+except Exception as _v62_exc:
+    logging.error("V62 self-audit failed: %s", short_error(_v62_exc, 2400))
+    raise
+
+# ====== END V62 WORD-COUNT TRUTH / SABBATH EDGE HARDENING ======
+
+
+# ====== V63 ADD-ONLY RELIABILITY / MATERIAL-DELTA / QUIET-SEND HARDENING (2026-08-10) ======
+# IMPORTANT: this layer is ADDITIVE ONLY. No existing V62 line is edited or removed.
+# It fixes four root causes while preserving the exact V35/V59 RSS boundary,
+# every existing filter, persistent filename/key, translation route and media policy.
+
+BOT_BUILD_ID = "winner-v63-add-only-reliability-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# 1) Matteo Moretto activation migration existed in the old code but was never
+#    called. Run that already-existing one-time migration at startup. After the
+#    migration, the normal management toggle remains authoritative.
+# ---------------------------------------------------------------------------
+_V63_PRE_MAIN = main
+
+
+def main() -> None:
+    try:
+        ensure_matteo_active_once()
+    except Exception as exc:
+        # A state-write problem must not stop the bot from starting.
+        logging.warning("Matteo Moretto one-time activation migration failed safely: %s", short_error(exc, 500))
+    return _V63_PRE_MAIN()
+
+
+# ---------------------------------------------------------------------------
+# 2) Duplicate root fix: a report that the old engine has already matched to the
+#    same transfer event is still NEW when it adds a concrete transfer fact that
+#    was absent from the matched report. This is event/fact based, never player-
+#    specific. A second reporter repeating the same facts remains a duplicate.
+# ---------------------------------------------------------------------------
+_V63_TRANSFER_FACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("official_bid_submitted", re.compile(
+        r"(?iu)(?:\b(?:official|formal|written)\s+(?:bid|offer)\b.{0,45}\b(?:submitted|sent|made|lodged|received)\b|"
+        r"\b(?:submitted|sent|made|lodged)\b.{0,45}\b(?:official|formal|written)?\s*(?:bid|offer)\b|"
+        r"הגיש(?:ה|ו)?\s+הצעה\s+רשמית|הצעה\s+רשמית\s+(?:הוגשה|נשלחה|התקבלה)|הצעה\s+רשמית\s+בכתב)"
+    )),
+    ("official_bid_expected", re.compile(
+        r"(?iu)(?:\b(?:official|formal|written)\s+(?:bid|offer)\b.{0,55}\b(?:expected|set|due)\b|"
+        r"\b(?:expected|set|due)\b.{0,55}\b(?:official|formal|written)\s+(?:bid|offer)\b|"
+        r"הצעה\s+רשמית(?:\s+בכתב)?\s+צפויה|צפויה\s+הצעה\s+רשמית(?:\s+בכתב)?)"
+    )),
+    ("personal_terms_agreed", re.compile(
+        r"(?iu)(?:personal\s+terms?.{0,35}(?:agreed|agreement)|agreed\s+personal\s+terms?|"
+        r"player.{0,30}(?:agreement|agreed)\s+with\s+(?:the\s+)?club|"
+        r"סוכמו\s+התנאים\s+האישיים|סיכם\s+(?:את\s+)?התנאים\s+האישיים|"
+        r"השחקן\s+(?:כבר\s+)?(?:הגיע\s+לסיכום|סיכם)\s+עם\s+המועדון)"
+    )),
+    ("player_green_light", re.compile(
+        r"(?iu)(?:player.{0,35}(?:green\s+light|approved|wants?\s+the\s+move|accepted)|"
+        r"green\s+light.{0,25}(?:move|transfer)|השחקן.{0,35}(?:נתן\s+אור\s+ירוק|רוצה\s+את\s+המעבר|אישר\s+את\s+המעבר)|"
+        r"אור\s+ירוק\s+(?:למעבר|להעברה))"
+    )),
+    ("clubs_close_to_agreement", re.compile(
+        r"(?iu)(?:negotiations?.{0,45}(?:close\s+to\s+(?:being\s+)?closed|close\s+to\s+agreement|final\s+stages?)|"
+        r"clubs?.{0,45}(?:close\s+to\s+agreement|final\s+details?)|"
+        r"המשא\s+ומתן\s+בין\s+המועדונים.{0,45}(?:עומד\s+להיסגר|קרוב\s+לסיכום|בשלבים\s+אחרונים)|"
+        r"המועדונים.{0,35}(?:קרובים\s+לסיכום|בפרטים\s+האחרונים))"
+    )),
+    ("final_small_details", re.compile(
+        r"(?iu)(?:only\s+(?:small|minor|final)\s+details?\s+remain|final\s+details?\s+remain|"
+        r"נותרו\s+(?:רק\s+)?פרטים\s+(?:קטנים|אחרונים)|פרטים\s+קטנים\s+בלבד)"
+    )),
+    ("travel_for_transfer", re.compile(
+        r"(?iu)(?:(?:expected|set|due)\s+to\s+(?:travel|fly)\s+to\b|(?:travel|fly)\s+next\s+week|"
+        r"צפוי\s+לנסוע\s+ל|צפוי\s+לטוס\s+ל|ייסע\s+ל|יטוס\s+ל)"
+    )),
+    ("transfer_deadline", re.compile(
+        r"(?iu)(?:wants?\s+to\s+(?:settle|resolve|decide).{0,55}\bbefore\b|"
+        r"רוצה\s+(?:להסדיר|להכריע|לסגור).{0,55}\bלפני\b)"
+    )),
+)
+_V63_TRANSFER_CONTEXT_RE = re.compile(
+    r"(?iu)(?:transfer|move|sign(?:ing)?|join|bid|offer|agreement|negotiat|personal\s+terms|"
+    r"העברה|מעבר|יחתום|חתימה|הצעה|סיכום|משא\s+ומתן|תנאים\s+אישיים)"
+)
+_V63_TRANSFER_MONEY_RE = re.compile(
+    r"(?iu)(?:[€£$]\s*\d+(?:[.,]\d+)?\s*(?:m|million|bn|billion)?|"
+    r"\b\d+(?:[.,]\d+)?\s*(?:m|million|bn|billion)\s*(?:euros?|pounds?|dollars?)?\b|"
+    r"\b\d+(?:[.,]\d+)?\s*מיל(?:יון|יארד)\s*(?:אירו|יורו|ליש[\"״׳']?ט|דולר))"
+)
+_V63_STRONG_NEW_TRANSFER_FACTS = {
+    "official_bid_submitted", "official_bid_expected", "personal_terms_agreed",
+    "player_green_light", "clubs_close_to_agreement", "final_small_details",
+    "travel_for_transfer", "transfer_deadline",
+}
+
+
+def _v63_transfer_fact_tags(value: Any) -> set[str]:
+    text = html.unescape(str(value or ""))
+    if not _V63_TRANSFER_CONTEXT_RE.search(text):
+        return set()
+    return {name for name, pattern in _V63_TRANSFER_FACT_PATTERNS if pattern.search(text)}
+
+
+def _v63_transfer_money_facts(value: Any) -> set[str]:
+    text = unicodedata.normalize("NFKC", html.unescape(str(value or ""))).casefold()
+    return {re.sub(r"\s+", "", match.group(0)) for match in _V63_TRANSFER_MONEY_RE.finditer(text)}
+
+
+def _v63_duplicate_has_material_transfer_delta(post: Post, duplicate_row: dict[str, Any]) -> bool:
+    current = str(_final_source_text(post) or getattr(post, "text", "") or "")
+    current_tags = _v63_transfer_fact_tags(current)
+    if not current_tags:
+        return False
+    previous_texts = [str(value or "") for value in _v46_row_variants(duplicate_row) if str(value or "").strip()]
+    if not previous_texts:
+        return False
+    previous_tags: set[str] = set()
+    previous_money: set[str] = set()
+    for text in previous_texts:
+        previous_tags.update(_v63_transfer_fact_tags(text))
+        previous_money.update(_v63_transfer_money_facts(text))
+    new_tags = (current_tags - previous_tags) & _V63_STRONG_NEW_TRANSFER_FACTS
+    if new_tags:
+        return True
+    current_money = _v63_transfer_money_facts(current)
+    # A newly reported concrete transfer fee is material when the current report
+    # also contains an offer/bid/agreement fact. The same fee repeated is not new.
+    if current_money - previous_money and current_tags & {
+        "official_bid_submitted", "official_bid_expected", "clubs_close_to_agreement",
+        "personal_terms_agreed", "player_green_light",
+    }:
+        return True
+    return False
+
+
+_V63_PRE_EXTENDED_DUPLICATE = _v53_extended_duplicate
+
+
+def _v53_extended_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    result = _V63_PRE_EXTENDED_DUPLICATE(post, state, text_override)
+    if isinstance(result, dict) and result.get("duplicate"):
+        if _v63_duplicate_has_material_transfer_delta(post, result):
+            return None
+    return result
+
+
+# Every current duplicate entry point resolves _v53_extended_duplicate dynamically.
+# Clear short-lived result caches so an old pre-V63 verdict cannot survive deploy.
+try:
+    with _V49_DUPLICATE_CACHE_LOCK:
+        _V49_DUPLICATE_CACHE.clear()
+except Exception:
+    pass
+try:
+    with _V40_DUP_RESULT_LOCK:
+        _V40_DUP_RESULT_CACHE.clear()
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# 3) Match-status root fix: a match suspended/postponed/abandoned for lightning,
+#    weather, safety or an emergency is a factual football event, not a live-score
+#    update. It may rescue only soft live/tier/editorial blocks; hard other-sport,
+#    women, betting, podcast, old/duplicate and technical failures stay absolute.
+# ---------------------------------------------------------------------------
+_V63_MATCH_STATUS_RE = re.compile(
+    r"(?iu)(?:match|game|fixture|משחק).{0,80}(?:suspend(?:ed|sion)?|postpon(?:ed|ement)?|"
+    r"abandon(?:ed|ment)?|delay(?:ed)?|halt(?:ed)?|stopp(?:ed|age)?|"
+    r"הושעה|הופסק|נדחה|נעצר|עוכב)|"
+    r"(?:suspend(?:ed|sion)?|postpon(?:ed|ement)?|abandon(?:ed|ment)?|delay(?:ed)?|halt(?:ed)?|"
+    r"הושעה|הופסק|נדחה|נעצר|עוכב).{0,80}(?:match|game|fixture|משחק)"
+)
+_V63_SAFETY_CAUSE_RE = re.compile(
+    r"(?iu)(?:lightning|thunder|storm|weather|rain|snow|fog|heat|safety|security|"
+    r"medical\s+emergency|crowd\s+safety|ברק|ברקים|רעם|סערה|מזג\s+האוויר|גשם|שלג|ערפל|"
+    r"חום|בטיחות|אבטחה|מצב\s+חירום\s+רפואי)"
+)
+_V63_SUSPENSION_HARD_RE = re.compile(
+    r"(?iu)(?:duplicate|old_post|too_old|women|wnba|other_sport|nba|basketball|golf|"
+    r"gambling|betting|podcast|instagram|tiktok|youth|academy|minor_player|young_player|"
+    r"translation|media_error|video_error)"
+)
+
+
+def _v63_reportable_match_suspension(post: Post) -> bool:
+    text = html.unescape(str(_final_source_text(post) or getattr(post, "text", "") or ""))
+    if not (_V63_MATCH_STATUS_RE.search(text) and _V63_SAFETY_CAUSE_RE.search(text)):
+        return False
+    try:
+        if is_other_sport_post(post):
+            return False
+    except Exception:
+        pass
+    try:
+        if is_womens_football_post(post):
+            return False
+    except Exception:
+        pass
+    return True
+
+
+_V63_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    reason = str(_V63_PRE_FINAL_LOCAL_BLOCK(post) or "")
+    if reason and _v63_reportable_match_suspension(post) and not _V63_SUSPENSION_HARD_RE.search(reason):
+        return ""
+    return reason
+
+
+# ---------------------------------------------------------------------------
+# 4) Quiet -> Neto Sport reliability: keep Telegram server-side copy (the cheap,
+#    fast path), but retry transient copyMessage/copyMessages failures before the
+#    already-existing fallback sender is allowed to take over. Albums are always
+#    retried as one copyMessages operation; they are never split by this layer.
+# ---------------------------------------------------------------------------
+_V63_PRE_QUIET_COPY = _quiet_copy_prepared_preview_immediately
+
+
+def _quiet_copy_prepared_preview_immediately(token: str, item: dict[str, Any]) -> dict[str, int]:
+    if not CONTROL_CHAT_ID:
+        return {}
+    message_ids = sorted(set(_quiet_prepared_message_ids(token, item)))
+    if not message_ids:
+        return {}
+    copied: dict[str, int] = {}
+    for target_chat_id in TELEGRAM_CHAT_IDS:
+        last_exc: Exception | None = None
+        for attempt in range(4):
+            try:
+                if len(message_ids) == 1:
+                    response = telegram_api(
+                        "copyMessage",
+                        {
+                            "chat_id": target_chat_id,
+                            "from_chat_id": CONTROL_CHAT_ID,
+                            "message_id": int(message_ids[0]),
+                        },
+                        max_attempts=1,
+                        timeout=max(8.0, REQUEST_TIMEOUT_SECONDS),
+                    )
+                else:
+                    response = telegram_api(
+                        "copyMessages",
+                        {
+                            "chat_id": target_chat_id,
+                            "from_chat_id": CONTROL_CHAT_ID,
+                            "message_ids": [int(value) for value in message_ids],
+                        },
+                        max_attempts=1,
+                        timeout=max(10.0, REQUEST_TIMEOUT_SECONDS),
+                    )
+                new_ids = [int(value) for value in _telegram_result_message_ids(response) if str(value).isdigit()]
+                if not new_ids:
+                    raise RuntimeError("telegram_copy_returned_no_message_ids")
+                if len(message_ids) > 1 and len(new_ids) != len(message_ids):
+                    raise RuntimeError(f"copied_album_count_mismatch:{len(new_ids)}/{len(message_ids)}")
+                copied[str(target_chat_id)] = int(new_ids[0])
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 3:
+                    time.sleep((0.15, 0.35, 0.70)[attempt])
+        if last_exc is not None:
+            logging.warning(
+                "Prepared Telegram server-copy still failed after retries from %s to %s: %s",
+                message_ids,
+                target_chat_id,
+                short_error(last_exc, 700),
+            )
+    if copied:
+        return copied
+    # No target was copied, so preserve the established V62 behavior. Returning
+    # its result (usually {}) lets send_prepared_control_post_to_main use the old
+    # reconstruct/upload fallback without any duplicated successful destination.
+    return _V63_PRE_QUIET_COPY(token, item)
+
+
+# ---------------------------------------------------------------------------
+# 5) Button longevity: the V57 20-worker pool is already the right architecture.
+# Add only a resurrection guard in case an executor was ever shut down by an old
+# code path/runtime edge. Normal callbacks are otherwise handled exactly as V62.
+# ---------------------------------------------------------------------------
+_V63_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+_V63_BUTTON_HEALTH_LOCK = RLock()
+
+
+def _v63_ensure_button_executor_alive() -> None:
+    global _V52_BUTTON_EXECUTOR
+    executor = globals().get("_V52_BUTTON_EXECUTOR")
+    if executor is not None and not bool(getattr(executor, "_shutdown", False)):
+        return
+    with _V63_BUTTON_HEALTH_LOCK:
+        executor = globals().get("_V52_BUTTON_EXECUTOR")
+        if executor is None or bool(getattr(executor, "_shutdown", False)):
+            _V52_BUTTON_EXECUTOR = ThreadPoolExecutor(max_workers=20, thread_name_prefix="control-v63-recovered")
+            logging.warning("Control button executor was unavailable and was recreated automatically.")
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+        _v63_ensure_button_executor_alive()
+    return _V63_PRE_PROCESS_CONTROL_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 6) Offline invariants: reported examples + no accidental RSS/config changes.
+# ---------------------------------------------------------------------------
+def _v63_self_audit() -> None:
+    roma = _v60_test_post(
+        "CentreGoals",
+        "Roma have submitted an official €25m bid to Porto for Rodrigo Mora. Porto had previously asked for more.",
+        "v63-roma",
+    )
+    prior_roma = {
+        "duplicate": True, "text": "Roma are interested in Rodrigo Mora and are considering making a bid to Porto.",
+        "original_text": "Roma are interested in Rodrigo Mora and are considering making a bid to Porto.",
+        "username": "OtherSource",
+    }
+    if not _v63_duplicate_has_material_transfer_delta(roma, prior_roma):
+        raise RuntimeError("v63_official_bid_delta_not_recognized")
+    same_roma = dict(prior_roma)
+    same_roma["text"] = same_roma["original_text"] = "Roma submitted an official €25m bid to Porto for Rodrigo Mora."
+    if _v63_duplicate_has_material_transfer_delta(roma, same_roma):
+        raise RuntimeError("v63_same_bid_wrongly_new")
+
+    ruggeri = _v60_test_post(
+        "MatteMoretto",
+        "Matteo Ruggeri to Aston Villa: the player gave the green light, club talks are close to agreement, only small details remain and he is expected to travel to Birmingham next week.",
+        "v63-ruggeri",
+    )
+    prior_ruggeri = {"duplicate": True, "text": "Aston Villa are in talks for Matteo Ruggeri.", "username": "OtherSource"}
+    if not _v63_duplicate_has_material_transfer_delta(ruggeri, prior_ruggeri):
+        raise RuntimeError("v63_ruggeri_material_delta_not_recognized")
+
+    ferran = _v60_test_post(
+        "MatteMoretto",
+        "Ferran Torres wants to settle his future before Wednesday. A formal written offer from PSG is expected in the coming hours; the player has already agreed terms with the French club.",
+        "v63-ferran",
+    )
+    prior_ferran = {"duplicate": True, "text": "PSG are interested in Ferran Torres.", "username": "OtherSource"}
+    if not _v63_duplicate_has_material_transfer_delta(ferran, prior_ferran):
+        raise RuntimeError("v63_ferran_material_delta_not_recognized")
+
+    weather = _v60_test_post(
+        FOOTBALLTWEET_DEFAULT_ACTIVE_USERNAME,
+        "United States: lightning was detected within 10 km of the stadium and the football match was suspended for 30 minutes.",
+        "v63-lightning",
+    )
+    if not _v63_reportable_match_suspension(weather):
+        raise RuntimeError("v63_lightning_suspension_not_recognized")
+
+    # Exact old-good RSS is an immutable boundary for this add-only layer.
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v63_http_rss_boundary_changed")
+    if fetch_posts is not _v35_fetch_posts or fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v63_v35_rss_boundary_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v63_scan_cadence_changed")
+    if SOURCE_REPORT_MIN_WORDS != 12:
+        raise RuntimeError("v63_12_word_threshold_changed")
+
+
+try:
+    _v63_self_audit()
+    logging.info(
+        "V63 active: add-only Matteo activation, material transfer-delta duplicate rescue, "
+        "safety-suspension news rescue, retry-only Telegram server copy and button executor recovery; "
+        "V35/V59 RSS and all V62 existing code remain unchanged."
+    )
+except Exception as _v63_exc:
+    logging.error("V63 self-audit failed: %s", short_error(_v63_exc, 2400))
+    raise
+
+# ====== END V63 ADD-ONLY RELIABILITY HARDENING ======
+
+# ====== V64 LOG-ONLY FIX: break historical manual-send recursion ======
+# No existing V63 code is edited. This only reconnects the dynamic base edge
+# to the last true Telegram sender, so all existing wrappers run once, not recursively.
+_base_send_prepared_message_to_main = _retained_send_prepared_message_to_main_L10808
+# ====== END V64 LOG-ONLY FIX ======
+
 if __name__ == "__main__":
     main()
