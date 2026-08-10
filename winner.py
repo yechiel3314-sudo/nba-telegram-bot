@@ -63374,5 +63374,436 @@ except Exception as _v63_exc:
 _base_send_prepared_message_to_main = _retained_send_prepared_message_to_main_L10808
 # ====== END V64 LOG-ONLY FIX ======
 
+# ====== V65 ADD-ONLY: EXACT OLD-GOOD RSS ENTRYPOINTS + COST-SAFE RUNTIME (2026-08-10) ======
+# IMPORTANT:
+# - No existing V64/V63 line above is edited or removed.
+# - The user's proven V35/V20 RSS URLs, primary/fallback ordering, retries,
+#   6s request timeout, 8s collection timeout and 20s scan cadence are preserved.
+# - The only live fallback is used AFTER the exact old-good RSS path returns no rows.
+# - No Gemini, filter, translation, media, button, duplicate or persistence key is changed.
+
+BOT_BUILD_ID = "winner-v65-exact-old-good-rss-cost-safe-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# 1) Keep the V64 recursion fix as the final manual-send terminal edge.
+# ---------------------------------------------------------------------------
+_base_send_prepared_message_to_main = _retained_send_prepared_message_to_main_L10808
+
+
+# ---------------------------------------------------------------------------
+# 2) Disable the redundant continuous forced scanner unconditionally.
+# V35 already starts the existing direct-X live lane per writer. Running the
+# separate continuous loop duplicates network work without being required for
+# the 20-second RSS scan or the normal fast lane.
+# ---------------------------------------------------------------------------
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+
+def start_continuous_force_discovery() -> None:
+    logging.info(
+        "Continuous forced discovery is disabled by V65: exact V35 RSS + existing direct-X live lane remain active."
+    )
+    return
+
+
+# ---------------------------------------------------------------------------
+# 3) Reuse one RSS worker pool instead of creating/destroying a new executor for
+# every writer on every 20-second cycle.  Request count, source order, timeouts
+# and results are unchanged; only thread-pool churn is removed.
+# ---------------------------------------------------------------------------
+_V65_RSS_SHARED_WORKERS = max(
+    16,
+    min(
+        32,
+        max(1, int(MAX_PARALLEL_ACCOUNT_CHECKS))
+        * max(1, int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT))
+        * 2,
+    ),
+)
+_V65_RSS_SHARED_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_V65_RSS_SHARED_WORKERS,
+    thread_name_prefix="rss-v65-shared",
+)
+
+def collect_posts_from_feed_templates(
+    username: str,
+    feed_templates: list[str],
+) -> tuple[list[Post], list[str], list[str]]:
+    """Exact old-good mirror race, using one persistent executor."""
+    all_posts: dict[str, Post] = {}
+    feed_errors: list[str] = []
+    timed_out_sources: list[str] = []
+    if not feed_templates:
+        return [], [], []
+
+    futures = {
+        _V65_RSS_SHARED_EXECUTOR.submit(fetch_feed, username, template): template
+        for template in feed_templates
+    }
+    try:
+        for future in as_completed(futures, timeout=FEED_COLLECTION_TIMEOUT_SECONDS):
+            template = futures[future]
+            source_name = feed_source_name(template)
+            try:
+                for post in future.result() or []:
+                    if not isinstance(post, Post):
+                        continue
+                    identity = str(post.post_id or post.link or "").strip()
+                    if identity:
+                        all_posts.setdefault(identity, post)
+            except Exception as exc:
+                feed_errors.append(
+                    f"{source_name}: {type(exc).__name__}: {short_error(exc)}"
+                )
+    except FuturesTimeoutError:
+        timed_out_sources = [
+            feed_source_name(template)
+            for future, template in futures.items()
+            if not future.done()
+        ]
+    finally:
+        for future in futures:
+            if not future.done():
+                future.cancel()
+
+    posts = list(all_posts.values())
+    posts.sort(
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return posts, feed_errors, timed_out_sources
+
+
+# ---------------------------------------------------------------------------
+# 4) Coalesce duplicate calls to the exact same writer for 2 seconds.
+# This matters when the automatic cycle and a manual RSS/status button overlap.
+# It never reuses a result across normal 20-second cycles.
+# ---------------------------------------------------------------------------
+_V65_RSS_RESULT_TTL_SECONDS = 2.0
+_V65_RSS_RESULT_LOCK = RLock()
+_V65_RSS_RESULT_CACHE: dict[str, tuple[float, list[Post]]] = {}
+_V65_RSS_ACCOUNT_LOCKS: dict[str, Lock] = {}
+_V65_RSS_ACCOUNT_LOCKS_GUARD = Lock()
+_V65_PRE_EXACT_OLD_GOOD_ROWS = _v35_exact_old_good_rss_rows
+
+def _v65_account_rss_lock(username: str) -> Lock:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V65_RSS_ACCOUNT_LOCKS_GUARD:
+        lock = _V65_RSS_ACCOUNT_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _V65_RSS_ACCOUNT_LOCKS[key] = lock
+        return lock
+
+def _v35_exact_old_good_rss_rows(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    now = time.time()
+    with _V65_RSS_RESULT_LOCK:
+        cached = _V65_RSS_RESULT_CACHE.get(key)
+        if cached and now - float(cached[0]) <= _V65_RSS_RESULT_TTL_SECONDS:
+            return list(cached[1])
+
+    with _v65_account_rss_lock(canonical):
+        now = time.time()
+        with _V65_RSS_RESULT_LOCK:
+            cached = _V65_RSS_RESULT_CACHE.get(key)
+            if cached and now - float(cached[0]) <= _V65_RSS_RESULT_TTL_SECONDS:
+                return list(cached[1])
+        rows = list(_V65_PRE_EXACT_OLD_GOOD_ROWS(canonical) or [])
+        with _V65_RSS_RESULT_LOCK:
+            _V65_RSS_RESULT_CACHE[key] = (time.time(), list(rows))
+        return rows
+
+
+# ---------------------------------------------------------------------------
+# 5) Hard final RSS boundary.
+# Automatic path: exact V35 first. Only if it returns ZERO rows do we wait
+# briefly for the direct-X Future that V35 itself already started.  No second
+# direct-X request is created just for this fallback.
+# ---------------------------------------------------------------------------
+_V65_EXACT_V35_FETCH_POSTS = _v35_fetch_posts
+_V65_EXACT_V35_FETCH_CONTROL = _v35_fetch_control_posts
+
+def _v65_wait_existing_live_fallback(username: str, timeout: float = 4.0) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        cached = list(_full_speed_cache_get(canonical) or [])
+    except Exception:
+        cached = []
+    if cached:
+        return cached
+    try:
+        future = _full_speed_start_live(canonical)
+        rows = _full_speed_future_rows(future, timeout)
+        if rows:
+            return rows
+    except Exception:
+        pass
+    try:
+        return list(_full_speed_cache_get(canonical) or [])
+    except Exception:
+        return []
+
+def _v65_fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    rows = list(_V65_EXACT_V35_FETCH_POSTS(canonical) or [])
+    if rows:
+        return rows
+    live_rows = _v65_wait_existing_live_fallback(canonical, 4.0)
+    if live_rows:
+        logging.info(
+            "RSS old-good returned zero rows for @%s; existing direct-X live fallback supplied %s rows.",
+            canonical,
+            len(live_rows),
+        )
+        try:
+            _stable_rss_remember(canonical, live_rows)
+            _remember_control_rss_posts(canonical, live_rows)
+            _ten_history_save(canonical, live_rows)
+        except Exception:
+            pass
+        return sorted(
+            [post for post in live_rows if isinstance(post, Post)],
+            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+    return []
+
+def _v65_fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        # Explicitly call the exact V35 control route, not any historical alias.
+        _name, rows, error = _V65_EXACT_V35_FETCH_CONTROL(canonical)
+        rows = list(rows or [])
+        if rows:
+            return canonical, rows, error
+        live_rows = _v65_wait_existing_live_fallback(canonical, 4.0)
+        if live_rows:
+            return canonical, live_rows, None
+        # Final diagnostic/history fallback: never claim 0/10 merely because all
+        # public RSS mirrors are temporarily empty while we already have valid
+        # recent rows in the bot's own persistent history.
+        gathered: list[Post] = []
+        for loader in (
+            lambda: _working_rss_cached(canonical, 60),
+            lambda: _ten_history_load(canonical),
+            lambda: _ten_history_collect_existing_state_posts(canonical),
+        ):
+            try:
+                gathered.extend(
+                    post for post in (loader() or []) if isinstance(post, Post)
+                )
+            except Exception:
+                pass
+        if gathered:
+            unique: dict[str, Post] = {}
+            for post in gathered:
+                identity = str(
+                    getattr(post, "post_id", "")
+                    or getattr(post, "link", "")
+                    or ""
+                ).strip()
+                if identity:
+                    unique.setdefault(identity, post)
+            ordered = sorted(
+                unique.values(),
+                key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+                reverse=True,
+            )
+            return canonical, ordered[:60], None
+        return canonical, [], error
+    except Exception as exc:
+        return canonical, [], exc
+
+# Exact proven HTTP implementation and source settings.
+http_get_feed = _v20_active_http_get_feed
+fetch_posts = _v65_fetch_posts
+fetch_control_posts = _v65_fetch_control_posts
+FEED_REQUEST_TIMEOUT_SECONDS = 6.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 8.0
+RSS_PRIMARY_SOURCE_COUNT = 3
+RSS_ENABLE_FALLBACK = True
+RSS_FALLBACK_SOURCE_COUNT = 2
+RSS_ENABLE_STALE_FALLBACK = False
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+
+
+# ---------------------------------------------------------------------------
+# 6) Make the RSS button use the exact final entrypoint and report what it
+# actually found. It no longer displays the misleading old V23 text.
+# ---------------------------------------------------------------------------
+def _v65_rss_probe_route(username: str, posts: list[Post]) -> str:
+    if not posts:
+        return "לא התקבלו נתונים"
+    source = str(getattr(posts[0], "source_name", "") or "").casefold()
+    if any(token in source for token in ("nitter", "twiiit", "lightbrd", "rsshub", "rss")):
+        return "RSS הישן"
+    link = str(getattr(posts[0], "link", "") or "").casefold()
+    if "x.com/" in link or "twitter.com/" in link:
+        return "X ישיר / זיכרון גיבוי"
+    return "RSS/זיכרון קיים"
+
+def rss_status_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "הבדיקה מריצה קודם את מסלול V35/V20 הישן שעבד: 3 מקורות ראשיים ואז 2 גיבויים.",
+        "רק אם כולם מחזירים אפס, נבדק ה-X הישיר שכבר קיים בבוט ואז הזיכרון השמור.",
+        "",
+    ]
+    ok_count = 0
+    recent_total = 0
+    fetched_by_account = fetch_control_posts_for_accounts(accounts)
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched_by_account.get(username, ([], None))
+        if error and not posts:
+            lines.append(
+                f"❌ {label}: לא התקבלו פוסטים - {short_error(error, 150)}"
+            )
+            continue
+        posts = sorted(
+            [post for post in (posts or []) if isinstance(post, Post)],
+            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        if posts:
+            ok_count += 1
+            route = _v65_rss_probe_route(username, posts)
+            latest = posts[0]
+            if latest.published_ts:
+                latest_dt = datetime.fromtimestamp(
+                    latest.published_ts, ZoneInfo(SHABBAT_TIMEZONE)
+                ).strftime("%H:%M %d/%m/%Y")
+            else:
+                latest_dt = "ללא זמן"
+            lines.append(
+                f"✅ {label}: {len(recent)} פוסטים ביממה | מסלול: {route} | אחרון: {latest_dt}"
+            )
+        else:
+            lines.append(
+                f"⚠️ {label}: V35 RSS + הגיבויים נבדקו ולא התקבלו פוסטים"
+            )
+    lines.extend([
+        "",
+        f"תוצאה: {ok_count}/{len(accounts)} כתבים עם נתונים. פוסטים מהיממה האחרונה: {recent_total}.",
+    ])
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 7) Skip duplicate 10-history persistence when the exact payload did not change.
+# The established persistence function still performs every real write.
+# ---------------------------------------------------------------------------
+_V65_PRE_TEN_HISTORY_SAVE = _ten_history_save
+_V65_TEN_HISTORY_LOCK = RLock()
+_V65_TEN_HISTORY_FP: dict[str, str] = {}
+
+def _v65_history_fp(username: str, posts: list[Post]) -> str:
+    rows = []
+    limit = max(1, int(globals().get("TEN_HISTORY_MAX_PER_ACCOUNT", 60)))
+    for post in [p for p in (posts or []) if isinstance(p, Post)][:limit]:
+        rows.append((
+            str(getattr(post, "post_id", "") or ""),
+            str(getattr(post, "link", "") or ""),
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+            float(getattr(post, "published_ts", 0.0) or 0.0),
+            tuple(getattr(post, "image_urls", []) or []),
+            tuple(getattr(post, "video_urls", []) or []),
+        ))
+    material = repr(rows).encode("utf-8", errors="ignore")
+    return hashlib.sha1(
+        str(username or "").strip().lstrip("@").casefold().encode("utf-8")
+        + b"|"
+        + material
+    ).hexdigest()
+
+def _ten_history_save(username: str, posts: list[Post]) -> None:
+    valid = [post for post in (posts or []) if isinstance(post, Post)]
+    if not valid:
+        return
+    key = str(username or "").strip().lstrip("@").casefold()
+    fingerprint = _v65_history_fp(username, valid)
+    with _V65_TEN_HISTORY_LOCK:
+        if _V65_TEN_HISTORY_FP.get(key) == fingerprint:
+            return
+    _V65_PRE_TEN_HISTORY_SAVE(username, valid)
+    with _V65_TEN_HISTORY_LOCK:
+        _V65_TEN_HISTORY_FP[key] = fingerprint
+
+
+# ---------------------------------------------------------------------------
+# 8) Deployment identity. This does not change deployment behavior; it makes it
+# obvious in Railway logs which GitHub commit/deployment is actually running.
+# ---------------------------------------------------------------------------
+def _v65_deploy_identity() -> str:
+    commit = str(os.environ.get("RAILWAY_GIT_COMMIT_SHA", "") or "").strip()
+    branch = str(os.environ.get("RAILWAY_GIT_BRANCH", "") or "").strip()
+    deployment = str(os.environ.get("RAILWAY_DEPLOYMENT_ID", "") or "").strip()
+    replica = str(os.environ.get("RAILWAY_REPLICA_ID", "") or "").strip()
+    return (
+        f"build={BOT_BUILD_ID} "
+        f"commit={commit[:12] or 'unknown'} "
+        f"branch={branch or 'unknown'} "
+        f"deployment={deployment or 'unknown'} "
+        f"replica={replica or 'unknown'}"
+    )
+
+logging.info("🚀 Runtime identity: %s", _v65_deploy_identity())
+
+
+# ---------------------------------------------------------------------------
+# 9) Final deterministic audit. No RSS/X/Telegram/Gemini network call.
+# ---------------------------------------------------------------------------
+def _v65_self_audit() -> None:
+    if _base_send_prepared_message_to_main is not _retained_send_prepared_message_to_main_L10808:
+        raise RuntimeError("v65_manual_send_recursion_fix_lost")
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v65_old_good_http_not_active")
+    if fetch_posts is not _v65_fetch_posts:
+        raise RuntimeError("v65_auto_rss_entrypoint_not_active")
+    if fetch_control_posts is not _v65_fetch_control_posts:
+        raise RuntimeError("v65_control_rss_entrypoint_not_active")
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError("v65_duplicate_continuous_scanner_still_enabled")
+    expected = [
+        "https://nitter.net/{username}/rss",
+        "https://twiiit.com/{username}/rss",
+        "https://lightbrd.com/{username}/rss",
+        "https://rsshub.rssforever.com/twitter/user/{username}",
+        "https://rsshub.app/twitter/user/{username}",
+    ]
+    if list(active_feed_templates())[:5] != expected:
+        raise RuntimeError("v65_rss_source_order_changed")
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v65_rss_retry_count_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v65_rss_request_timeout_changed")
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v65_rss_collection_timeout_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v65_rss_primary_fallback_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v65_scan_cadence_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v65_post_cap_changed")
+    if int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS) != 1:
+        raise RuntimeError("v65_gemini_single_request_contract_changed")
+
+_v65_self_audit()
+logging.info(
+    "V65 active: exact V35/V20 RSS is first; empty-RSS uses only the existing direct-X fallback; "
+    "duplicate continuous scanner disabled; RSS executor reused; unchanged ten-history writes debounced; "
+    "V64 recursion fix and all V63 policy fixes preserved."
+)
+
+# ====== END V65 ADD-ONLY RSS / COST FIX ======
+
 if __name__ == "__main__":
     main()
