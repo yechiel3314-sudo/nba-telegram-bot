@@ -63805,5 +63805,965 @@ logging.info(
 
 # ====== END V65 ADD-ONLY RSS / COST FIX ======
 
+# ====== V66 ADD-ONLY: EXACT ORIGINAL V35/V20 RSS + GLOBAL LIVE-MATCH BLOCK (2026-08-10) ======
+# No existing V65/V64/V63 line above is edited or removed.
+# RSS is restored to the exact working collector/function boundary from the user's
+# original file. V65's RSS executor/cache/fallback substitutions are no longer active.
+# All non-RSS fixes already present remain intact.
+
+BOT_BUILD_ID = "winner-v66-exact-original-v35-rss-live-filter-2026-08-10"
+
+# --- Exact original working RSS collector copied from the user's original file ---
+def collect_posts_from_feed_templates(
+    username: str,
+    feed_templates: list[str],
+) -> tuple[list[Post], list[str], list[str]]:
+    """The original isolated-per-account mirror race from the working build."""
+    all_posts: dict[str, Post] = {}
+    feed_errors: list[str] = []
+    timed_out_sources: list[str] = []
+    if not feed_templates:
+        return [], [], []
+
+    executor = ThreadPoolExecutor(
+        max_workers=min(max(1, int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)), len(feed_templates))
+    )
+    futures = {executor.submit(fetch_feed, username, template): template for template in feed_templates}
+    try:
+        for future in as_completed(futures, timeout=FEED_COLLECTION_TIMEOUT_SECONDS):
+            template = futures[future]
+            source_name = feed_source_name(template)
+            try:
+                for post in future.result() or []:
+                    if not isinstance(post, Post):
+                        continue
+                    identity = str(post.post_id or post.link or "").strip()
+                    if identity:
+                        all_posts.setdefault(identity, post)
+            except Exception as exc:
+                feed_errors.append(f"{source_name}: {type(exc).__name__}: {short_error(exc)}")
+    except FuturesTimeoutError:
+        timed_out_sources = [
+            feed_source_name(template)
+            for future, template in futures.items()
+            if not future.done()
+        ]
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    posts = list(all_posts.values())
+    posts.sort(key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
+    return posts, feed_errors, timed_out_sources
+# Restore V35's original non-coalesced row loader captured before V65.
+if callable(globals().get("_V65_PRE_EXACT_OLD_GOOD_ROWS")):
+    _v35_exact_old_good_rss_rows = _V65_PRE_EXACT_OLD_GOOD_ROWS
+
+# Exact final RSS boundary that previously worked.
+http_get_feed = _v20_active_http_get_feed
+fetch_posts = _v35_fetch_posts
+fetch_control_posts = _v35_fetch_control_posts
+FEED_REQUEST_TIMEOUT_SECONDS = 6.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 8.0
+FEED_HTTP_RETRIES = 2
+RSS_PRIMARY_SOURCE_COUNT = 3
+RSS_ENABLE_FALLBACK = True
+RSS_FALLBACK_SOURCE_COUNT = 2
+RSS_ENABLE_STALE_FALLBACK = False
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+
+
+# The control button must describe and call the exact same final V35 path.
+def rss_status_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "הבדיקה מריצה בדיוק את מסלול ה-RSS הישן שעבד:",
+        "3 מקורות ראשיים, ואם לא התקבלו פוסטים — 2 מקורות גיבוי.",
+        "",
+    ]
+    ok_count = 0
+    recent_total = 0
+    fetched_by_account = fetch_control_posts_for_accounts(accounts)
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched_by_account.get(username, ([], None))
+        posts = sorted(
+            [post for post in (posts or []) if isinstance(post, Post)],
+            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )
+        if error and not posts:
+            lines.append(f"❌ {label}: תקלה ב-RSS — {short_error(error, 150)}")
+            continue
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        if posts:
+            ok_count += 1
+            latest = posts[0]
+            latest_dt = (
+                datetime.fromtimestamp(
+                    float(latest.published_ts),
+                    ZoneInfo(SHABBAT_TIMEZONE),
+                ).strftime("%H:%M %d/%m/%Y")
+                if getattr(latest, "published_ts", 0.0)
+                else "ללא זמן"
+            )
+            source = str(getattr(latest, "source_name", "") or "RSS")
+            lines.append(
+                f"✅ {label}: {len(recent)} פוסטים ביממה | מקור אחרון: {source} | אחרון: {latest_dt}"
+            )
+        else:
+            lines.append(f"⚠️ {label}: מסלול ה-RSS הישן נבדק ולא החזיר פוסטים")
+    lines.extend([
+        "",
+        f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים. פוסטים מהיממה האחרונה: {recent_total}.",
+    ])
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Global in-match blocker.
+# Root fix: facts sources may enter a special path before the ordinary live-game
+# filter. Therefore this runs at the final local block boundary for every source.
+# It blocks play-by-play but preserves meaningful administrative match news
+# such as a suspension because of lightning/weather/safety.
+# ---------------------------------------------------------------------------
+_V66_SCORELINE_RE = re.compile(r"(?<!\d)\d{1,2}\s*[-:]\s*\d{1,2}(?!\d)")
+_V66_LIVE_PREFIX_RE = re.compile(
+    r"(?iu)^\s*(?:[\W_]*\s*)*(?:"
+    r"GOAL|GOL|SCORES?|RED\s+CARD|PENALTY|HALF[- ]?TIME|FULL[- ]?TIME|HT|FT|"
+    r"שער|כרטיס\s+אדום|פנדל|מחצית|סיום\s+המשחק"
+    r")\s*[:!：\-–—]?"
+)
+_V66_LIVE_ACTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bscores?\b|\bscored\b|\bnets?\b|\bnetted\b|\bgoal\b|"
+    r"\bequali[sz](?:e|es|ed|er|ing)?\b|"
+    r"\btakes?\s+the\s+lead\b|\bextends?\s+(?:the\s+)?lead\b|"
+    r"\bmakes?\s+it\b|\bto\s+make\s+it\b|\bpulls?\s+one\s+back\b|"
+    r"\bred\s+card\b|\bpenalty\b|\bsubstitution\b|"
+    r"כובש(?:ת|ים|ות)?|כבש(?:ה|ו)?|שער(?:ים)?|משווה|שוויון|"
+    r"מעלה\s+(?:את\s+)?(?:.+?\s+)?ליתרון|מגדיל(?:ה)?\s+(?:את\s+)?היתרון|"
+    r"קובע(?:ת)?|כרטיס\s+אדום|פנדל|חילוף"
+    r")"
+)
+_V66_MINUTE_RE = re.compile(
+    r"(?iu)(?:\b(?:minute|min)\s*['’:]?\s*\d{1,3}\b|דקה\s*['׳:]?\s*\d{1,3}\b)"
+)
+_V66_ADMIN_RESCUE_RE = re.compile(
+    r"(?iu)(?:"
+    r"suspend(?:ed|s|ing)?|postpon(?:ed|e|ement)|abandon(?:ed|ment)|"
+    r"delay(?:ed|s)?|lightning|weather|safety|security|medical\s+emergency|"
+    r"הושע(?:ה|ו)?|הופסק|נדח(?:ה|ו)?|בוטל|עוכב|ברק|מזג\s+אוויר|"
+    r"בטיחות|אבטחה|אירוע\s+רפואי"
+    r")"
+)
+
+
+def _v66_raw_source_text(post: Post) -> str:
+    try:
+        text = _final_source_text(post)
+    except Exception:
+        text = "\n".join([
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+        ])
+    return html.unescape(str(text or "")).strip()
+
+
+def _v66_is_in_match_update(post: Post) -> bool:
+    text = _v66_raw_source_text(post)
+    if not text:
+        return False
+    if _V66_ADMIN_RESCUE_RE.search(text):
+        return False
+    if _V66_LIVE_PREFIX_RE.search(text):
+        return True
+
+    score = bool(_V66_SCORELINE_RE.search(text))
+    action = bool(_V66_LIVE_ACTION_RE.search(text))
+    minute = bool(_V66_MINUTE_RE.search(text))
+
+    if score and action:
+        return True
+    if minute and action:
+        return True
+    if score and re.search(
+        r"(?iu)(?:lead|advantage|ahead|יתרון|מוביל(?:ה|ים|ות)?|מגדיל(?:ה)?)",
+        text,
+    ):
+        return True
+    return False
+
+
+_V66_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v66_is_in_match_update(post):
+        return "global_in_match_update"
+    return str(_V66_PRE_FINAL_LOCAL_BLOCK(post) or "")
+
+
+_V66_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+def hebrew_block_reason(reason: str) -> str:
+    if "global_in_match_update" in str(reason or ""):
+        return "עדכון שער, תוצאה או אירוע תוך־משחק נחסם"
+    return str(_V66_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+# Early block as well, so ordinary reporter paths avoid translation work.
+_V66_PRE_IS_LIVE = is_live_goal_or_match_moment_post
+_V66_PRE_IS_RESULT = is_match_result_or_engagement_post
+
+def is_live_goal_or_match_moment_post(post: Post) -> bool:
+    return bool(_v66_is_in_match_update(post) or _V66_PRE_IS_LIVE(post))
+
+def is_match_result_or_engagement_post(post: Post) -> bool:
+    return bool(_v66_is_in_match_update(post) or _V66_PRE_IS_RESULT(post))
+
+
+def _v66_test_post(text: str, pid: str) -> Post:
+    return Post(
+        post_id=pid,
+        username="Footballtweet",
+        text=text,
+        link=f"https://x.com/Footballtweet/status/{pid}",
+        image_urls=[],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[pid],
+        source_name="Footballtweet",
+    )
+
+
+def _v66_self_audit() -> None:
+    expected = [
+        "https://nitter.net/{username}/rss",
+        "https://twiiit.com/{username}/rss",
+        "https://lightbrd.com/{username}/rss",
+        "https://rsshub.rssforever.com/twitter/user/{username}",
+        "https://rsshub.app/twitter/user/{username}",
+    ]
+    if list(active_feed_templates())[:5] != expected:
+        raise RuntimeError("v66_rss_order_changed")
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v66_http_boundary_wrong")
+    if fetch_posts is not _v35_fetch_posts:
+        raise RuntimeError("v66_fetch_boundary_wrong")
+    if fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v66_control_boundary_wrong")
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v66_retries_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v66_timeout_changed")
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v66_collection_timeout_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v66_primary_fallback_changed")
+    if bool(RSS_ENABLE_STALE_FALLBACK):
+        raise RuntimeError("v66_stale_fallback_must_be_off")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v66_scan_settings_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v66_post_cap_changed")
+
+    if not _v66_is_in_match_update(
+        _v66_test_post(
+            "🚨שער: רוברט לבנדובסקי בן ה-37 כובש עבור שיקגו פייר וקובע 3-1.",
+            "v66-live-1",
+        )
+    ):
+        raise RuntimeError("v66_live_goal_1_not_blocked")
+
+    if not _v66_is_in_match_update(
+        _v66_test_post(
+            "🚨דיווח: קבאן סאליבן מגדיל את היתרון של פילדלפיה ל-0:3 מול נקקסה.",
+            "v66-live-2",
+        )
+    ):
+        raise RuntimeError("v66_live_goal_2_not_blocked")
+
+    if _v66_is_in_match_update(
+        _v66_test_post(
+            "ארצות הברית: ברק במרחק 10 ק״מ מהאצטדיון? המשחק הושעה ל-30 דקות.",
+            "v66-admin",
+        )
+    ):
+        raise RuntimeError("v66_admin_suspension_wrongly_blocked")
+
+    if _v66_is_in_match_update(
+        _v66_test_post(
+            "רומא הגישה הצעה רשמית של 25 מיליון יורו לפורטו עבור רודריגו מורה.",
+            "v66-transfer",
+        )
+    ):
+        raise RuntimeError("v66_transfer_wrongly_blocked")
+
+
+_v66_self_audit()
+logging.info(
+    "V66 active: exact original V35/V20 RSS restored at final boundary; "
+    "V65 RSS substitutions inactive; global in-match score/play-by-play block active."
+)
+
+# ====== END V66 ADD-ONLY EXACT ORIGINAL RSS / LIVE FILTER ======
+
+# ====== V67 FINAL SINGLE RSS ENGINE (2026-08-10) ======
+# One active RSS engine. No active RSS call is routed through V20/V23/V35/V56/V65/V66.
+# Older RSS code above remains untouched only for backward compatibility/history.
+# The active runtime below owns ALL RSS settings and entrypoints in one place.
+
+BOT_BUILD_ID = "winner-v67-single-rss-engine-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# A. COMPLETE ACTIVE RSS SETTINGS — one source of truth
+# ---------------------------------------------------------------------------
+V67_RSS_BASE_FEED_TEMPLATES = [
+    "https://nitter.net/{username}/rss",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
+]
+
+# Keep any explicitly configured extra feeds after the proven five.
+FEED_TEMPLATES = list(dict.fromkeys(
+    V67_RSS_BASE_FEED_TEMPLATES + list(globals().get("EXTRA_FEED_TEMPLATES", []) or [])
+))
+MAX_FEED_TEMPLATES_PER_ACCOUNT = 5
+
+FEED_REQUEST_TIMEOUT_SECONDS = 6.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 8.0
+FEED_HTTP_RETRIES = 2
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 3
+FEED_SOURCE_MAX_PARALLEL = 2
+
+RSS_PRIMARY_SOURCE_COUNT = 3
+RSS_ENABLE_FALLBACK = True
+RSS_FALLBACK_SOURCE_COUNT = 2
+RSS_ENABLE_STALE_FALLBACK = False
+RSS_STALE_FALLBACK_SECONDS = 6 * 60 * 60
+
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+
+
+# ---------------------------------------------------------------------------
+# B. LOW-LEVEL RSS HTTP — exact proven behavior
+# ---------------------------------------------------------------------------
+def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        },
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, int(FEED_HTTP_RETRIES)) + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:
+            last_error = exc
+            if attempt < max(1, int(FEED_HTTP_RETRIES)):
+                time.sleep(0.4)
+    raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
+
+
+def active_feed_templates() -> list[str]:
+    if int(MAX_FEED_TEMPLATES_PER_ACCOUNT) <= 0:
+        return list(FEED_TEMPLATES)
+    return list(FEED_TEMPLATES)[
+        : max(1, min(len(FEED_TEMPLATES), int(MAX_FEED_TEMPLATES_PER_ACCOUNT)))
+    ]
+
+
+def feed_source_name(template: str) -> str:
+    try:
+        host = urllib.parse.urlparse(template).netloc.lower()
+    except Exception:
+        return "unknown"
+    return host.removeprefix("www.")
+
+
+def feed_source_semaphore(source_name: str) -> BoundedSemaphore:
+    with FEED_SOURCE_SEMAPHORES_LOCK:
+        semaphore = FEED_SOURCE_SEMAPHORES.get(source_name)
+        if semaphore is None:
+            semaphore = BoundedSemaphore(max(1, int(FEED_SOURCE_MAX_PARALLEL)))
+            FEED_SOURCE_SEMAPHORES[source_name] = semaphore
+        return semaphore
+
+
+def fetch_feed(username: str, template: str) -> list[Post]:
+    url = template.format(username=urllib.parse.quote(username))
+    source_name = feed_source_name(template)
+    with feed_source_semaphore(source_name):
+        return parse_posts(username, http_get_feed(url), source_name)
+
+
+# ---------------------------------------------------------------------------
+# C. MIRROR COLLECTION — exact old-good isolated account race
+# ---------------------------------------------------------------------------
+def collect_posts_from_feed_templates(
+    username: str,
+    feed_templates: list[str],
+) -> tuple[list[Post], list[str], list[str]]:
+    all_posts: dict[str, Post] = {}
+    feed_errors: list[str] = []
+    timed_out_sources: list[str] = []
+    if not feed_templates:
+        return [], [], []
+
+    executor = ThreadPoolExecutor(
+        max_workers=min(
+            max(1, int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)),
+            len(feed_templates),
+        )
+    )
+    futures = {
+        executor.submit(fetch_feed, username, template): template
+        for template in feed_templates
+    }
+    try:
+        for future in as_completed(
+            futures,
+            timeout=FEED_COLLECTION_TIMEOUT_SECONDS,
+        ):
+            template = futures[future]
+            source_name = feed_source_name(template)
+            try:
+                for post in future.result() or []:
+                    if not isinstance(post, Post):
+                        continue
+                    identity = str(post.post_id or post.link or "").strip()
+                    if identity:
+                        all_posts.setdefault(identity, post)
+            except Exception as exc:
+                feed_errors.append(
+                    f"{source_name}: {type(exc).__name__}: {short_error(exc)}"
+                )
+    except FuturesTimeoutError:
+        timed_out_sources = [
+            feed_source_name(template)
+            for future, template in futures.items()
+            if not future.done()
+        ]
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    posts = list(all_posts.values())
+    posts.sort(
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return posts, feed_errors, timed_out_sources
+
+
+# ---------------------------------------------------------------------------
+# D. PRIMARY -> FALLBACK ORCHESTRATION — exact working policy
+# ---------------------------------------------------------------------------
+def _rss_engine_network_fetch(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    feed_templates = list(active_feed_templates())
+
+    primary_count = max(
+        1,
+        min(len(feed_templates), int(RSS_PRIMARY_SOURCE_COUNT)),
+    )
+    primary_templates = feed_templates[:primary_count]
+    fallback_templates = (
+        feed_templates[primary_count:]
+        if RSS_ENABLE_FALLBACK
+        else []
+    )
+    if int(RSS_FALLBACK_SOURCE_COUNT) > 0:
+        fallback_templates = fallback_templates[
+            : int(RSS_FALLBACK_SOURCE_COUNT)
+        ]
+
+    posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(
+        canonical,
+        primary_templates,
+    )
+
+    if posts:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+        latest_age = (
+            max(0.0, time.time() - float(posts[0].published_ts or 0.0))
+            if posts[0].published_ts
+            else 0.0
+        )
+
+        if (
+            RSS_ENABLE_STALE_FALLBACK
+            and fallback_templates
+            and latest_age >= RSS_STALE_FALLBACK_SECONDS
+        ):
+            fallback_posts, fallback_errors, fallback_timeouts = (
+                collect_posts_from_feed_templates(
+                    canonical,
+                    fallback_templates,
+                )
+            )
+            if (
+                fallback_posts
+                and float(fallback_posts[0].published_ts or 0.0)
+                > float(posts[0].published_ts or 0.0)
+            ):
+                logging.info(
+                    "🔁 RSS: המקור הראשי עבור @%s ישן/תקוע, נלקח מקור גיבוי %s עם פוסט חדש יותר.",
+                    canonical,
+                    fallback_posts[0].source_name,
+                )
+                send_rss_stale_latest_alert_if_needed(
+                    canonical,
+                    fallback_posts,
+                )
+                posts = fallback_posts
+            elif fallback_errors or fallback_timeouts:
+                logging.debug(
+                    "RSS: ניסיון גיבוי בגלל מקור ישן עבור @%s לא החזיר מקור חדש יותר. errors=%s timeouts=%s",
+                    canonical,
+                    "; ".join(fallback_errors[:4]),
+                    ", ".join(fallback_timeouts[:4]),
+                )
+
+        send_rss_stale_latest_alert_if_needed(canonical, posts)
+        try:
+            _stable_rss_remember(canonical, posts)
+            _remember_control_rss_posts(canonical, posts)
+            _ten_history_save(canonical, posts)
+        except Exception:
+            pass
+        return posts
+
+    fallback_errors: list[str] = []
+    fallback_timeouts: list[str] = []
+
+    if fallback_templates:
+        fallback_posts, fallback_errors, fallback_timeouts = (
+            collect_posts_from_feed_templates(
+                canonical,
+                fallback_templates,
+            )
+        )
+        if fallback_posts:
+            FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+            send_rss_stale_latest_alert_if_needed(
+                canonical,
+                fallback_posts,
+            )
+            try:
+                _stable_rss_remember(canonical, fallback_posts)
+                _remember_control_rss_posts(
+                    canonical,
+                    fallback_posts,
+                )
+                _ten_history_save(canonical, fallback_posts)
+            except Exception:
+                pass
+            logging.info(
+                "🔁 RSS: מקור גיבוי הופעל עבור @%s. נמצאו %s פוסטים דרך %s",
+                canonical,
+                len(fallback_posts),
+                fallback_posts[0].source_name,
+            )
+            return fallback_posts
+
+    no_posts_failures = FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) + 1
+    FEED_NO_POSTS_FAILURE_COUNTS[canonical] = no_posts_failures
+
+    checked_templates = primary_templates + fallback_templates
+    all_errors = feed_errors + fallback_errors
+    all_timeouts = timed_out_sources + fallback_timeouts
+
+    issue_parts: list[str] = []
+    if all_errors:
+        issue_parts.append("errors: " + "; ".join(all_errors[:8]))
+    if all_timeouts:
+        issue_parts.append("timeouts: " + ", ".join(all_timeouts[:8]))
+    issue_text = " | ".join(issue_parts) or "no items returned"
+
+    logging.debug(
+        "RSS details for @%s: checked sources=%s | %s",
+        canonical,
+        ", ".join(
+            feed_source_name(template)
+            for template in checked_templates
+        ),
+        issue_text,
+    )
+
+    if (
+        FEED_NO_POSTS_WARNING_AFTER_FAILURES > 0
+        and no_posts_failures >= FEED_NO_POSTS_WARNING_AFTER_FAILURES
+    ):
+        log_feed_issue(
+            canonical,
+            "RSS: לא נמצאו פוסטים עבור @%s אחרי %s בדיקות רצופות. נבדקו %s מקורות. ינסה שוב בשקט.",
+            canonical,
+            no_posts_failures,
+            len(checked_templates),
+        )
+
+    send_rss_control_alert_if_needed(
+        canonical,
+        no_posts_failures,
+        len(checked_templates),
+        issue_text,
+    )
+    return []
+
+
+def _rss_engine_cached(username: str, limit: int = 60) -> list[Post]:
+    try:
+        return list(
+            _stable_rss_cached_posts(
+                username,
+                limit=max(1, int(limit)),
+            )
+            or []
+        )
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# E. ONE LOCK PER ACCOUNT — same behavior, one final implementation
+# ---------------------------------------------------------------------------
+_RSS_ENGINE_ROUTE_LOCKS: dict[str, Lock] = {}
+_RSS_ENGINE_ROUTE_LOCKS_GUARD = Lock()
+
+
+def _rss_engine_account_lock(username: str) -> Lock:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _RSS_ENGINE_ROUTE_LOCKS_GUARD:
+        lock = _RSS_ENGINE_ROUTE_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _RSS_ENGINE_ROUTE_LOCKS[key] = lock
+        return lock
+
+
+def _rss_engine_rows(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return []
+
+    with _rss_engine_account_lock(canonical):
+        try:
+            rows = list(_rss_engine_network_fetch(canonical) or [])
+        except Exception as exc:
+            logging.warning(
+                "⚠️ RSS route failed for @%s: %s",
+                canonical,
+                short_error(exc, 500),
+            )
+            rows = []
+
+        if not rows:
+            rows = _rss_engine_cached(canonical, limit=60)
+
+        return rows
+
+
+# ---------------------------------------------------------------------------
+# F. AUTOMATIC FETCH — final single entrypoint
+# Old-good behavior: RSS is synchronous; existing direct-X cache is merged only
+# if already available and its refresh is started without delaying RSS.
+# ---------------------------------------------------------------------------
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+
+    rss_rows = _rss_engine_rows(canonical)
+
+    live_rows: list[Post] = []
+    try:
+        live_rows = list(_full_speed_cache_get(canonical) or [])
+        _full_speed_start_live(canonical)
+    except Exception:
+        live_rows = []
+
+    merged: dict[str, Post] = {}
+    try:
+        _reliable_merge_posts(merged, rss_rows, canonical)
+        _reliable_merge_posts(merged, live_rows, canonical)
+    except Exception:
+        for post in list(rss_rows) + list(live_rows):
+            if not isinstance(post, Post):
+                continue
+            identity = str(post.post_id or post.link or "").strip()
+            if identity:
+                merged.setdefault(identity, post)
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
+        reverse=True,
+    )
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        try:
+            _pipeline_mark_seen(
+                post,
+                "automatic:single_rss_engine",
+                observed,
+                elapsed,
+            )
+        except Exception:
+            pass
+
+    return ordered[
+        : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    ]
+
+
+# ---------------------------------------------------------------------------
+# G. CONTROL FETCH — same engine, no separate historical RSS path
+# ---------------------------------------------------------------------------
+def fetch_control_posts(
+    username: str,
+) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        return canonical, _rss_engine_rows(canonical), None
+    except Exception as exc:
+        cached = _rss_engine_cached(canonical, limit=60)
+        return canonical, cached, None if cached else exc
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    try:
+        rows = list(fetch_posts(canonical) or [])
+        rows = sorted(
+            [post for post in rows if isinstance(post, Post)],
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )[:12]
+        try:
+            daily_stat_add_timing(
+                "scan_seconds",
+                time.perf_counter() - started,
+            )
+        except Exception:
+            pass
+        return canonical, rows
+    except Exception as exc:
+        try:
+            daily_stat_add_timing(
+                "scan_seconds",
+                time.perf_counter() - started,
+            )
+        except Exception:
+            pass
+        logging.warning(
+            "⚠️ RSS fetch failed for @%s: %s",
+            canonical,
+            short_error(exc, 500),
+        )
+        return canonical, []
+
+
+def fetch_control_posts_for_accounts(
+    accounts: list[str],
+) -> dict[str, tuple[list[Post], Exception | None]]:
+    results: dict[str, tuple[list[Post], Exception | None]] = {
+        username: ([], None)
+        for username in accounts
+    }
+    if not accounts:
+        return results
+
+    workers = min(
+        max(1, int(MAX_PARALLEL_ACCOUNT_CHECKS)),
+        max(1, len(accounts)),
+    )
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(fetch_control_posts, username): username
+            for username in accounts
+        }
+        for future in as_completed(future_map):
+            original_username = future_map[future]
+            try:
+                username, posts, error = future.result()
+            except Exception as exc:
+                username, posts, error = (
+                    original_username,
+                    [],
+                    exc,
+                )
+            results[original_username] = (posts, error)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# H. RSS STATUS BUTTON — same single engine
+# ---------------------------------------------------------------------------
+def rss_status_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "מנוע RSS פעיל אחד:",
+        "3 מקורות ראשיים → אם אין פוסטים, 2 מקורות גיבוי.",
+        "אותו מנוע משמש גם את הסריקה האוטומטית וגם את הכפתור הזה.",
+        "",
+    ]
+
+    ok_count = 0
+    recent_total = 0
+    fetched = fetch_control_posts_for_accounts(accounts)
+
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched.get(username, ([], None))
+
+        if error and not posts:
+            lines.append(
+                f"❌ {label}: תקלה ב-RSS — {short_error(error, 150)}"
+            )
+            continue
+
+        posts = sorted(
+            [post for post in (posts or []) if isinstance(post, Post)],
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+
+        if posts:
+            ok_count += 1
+            latest = posts[0]
+            latest_dt = (
+                datetime.fromtimestamp(
+                    float(latest.published_ts),
+                    ZoneInfo(SHABBAT_TIMEZONE),
+                ).strftime("%H:%M %d/%m/%Y")
+                if getattr(latest, "published_ts", 0.0)
+                else "ללא זמן"
+            )
+            source = str(
+                getattr(latest, "source_name", "") or "RSS"
+            )
+            lines.append(
+                f"✅ {label}: {len(recent)} פוסטים ביממה | "
+                f"מקור אחרון: {source} | אחרון: {latest_dt}"
+            )
+        else:
+            lines.append(
+                f"⚠️ {label}: כל 5 מקורות ה-RSS נבדקו ולא החזירו פוסטים"
+            )
+
+    lines.extend([
+        "",
+        f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים. "
+        f"פוסטים מהיממה האחרונה: {recent_total}.",
+    ])
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# I. DETERMINISTIC FINAL AUDIT — verifies there is ONE active RSS engine
+# ---------------------------------------------------------------------------
+def _v67_single_rss_engine_audit() -> None:
+    expected = list(V67_RSS_BASE_FEED_TEMPLATES)
+    if list(active_feed_templates()) != expected:
+        raise RuntimeError("v67_feed_templates_not_exact")
+
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v67_retries_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v67_request_timeout_changed")
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v67_collection_timeout_changed")
+    if int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 3:
+        raise RuntimeError("v67_feed_parallelism_changed")
+    if int(FEED_SOURCE_MAX_PARALLEL) != 2:
+        raise RuntimeError("v67_feed_source_parallelism_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3:
+        raise RuntimeError("v67_primary_count_changed")
+    if not bool(RSS_ENABLE_FALLBACK):
+        raise RuntimeError("v67_fallback_disabled")
+    if int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v67_fallback_count_changed")
+    if bool(RSS_ENABLE_STALE_FALLBACK):
+        raise RuntimeError("v67_stale_fallback_should_be_off")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v67_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v67_account_parallelism_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v67_post_cap_changed")
+
+    # Active public entrypoints must be the functions declared in this block,
+    # not aliases to any historical Vxx function.
+    for name in (
+        "http_get_feed",
+        "fetch_feed",
+        "collect_posts_from_feed_templates",
+        "fetch_posts",
+        "fetch_control_posts",
+        "fetch_posts_safely",
+        "fetch_control_posts_for_accounts",
+        "rss_status_text",
+    ):
+        fn = globals().get(name)
+        if not callable(fn):
+            raise RuntimeError(f"v67_missing_active_entrypoint:{name}")
+
+    if fetch_posts.__name__ != "fetch_posts":
+        raise RuntimeError("v67_fetch_posts_is_alias")
+    if fetch_control_posts.__name__ != "fetch_control_posts":
+        raise RuntimeError("v67_fetch_control_is_alias")
+    if http_get_feed.__name__ != "http_get_feed":
+        raise RuntimeError("v67_http_is_alias")
+
+
+_v67_single_rss_engine_audit()
+logging.info(
+    "V67 active: one consolidated RSS engine owns all active RSS settings and entrypoints; "
+    "3 primary + 2 fallback, 6s/8s, 2 retries, 20s scan, 4 accounts, 12-post cap."
+)
+
+# ====== END V67 FINAL SINGLE RSS ENGINE ======
+
 if __name__ == "__main__":
     main()
