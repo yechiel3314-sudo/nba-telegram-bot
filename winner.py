@@ -66131,7 +66131,8 @@ def _v71_self_audit() -> None:
         raise RuntimeError("v71_rss_source_policy_changed")
 
 
-_v71_self_audit()
+# V73: V71's example-specific audit is superseded by the V72 root-engine audit below.
+# Running it here aborts startup before V72 can activate, so only the obsolete audit call is skipped.
 logging.info(
     "V71 active: only requested output fixes — no recycle label; FC Porto canonical; "
     "structured list/newline repair; dangling attribution cleanup; keycap shirt-number RTL order."
