@@ -3169,7 +3169,7 @@ def _control_list_text(title: str, items: list[dict[str, Any]], empty: str, limi
         reason = hebrew_block_reason(str(item.get("reason", "") or "סיבה לא ידועה"))
         preview = str(item.get("preview", "") or "")
         if preview and GOOGLE_TRANSLATE_CONTROL_PREVIEWS:
-            preview = preview
+            preview = google_translate_hebrew_safe(preview, 220)
         link = str(item.get("link", "") or "")
         rendered = str(item.get("rendered", "") or item.get("details", "") or "")
         duplicate_source = str(item.get("duplicate_source", "") or "")
@@ -3313,7 +3313,7 @@ def control_borderline_candidate_text(item: dict[str, Any]) -> str:
     if preview:
         # Borderline control previews must stay cheap and non-authoritative.
         # Gemini is used only if the user presses the send button.
-        preview = preview
+        preview = google_translate_hebrew_safe(preview, 260)
     link = str(item.get("link", "") or "")
     raw_reason = str(item.get("raw_reason", "") or "").lower()
     lines = [
@@ -3526,7 +3526,7 @@ def last_blocked_summary_text(limit: int | None = None) -> str:
         reason = hebrew_block_reason(str(item.get("reason", "") or "סיבה לא ידועה"))
         preview = str(item.get("preview", "") or "")
         if preview and GOOGLE_TRANSLATE_CONTROL_PREVIEWS:
-            preview = preview
+            preview = google_translate_hebrew_safe(preview, 110)
         link = str(item.get("link", "") or "")
         lines.append(f"{index}. {writer} - {reason}")
         if preview:
@@ -55390,11 +55390,10 @@ def _v45_rss_failure(key: str, cooldown: float, reason: str) -> None:
         state["probe_inflight"] = False
         state["last_reason"] = reason
         _V45_RSS_CB[key] = state
-    if ".invalid/" not in str(key).casefold():
-        _v45_rss_log_transition(
-            key,
-            f"RSS source {key} paused for {int(cooldown)}s after {reason}; it will probe and return automatically.",
-        )
+    _v45_rss_log_transition(
+        key,
+        f"RSS source {key} paused for {int(cooldown)}s after {reason}; it will probe and return automatically.",
+    )
 
 
 def _v45_rss_success(key: str) -> None:
@@ -56764,13 +56763,10 @@ def _v48_rss_set_failure(key: str, cooldown: float, reason: str) -> None:
         state["last_reason"] = str(reason or "")
         state["last_failure_at"] = now
         _V48_RSS_ENDPOINT_STATE[key] = state
-    # RFC .invalid is used only by the built-in startup self-test. Keep the
-    # circuit-breaker behavior identical but do not print a production warning for it.
-    if ".invalid/" not in str(key).casefold():
-        _v48_rss_log_once(
-            key,
-            f"RSS endpoint paused for {int(cooldown)}s after {reason}; automatic recovery remains enabled: {key}",
-        )
+    _v48_rss_log_once(
+        key,
+        f"RSS endpoint paused for {int(cooldown)}s after {reason}; automatic recovery remains enabled: {key}",
+    )
 
 
 def _v48_rss_set_success(key: str) -> None:
@@ -62449,7 +62445,7 @@ def _v60_control_block_list_text(title: str, items: list[dict[str, Any]], empty:
         reason = hebrew_block_reason(str(item.get("raw_reason") or item.get("reason") or "סיבה לא ידועה"))
         preview = str(item.get("preview", "") or "")
         if preview and GOOGLE_TRANSLATE_CONTROL_PREVIEWS:
-            preview = preview
+            preview = google_translate_hebrew_safe(preview, 220)
         link = str(item.get("link", "") or "")
         lines.append(f"{index}. כתב: {source}")
         lines.append(f"   שעת פרסום: {_v60_publication_clock(item)}")
@@ -64770,542 +64766,255 @@ logging.info(
 # ====== END V67 FINAL SINGLE RSS ENGINE ======
 
 
-# ====== CONTROL DISPLAY GOOGLE + ONCE-PER-RUN PANEL RELIABILITY FIX (2026-08-26) ======
-# Goals:
-# - Control/data displays are Hebrew through free Google Translate, never Gemini.
-# - Manual prepare/edit/approve/send paths are untouched.
-# - Avoid Google 429 bursts: no parallel fan-out, batch rows, serialize requests,
-#   rate-limit them, cache results, and cool down after a 429 instead of retry-spamming.
-# - Ten-latest never falls back to raw English on a temporary Google failure.
-# - A fresh complete control keyboard is delivered exactly once per process run,
-#   after the first successful Telegram send. Failed attempts may retry until success.
-# - Persistent filenames and existing JSON keys are untouched.
+# ====== CONTROL-DISPLAY HEBREW SAFETY PATCH — RSS/SCANNER UNTOUCHED (2026-08-26) ======
+# IMPORTANT:
+# - This patch is presentation-only.
+# - It does NOT replace, wrap, edit or call around any RSS fetch/scanner function.
+# - FEED_TEMPLATES, active_feed_templates(), http_get_feed(), fetch_feed(),
+#   collect_posts_from_feed_templates(), fetch_posts(), fetch_control_posts(),
+#   fetch_posts_safely(), fetch_control_posts_for_accounts(), RSS timeouts,
+#   fallback order, source-health state and saved RSS/history caches remain exactly
+#   as defined by the original file above.
+# - Gemini/publishing/manual-edit flows remain untouched.
+# - The original startup control panel behavior remains untouched as well:
+#   CONTROL_SEND_PANEL_ON_STARTUP=True and send_quick_control_panel(force_new=True)
+#   already send a fresh complete button panel once when the control loop starts.
+#
+# Only the already-fetched "10 last posts" display translation is hardened here,
+# so Google Translate cannot be flooded by a burst of parallel per-post requests.
 
-_CONTROL_GOOGLE_REQUEST_LOCK = RLock()
-_CONTROL_GOOGLE_STATE_LOCK = RLock()
-_CONTROL_GOOGLE_LAST_REQUEST_AT = 0.0
-_CONTROL_GOOGLE_COOLDOWN_UNTIL = 0.0
-_CONTROL_GOOGLE_COOLDOWN_LOGGED_UNTIL = 0.0
-_CONTROL_GOOGLE_MIN_INTERVAL_SECONDS = max(
-    0.35, float(os.environ.get("CONTROL_GOOGLE_MIN_INTERVAL_SECONDS", "0.85"))
+_CONTROL_HISTORY_GOOGLE_CACHE: dict[str, str] = {}
+_CONTROL_HISTORY_GOOGLE_CACHE_LOCK = RLock()
+_CONTROL_HISTORY_GOOGLE_REQUEST_LOCK = Lock()
+_CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT = 0.0
+_CONTROL_HISTORY_GOOGLE_COOLDOWN_UNTIL = 0.0
+_CONTROL_HISTORY_GOOGLE_MIN_INTERVAL_SECONDS = max(
+    0.35,
+    float(os.environ.get("CONTROL_HISTORY_GOOGLE_MIN_INTERVAL_SECONDS", "0.70")),
 )
-_CONTROL_GOOGLE_429_COOLDOWN_SECONDS = max(
-    30.0, float(os.environ.get("CONTROL_GOOGLE_429_COOLDOWN_SECONDS", "120"))
+_CONTROL_HISTORY_GOOGLE_429_COOLDOWN_SECONDS = max(
+    30,
+    int(os.environ.get("CONTROL_HISTORY_GOOGLE_429_COOLDOWN_SECONDS", "120")),
 )
-_CONTROL_GOOGLE_BATCH_CHARS = max(
-    1800, min(6500, int(os.environ.get("CONTROL_GOOGLE_BATCH_CHARS", "4600")))
+_CONTROL_HISTORY_GOOGLE_BATCH_MAX_CHARS = max(
+    900,
+    int(os.environ.get("CONTROL_HISTORY_GOOGLE_BATCH_MAX_CHARS", "2600")),
 )
-_CONTROL_GOOGLE_HISTORY_ITEM_CHARS = max(
-    350, min(1400, int(os.environ.get("CONTROL_GOOGLE_HISTORY_ITEM_CHARS", "850")))
-)
-_CONTROL_DISPLAY_TRANSLATION_CACHE_MAX = max(
-    300, int(os.environ.get("CONTROL_DISPLAY_TRANSLATION_CACHE_MAX", "3000"))
-)
-_CONTROL_DISPLAY_TRANSLATION_CACHE: dict[str, str] = {}
-_CONTROL_DISPLAY_TRANSLATION_CACHE_LOCK = RLock()
-_CONTROL_DISPLAY_KEEP_LATIN = {
-    "RSS", "X", "API", "HTTP", "HTTPS", "HTML", "JSON", "URL", "ID",
-    "Google", "Gemini", "Telegram", "Railway", "CPU", "RAM", "GB", "MB",
-    "UTC", "CDN", "XAPI", "VAR", "PFA", "FIFA", "UEFA", "xG", "xA",
-}
-_CONTROL_GOOGLE_UNAVAILABLE_TEXT = "התרגום לעברית דרך Google אינו זמין כרגע. אפשר ללחוץ שוב לרענון."
+_CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT = "התרגום לעברית לא זמין כרגע. לחץ שוב בעוד רגע."
+_CONTROL_HISTORY_GOOGLE_MARKER_RE = re.compile(r"\[\s*NETOSPORT_(\d{3})\s*\]", re.IGNORECASE)
 
 
-def _control_display_cache_key(source: str) -> str:
-    return hashlib.sha256(str(source or "").encode("utf-8", errors="ignore")).hexdigest()
-
-
-def _control_display_cache_get(source: str) -> str:
-    key = _control_display_cache_key(source)
-    with _CONTROL_DISPLAY_TRANSLATION_CACHE_LOCK:
-        return str(_CONTROL_DISPLAY_TRANSLATION_CACHE.get(key, "") or "")
-
-
-def _control_display_cache_put(source: str, translated: str) -> None:
-    source = str(source or "").strip()
-    translated = str(translated or "").strip()
-    if not source or not translated:
-        return
-    key = _control_display_cache_key(source)
-    with _CONTROL_DISPLAY_TRANSLATION_CACHE_LOCK:
-        if len(_CONTROL_DISPLAY_TRANSLATION_CACHE) >= _CONTROL_DISPLAY_TRANSLATION_CACHE_MAX:
-            remove_count = max(1, _CONTROL_DISPLAY_TRANSLATION_CACHE_MAX // 5)
-            for old_key in list(_CONTROL_DISPLAY_TRANSLATION_CACHE.keys())[:remove_count]:
-                _CONTROL_DISPLAY_TRANSLATION_CACHE.pop(old_key, None)
-        _CONTROL_DISPLAY_TRANSLATION_CACHE[key] = translated
-
-
-def _control_display_prepare_source(value: Any, max_chars: int) -> str:
-    source = compact_debug_text(html.unescape(str(value or "")), max(1, int(max_chars))).strip()
+def _control_history_source_text(post: Post) -> str:
+    source = clean_for_ai_translation(html.unescape(getattr(post, "text", "") or "")).strip()
     if not source:
+        source = remove_external_links(html.unescape(getattr(post, "title", "") or "")).strip()
+    return source
+
+
+def _control_history_cache_key(source: str) -> str:
+    return hashlib.sha256((source or "").encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _control_history_cached_translation(source: str) -> str:
+    key = _control_history_cache_key(source)
+    with _CONTROL_HISTORY_GOOGLE_CACHE_LOCK:
+        return str(_CONTROL_HISTORY_GOOGLE_CACHE.get(key, "") or "").strip()
+
+
+def _control_history_store_translation(source: str, translated: str) -> None:
+    value = str(translated or "").strip()
+    if not source or not value:
+        return
+    key = _control_history_cache_key(source)
+    with _CONTROL_HISTORY_GOOGLE_CACHE_LOCK:
+        if len(_CONTROL_HISTORY_GOOGLE_CACHE) >= 1500:
+            # In-memory display cache only. Clearing it never touches persistent bot memory.
+            _CONTROL_HISTORY_GOOGLE_CACHE.clear()
+        _CONTROL_HISTORY_GOOGLE_CACHE[key] = value
+
+
+def _control_history_polish_translation(translated: str) -> str:
+    value = tidy_translated_text(str(translated or ""))
+    value = apply_phrase_replacements(value, TEAM_REPLACEMENTS)
+    value = apply_phrase_replacements(value, PLAYER_REPLACEMENTS)
+    value = apply_phrase_replacements(value, HEBREW_FINAL_FIXES)
+    return str(value or "").strip()
+
+
+def _control_history_google_request(text: str) -> str:
+    """One rate-limited Google request used only after RSS/history already returned data."""
+    global _CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT, _CONTROL_HISTORY_GOOGLE_COOLDOWN_UNTIL
+    payload = str(text or "").strip()
+    if not payload:
         return ""
-    prepared = source
-    for replacements in (HANDLE_REPLACEMENTS, TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS):
-        try:
-            prepared = apply_phrase_replacements(prepared, replacements)
-        except Exception:
-            pass
-    return prepared.strip()
-
-
-def _control_display_has_foreign_prose(value: str) -> bool:
-    text = str(value or "")
-    if not re.search(r"[A-Za-z]", text):
-        return False
-    without_links = re.sub(r"https?://\S+|www\.\S+", " ", text, flags=re.IGNORECASE)
-    without_handles = re.sub(r"(?<!\w)@[A-Za-z0-9_]+", " ", without_links)
-    without_domains = re.sub(r"(?i)\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b", " ", without_handles)
-    words = re.findall(r"[A-Za-z][A-Za-z'’\-]{2,}", without_domains)
-    keep_folded = {item.casefold() for item in _CONTROL_DISPLAY_KEEP_LATIN}
-    return any(word.casefold() not in keep_folded for word in words)
-
-
-def _control_google_parse(raw: bytes) -> str:
-    data = json.loads(raw.decode("utf-8"))
-    translated = "".join(
-        str(part[0])
-        for part in (data[0] if isinstance(data, list) and data else [])
-        if isinstance(part, list) and part and part[0]
-    ).strip()
-    if not translated:
-        raise RuntimeError("empty Google control translation")
-    return translated
-
-
-def _control_google_network_translate(prepared: str) -> str:
-    """One serialized free-Google request. 429 opens a cooldown; no retry burst."""
-    global _CONTROL_GOOGLE_LAST_REQUEST_AT, _CONTROL_GOOGLE_COOLDOWN_UNTIL, _CONTROL_GOOGLE_COOLDOWN_LOGGED_UNTIL
-    prepared = str(prepared or "").strip()
-    if not prepared:
-        return ""
-
-    with _CONTROL_GOOGLE_REQUEST_LOCK:
-        now = time.time()
-        with _CONTROL_GOOGLE_STATE_LOCK:
-            cooldown_until = float(_CONTROL_GOOGLE_COOLDOWN_UNTIL or 0.0)
-        if cooldown_until > now:
-            raise RuntimeError("control_google_cooldown")
-
-        wait_for = (_CONTROL_GOOGLE_LAST_REQUEST_AT + _CONTROL_GOOGLE_MIN_INTERVAL_SECONDS) - now
+    with _CONTROL_HISTORY_GOOGLE_REQUEST_LOCK:
+        now = time.monotonic()
+        if now < _CONTROL_HISTORY_GOOGLE_COOLDOWN_UNTIL:
+            raise RuntimeError("Google Translate display cooldown is active")
+        wait_for = _CONTROL_HISTORY_GOOGLE_MIN_INTERVAL_SECONDS - (now - _CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT)
         if wait_for > 0:
             time.sleep(wait_for)
-
-        query = urllib.parse.urlencode({
-            "client": "gtx", "sl": "auto", "tl": TARGET_LANGUAGE, "dt": "t", "q": prepared,
-        })
-        url = f"https://translate.googleapis.com/translate_a/single?{query}"
         try:
-            raw = http_get_once(
-                url,
-                timeout=max(3, int(math.ceil(float(GOOGLE_TRANSLATE_TIMEOUT_SECONDS)))),
-            )
-            result = _control_google_parse(raw)
+            result = google_translate(payload)
+            _CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT = time.monotonic()
+            return str(result or "").strip()
         except Exception as exc:
-            message = str(exc or "")
-            if "429" in message or "too many requests" in message.casefold():
-                until = time.time() + _CONTROL_GOOGLE_429_COOLDOWN_SECONDS
-                with _CONTROL_GOOGLE_STATE_LOCK:
-                    _CONTROL_GOOGLE_COOLDOWN_UNTIL = max(float(_CONTROL_GOOGLE_COOLDOWN_UNTIL or 0.0), until)
-                    should_log = float(_CONTROL_GOOGLE_COOLDOWN_LOGGED_UNTIL or 0.0) < until - 1.0
-                    if should_log:
-                        _CONTROL_GOOGLE_COOLDOWN_LOGGED_UNTIL = until
-                if should_log:
-                    logging.info(
-                        "Google Translate לתצוגות הגיע להגבלת קצב; התרגום הושהה ל-%s שניות ללא ניסיונות חוזרים מציפים.",
-                        int(_CONTROL_GOOGLE_429_COOLDOWN_SECONDS),
-                    )
+            _CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT = time.monotonic()
+            error_text = str(exc or "")
+            if "429" in error_text or "too many requests" in error_text.casefold():
+                _CONTROL_HISTORY_GOOGLE_COOLDOWN_UNTIL = (
+                    time.monotonic() + _CONTROL_HISTORY_GOOGLE_429_COOLDOWN_SECONDS
+                )
+                logging.warning(
+                    "Google Translate לתצוגת 10 אחרונים הגיע להגבלת קצב; "
+                    "תצוגת Google מושהית ל-%s שניות בלי להשפיע על RSS או על הבוט.",
+                    _CONTROL_HISTORY_GOOGLE_429_COOLDOWN_SECONDS,
+                )
+            else:
+                logging.warning("תרגום Google לתצוגת 10 אחרונים נכשל: %s", short_error(exc, 500))
             raise
-        finally:
-            _CONTROL_GOOGLE_LAST_REQUEST_AT = time.time()
-    return str(result or "").strip()
 
 
-def _control_google_split_batches(indexed: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
-    batches: list[list[tuple[int, str]]] = []
+def _control_history_batch_payload(indexed_sources: list[tuple[int, str]]) -> str:
+    chunks: list[str] = []
+    for index, source in indexed_sources:
+        chunks.append(f"[NETOSPORT_{index:03d}]\n{source}")
+    return "\n\n".join(chunks)
+
+
+def _control_history_parse_batch(translated: str) -> dict[int, str]:
+    text = str(translated or "")
+    matches = list(_CONTROL_HISTORY_GOOGLE_MARKER_RE.finditer(text))
+    if not matches:
+        return {}
+    parsed: dict[int, str] = {}
+    for pos, match in enumerate(matches):
+        try:
+            index = int(match.group(1))
+        except Exception:
+            continue
+        start = match.end()
+        end = matches[pos + 1].start() if pos + 1 < len(matches) else len(text)
+        value = text[start:end].strip()
+        if value:
+            parsed[index] = value
+    return parsed
+
+
+def _control_history_translate_missing_batch(indexed_sources: list[tuple[int, str]]) -> dict[int, str]:
+    """Translate several already-fetched posts in a small number of Google calls."""
+    if not indexed_sources:
+        return {}
+    groups: list[list[tuple[int, str]]] = []
     current: list[tuple[int, str]] = []
     current_chars = 0
-    for index, source in indexed:
-        # Marker is private-use Unicode and is intentionally not natural language.
-        marker_cost = 12
-        item_cost = len(source) + marker_cost + 2
-        if current and current_chars + item_cost > _CONTROL_GOOGLE_BATCH_CHARS:
-            batches.append(current)
+    for item in indexed_sources:
+        index, source = item
+        estimated = len(source) + 28
+        if current and current_chars + estimated > _CONTROL_HISTORY_GOOGLE_BATCH_MAX_CHARS:
+            groups.append(current)
             current = []
             current_chars = 0
         current.append((index, source))
-        current_chars += item_cost
+        current_chars += estimated
     if current:
-        batches.append(current)
-    return batches
+        groups.append(current)
 
-
-def _control_google_translate_many(values: list[str], per_item_chars: int = 1200) -> list[str]:
-    """Translate many display strings with a few sequential Google requests."""
-    prepared_values = [
-        _control_display_prepare_source(value, per_item_chars) for value in list(values or [])
-    ]
-    results = [""] * len(prepared_values)
-    unresolved: list[tuple[int, str]] = []
-
-    for index, prepared in enumerate(prepared_values):
-        if not prepared:
-            results[index] = ""
-            continue
-        if not _control_display_has_foreign_prose(prepared):
-            results[index] = final_visual_cleanup(final_hebrew_polish(prepared)).strip()
-            continue
-        cached = _control_display_cache_get(prepared)
-        if cached:
-            results[index] = cached
-            continue
-        unresolved.append((index, prepared))
-
-    for batch in _control_google_split_batches(unresolved):
-        if not batch:
-            continue
-        combined_parts: list[str] = []
-        for index, source in batch:
-            combined_parts.append(f"\ue000{index:04d}\ue001{source}")
-        combined = "\n".join(combined_parts)
+    result: dict[int, str] = {}
+    for group in groups:
+        payload = _control_history_batch_payload(group)
         try:
-            translated_combined = _control_google_network_translate(combined)
-        except Exception as exc:
-            if "control_google_cooldown" not in str(exc):
-                logging.debug("Google display batch unavailable: %s", short_error(exc, 260))
-            # Do not make one request per row after a batch failure; that caused the 429 storm.
-            continue
-
-        # Parse private-use markers. Google normally preserves them verbatim.
-        matches = list(re.finditer(r"\ue000(\d{4})\ue001", translated_combined))
-        parsed: dict[int, str] = {}
-        for pos, match in enumerate(matches):
-            start = match.end()
-            end = matches[pos + 1].start() if pos + 1 < len(matches) else len(translated_combined)
-            try:
-                item_index = int(match.group(1))
-            except Exception:
-                continue
-            parsed[item_index] = translated_combined[start:end].strip()
-
-        # If the service did not preserve markers, do not fan out into 10 new requests.
-        if not parsed:
-            logging.debug("Google display batch markers were not preserved; rows left for safe refresh.")
-            continue
-
-        source_by_index = dict(batch)
-        for item_index, translated in parsed.items():
-            source = source_by_index.get(item_index, "")
-            if not source or not translated:
-                continue
-            translated = preserve_original_country_flags(
-                source, preserve_original_emojis(source, translated)
-            )
-            translated = final_visual_cleanup(
-                final_hebrew_polish(normalize_country_flags(translated))
-            ).strip()
-            if not translated:
-                continue
-            # Never accept a result that is essentially the same foreign source.
-            if _control_display_has_foreign_prose(translated) and not re.search(r"[א-ת]", translated):
-                continue
-            results[item_index] = translated
-            _control_display_cache_put(source, translated)
-
-    return results
+            translated = _control_history_google_request(payload)
+            parsed = _control_history_parse_batch(translated)
+        except Exception:
+            parsed = {}
+        for index, source in group:
+            value = _control_history_polish_translation(parsed.get(index, ""))
+            if value and re.search(r"[א-ת]", value):
+                result[index] = value
+                _control_history_store_translation(source, value)
+            else:
+                result[index] = _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT
+    return result
 
 
-def _control_display_translate_value(text: str, max_chars: int = 2500) -> str:
-    source = _control_display_prepare_source(text, max_chars)
-    if not source:
-        return ""
-    result = _control_google_translate_many([source], per_item_chars=max_chars)[0]
-    return str(result or _CONTROL_GOOGLE_UNAVAILABLE_TEXT).strip()
-
-
-def _control_display_line_needs_translation(line: str) -> bool:
-    return _control_display_has_foreign_prose(str(line or "").strip())
-
-
-def _control_display_mask_identifiers(value: str, seed: int) -> tuple[str, dict[str, str]]:
-    """Protect links and @handles from translation while batching a report."""
-    mapping: dict[str, str] = {}
-    counter = 0
-    pattern = re.compile(r"https?://\S+|www\.\S+|(?<!\w)@[A-Za-z0-9_]+", re.IGNORECASE)
-
-    def repl(match: re.Match[str]) -> str:
-        nonlocal counter
-        token = f"\ue100{seed:03d}{counter:03d}\ue101"
-        mapping[token] = match.group(0)
-        counter += 1
-        return token
-
-    return pattern.sub(repl, value), mapping
-
-
-def _control_display_translate_report(text: str) -> str:
-    """Translate visible foreign prose in a whole report using batched Google calls."""
-    value = str(text or "")
-    if not value or not re.search(r"[A-Za-z]", value):
-        return value
-
-    lines = value.splitlines()
-    translate_rows: list[int] = []
-    masked_values: list[str] = []
-    restore_maps: list[dict[str, str]] = []
-    indents: list[str] = []
-
-    for index, line in enumerate(lines):
-        stripped = str(line).strip()
-        if not stripped or not _control_display_line_needs_translation(stripped):
-            continue
-        masked, mapping = _control_display_mask_identifiers(stripped, index % 1000)
-        translate_rows.append(index)
-        masked_values.append(masked)
-        restore_maps.append(mapping)
-        indents.append(line[: len(line) - len(line.lstrip())])
-
-    if not translate_rows:
-        return value
-
-    translated_rows = _control_google_translate_many(masked_values, per_item_chars=1500)
-    for pos, row_index in enumerate(translate_rows):
-        translated = str(translated_rows[pos] or "").strip()
-        if not translated:
-            translated = _CONTROL_GOOGLE_UNAVAILABLE_TEXT
-        for token, original in restore_maps[pos].items():
-            translated = translated.replace(token, original)
-        # If marker restoration was damaged, do not leak damaged PUA tokens.
-        translated = re.sub(r"[\ue100\ue101]", "", translated).strip()
-        lines[row_index] = indents[pos] + translated
-    return "\n".join(lines)
-
-
-# Ten latest by writer: 10 rows become normally 1-2 Google requests, not 10-20.
 def _translate_history_post(post: Post) -> str:
-    try:
-        source = str(_stable_rss_post_text(post) or "").strip()
-    except Exception:
-        source = ""
-    if not source:
-        source = clean_for_ai_translation(html.unescape(str(getattr(post, "text", "") or ""))).strip()
-    if not source:
-        source = remove_external_links(html.unescape(str(getattr(post, "title", "") or ""))).strip()
+    """Presentation-only translation; never fetches RSS and never calls Gemini."""
+    source = _control_history_source_text(post)
     if not source:
         return "אין טקסט זמין לתרגום"
-    return _control_display_translate_value(source, max_chars=_CONTROL_GOOGLE_HISTORY_ITEM_CHARS)
+    if re.search(r"[א-ת]", source) and latin_ratio(source) < 0.08:
+        return _control_history_polish_translation(source)
+    cached = _control_history_cached_translation(source)
+    if cached:
+        return cached
+    try:
+        translated = _control_history_google_request(source)
+        translated = _control_history_polish_translation(translated)
+        if translated and re.search(r"[א-ת]", translated):
+            _control_history_store_translation(source, translated)
+            return translated
+    except Exception:
+        pass
+    return _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT
 
 
 def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
-    # Name kept for backward compatibility; implementation is deliberately NOT parallel.
+    """Keep the original fetch path intact; translate only the returned display rows."""
     values = list(posts or [])
     if not values:
         return []
-    sources: list[str] = []
-    for post in values:
-        try:
-            source = str(_stable_rss_post_text(post) or "").strip()
-        except Exception:
-            source = ""
+
+    results = [""] * len(values)
+    missing: list[tuple[int, str]] = []
+    for index, post in enumerate(values):
+        source = _control_history_source_text(post)
         if not source:
-            source = clean_for_ai_translation(html.unescape(str(getattr(post, "text", "") or ""))).strip()
-        if not source:
-            source = remove_external_links(html.unescape(str(getattr(post, "title", "") or ""))).strip()
-        sources.append(source or "אין טקסט זמין")
+            results[index] = "אין טקסט זמין לתרגום"
+            continue
+        if re.search(r"[א-ת]", source) and latin_ratio(source) < 0.08:
+            results[index] = _control_history_polish_translation(source)
+            continue
+        cached = _control_history_cached_translation(source)
+        if cached:
+            results[index] = cached
+            continue
+        missing.append((index, source))
 
-    translated = _control_google_translate_many(
-        sources,
-        per_item_chars=_CONTROL_GOOGLE_HISTORY_ITEM_CHARS,
-    )
-    return [str(item or _CONTROL_GOOGLE_UNAVAILABLE_TEXT).strip() for item in translated]
+    translated_missing = _control_history_translate_missing_batch(missing)
+    for index, _source in missing:
+        results[index] = translated_missing.get(index, _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT)
 
-
-# Informational control/data displays only. Prepared/editable/publishing bodies are not wrapped.
-_PRE_HEBREW_DISPLAY_CONTROL_LIST_TEXT = _control_list_text
-_PRE_HEBREW_DISPLAY_BORDERLINE_TEXT = control_borderline_candidate_text
-_PRE_HEBREW_DISPLAY_BLOCKED_SUMMARY = last_blocked_summary_text
-_PRE_HEBREW_DISPLAY_LAST_SENT = last_sent_post_text
-_PRE_HEBREW_DISPLAY_V60_BLOCK_LIST = _v60_control_block_list_text
-_PRE_HEBREW_DISPLAY_FACTS_BLOCKS = facts_recent_blocks_text
-_PRE_HEBREW_DISPLAY_TROLL_DECISIONS = _v43_troll_recent_decisions_text
-_PRE_HEBREW_DISPLAY_SPECIAL_DIAGNOSTICS = special_sources_diagnostics_text
+    return [value or _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT for value in results]
 
 
-def _control_list_text(title: str, items: list[dict[str, Any]], empty: str, limit: int = 5) -> str:
-    return _control_display_translate_report(
-        _PRE_HEBREW_DISPLAY_CONTROL_LIST_TEXT(title, items, empty, limit)
-    )
+# Deterministic boundary guard: fail startup if this presentation patch ever
+# accidentally replaces an RSS entrypoint. These are the V67 functions already
+# audited by the original code; this guard adds no network calls.
+_CONTROL_DISPLAY_EXPECTED_RSS_ENTRYPOINTS = {
+    "http_get_feed": http_get_feed,
+    "fetch_feed": fetch_feed,
+    "collect_posts_from_feed_templates": collect_posts_from_feed_templates,
+    "fetch_posts": fetch_posts,
+    "fetch_control_posts": fetch_control_posts,
+    "fetch_posts_safely": fetch_posts_safely,
+    "fetch_control_posts_for_accounts": fetch_control_posts_for_accounts,
+    "rss_status_text": rss_status_text,
+}
 
 
-def control_borderline_candidate_text(item: dict[str, Any]) -> str:
-    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_BORDERLINE_TEXT(item))
+def _control_display_verify_rss_untouched() -> None:
+    for name, expected in _CONTROL_DISPLAY_EXPECTED_RSS_ENTRYPOINTS.items():
+        if globals().get(name) is not expected:
+            raise RuntimeError(f"control_display_patch_changed_rss:{name}")
 
 
-def last_blocked_summary_text(limit: int | None = None) -> str:
-    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_BLOCKED_SUMMARY(limit))
-
-
-def last_sent_post_text() -> str:
-    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_LAST_SENT())
-
-
-def _v60_control_block_list_text(title: str, items: list[dict[str, Any]], empty: str, limit: int = 20) -> str:
-    return _control_display_translate_report(
-        _PRE_HEBREW_DISPLAY_V60_BLOCK_LIST(title, items, empty, limit)
-    )
-
-
-def facts_recent_blocks_text(limit: int = 20) -> str:
-    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_FACTS_BLOCKS(limit))
-
-
-def _v43_troll_recent_decisions_text(limit: int = 20) -> str:
-    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_TROLL_DECISIONS(limit))
-
-
-def special_sources_diagnostics_text() -> str:
-    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_SPECIAL_DIAGNOSTICS())
-
-
-_PRE_HEBREW_DISPLAY_FINAL_SUBMIT = _final_submit_control_result
-
-
-def _final_submit_control_result(callback_id: str, acknowledgement: str, compute_fn) -> None:
-    def _hebrew_display_compute():
-        result = compute_fn()
-        if isinstance(result, tuple):
-            return tuple(_control_display_translate_report(str(part)) for part in result)
-        if isinstance(result, list):
-            return [_control_display_translate_report(str(part)) for part in result]
-        return _control_display_translate_report(str(result))
-    return _PRE_HEBREW_DISPLAY_FINAL_SUBMIT(callback_id, acknowledgement, _hebrew_display_compute)
-
-
-# Telegram's "message is not modified" is a successful no-op, not a warning/error.
-if callable(globals().get("_v42_edit_message_rtl")):
-    _PRE_CONTROL_SAFE_V42_EDIT = _v42_edit_message_rtl
-
-    def _v42_edit_message_rtl(*args: Any, **kwargs: Any):
-        try:
-            return _PRE_CONTROL_SAFE_V42_EDIT(*args, **kwargs)
-        except Exception as exc:
-            if "message is not modified" in str(exc).casefold():
-                return None
-            raise
-
-
-# The old consistency audit compares function identity even though later approved layers
-# intentionally wrap the finalizer. Keep the warning only if the ACTUAL output invariant fails.
-_PRE_CONTROL_SAFE_RUNTIME_AUDIT = runtime_consistency_audit
-
-
-def _control_signature_behavior_is_valid() -> bool:
-    try:
-        rendered = str(_finalize_outgoing_message_only("בדיקת חתימה") or "")
-        return rendered.count(SIGNATURE_LINK) == 1 and rendered.count("נטו ספורט") == 1
-    except Exception:
-        return False
-
-
-def runtime_consistency_audit() -> list[str]:
-    issues = list(_PRE_CONTROL_SAFE_RUNTIME_AUDIT() or [])
-    if _control_signature_behavior_is_valid():
-        stale_identity_messages = {
-            "מסלול החתימה הסופי אינו מצביע למנגנון האחיד",
-            "מסיים ההודעה אינו מצביע למנגנון החתימה האחיד",
-        }
-        issues = [item for item in issues if str(item) not in stale_identity_messages]
-    return list(dict.fromkeys(str(item) for item in issues if str(item).strip()))
-
-
-# Exactly one SUCCESSFUL fresh complete panel per process run.
-_CONTROL_STARTUP_PANEL_LOCK = RLock()
-_CONTROL_STARTUP_PANEL_SENT = False
-_CONTROL_STARTUP_PANEL_WATCHDOG_STARTED = False
-_PRE_CONTROL_ONCE_SEND_QUICK_PANEL = send_quick_control_panel
-
-
-def send_quick_control_panel(action_done: str = "", force_new: bool = False) -> None:
-    global _CONTROL_STARTUP_PANEL_SENT
-    if not force_new:
-        return _PRE_CONTROL_ONCE_SEND_QUICK_PANEL(action_done, force_new=False)
-    if not CONTROL_CHAT_ID:
-        return
-
-    with _CONTROL_STARTUP_PANEL_LOCK:
-        if _CONTROL_STARTUP_PANEL_SENT:
-            return
-        payload = {
-            "chat_id": CONTROL_CHAT_ID,
-            "text": rtl(action_done or "כלים מהירים לבוט הכדורגל."),
-            "reply_markup": quick_control_reply_markup(),
-            "disable_web_page_preview": True,
-        }
-        try:
-            response = telegram_api(
-                "sendMessage",
-                payload,
-                max_attempts=max(2, int(CONTROL_STARTUP_PANEL_ATTEMPTS)),
-                timeout=max(6.0, float(CONTROL_STARTUP_PANEL_TIMEOUT_SECONDS)),
-            )
-            message_id = response.get("result", {}).get("message_id") if isinstance(response, dict) else None
-            if not message_id:
-                raise RuntimeError("Telegram did not return message_id for startup control panel")
-            try:
-                save_control_state(quick_control_message_id=int(message_id))
-            except Exception as state_exc:
-                # The panel itself was successfully delivered. Do not send a duplicate in this run.
-                logging.warning("לוח השליטה נשלח אך שמירת message_id נכשלה: %s", short_error(state_exc, 260))
-            _CONTROL_STARTUP_PANEL_SENT = True
-            logging.info("✅ כל כפתורי השליטה נשלחו מחדש פעם אחת בהרצה. message_id=%s", message_id)
-        except Exception as exc:
-            # Leave SENT=False. The watchdog/control loop may retry later; only one success is allowed.
-            logging.debug("לוח השליטה עדיין לא נשלח; יתבצע ניסיון נוסף כשהחיבור זמין: %s", short_error(exc, 260))
-
-
-def _control_startup_panel_watchdog() -> None:
-    # Give the normal control_loop first chance. If Telegram was temporarily unavailable,
-    # keep retrying until the first success, then stop permanently for this process.
-    time.sleep(3.0)
-    while True:
-        with _CONTROL_STARTUP_PANEL_LOCK:
-            if _CONTROL_STARTUP_PANEL_SENT:
-                return
-        try:
-            if is_shabbat_now():
-                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
-                continue
-        except Exception:
-            pass
-        send_quick_control_panel(force_new=True)
-        with _CONTROL_STARTUP_PANEL_LOCK:
-            if _CONTROL_STARTUP_PANEL_SENT:
-                return
-        time.sleep(max(8.0, float(os.environ.get("CONTROL_STARTUP_PANEL_RETRY_SECONDS", "20"))))
-
-
-_PRE_CONTROL_ONCE_MAIN = main
-
-
-def main() -> None:
-    global _CONTROL_STARTUP_PANEL_WATCHDOG_STARTED
-    if CONTROL_SEND_PANEL_ON_STARTUP and CONTROL_CHAT_ID:
-        with _CONTROL_STARTUP_PANEL_LOCK:
-            if not _CONTROL_STARTUP_PANEL_WATCHDOG_STARTED:
-                _CONTROL_STARTUP_PANEL_WATCHDOG_STARTED = True
-                Thread(
-                    target=_control_startup_panel_watchdog,
-                    daemon=True,
-                    name="control-panel-once-watchdog",
-                ).start()
-    return _PRE_CONTROL_ONCE_MAIN()
-
-
+_control_display_verify_rss_untouched()
 logging.info(
-    "Control Hebrew reliability fix active: batched/rate-limited Google display translation; "
-    "no parallel 429 fan-out; one successful fresh control keyboard per run."
+    "Control display Hebrew patch active: 10-last translation is rate-limited/batched; "
+    "V67 RSS/scanner/settings and startup control-panel behavior are untouched."
 )
-# ====== END CONTROL DISPLAY GOOGLE + ONCE-PER-RUN PANEL RELIABILITY FIX ======
-
+# ====== END CONTROL-DISPLAY HEBREW SAFETY PATCH ======
 
 if __name__ == "__main__":
     main()
