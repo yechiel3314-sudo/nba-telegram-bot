@@ -64765,24 +64765,6 @@ logging.info(
 
 # ====== END V67 FINAL SINGLE RSS ENGINE ======
 
-
-# ====== CONTROL-DISPLAY HEBREW SAFETY PATCH — RSS/SCANNER UNTOUCHED (2026-08-26) ======
-# IMPORTANT:
-# - This patch is presentation-only.
-# - It does NOT replace, wrap, edit or call around any RSS fetch/scanner function.
-# - FEED_TEMPLATES, active_feed_templates(), http_get_feed(), fetch_feed(),
-#   collect_posts_from_feed_templates(), fetch_posts(), fetch_control_posts(),
-#   fetch_posts_safely(), fetch_control_posts_for_accounts(), RSS timeouts,
-#   fallback order, source-health state and saved RSS/history caches remain exactly
-#   as defined by the original file above.
-# - Gemini/publishing/manual-edit flows remain untouched.
-# - The original startup control panel behavior remains untouched as well:
-#   CONTROL_SEND_PANEL_ON_STARTUP=True and send_quick_control_panel(force_new=True)
-#   already send a fresh complete button panel once when the control loop starts.
-#
-# Only the already-fetched "10 last posts" display translation is hardened here,
-# so Google Translate cannot be flooded by a burst of parallel per-post requests.
-
 _CONTROL_HISTORY_GOOGLE_CACHE: dict[str, str] = {}
 _CONTROL_HISTORY_GOOGLE_CACHE_LOCK = RLock()
 _CONTROL_HISTORY_GOOGLE_REQUEST_LOCK = Lock()
@@ -64987,34 +64969,6 @@ def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
 
     return [value or _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT for value in results]
 
-
-# Deterministic boundary guard: fail startup if this presentation patch ever
-# accidentally replaces an RSS entrypoint. These are the V67 functions already
-# audited by the original code; this guard adds no network calls.
-_CONTROL_DISPLAY_EXPECTED_RSS_ENTRYPOINTS = {
-    "http_get_feed": http_get_feed,
-    "fetch_feed": fetch_feed,
-    "collect_posts_from_feed_templates": collect_posts_from_feed_templates,
-    "fetch_posts": fetch_posts,
-    "fetch_control_posts": fetch_control_posts,
-    "fetch_posts_safely": fetch_posts_safely,
-    "fetch_control_posts_for_accounts": fetch_control_posts_for_accounts,
-    "rss_status_text": rss_status_text,
-}
-
-
-def _control_display_verify_rss_untouched() -> None:
-    for name, expected in _CONTROL_DISPLAY_EXPECTED_RSS_ENTRYPOINTS.items():
-        if globals().get(name) is not expected:
-            raise RuntimeError(f"control_display_patch_changed_rss:{name}")
-
-
-_control_display_verify_rss_untouched()
-logging.info(
-    "Control display Hebrew patch active: 10-last translation is rate-limited/batched; "
-    "V67 RSS/scanner/settings and startup control-panel behavior are untouched."
-)
-# ====== END CONTROL-DISPLAY HEBREW SAFETY PATCH ======
 
 if __name__ == "__main__":
     main()
