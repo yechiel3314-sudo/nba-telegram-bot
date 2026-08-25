@@ -64765,5 +64765,319 @@ logging.info(
 
 # ====== END V67 FINAL SINGLE RSS ENGINE ======
 
+# ====== CONTROL-DISPLAY HEBREW-ONLY GOOGLE TRANSLATE PATCH (2026-08-26) ======
+# Scope:
+# - Control/data-display text only.
+# - Google Translate only; never spends Gemini quota.
+# - Never changes manual editing/preparation/publishing translation paths.
+# - Never renames/resets persistent files or JSON keys.
+# - Ten-latest must never silently fall back to the original English source.
+
+_CONTROL_DISPLAY_TRANSLATION_TIMEOUT_SECONDS = float(
+    os.environ.get("CONTROL_DISPLAY_TRANSLATION_TIMEOUT_SECONDS", "4.5")
+)
+_CONTROL_DISPLAY_TRANSLATION_WORKERS = max(
+    2, min(8, int(os.environ.get("CONTROL_DISPLAY_TRANSLATION_WORKERS", "6")))
+)
+_CONTROL_DISPLAY_TRANSLATION_CACHE_MAX = max(
+    200, int(os.environ.get("CONTROL_DISPLAY_TRANSLATION_CACHE_MAX", "2500"))
+)
+_CONTROL_DISPLAY_TRANSLATION_CACHE: dict[str, str] = {}
+_CONTROL_DISPLAY_TRANSLATION_CACHE_LOCK = RLock()
+_CONTROL_DISPLAY_TRANSLATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_CONTROL_DISPLAY_TRANSLATION_WORKERS,
+    thread_name_prefix="control-google-he",
+)
+_CONTROL_DISPLAY_KEEP_LATIN = {
+    "RSS", "X", "API", "HTTP", "HTTPS", "HTML", "JSON", "URL", "ID",
+    "Google", "Gemini", "Telegram", "Railway", "CPU", "RAM", "GB", "MB",
+    "UTC", "CDN", "XAPI",
+}
+
+
+def _control_display_cache_get(source: str) -> str:
+    key = hashlib.sha256(source.encode("utf-8", errors="ignore")).hexdigest()
+    with _CONTROL_DISPLAY_TRANSLATION_CACHE_LOCK:
+        return str(_CONTROL_DISPLAY_TRANSLATION_CACHE.get(key, "") or "")
+
+
+def _control_display_cache_put(source: str, translated: str) -> None:
+    if not source or not translated:
+        return
+    key = hashlib.sha256(source.encode("utf-8", errors="ignore")).hexdigest()
+    with _CONTROL_DISPLAY_TRANSLATION_CACHE_LOCK:
+        if len(_CONTROL_DISPLAY_TRANSLATION_CACHE) >= _CONTROL_DISPLAY_TRANSLATION_CACHE_MAX:
+            # Process-only display cache: safe to evict; persistent bot memory is untouched.
+            remove_count = max(1, _CONTROL_DISPLAY_TRANSLATION_CACHE_MAX // 5)
+            for old_key in list(_CONTROL_DISPLAY_TRANSLATION_CACHE.keys())[:remove_count]:
+                _CONTROL_DISPLAY_TRANSLATION_CACHE.pop(old_key, None)
+        _CONTROL_DISPLAY_TRANSLATION_CACHE[key] = translated
+
+
+def _control_display_google_translate_once(text: str, max_chars: int = 2500) -> str:
+    """Fast one-request Google translation used only by control/data displays."""
+    source = compact_debug_text(html.unescape(str(text or "")), max_chars).strip()
+    if not source:
+        return ""
+
+    # Apply existing deterministic names first. This reduces untranslated Latin
+    # leftovers without using Gemini and keeps familiar football names consistent.
+    prepared = source
+    for replacements in (HANDLE_REPLACEMENTS, TEAM_REPLACEMENTS, PLAYER_REPLACEMENTS):
+        try:
+            prepared = apply_phrase_replacements(prepared, replacements)
+        except Exception:
+            pass
+
+    # If the visible text is already Hebrew and contains no real foreign prose,
+    # return immediately without any network call.
+    latin_words = re.findall(r"[A-Za-z][A-Za-z'’\-]{2,}", prepared)
+    unknown_latin = [word for word in latin_words if word not in _CONTROL_DISPLAY_KEEP_LATIN]
+    if re.search(r"[א-ת]", prepared) and not unknown_latin:
+        return final_visual_cleanup(final_hebrew_polish(prepared)).strip()
+
+    cached = _control_display_cache_get(prepared)
+    if cached:
+        return cached
+
+    query = urllib.parse.urlencode(
+        {"client": "gtx", "sl": "auto", "tl": TARGET_LANGUAGE, "dt": "t", "q": prepared}
+    )
+    url = f"https://translate.googleapis.com/translate_a/single?{query}"
+    raw = http_get_once(url, timeout=max(2, int(math.ceil(_CONTROL_DISPLAY_TRANSLATION_TIMEOUT_SECONDS))))
+    data = json.loads(raw.decode("utf-8"))
+    translated = "".join(
+        str(part[0]) for part in (data[0] if isinstance(data, list) and data else [])
+        if isinstance(part, list) and part and part[0]
+    ).strip()
+    if not translated:
+        raise RuntimeError("Google Translate returned an empty control-display translation")
+
+    translated = preserve_original_country_flags(prepared, preserve_original_emojis(prepared, translated))
+    translated = final_visual_cleanup(final_hebrew_polish(normalize_country_flags(translated))).strip()
+    if not translated:
+        raise RuntimeError("Google Translate returned no usable Hebrew control-display text")
+
+    _control_display_cache_put(prepared, translated)
+    return translated
+
+
+def _control_display_translate_value(text: str, max_chars: int = 2500) -> str:
+    """Hebrew-only display translation. Never returns raw foreign prose on failure."""
+    source = compact_debug_text(html.unescape(str(text or "")), max_chars).strip()
+    if not source:
+        return ""
+    try:
+        translated = _control_display_google_translate_once(source, max_chars=max_chars)
+    except Exception as first_exc:
+        logging.warning("Control Google translation fast path failed: %s", short_error(first_exc, 300))
+        # One controlled retry via the already-existing free Google path. This is
+        # display-only and still never calls Gemini.
+        try:
+            translated = google_translate_hebrew_safe(source, max_chars=max_chars)
+        except Exception as second_exc:
+            logging.warning("Control Google translation retry failed: %s", short_error(second_exc, 300))
+            translated = ""
+
+    translated = str(translated or "").strip()
+    # Existing helper may return the source on failure. Do not leak that English
+    # source into control/data displays.
+    source_latin = len(re.findall(r"[A-Za-z]", source))
+    translated_latin = len(re.findall(r"[A-Za-z]", translated))
+    translated_hebrew = len(re.findall(r"[א-ת]", translated))
+    remaining_words = [
+        word for word in re.findall(r"[A-Za-z][A-Za-z'’\-]{2,}", translated)
+        if word not in _CONTROL_DISPLAY_KEEP_LATIN
+    ]
+    near_english = bool(
+        translated
+        and (
+            (
+                source_latin >= 20
+                and translated_latin >= max(18, int(source_latin * 0.65))
+                and translated_hebrew < max(8, int(translated_latin * 0.20))
+            )
+            or (translated_hebrew == 0 and bool(remaining_words))
+        )
+    )
+    if not translated or near_english:
+        return "התרגום לעברית דרך Google לא היה זמין לרגע. אפשר ללחוץ שוב לרענון."
+    return translated
+
+
+def _control_display_line_needs_translation(line: str) -> bool:
+    value = str(line or "").strip()
+    if not value or not re.search(r"[A-Za-z]", value):
+        return False
+    # Links and account handles are identifiers, not prose to translate.
+    without_links = re.sub(r"https?://\S+|www\.\S+", " ", value, flags=re.IGNORECASE)
+    without_handles = re.sub(r"(?<!\w)@[A-Za-z0-9_]+", " ", without_links)
+    without_domains = re.sub(r"(?i)\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b", " ", without_handles)
+    words = re.findall(r"[A-Za-z][A-Za-z'’\-]{2,}", without_domains)
+    words = [word for word in words if word not in _CONTROL_DISPLAY_KEEP_LATIN]
+    # Any real foreign prose word in a data-display line should be translated.
+    # URLs, domains, @handles and explicitly-kept technical brands are excluded.
+    return bool(words)
+
+
+def _control_display_translate_report(text: str) -> str:
+    """Translate foreign prose inside informational control reports only."""
+    value = str(text or "")
+    if not value or not re.search(r"[A-Za-z]", value):
+        return value
+    output: list[str] = []
+    for raw_line in value.splitlines():
+        line = str(raw_line)
+        stripped = line.strip()
+        if not stripped or not _control_display_line_needs_translation(stripped):
+            output.append(line)
+            continue
+        # Never send a visible URL through Google. Translate only the prose
+        # segments around links and reassemble them byte-for-byte.
+        parts = re.split(r"(https?://\S+|www\.\S+)", stripped, flags=re.IGNORECASE)
+        rendered_parts: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            if re.fullmatch(r"https?://\S+|www\.\S+", part, flags=re.IGNORECASE):
+                rendered_parts.append(part)
+            elif _control_display_line_needs_translation(part):
+                rendered_parts.append(
+                    _control_display_translate_value(part, max_chars=min(1800, max(220, len(part) * 3)))
+                )
+            else:
+                rendered_parts.append(part)
+        translated = "".join(rendered_parts).strip()
+        indent = line[: len(line) - len(line.lstrip())]
+        output.append(indent + translated)
+    return "\n".join(output)
+
+
+# 1) Ten-latest: use the fast bounded Google-only display path and never fall
+#    back to the original English source when a future times out.
+def _translate_history_post(post: Post) -> str:
+    try:
+        source = str(_stable_rss_post_text(post) or "").strip()
+    except Exception:
+        source = ""
+    if not source:
+        source = clean_for_ai_translation(html.unescape(str(getattr(post, "text", "") or ""))).strip()
+    if not source:
+        source = remove_external_links(html.unescape(str(getattr(post, "title", "") or ""))).strip()
+    if not source:
+        return "אין טקסט זמין לתרגום"
+    return _control_display_translate_value(source, max_chars=1800)
+
+
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    values = list(posts or [])
+    if not values:
+        return []
+    results = [""] * len(values)
+    futures: dict[Any, int] = {}
+    for index, post in enumerate(values):
+        try:
+            future = _CONTROL_DISPLAY_TRANSLATION_EXECUTOR.submit(_translate_history_post, post)
+            futures[future] = index
+        except Exception as exc:
+            logging.warning("Could not queue Google control translation for row %s: %s", index + 1, short_error(exc, 250))
+
+    if futures:
+        # Each task is a one-request fast path plus at most one controlled free
+        # fallback. The bounded pool prevents unbounded thread growth.
+        done, pending = _reliable_wait(
+            set(futures),
+            timeout=max(8.0, min(18.0, float(CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS))),
+        )
+        for future in done:
+            index = futures[future]
+            try:
+                results[index] = str(future.result() or "").strip()
+            except Exception as exc:
+                logging.warning("Google control translation row failed: %s", short_error(exc, 250))
+        for future in pending:
+            future.cancel()
+
+    for index, result in enumerate(results):
+        if not result:
+            # Critical behavior change: never expose the English source merely
+            # because a display translation timed out.
+            results[index] = "התרגום לעברית דרך Google לא הושלם. לחץ שוב לרענון."
+    return results
+
+
+# 2) Informational control/data displays. These wrappers translate only visible
+#    foreign prose. They do not touch prepared/editable post bodies or publishing.
+_PRE_HEBREW_DISPLAY_CONTROL_LIST_TEXT = _control_list_text
+_PRE_HEBREW_DISPLAY_BORDERLINE_TEXT = control_borderline_candidate_text
+_PRE_HEBREW_DISPLAY_BLOCKED_SUMMARY = last_blocked_summary_text
+_PRE_HEBREW_DISPLAY_LAST_SENT = last_sent_post_text
+_PRE_HEBREW_DISPLAY_V60_BLOCK_LIST = _v60_control_block_list_text
+_PRE_HEBREW_DISPLAY_FACTS_BLOCKS = facts_recent_blocks_text
+_PRE_HEBREW_DISPLAY_TROLL_DECISIONS = _v43_troll_recent_decisions_text
+_PRE_HEBREW_DISPLAY_SPECIAL_DIAGNOSTICS = special_sources_diagnostics_text
+
+
+def _control_list_text(title: str, items: list[dict[str, Any]], empty: str, limit: int = 5) -> str:
+    return _control_display_translate_report(
+        _PRE_HEBREW_DISPLAY_CONTROL_LIST_TEXT(title, items, empty, limit)
+    )
+
+
+def control_borderline_candidate_text(item: dict[str, Any]) -> str:
+    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_BORDERLINE_TEXT(item))
+
+
+def last_blocked_summary_text(limit: int | None = None) -> str:
+    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_BLOCKED_SUMMARY(limit))
+
+
+def last_sent_post_text() -> str:
+    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_LAST_SENT())
+
+
+def _v60_control_block_list_text(title: str, items: list[dict[str, Any]], empty: str, limit: int = 20) -> str:
+    return _control_display_translate_report(
+        _PRE_HEBREW_DISPLAY_V60_BLOCK_LIST(title, items, empty, limit)
+    )
+
+
+def facts_recent_blocks_text(limit: int = 20) -> str:
+    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_FACTS_BLOCKS(limit))
+
+
+def _v43_troll_recent_decisions_text(limit: int = 20) -> str:
+    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_TROLL_DECISIONS(limit))
+
+
+def special_sources_diagnostics_text() -> str:
+    return _control_display_translate_report(_PRE_HEBREW_DISPLAY_SPECIAL_DIAGNOSTICS())
+
+
+# 3) Central informational result dispatcher. Every statistics/diagnostics button
+#    routed through it gets the same Hebrew-only display cleanup. Crucially, the
+#    latest-writer/manual prepare/edit/send path does not use this wrapper.
+_PRE_HEBREW_DISPLAY_FINAL_SUBMIT = _final_submit_control_result
+
+
+def _final_submit_control_result(callback_id: str, acknowledgement: str, compute_fn) -> None:
+    def _hebrew_display_compute():
+        result = compute_fn()
+        if isinstance(result, tuple):
+            return tuple(_control_display_translate_report(str(part)) for part in result)
+        if isinstance(result, list):
+            return [_control_display_translate_report(str(part)) for part in result]
+        return _control_display_translate_report(str(result))
+
+    return _PRE_HEBREW_DISPLAY_FINAL_SUBMIT(callback_id, acknowledgement, _hebrew_display_compute)
+
+
+logging.info(
+    "Control display Hebrew patch active: Google-only data previews, bounded cache/pool, "
+    "no English fallback in 10-latest; manual prepare/edit/publish paths unchanged."
+)
+# ====== END CONTROL-DISPLAY HEBREW-ONLY GOOGLE TRANSLATE PATCH ======
+
+
 if __name__ == "__main__":
     main()
