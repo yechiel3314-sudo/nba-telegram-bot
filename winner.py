@@ -64765,184 +64765,156 @@ logging.info(
 
 # ====== END V67 FINAL SINGLE RSS ENGINE ======
 
-_CONTROL_HISTORY_GOOGLE_CACHE: dict[str, str] = {}
-_CONTROL_HISTORY_GOOGLE_CACHE_LOCK = RLock()
-_CONTROL_HISTORY_GOOGLE_REQUEST_LOCK = Lock()
-_CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT = 0.0
-_CONTROL_HISTORY_GOOGLE_COOLDOWN_UNTIL = 0.0
-_CONTROL_HISTORY_GOOGLE_MIN_INTERVAL_SECONDS = max(
-    0.35,
-    float(os.environ.get("CONTROL_HISTORY_GOOGLE_MIN_INTERVAL_SECONDS", "0.70")),
+
+# ====== TRANSLATION-ONLY CONTROL DISPLAY FIX (2026-08-26) ======
+# IMPORTANT: this block changes ONLY Google-Translate rendering used by the
+# control-panel "10 last posts" view. RSS/feed collection, caches/history,
+# filters, Gemini, post preparation/editing, publishing, Telegram routing,
+# persistent state and startup behavior remain exactly as in the user's file.
+#
+# Root cause: the original history renderer can fire many Google Translate
+# requests at once. The public endpoint may answer HTTP 429 under that burst.
+# The replacement batches visible texts, adds a process-local cache and never
+# exposes untranslated English when Google is temporarily unavailable.
+
+_CONTROL_HISTORY_TRANSLATION_CACHE: dict[str, str] = {}
+_CONTROL_HISTORY_TRANSLATION_CACHE_LOCK = Lock()
+_CONTROL_HISTORY_TRANSLATION_REQUEST_LOCK = Lock()
+_CONTROL_HISTORY_TRANSLATION_LAST_REQUEST_AT = 0.0
+_CONTROL_HISTORY_TRANSLATION_MIN_INTERVAL_SECONDS = float(
+    os.environ.get("CONTROL_HISTORY_TRANSLATION_MIN_INTERVAL_SECONDS", "0.35")
 )
-_CONTROL_HISTORY_GOOGLE_429_COOLDOWN_SECONDS = max(
-    30,
-    int(os.environ.get("CONTROL_HISTORY_GOOGLE_429_COOLDOWN_SECONDS", "120")),
+_CONTROL_HISTORY_TRANSLATION_COOLDOWN_UNTIL = 0.0
+_CONTROL_HISTORY_TRANSLATION_429_COOLDOWN_SECONDS = float(
+    os.environ.get("CONTROL_HISTORY_TRANSLATION_429_COOLDOWN_SECONDS", "90")
 )
-_CONTROL_HISTORY_GOOGLE_BATCH_MAX_CHARS = max(
-    900,
-    int(os.environ.get("CONTROL_HISTORY_GOOGLE_BATCH_MAX_CHARS", "2600")),
+_CONTROL_HISTORY_TRANSLATION_BATCH_CHARS = max(
+    1200, int(os.environ.get("CONTROL_HISTORY_TRANSLATION_BATCH_CHARS", "3800"))
 )
-_CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT = "התרגום לעברית לא זמין כרגע. לחץ שוב בעוד רגע."
-_CONTROL_HISTORY_GOOGLE_MARKER_RE = re.compile(r"\[\s*NETOSPORT_(\d{3})\s*\]", re.IGNORECASE)
+_CONTROL_HISTORY_TRANSLATION_UNAVAILABLE_TEXT = "התרגום לעברית דרך Google לא זמין כרגע. לחץ שוב לרענון."
+_CONTROL_HISTORY_MARKER_RE = re.compile(r"§§§\s*(\d{6})\s*§§§")
 
 
 def _control_history_source_text(post: Post) -> str:
-    source = clean_for_ai_translation(html.unescape(getattr(post, "text", "") or "")).strip()
+    source = clean_for_ai_translation(html.unescape(str(getattr(post, "text", "") or ""))).strip()
     if not source:
-        source = remove_external_links(html.unescape(getattr(post, "title", "") or "")).strip()
+        source = remove_external_links(html.unescape(str(getattr(post, "title", "") or ""))).strip()
     return source
 
 
 def _control_history_cache_key(source: str) -> str:
-    return hashlib.sha256((source or "").encode("utf-8", errors="ignore")).hexdigest()
+    return hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()
 
 
-def _control_history_cached_translation(source: str) -> str:
+def _control_history_cached(source: str) -> str:
+    if not source:
+        return ""
     key = _control_history_cache_key(source)
-    with _CONTROL_HISTORY_GOOGLE_CACHE_LOCK:
-        return str(_CONTROL_HISTORY_GOOGLE_CACHE.get(key, "") or "").strip()
+    with _CONTROL_HISTORY_TRANSLATION_CACHE_LOCK:
+        return str(_CONTROL_HISTORY_TRANSLATION_CACHE.get(key, "") or "")
 
 
-def _control_history_store_translation(source: str, translated: str) -> None:
-    value = str(translated or "").strip()
-    if not source or not value:
+def _control_history_remember(source: str, translated: str) -> None:
+    source = str(source or "").strip()
+    translated = str(translated or "").strip()
+    if not source or not translated or translated == _CONTROL_HISTORY_TRANSLATION_UNAVAILABLE_TEXT:
         return
     key = _control_history_cache_key(source)
-    with _CONTROL_HISTORY_GOOGLE_CACHE_LOCK:
-        if len(_CONTROL_HISTORY_GOOGLE_CACHE) >= 1500:
-            # In-memory display cache only. Clearing it never touches persistent bot memory.
-            _CONTROL_HISTORY_GOOGLE_CACHE.clear()
-        _CONTROL_HISTORY_GOOGLE_CACHE[key] = value
+    with _CONTROL_HISTORY_TRANSLATION_CACHE_LOCK:
+        if len(_CONTROL_HISTORY_TRANSLATION_CACHE) >= 1500:
+            for old_key in list(_CONTROL_HISTORY_TRANSLATION_CACHE)[:300]:
+                _CONTROL_HISTORY_TRANSLATION_CACHE.pop(old_key, None)
+        _CONTROL_HISTORY_TRANSLATION_CACHE[key] = translated
 
 
-def _control_history_polish_translation(translated: str) -> str:
+def _control_history_polish(translated: str, original: str = "") -> str:
     value = tidy_translated_text(str(translated or ""))
     value = apply_phrase_replacements(value, TEAM_REPLACEMENTS)
     value = apply_phrase_replacements(value, PLAYER_REPLACEMENTS)
     value = apply_phrase_replacements(value, HEBREW_FINAL_FIXES)
-    return str(value or "").strip()
+    value = str(value or "").strip()
+    if not value and re.search(r"[א-ת]", str(original or "")):
+        value = str(original or "").strip()
+    return value
 
 
-def _control_history_google_request(text: str) -> str:
-    """One rate-limited Google request used only after RSS/history already returned data."""
-    global _CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT, _CONTROL_HISTORY_GOOGLE_COOLDOWN_UNTIL
-    payload = str(text or "").strip()
-    if not payload:
-        return ""
-    with _CONTROL_HISTORY_GOOGLE_REQUEST_LOCK:
-        now = time.monotonic()
-        if now < _CONTROL_HISTORY_GOOGLE_COOLDOWN_UNTIL:
-            raise RuntimeError("Google Translate display cooldown is active")
-        wait_for = _CONTROL_HISTORY_GOOGLE_MIN_INTERVAL_SECONDS - (now - _CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT)
+def _control_history_google_request(value: str) -> str:
+    """One throttled Google request used only by the 10-last control display."""
+    global _CONTROL_HISTORY_TRANSLATION_LAST_REQUEST_AT, _CONTROL_HISTORY_TRANSLATION_COOLDOWN_UNTIL
+    now = time.time()
+    if now < float(_CONTROL_HISTORY_TRANSLATION_COOLDOWN_UNTIL or 0.0):
+        raise RuntimeError("google_translate_control_cooldown")
+    with _CONTROL_HISTORY_TRANSLATION_REQUEST_LOCK:
+        now = time.time()
+        wait_for = (
+            float(_CONTROL_HISTORY_TRANSLATION_LAST_REQUEST_AT or 0.0)
+            + max(0.0, float(_CONTROL_HISTORY_TRANSLATION_MIN_INTERVAL_SECONDS))
+            - now
+        )
         if wait_for > 0:
             time.sleep(wait_for)
         try:
-            result = google_translate(payload)
-            _CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT = time.monotonic()
-            return str(result or "").strip()
+            result = google_translate(value)
+            _CONTROL_HISTORY_TRANSLATION_LAST_REQUEST_AT = time.time()
+            return str(result or "")
         except Exception as exc:
-            _CONTROL_HISTORY_GOOGLE_LAST_REQUEST_AT = time.monotonic()
-            error_text = str(exc or "")
-            if "429" in error_text or "too many requests" in error_text.casefold():
-                _CONTROL_HISTORY_GOOGLE_COOLDOWN_UNTIL = (
-                    time.monotonic() + _CONTROL_HISTORY_GOOGLE_429_COOLDOWN_SECONDS
+            _CONTROL_HISTORY_TRANSLATION_LAST_REQUEST_AT = time.time()
+            if "429" in str(exc) or "Too Many Requests" in str(exc):
+                _CONTROL_HISTORY_TRANSLATION_COOLDOWN_UNTIL = time.time() + max(
+                    10.0, float(_CONTROL_HISTORY_TRANSLATION_429_COOLDOWN_SECONDS)
                 )
-                logging.warning(
-                    "Google Translate לתצוגת 10 אחרונים הגיע להגבלת קצב; "
-                    "תצוגת Google מושהית ל-%s שניות בלי להשפיע על RSS או על הבוט.",
-                    _CONTROL_HISTORY_GOOGLE_429_COOLDOWN_SECONDS,
-                )
-            else:
-                logging.warning("תרגום Google לתצוגת 10 אחרונים נכשל: %s", short_error(exc, 500))
             raise
 
 
-def _control_history_batch_payload(indexed_sources: list[tuple[int, str]]) -> str:
-    chunks: list[str] = []
-    for index, source in indexed_sources:
-        chunks.append(f"[NETOSPORT_{index:03d}]\n{source}")
-    return "\n\n".join(chunks)
-
-
-def _control_history_parse_batch(translated: str) -> dict[int, str]:
-    text = str(translated or "")
-    matches = list(_CONTROL_HISTORY_GOOGLE_MARKER_RE.finditer(text))
-    if not matches:
+def _control_history_translate_batch(batch: list[tuple[int, str]]) -> dict[int, str]:
+    """Translate several visible posts in one request and split them safely."""
+    if not batch:
         return {}
-    parsed: dict[int, str] = {}
-    for pos, match in enumerate(matches):
-        try:
-            index = int(match.group(1))
-        except Exception:
-            continue
-        start = match.end()
-        end = matches[pos + 1].start() if pos + 1 < len(matches) else len(text)
-        value = text[start:end].strip()
-        if value:
-            parsed[index] = value
-    return parsed
-
-
-def _control_history_translate_missing_batch(indexed_sources: list[tuple[int, str]]) -> dict[int, str]:
-    """Translate several already-fetched posts in a small number of Google calls."""
-    if not indexed_sources:
-        return {}
-    groups: list[list[tuple[int, str]]] = []
-    current: list[tuple[int, str]] = []
-    current_chars = 0
-    for item in indexed_sources:
-        index, source = item
-        estimated = len(source) + 28
-        if current and current_chars + estimated > _CONTROL_HISTORY_GOOGLE_BATCH_MAX_CHARS:
-            groups.append(current)
-            current = []
-            current_chars = 0
-        current.append((index, source))
-        current_chars += estimated
-    if current:
-        groups.append(current)
-
+    payload_parts: list[str] = []
+    expected: dict[int, str] = {}
+    for index, source in batch:
+        marker = f"§§§{int(index):06d}§§§"
+        payload_parts.extend([marker, source])
+        expected[int(index)] = source
+    payload = "\n\n".join(payload_parts)
+    translated_blob = _control_history_google_request(payload)
+    matches = list(_CONTROL_HISTORY_MARKER_RE.finditer(translated_blob))
     result: dict[int, str] = {}
-    for group in groups:
-        payload = _control_history_batch_payload(group)
-        try:
-            translated = _control_history_google_request(payload)
-            parsed = _control_history_parse_batch(translated)
-        except Exception:
-            parsed = {}
-        for index, source in group:
-            value = _control_history_polish_translation(parsed.get(index, ""))
-            if value and re.search(r"[א-ת]", value):
-                result[index] = value
-                _control_history_store_translation(source, value)
-            else:
-                result[index] = _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT
+    if matches:
+        for pos, match in enumerate(matches):
+            idx = int(match.group(1))
+            start = match.end()
+            end = matches[pos + 1].start() if pos + 1 < len(matches) else len(translated_blob)
+            if idx in expected:
+                value = _control_history_polish(translated_blob[start:end].strip(), expected[idx])
+                if value:
+                    result[idx] = value
     return result
 
 
 def _translate_history_post(post: Post) -> str:
-    """Presentation-only translation; never fetches RSS and never calls Gemini."""
+    """Google-only Hebrew preview for one history item; no Gemini and no RSS access."""
     source = _control_history_source_text(post)
     if not source:
         return "אין טקסט זמין לתרגום"
-    if re.search(r"[א-ת]", source) and latin_ratio(source) < 0.08:
-        return _control_history_polish_translation(source)
-    cached = _control_history_cached_translation(source)
+    if latin_ratio(source) < 0.08 and re.search(r"[א-ת]", source):
+        return _control_history_polish(source, source) or source
+    cached = _control_history_cached(source)
     if cached:
         return cached
     try:
         translated = _control_history_google_request(source)
-        translated = _control_history_polish_translation(translated)
-        if translated and re.search(r"[א-ת]", translated):
-            _control_history_store_translation(source, translated)
+        translated = _control_history_polish(translated, source)
+        if translated:
+            _control_history_remember(source, translated)
             return translated
-    except Exception:
-        pass
-    return _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT
+    except Exception as exc:
+        logging.warning("תרגום Google לתצוגת 10 אחרונים נכשל זמנית: %s", short_error(exc, 240))
+    return _CONTROL_HISTORY_TRANSLATION_UNAVAILABLE_TEXT
 
 
 def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
-    """Keep the original fetch path intact; translate only the returned display rows."""
+    """Fast bounded display translation. Name retained for compatibility; no request burst."""
     values = list(posts or [])
     if not values:
         return []
@@ -64952,23 +64924,68 @@ def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
     for index, post in enumerate(values):
         source = _control_history_source_text(post)
         if not source:
-            results[index] = "אין טקסט זמין לתרגום"
+            results[index] = "הפוסט התקבל ללא טקסט קריא"
             continue
-        if re.search(r"[א-ת]", source) and latin_ratio(source) < 0.08:
-            results[index] = _control_history_polish_translation(source)
+        if latin_ratio(source) < 0.08 and re.search(r"[א-ת]", source):
+            results[index] = _control_history_polish(source, source) or source
             continue
-        cached = _control_history_cached_translation(source)
+        cached = _control_history_cached(source)
         if cached:
             results[index] = cached
-            continue
-        missing.append((index, source))
+        else:
+            missing.append((index, source))
 
-    translated_missing = _control_history_translate_missing_batch(missing)
-    for index, _source in missing:
-        results[index] = translated_missing.get(index, _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT)
+    batches: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    current_chars = 0
+    for item in missing:
+        item_chars = len(item[1]) + 24
+        if current and current_chars + item_chars > _CONTROL_HISTORY_TRANSLATION_BATCH_CHARS:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+    if current:
+        batches.append(current)
 
-    return [value or _CONTROL_HISTORY_GOOGLE_UNAVAILABLE_TEXT for value in results]
+    for batch in batches:
+        batch_request_failed = False
+        try:
+            batch_result = _control_history_translate_batch(batch)
+        except Exception as exc:
+            batch_request_failed = True
+            logging.warning("תרגום Google קבוצתי לתצוגת 10 אחרונים נכשל זמנית: %s", short_error(exc, 240))
+            batch_result = {}
 
+        for index, source in batch:
+            translated = str(batch_result.get(index, "") or "").strip()
+            if translated:
+                results[index] = translated
+                _control_history_remember(source, translated)
+
+        # Retry individually only when Google answered but a marker was altered.
+        # A network/429 failure stays fast and does not trigger ten more requests.
+        for index, source in batch:
+            if results[index]:
+                continue
+            if batch_request_failed:
+                results[index] = _CONTROL_HISTORY_TRANSLATION_UNAVAILABLE_TEXT
+            else:
+                results[index] = _translate_history_post(values[index])
+
+    for index, value in enumerate(results):
+        if not str(value or "").strip():
+            results[index] = _CONTROL_HISTORY_TRANSLATION_UNAVAILABLE_TEXT
+    return results
+
+
+logging.info(
+    "Translation-only control fix active: Google history previews are cached/batched; "
+    "RSS, Gemini, editing, publishing and startup behavior are unchanged."
+)
+
+# ====== END TRANSLATION-ONLY CONTROL DISPLAY FIX ======
 
 if __name__ == "__main__":
     main()
