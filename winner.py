@@ -66847,5 +66847,594 @@ logging.info(
 
 # ====== END V72 ROOT FORMAT ENGINE ======
 
+# ====== V76 ONE WORKING RSS SOURCE / HISTORICAL-SAFE COST FIX (2026-08-26) ======
+# Root goal:
+# - normal scan contacts ONE working RSS source per writer, not 3/5 in parallel;
+# - the other proven RSS mirrors are standby only;
+# - if the active source fails/returns zero, standby sources are tried ONE BY ONE
+#   and the first successful source becomes the preferred source;
+# - Direct-X is started ONLY after every RSS candidate failed/returned zero;
+# - V70 ETag / Last-Modified / HTTP 304 remains the active feed transport;
+# - no persistent file/key, filter, Gemini rule, Telegram route, media route,
+#   Shabbat behavior, RTL behavior, writer list or scan cadence is changed.
+#
+# Historical note:
+# Earlier builds used the "one primary + fallback" principle. Later V35/V57
+# hardened this to 3 primary + 2 fallback mirrors. V76 keeps the later proven
+# five-source pool for safety, while restoring one-source-at-a-time execution
+# so healthy cycles do not pay for parallel mirror races.
+
+BOT_BUILD_ID = "winner-v76-one-working-rss-safe-2026-08-26"
+
+V76_RSS_TEMPLATES = [
+    "https://nitter.net/{username}/rss",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
+]
+
+# Five known candidates exist, but only ONE is active in a healthy cycle.
+FEED_TEMPLATES = list(V76_RSS_TEMPLATES)
+MAX_FEED_TEMPLATES_PER_ACCOUNT = len(V76_RSS_TEMPLATES)
+RSS_PRIMARY_SOURCE_COUNT = 1
+RSS_ENABLE_FALLBACK = True
+RSS_FALLBACK_SOURCE_COUNT = len(V76_RSS_TEMPLATES) - 1
+RSS_ENABLE_STALE_FALLBACK = False
+
+# Preserve the current proven timing/cadence.
+FEED_REQUEST_TIMEOUT_SECONDS = 6.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 8.0
+FEED_HTTP_RETRIES = 2
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+
+# V65 already disabled the redundant continuous forced discovery lane.
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+
+_V76_PREF_LOCK = RLock()
+_V76_PREF_BY_WRITER: dict[str, str] = {}
+_V76_GLOBAL_PREFERRED = V76_RSS_TEMPLATES[0]
+
+# Coalesce an automatic scan and a manual RSS/status scan that overlap.
+# 2 seconds is far below the 20-second normal cadence, so this cannot make
+# ordinary cycles stale; it only prevents duplicated work at the same moment.
+_V76_RESULT_TTL_SECONDS = 2.0
+_V76_RESULT_LOCK = RLock()
+_V76_RESULT_CACHE: dict[str, tuple[float, list[Post], dict[str, Any]]] = {}
+_V76_ACCOUNT_LOCKS: dict[str, Lock] = {}
+_V76_ACCOUNT_LOCKS_GUARD = Lock()
+
+_V76_DIAG_LOCK = RLock()
+_V76_LAST_DIAG: dict[str, dict[str, Any]] = {}
+
+_V76_STATS_LOCK = Lock()
+_V76_STATS: dict[str, int] = {
+    "healthy_one_source_cycles": 0,
+    "failover_cycles": 0,
+    "standby_attempts": 0,
+    "preferred_source_changes": 0,
+    "all_rss_failed": 0,
+    "coalesced_calls": 0,
+    "direct_x_fallbacks": 0,
+}
+
+
+def _v76_stat(name: str, amount: int = 1) -> None:
+    with _V76_STATS_LOCK:
+        _V76_STATS[name] = int(_V76_STATS.get(name, 0)) + int(amount)
+
+
+def _v76_writer_key(username: str) -> str:
+    return str(username or "").strip().lstrip("@").casefold()
+
+
+def _v76_account_lock(username: str) -> Lock:
+    key = _v76_writer_key(username)
+    with _V76_ACCOUNT_LOCKS_GUARD:
+        lock = _V76_ACCOUNT_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _V76_ACCOUNT_LOCKS[key] = lock
+        return lock
+
+
+def _v76_template_source(template: str) -> str:
+    try:
+        return str(feed_source_name(template) or "")
+    except Exception:
+        return str(template or "")
+
+
+def _v76_template_from_source_name(source_name: str) -> str:
+    wanted = str(source_name or "").strip().casefold().removeprefix("www.")
+    if not wanted:
+        return ""
+    for template in V76_RSS_TEMPLATES:
+        host = _v76_template_source(template).strip().casefold().removeprefix("www.")
+        if wanted == host or wanted.endswith("." + host) or host.endswith("." + wanted):
+            return template
+    return ""
+
+
+def _v76_cached_known_source(username: str) -> str:
+    """Use existing bot history to remember which RSS mirror had worked.
+
+    This adds no network request and writes no new persistent key.
+    """
+    loaders = (
+        lambda: _rss_engine_cached(username, limit=12),
+        lambda: _working_rss_cached(username, limit=12),
+    )
+    for loader in loaders:
+        try:
+            rows = list(loader() or [])
+        except Exception:
+            rows = []
+        for post in rows:
+            if not isinstance(post, Post):
+                continue
+            template = _v76_template_from_source_name(
+                str(getattr(post, "source_name", "") or "")
+            )
+            if template:
+                return template
+    return ""
+
+
+def _v76_get_preferred(username: str) -> str:
+    global _V76_GLOBAL_PREFERRED
+    key = _v76_writer_key(username)
+
+    with _V76_PREF_LOCK:
+        current = _V76_PREF_BY_WRITER.get(key, "")
+        global_current = _V76_GLOBAL_PREFERRED
+
+    if current in V76_RSS_TEMPLATES:
+        return current
+
+    # Prefer a mirror already proven by preserved RSS history, otherwise use
+    # the source most recently proven by another writer, otherwise Nitter first.
+    cached = _v76_cached_known_source(username)
+    chosen = (
+        cached
+        if cached in V76_RSS_TEMPLATES
+        else global_current
+        if global_current in V76_RSS_TEMPLATES
+        else V76_RSS_TEMPLATES[0]
+    )
+    with _V76_PREF_LOCK:
+        _V76_PREF_BY_WRITER[key] = chosen
+    return chosen
+
+
+def _v76_set_preferred(username: str, template: str) -> None:
+    global _V76_GLOBAL_PREFERRED
+    if template not in V76_RSS_TEMPLATES:
+        return
+    key = _v76_writer_key(username)
+    with _V76_PREF_LOCK:
+        previous = _V76_PREF_BY_WRITER.get(key, "")
+        _V76_PREF_BY_WRITER[key] = template
+        _V76_GLOBAL_PREFERRED = template
+    if previous and previous != template:
+        _v76_stat("preferred_source_changes")
+        logging.info(
+            "🔁 RSS @%s: source changed %s -> %s after real failover success.",
+            str(username or "").strip().lstrip("@"),
+            _v76_template_source(previous),
+            _v76_template_source(template),
+        )
+
+
+def _v76_ordered_candidates(username: str) -> list[str]:
+    preferred = _v76_get_preferred(username)
+    return [preferred] + [
+        template
+        for template in V76_RSS_TEMPLATES
+        if template != preferred
+    ]
+
+
+def _v76_save_diag(username: str, diag: dict[str, Any]) -> None:
+    key = _v76_writer_key(username)
+    with _V76_DIAG_LOCK:
+        _V76_LAST_DIAG[key] = dict(diag)
+
+
+def _v76_get_diag(username: str) -> dict[str, Any]:
+    key = _v76_writer_key(username)
+    with _V76_DIAG_LOCK:
+        return dict(_V76_LAST_DIAG.get(key, {}) or {})
+
+
+def _v76_remember_rows(username: str, rows: list[Post]) -> None:
+    if not rows:
+        return
+    try:
+        _stable_rss_remember(username, rows)
+        _remember_control_rss_posts(username, rows)
+        _ten_history_save(username, rows)
+    except Exception:
+        pass
+
+
+def _v76_live_rss_rows(username: str) -> list[Post]:
+    """One-source healthy path; sequential standby failover on real zero/error."""
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return []
+    key = _v76_writer_key(canonical)
+    now = time.time()
+
+    with _V76_RESULT_LOCK:
+        cached = _V76_RESULT_CACHE.get(key)
+        if cached and now - float(cached[0]) <= _V76_RESULT_TTL_SECONDS:
+            _v76_stat("coalesced_calls")
+            _v76_save_diag(canonical, dict(cached[2]))
+            return list(cached[1])
+
+    with _v76_account_lock(canonical):
+        now = time.time()
+        with _V76_RESULT_LOCK:
+            cached = _V76_RESULT_CACHE.get(key)
+            if cached and now - float(cached[0]) <= _V76_RESULT_TTL_SECONDS:
+                _v76_stat("coalesced_calls")
+                _v76_save_diag(canonical, dict(cached[2]))
+                return list(cached[1])
+
+        candidates = _v76_ordered_candidates(canonical)
+        attempted: list[str] = []
+        errors: list[str] = []
+        preferred = candidates[0] if candidates else ""
+
+        for index, template in enumerate(candidates):
+            source = _v76_template_source(template)
+            attempted.append(source)
+            if index > 0:
+                _v76_stat("standby_attempts")
+
+            try:
+                rows = [
+                    post
+                    for post in (fetch_feed(canonical, template) or [])
+                    if isinstance(post, Post)
+                ]
+            except Exception as exc:
+                rows = []
+                errors.append(
+                    f"{source}: {type(exc).__name__}: {short_error(exc, 140)}"
+                )
+
+            if not rows:
+                continue
+
+            rows.sort(
+                key=lambda post: float(
+                    getattr(post, "published_ts", 0.0) or 0.0
+                ),
+                reverse=True,
+            )
+            _v76_set_preferred(canonical, template)
+            _v76_remember_rows(canonical, rows)
+
+            if index == 0:
+                _v76_stat("healthy_one_source_cycles")
+            else:
+                _v76_stat("failover_cycles")
+
+            diag = {
+                "live": True,
+                "source": source,
+                "attempted": list(attempted),
+                "attempt_count": len(attempted),
+                "fallback_used": index > 0,
+                "errors": list(errors),
+                "timestamp": time.time(),
+            }
+            _v76_save_diag(canonical, diag)
+            with _V76_RESULT_LOCK:
+                _V76_RESULT_CACHE[key] = (
+                    time.time(),
+                    list(rows),
+                    dict(diag),
+                )
+            return rows
+
+        _v76_stat("all_rss_failed")
+        diag = {
+            "live": False,
+            "source": "",
+            "preferred": _v76_template_source(preferred),
+            "attempted": list(attempted),
+            "attempt_count": len(attempted),
+            "fallback_used": len(attempted) > 1,
+            "errors": list(errors),
+            "timestamp": time.time(),
+        }
+        _v76_save_diag(canonical, diag)
+        with _V76_RESULT_LOCK:
+            _V76_RESULT_CACHE[key] = (
+                time.time(),
+                [],
+                dict(diag),
+            )
+        return []
+
+
+def fetch_posts(username: str) -> list[Post]:
+    """Final automatic route: RSS -> Direct-X only if ALL RSS candidates failed."""
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+
+    rss_rows = _v76_live_rss_rows(canonical)
+    if rss_rows:
+        ordered = list(rss_rows)
+        observed = time.time()
+        elapsed = time.perf_counter() - started
+        for post in ordered:
+            try:
+                _pipeline_mark_seen(
+                    post,
+                    "automatic:v76_one_rss_success",
+                    observed,
+                    elapsed,
+                )
+            except Exception:
+                pass
+        return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+    # True emergency path only. No Direct-X wake-up occurred above.
+    _v76_stat("direct_x_fallbacks")
+    try:
+        live_rows = list(
+            _v70_direct_x_fallback_rows(canonical, timeout=4.0) or []
+        )
+    except Exception:
+        live_rows = []
+
+    # If both live discovery routes are unavailable, keep the bot alive from
+    # its preserved RSS history instead of reporting a false empty state.
+    if not live_rows:
+        try:
+            live_rows = list(_rss_engine_cached(canonical, limit=60) or [])
+        except Exception:
+            live_rows = []
+
+    ordered = sorted(
+        [post for post in live_rows if isinstance(post, Post)],
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
+        reverse=True,
+    )
+    if ordered:
+        _v76_remember_rows(canonical, ordered)
+
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        try:
+            _pipeline_mark_seen(
+                post,
+                "automatic:v76_direct_x_only_after_all_rss_failed",
+                observed,
+                elapsed,
+            )
+        except Exception:
+            pass
+
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+def _v76_history_rows(username: str, limit: int = 60) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    gathered: list[Post] = []
+
+    for loader in (
+        lambda: _rss_engine_cached(canonical, limit=limit),
+        lambda: _working_rss_cached(canonical, limit=limit),
+        lambda: _ten_history_load(canonical),
+        lambda: _ten_history_collect_existing_state_posts(canonical),
+    ):
+        try:
+            gathered.extend(
+                post
+                for post in (loader() or [])
+                if isinstance(post, Post)
+            )
+        except Exception:
+            pass
+
+    unique: dict[str, Post] = {}
+    for post in gathered:
+        identity = str(
+            getattr(post, "post_id", "")
+            or getattr(post, "link", "")
+            or ""
+        ).strip()
+        if identity:
+            unique.setdefault(identity, post)
+
+    return sorted(
+        unique.values(),
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
+        reverse=True,
+    )[:max(1, int(limit))]
+
+
+def fetch_control_posts(
+    username: str,
+) -> tuple[str, list[Post], Exception | None]:
+    """RSS button tests RSS only; it never wakes Direct-X just for diagnostics."""
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows = _v76_live_rss_rows(canonical)
+        if rows:
+            return canonical, rows, None
+
+        history = _v76_history_rows(canonical, limit=60)
+        if history:
+            diag = _v76_get_diag(canonical)
+            diag["history_used"] = True
+            _v76_save_diag(canonical, diag)
+            return canonical, history, None
+
+        return canonical, [], None
+    except Exception as exc:
+        history = _v76_history_rows(canonical, limit=60)
+        if history:
+            return canonical, history, None
+        return canonical, [], exc
+
+
+def rss_status_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "מצב חסכוני: מקור RSS עובד אחד בכל סריקה.",
+        "גיבויים נבדקים אחד-אחד רק אם המקור הפעיל נכשל/מחזיר 0.",
+        "Direct-X לא מופעל על ידי כפתור הבדיקה.",
+        "",
+    ]
+
+    ok_count = 0
+    recent_total = 0
+    fetched = fetch_control_posts_for_accounts(accounts)
+
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched.get(username, ([], None))
+        diag = _v76_get_diag(username)
+        attempted = list(diag.get("attempted") or [])
+        attempt_count = int(diag.get("attempt_count", len(attempted)) or 0)
+        live = bool(diag.get("live"))
+        history_used = bool(diag.get("history_used"))
+
+        posts = sorted(
+            [post for post in (posts or []) if isinstance(post, Post)],
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )
+
+        if error and not posts:
+            lines.append(
+                f"❌ {label}: תקלה ב-RSS — {short_error(error, 150)}"
+            )
+            continue
+
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+
+        if live and posts:
+            ok_count += 1
+            latest = posts[0]
+            source = str(
+                diag.get("source")
+                or getattr(latest, "source_name", "")
+                or "RSS"
+            )
+            latest_dt = (
+                datetime.fromtimestamp(
+                    float(getattr(latest, "published_ts", 0.0) or 0.0),
+                    ZoneInfo(SHABBAT_TIMEZONE),
+                ).strftime("%H:%M %d/%m/%Y")
+                if getattr(latest, "published_ts", 0.0)
+                else "ללא זמן"
+            )
+            if attempt_count <= 1:
+                effort = "נבדק מקור 1 בלבד"
+            else:
+                effort = f"נבדקו {attempt_count} מקורות עד הצלחה"
+            lines.append(
+                f"✅ {label}: {len(recent)} פוסטים ביממה | "
+                f"מקור פעיל: {source} | {effort} | אחרון: {latest_dt}"
+            )
+            continue
+
+        if posts and history_used:
+            latest = posts[0]
+            latest_dt = (
+                datetime.fromtimestamp(
+                    float(getattr(latest, "published_ts", 0.0) or 0.0),
+                    ZoneInfo(SHABBAT_TIMEZONE),
+                ).strftime("%H:%M %d/%m/%Y")
+                if getattr(latest, "published_ts", 0.0)
+                else "ללא זמן"
+            )
+            lines.append(
+                f"⚠️ {label}: RSS חי לא החזיר כרגע; "
+                f"נבדקו {attempt_count} מקורות. קיימים {len(posts)} פוסטים בזיכרון | "
+                f"אחרון: {latest_dt}"
+            )
+            continue
+
+        lines.append(
+            f"❌ {label}: RSS חי לא החזיר פוסטים; "
+            f"נבדקו בפועל {attempt_count} מקורות"
+        )
+
+    lines.extend([
+        "",
+        f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו RSS חי. "
+        f"פוסטים מהיממה האחרונה בתוצאות: {recent_total}.",
+    ])
+    return "\n".join(lines)
+
+
+def _v76_self_audit() -> None:
+    # Source order preserved from the proven August pool.
+    if list(FEED_TEMPLATES) != list(V76_RSS_TEMPLATES):
+        raise RuntimeError("v76_feed_order_changed")
+
+    # Healthy policy is one source only; four are standby, not parallel.
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 1:
+        raise RuntimeError("v76_primary_not_one")
+    if int(RSS_FALLBACK_SOURCE_COUNT) != 4:
+        raise RuntimeError("v76_standby_count_wrong")
+
+    # Proven operational cadence remains untouched.
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v76_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v76_account_workers_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v76_post_cap_changed")
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v76_retry_count_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v76_request_timeout_changed")
+
+    # ETag/304 transport from V70 must remain active.
+    feed_names = set(fetch_feed.__code__.co_names)
+    if "_v70_conditional_feed_request" not in feed_names:
+        raise RuntimeError("v76_etag_transport_lost")
+
+    # Final automatic route must contain RSS first and Direct-X fallback.
+    names = set(fetch_posts.__code__.co_names)
+    if "_v76_live_rss_rows" not in names:
+        raise RuntimeError("v76_rss_first_route_missing")
+    if "_v70_direct_x_fallback_rows" not in names:
+        raise RuntimeError("v76_direct_x_emergency_route_missing")
+
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError("v76_redundant_continuous_scanner_enabled")
+
+
+_v76_self_audit()
+logging.info(
+    "V76 active: one proven RSS source per healthy writer cycle; sequential standby "
+    "failover only on zero/error; successful fallback becomes preferred; V70 ETag/304 "
+    "preserved; Direct-X only after all RSS candidates fail; diagnostics never wake Direct-X."
+)
+
+# ====== END V76 ONE WORKING RSS SOURCE / HISTORICAL-SAFE COST FIX ======
+
 if __name__ == "__main__":
     main()
