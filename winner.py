@@ -66847,27 +66847,45 @@ logging.info(
 
 # ====== END V72 ROOT FORMAT ENGINE ======
 
-# ====== V78 RSS-ONLY RESTORE ======
-# Exact historical RSS block copied verbatim from winner_FINAL_FIXED_2026-08-07.py.
-# No non-RSS function or setting is changed in this layer.
-# ====== END V78 HEADER ======
+# ====== V80 EARLY ONE-PRIMARY RSS RESTORE ======
+# Restores the genuinely early bot topology:
+#   primary:  nitter.net
+#   fallback: xcancel.com, ONLY if primary returns zero/errors
+# Healthy cycle therefore performs exactly ONE RSS-source check per writer.
+# No 3/5-mirror fan-out, no ETag layer, no sticky learning, no Direct-X supplement.
+# Everything outside RSS remains V73.
 
-# ====== V56 RESTORE THE ACTUAL LAST WORKING V23 RSS/DISCOVERY ROUTE (2026-08-07) ======
-# IMPORTANT: V24 and later were built from a branch that did NOT contain the
-# final V23 RSS restore block.  V50 later claimed to restore the V43 route, but
-# V43 itself also lacked that V23 block.  This final layer restores the actual
-# V23/V19 working RSS/discovery principle while preserving every V24-V55 content,
-# formatting, duplicate, translation, media, Opta, TrollFootball and button fix.
-# No new RSS source is added.  Existing persistent files/JSON keys are untouched.
+BOT_BUILD_ID = "winner-v80-early-one-primary-rss-2026-08-26"
 
-BOT_BUILD_ID = "winner-v56-actual-v23-rss-restore-keep-v55-fixes-2026-08-07"
+FEED_TEMPLATES = [
+    "https://nitter.net/{username}/rss",
+    "https://xcancel.com/{username}/rss",
+]
+MAX_FEED_TEMPLATES_PER_ACCOUNT = 0
+RSS_PRIMARY_SOURCE_COUNT = 1
+RSS_ENABLE_FALLBACK = True
+RSS_FALLBACK_SOURCE_COUNT = 1
+RSS_ENABLE_STALE_FALLBACK = False
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 1
 
-# The exact working V23/V19 RSS GET.  Current retry setting is already 2 by
-# default; Railway environment overrides remain authoritative.
-FEED_HTTP_RETRIES = int(os.environ.get("FEED_HTTP_RETRIES", "2"))
+# Exact early RSS request behavior.
+FEED_REQUEST_TIMEOUT_SECONDS = 4.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 4.5
+FEED_HTTP_RETRIES = 2
+
+# Keep the current outer V73 scan behavior; only RSS topology is rolled back.
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+
+# Keep the redundant later continuous X scanner off.
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
 
 
-def _v56_rss_http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+def http_get_feed(
+    url: str,
+    timeout: int = FEED_REQUEST_TIMEOUT_SECONDS,
+) -> bytes:
     request = urllib.request.Request(
         url,
         headers={
@@ -66876,393 +66894,235 @@ def _v56_rss_http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS
         },
     )
     last_error: Exception | None = None
-    for attempt in range(1, max(1, int(FEED_HTTP_RETRIES)) + 1):
+    for attempt in range(1, max(1, FEED_HTTP_RETRIES) + 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except Exception as exc:
             last_error = exc
-            if attempt < max(1, int(FEED_HTTP_RETRIES)):
+            if attempt < max(1, FEED_HTTP_RETRIES):
                 time.sleep(0.4)
     raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
 
 
-def _v56_final_rss_network_fetch(
-    username: str,
-    limit: int = 30,
-    exhaustive: bool = False,
-) -> tuple[list[Post], dict[str, Any]]:
-    """Exact V23 principle: primary RSS -> direct public X -> fallback RSS."""
-    canonical = str(username or "").strip().lstrip("@")
-    requested = max(1, int(limit))
-    target = min(requested, 10 if exhaustive else 1)
-    templates = _final_rss_ordered_templates()
-    primary = [item for item in templates if "nitter.net" in feed_source_name(item).casefold()]
-    fallback = [item for item in templates if item not in primary]
-    diagnostics: dict[str, Any] = {
-        "errors": [],
-        "timeouts": [],
-        "sources": {},
-        "variants": [],
-        "path": [],
-        "returned_network": 0,
-    }
-    merged: dict[str, Post] = {}
+def active_feed_templates() -> list[str]:
+    if MAX_FEED_TEMPLATES_PER_ACCOUNT <= 0:
+        return list(FEED_TEMPLATES)
+    return list(FEED_TEMPLATES)[
+        : max(1, min(len(FEED_TEMPLATES), int(MAX_FEED_TEMPLATES_PER_ACCOUNT)))
+    ]
 
-    variants = _stable_rss_username_variants(canonical)
-    if not variants:
-        variants = [canonical]
 
-    # 1) Primary Nitter RSS first.  If healthy, do not hit dead fallback mirrors.
-    for variant in variants:
-        diagnostics["variants"].append(variant)
-        for template in primary:
-            posts, error = _final_rss_fetch_one(variant, template)
-            if error:
-                diagnostics["errors"].append(error)
-                continue
-            before = len(merged)
-            _reliable_merge_posts(merged, posts, canonical)
-            added = len(merged) - before
-            diagnostics["sources"][f"primary:{variant}:{feed_source_name(template)}"] = added
-            if added:
-                diagnostics["path"].append("primary_rss")
-                if len(merged) >= target:
-                    ordered = sorted(
-                        merged.values(),
-                        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
-                        reverse=True,
-                    )
-                    diagnostics["returned_network"] = len(ordered)
-                    _final_rss_store_diagnostics(canonical, diagnostics)
-                    return ordered[:requested], diagnostics
-
-    # 2) Existing direct public-X safety lane.  This is part of the exact V23
-    # discovery route and does not add an RSS source or require an API key.
-    try:
-        direct = _reliable_direct_profile_posts(
-            canonical,
-            limit=max(20, requested),
-            force=not bool(merged),
-        )
-        before = len(merged)
-        _reliable_merge_posts(merged, direct, canonical)
-        added = len(merged) - before
-        diagnostics["sources"]["direct_x_no_key"] = added
-        if added:
-            diagnostics["path"].append("direct_x_no_key")
-    except Exception as exc:
-        diagnostics["errors"].append("direct_x_no_key: " + short_error(exc, 350))
-
-    if len(merged) >= target and not exhaustive:
-        ordered = sorted(
-            merged.values(),
-            key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
-            reverse=True,
-        )
-        diagnostics["returned_network"] = len(ordered)
-        _final_rss_store_diagnostics(canonical, diagnostics)
-        return ordered[:requested], diagnostics
-
-    # 3) Existing fallback RSS mirrors only when primary/direct did not provide
-    # enough rows.  Same five configured templates; no new source is introduced.
-    for variant in variants:
-        if not fallback:
-            break
-        try:
-            posts, errors, timeouts = collect_posts_from_feed_templates(variant, fallback)
-        except Exception as exc:
-            posts, errors, timeouts = [], [f"fallback: {short_error(exc, 350)}"], []
-        diagnostics["errors"].extend(errors or [])
-        diagnostics["timeouts"].extend(timeouts or [])
-        before = len(merged)
-        _reliable_merge_posts(merged, posts, canonical)
-        added = len(merged) - before
-        diagnostics["sources"][f"fallback:{variant}"] = added
-        if added:
-            diagnostics["path"].append("fallback_rss")
-        if len(merged) >= target:
-            break
-
-    ordered = sorted(
-        merged.values(),
-        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
-        reverse=True,
+def fetch_feed(username: str, template: str) -> list[Post]:
+    url = template.format(username=urllib.parse.quote(username))
+    return parse_posts(
+        username,
+        http_get_feed(url),
+        feed_source_name(template),
     )
-    diagnostics["returned_network"] = len(ordered)
-    diagnostics["errors"] = list(dict.fromkeys(diagnostics["errors"]))[-12:]
-    diagnostics["timeouts"] = list(dict.fromkeys(diagnostics["timeouts"]))[-12:]
-    _final_rss_store_diagnostics(canonical, diagnostics)
-    return ordered[:requested], diagnostics
 
 
-def _v56_stable_rss_network_fetch(
+def collect_posts_from_feed_templates(
     username: str,
-    limit: int = 30,
-    exhaustive: bool = False,
-) -> tuple[list[Post], dict[str, Any]]:
-    return _v56_final_rss_network_fetch(username, limit=limit, exhaustive=exhaustive)
+    feed_templates: list[str],
+) -> tuple[list[Post], list[str], list[str]]:
+    all_posts: dict[str, Post] = {}
+    feed_errors: list[str] = []
+    timed_out_sources: list[str] = []
+    if not feed_templates:
+        return [], [], []
 
-
-def _v56_full_speed_rss_job(username: str) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    started = time.perf_counter()
-    try:
-        rows = list(_FULL_SPEED_RSS_BASE(canonical) or [])
-    except Exception as exc:
-        logging.debug(
-            "Equal-speed RSS job failed safely for @%s: %s",
-            canonical,
-            short_error(exc, 300),
+    executor = ThreadPoolExecutor(
+        max_workers=min(
+            max(1, int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)),
+            len(feed_templates),
         )
-        rows = []
-    rows = sorted(
-        [post for post in rows if isinstance(post, Post)],
-        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
-        reverse=True,
     )
-    key = canonical.casefold()
-    with _FULL_SPEED_RSS_LOCK:
-        _FULL_SPEED_RSS_CACHE[key] = (time.time(), list(rows))
-    with _FULL_SPEED_LIVE_LOCK:
-        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
-        stats["last_rss_job_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
-        stats["last_rss_job_rows"] = len(rows)
-        stats["last_rss_job_at"] = time.time()
-        stats["active_rss_route"] = "v56_actual_v23"
-        _FULL_SPEED_DISCOVERY_STATS[key] = stats
-    return rows
-
-
-def _v56_full_speed_start_rss(username: str):
-    canonical = str(username or "").strip().lstrip("@")
-    key = canonical.casefold()
-    with _FULL_SPEED_RSS_LOCK:
-        existing = _FULL_SPEED_RSS_INFLIGHT.get(key)
-        if existing is not None and not existing.done():
-            return existing
-        future = _FULL_SPEED_RSS_EXECUTOR.submit(_full_speed_rss_job, canonical)
-        _FULL_SPEED_RSS_INFLIGHT[key] = future
-        return future
-
-
-def _v56_fetch_posts_unbounded(username: str) -> list[Post]:
-    """V23 bounded parallel RSS/live discovery, before the later 12-row cap."""
-    canonical = str(username or "").strip().lstrip("@")
-    key = canonical.casefold()
-    started = time.perf_counter()
-
-    rss_rows = _full_speed_rss_cache_get(canonical)
-    live_rows = _full_speed_cache_get(canonical)
-    rss_future = _full_speed_start_rss(canonical)
-    live_future = None if live_rows else _full_speed_start_live(canonical)
-
-    for future, kind in ((rss_future, "rss"), (live_future, "live")):
-        if future is None or not future.done():
-            continue
-        try:
-            rows = list(future.result() or [])
-        except Exception:
-            rows = []
-        if kind == "live":
-            live_rows = rows or _full_speed_cache_get(canonical)
-        else:
-            rss_rows = rows or _full_speed_rss_cache_get(canonical)
-
-    pending = {
-        future for future in (rss_future, live_future)
-        if future is not None and not future.done()
+    futures = {
+        executor.submit(fetch_feed, username, template): template
+        for template in feed_templates
     }
-    deadline = time.perf_counter() + FULL_SPEED_FETCH_BUDGET_SECONDS
-    while pending and time.perf_counter() < deadline:
-        remaining = max(0.0, deadline - time.perf_counter())
-        done, still_pending = _rss_wait(
-            pending,
-            timeout=remaining,
-            return_when=_RSS_FIRST_COMPLETED,
-        )
-        if not done:
-            break
-        for future in done:
+    try:
+        for future in as_completed(
+            futures,
+            timeout=FEED_COLLECTION_TIMEOUT_SECONDS,
+        ):
+            template = futures[future]
+            source_name = feed_source_name(template)
             try:
-                rows = list(future.result() or [])
-            except Exception:
-                rows = []
-            if future is live_future:
-                live_rows = rows or _full_speed_cache_get(canonical)
-            elif future is rss_future:
-                rss_rows = rows or _full_speed_rss_cache_get(canonical)
-        pending = set(still_pending)
-        if live_rows:
-            break
+                for post in future.result() or []:
+                    if not isinstance(post, Post):
+                        continue
+                    identity = str(
+                        getattr(post, "post_id", "")
+                        or getattr(post, "link", "")
+                        or ""
+                    ).strip()
+                    if identity:
+                        all_posts.setdefault(identity, post)
+            except Exception as exc:
+                feed_errors.append(
+                    f"{source_name}: {type(exc).__name__}: {short_error(exc)}"
+                )
+    except FuturesTimeoutError:
+        timed_out_sources = [
+            feed_source_name(template)
+            for future, template in futures.items()
+            if not future.done()
+        ]
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
 
-    if not rss_rows:
-        rss_rows = _full_speed_rss_cache_get(canonical)
-    if not live_rows:
-        live_rows = _full_speed_cache_get(canonical)
-
-    merged: dict[str, Post] = {}
-    _reliable_merge_posts(merged, rss_rows, canonical)
-    _reliable_merge_posts(merged, live_rows, canonical)
-    ordered = sorted(
-        merged.values(),
+    posts = list(all_posts.values())
+    posts.sort(
         key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
         reverse=True,
     )
+    return posts, feed_errors, timed_out_sources
 
-    rss_latest = _full_speed_latest_ts(rss_rows)
-    live_latest = _full_speed_latest_ts(live_rows)
-    with _FULL_SPEED_LIVE_LOCK:
-        stats = dict(_FULL_SPEED_DISCOVERY_STATS.get(key, {}))
-        stats.update({
-            "last_bounded_fetch_ms": round((time.perf_counter() - started) * 1000.0, 1),
-            "last_rss_rows": len(rss_rows),
-            "last_live_rows_used": len(live_rows),
-            "last_merged_rows": len(ordered),
-            "rss_latest_ts": rss_latest,
-            "live_latest_ts": live_latest,
-            "live_was_newer": bool(live_latest and live_latest > rss_latest),
-            "checked_at": time.time(),
-            "active_route": "v56_actual_v23_bounded_parallel",
-        })
-        _FULL_SPEED_DISCOVERY_STATS[key] = stats
 
-    if live_latest and live_latest > rss_latest:
-        gap = max(0.0, live_latest - rss_latest) if rss_latest else 0.0
-        logging.info(
-            "⚡ @%s: נמצא פוסט חי חדש יותר מה-RSS%s והוא הועבר מיד למסלול האוטומטי.",
+_V80_RSS_DIAG_LOCK = RLock()
+_V80_RSS_DIAG: dict[str, dict[str, Any]] = {}
+
+
+def _v80_diag_set(username: str, **values: Any) -> None:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V80_RSS_DIAG_LOCK:
+        _V80_RSS_DIAG[key] = dict(values)
+
+
+def _v80_diag_get(username: str) -> dict[str, Any]:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V80_RSS_DIAG_LOCK:
+        return dict(_V80_RSS_DIAG.get(key, {}) or {})
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    templates = active_feed_templates()
+
+    primary = templates[:1]
+    fallback = templates[1:2] if RSS_ENABLE_FALLBACK else []
+
+    # EARLY HEALTHY PATH: exactly one Nitter request.
+    posts, primary_errors, primary_timeouts = (
+        collect_posts_from_feed_templates(canonical, primary)
+    )
+    if posts:
+        _v80_diag_set(
             canonical,
-            f" בפער של {gap:.0f} שניות" if gap else "",
+            source="nitter.net",
+            attempts=1,
+            fallback_used=False,
+            errors=primary_errors,
+            timeouts=primary_timeouts,
         )
-
-    if ordered:
         try:
-            _stable_rss_remember(canonical, ordered)
-            _remember_control_rss_posts(canonical, ordered)
-            _ten_history_save(canonical, ordered)
+            _stable_rss_remember(canonical, posts)
+            _remember_control_rss_posts(canonical, posts)
+            _ten_history_save(canonical, posts)
         except Exception:
             pass
+        return posts
 
-    observed = time.time()
-    elapsed = time.perf_counter() - started
-    for post in ordered:
-        if isinstance(post, Post):
+    # Only if primary gave zero/error: one XCancel fallback request.
+    fallback_errors: list[str] = []
+    fallback_timeouts: list[str] = []
+    if fallback:
+        fallback_posts, fallback_errors, fallback_timeouts = (
+            collect_posts_from_feed_templates(canonical, fallback)
+        )
+        if fallback_posts:
+            _v80_diag_set(
+                canonical,
+                source="xcancel.com",
+                attempts=2,
+                fallback_used=True,
+                errors=primary_errors + fallback_errors,
+                timeouts=primary_timeouts + fallback_timeouts,
+            )
             try:
-                _pipeline_mark_seen(post, "automatic:v56_actual_v23_rss_live", observed, elapsed)
+                _stable_rss_remember(canonical, fallback_posts)
+                _remember_control_rss_posts(canonical, fallback_posts)
+                _ten_history_save(canonical, fallback_posts)
             except Exception:
                 pass
+            return fallback_posts
 
-    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+    _v80_diag_set(
+        canonical,
+        source="",
+        attempts=1 + (1 if fallback else 0),
+        fallback_used=bool(fallback),
+        errors=primary_errors + fallback_errors,
+        timeouts=primary_timeouts + fallback_timeouts,
+    )
+    return []
 
 
-def _v56_fetch_posts(username: str) -> list[Post]:
-    # Preserve the later explicit server-saving requirement: only 12 candidates
-    # enter automatic processing.  The RSS/live layer still fetches and stores
-    # the full old-good result before this final slice.
-    return list(_v56_fetch_posts_unbounded(username) or [])[:12]
-
-
-def _v56_continuous_force_probe_account(username: str) -> list[Post]:
-    """V23 behavior: continuous fast lane is direct-X only, never duplicate RSS."""
-    canonical = _continuous_force_account_name(username)
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical = str(username or "").strip().lstrip("@")
     started = time.perf_counter()
     try:
-        rows = list(
-            _reliable_direct_profile_posts(
-                canonical,
-                limit=CONTINUOUS_FORCE_LIMIT,
-                force=True,
-            )
-            or []
-        )
-        elapsed = time.perf_counter() - started
-        return _continuous_force_store_rows(canonical, rows, elapsed)
-    except Exception as exc:
-        logging.debug(
-            "Continuous forced live lookup failed safely for @%s: %s",
-            canonical,
-            short_error(exc, 300),
-        )
-        return []
-    finally:
-        with _CONTINUOUS_FORCE_LOCK:
-            _CONTINUOUS_FORCE_INFLIGHT.pop(canonical.casefold(), None)
-
-
-# Manual diagnostics must not observe a cold background placeholder.  Run the
-# actual V23 network route and wait for the result, then use existing cache only
-# if every current source returned nothing.
-_V56_MANUAL_RSS_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
-_V56_MANUAL_RSS_DIAGNOSTICS_LOCK = RLock()
-
-
-def _v56_fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
-    canonical = str(username or "").strip().lstrip("@")
-    try:
-        rows, diagnostics = _v56_final_rss_network_fetch(canonical, limit=60, exhaustive=True)
-        with _V56_MANUAL_RSS_DIAGNOSTICS_LOCK:
-            _V56_MANUAL_RSS_DIAGNOSTICS[canonical.casefold()] = dict(diagnostics or {})
-        rows = list(rows or [])
-        if not rows:
-            try:
-                rows = list(_stable_rss_cached_posts(canonical, limit=60) or [])
-            except Exception:
-                rows = []
-        return canonical, rows, None
+        rows = list(fetch_posts(canonical) or [])
+        try:
+            daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        except Exception:
+            pass
+        return canonical, rows[
+            : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+        ]
     except Exception as exc:
         try:
-            cached = list(_stable_rss_cached_posts(canonical, limit=60) or [])
+            daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
         except Exception:
-            cached = []
-        return canonical, cached, None if cached else exc
+            pass
+        logging.warning(
+            "⚠️ RSS fetch failed for @%s: %s",
+            canonical,
+            short_error(exc, 500),
+        )
+        return canonical, []
 
 
-# Activate the actual working V23 route at the FINAL boundary so no later V45,
-# V48, V49 or V50 compatibility layer can replace it again.
-http_get_feed = _v56_rss_http_get_feed
-_final_rss_network_fetch = _v56_final_rss_network_fetch
-_stable_rss_network_fetch = _v56_stable_rss_network_fetch
-_full_speed_rss_job = _v56_full_speed_rss_job
-_full_speed_start_rss = _v56_full_speed_start_rss
-fetch_posts = _v56_fetch_posts
-fetch_control_posts = _v56_fetch_control_posts
-_continuous_force_probe_account = _v56_continuous_force_probe_account
-MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
-
-# Redirect compatibility aliases too, exactly as the working V23 layer did.
-_v20_final_rss_network_fetch = _v56_final_rss_network_fetch
-_v21_final_rss_network_fetch = _v56_final_rss_network_fetch
-_v22_final_rss_network_fetch = _v56_final_rss_network_fetch
-_v20_full_speed_rss_job = _v56_full_speed_rss_job
-_v20_full_speed_start_rss = _v56_full_speed_start_rss
-_v20_fetch_posts = _v56_fetch_posts
-_v20_continuous_force_probe_account = _v56_continuous_force_probe_account
-
-# Clear only stale in-process cooldown/circuit state created by later abandoned
-# RSS experiments.  No persistent file is touched.
-try:
-    with _V45_RSS_CB_LOCK:
-        _V45_RSS_CB.clear()
-except Exception:
-    pass
-try:
-    with _V48_RSS_LOCK:
-        _V48_RSS_ENDPOINT_STATE.clear()
-except Exception:
-    pass
+def fetch_control_posts(
+    username: str,
+) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        return canonical, list(fetch_posts(canonical) or []), None
+    except Exception as exc:
+        return canonical, [], exc
 
 
-def _v56_rss_path_text(username: str) -> str:
-    with _V56_MANUAL_RSS_DIAGNOSTICS_LOCK:
-        diagnostics = dict(_V56_MANUAL_RSS_DIAGNOSTICS.get(str(username or "").casefold(), {}))
-    path = list(dict.fromkeys(diagnostics.get("path") or []))
-    if "primary_rss" in path:
-        return "RSS ראשי"
-    if "fallback_rss" in path:
-        return "RSS גיבוי"
-    if "direct_x_no_key" in path:
-        return "X ישיר (גיבוי למסלול RSS)"
-    return "לא זוהה מקור פעיל"
+def fetch_control_posts_for_accounts(
+    accounts: list[str],
+) -> dict[str, tuple[list[Post], Exception | None]]:
+    results: dict[str, tuple[list[Post], Exception | None]] = {
+        username: ([], None) for username in accounts
+    }
+    if not accounts:
+        return results
+
+    workers = min(
+        max(1, int(MAX_PARALLEL_ACCOUNT_CHECKS)),
+        max(1, len(accounts)),
+    )
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(fetch_control_posts, username): username
+            for username in accounts
+        }
+        for future in as_completed(future_map):
+            original = future_map[future]
+            try:
+                _canonical, posts, error = future.result()
+            except Exception as exc:
+                posts, error = [], exc
+            results[original] = (posts, error)
+    return results
 
 
 def rss_status_text() -> str:
@@ -67270,53 +67130,50 @@ def rss_status_text() -> str:
     lines = [
         f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
         "",
-        "הבדיקה הזו מריצה את מסלול ה-RSS/גיבוי שעבד ב-V23 וממתינה לתוצאה אמיתית.",
-        "מקורות העובדות, אופטה, ציוצי כדורגל, מטרות מרכזיות וסופסקור נמצאים בתפריט ‘עובדות’.",
+        "מקור ראשי יחיד: nitter.net",
+        "xcancel.com נבדק רק אם המקור הראשי נכשל או מחזיר 0.",
         "",
     ]
+
     ok_count = 0
     recent_total = 0
-    fetched_by_account = fetch_control_posts_for_accounts(accounts)
+    fetched = fetch_control_posts_for_accounts(accounts)
+
     for username in accounts:
         label = _hebrew_account_label(username)
-        posts, error = fetched_by_account.get(username, ([], None))
-        if error:
-            lines.append(f"❌ {label}: תקלה בשליפה - {short_error(error, 140)}")
+        posts, error = fetched.get(username, ([], None))
+        diag = _v80_diag_get(username)
+        posts = sorted(
+            [p for p in (posts or []) if isinstance(p, Post)],
+            key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )
+
+        if error and not posts:
+            lines.append(
+                f"❌ {label}: תקלה ב-RSS — {short_error(error, 140)}"
+            )
             continue
-        recent = recent_24h_posts(posts)
-        recent_total += len(recent)
-        route = _v56_rss_path_text(username)
+
         if posts:
             ok_count += 1
-            source = posts[0].source_name or route
-            if recent:
-                latest_dt = datetime.fromtimestamp(
-                    recent[0].published_ts,
-                    ZoneInfo(SHABBAT_TIMEZONE),
-                ).strftime("%H:%M %d/%m/%Y")
-                lines.append(
-                    f"✅ {label}: {len(recent)} פוסטים ביממה | מסלול: {route} | "
-                    f"מקור אחרון: {source} | אחרון: {latest_dt}"
-                )
-            else:
-                age_hours = max(
-                    0.0,
-                    (time.time() - float(posts[0].published_ts or 0.0)) / 3600,
-                ) if posts[0].published_ts else 0.0
-                lines.append(
-                    f"⚠️ {label}: נמצאו פוסטים אך הם ישנים | מסלול: {route} | "
-                    f"אחרון לפני {age_hours:.1f} שעות | מקור: {source}"
-                )
+            recent = recent_24h_posts(posts)
+            recent_total += len(recent)
+            source = str(
+                diag.get("source")
+                or getattr(posts[0], "source_name", "")
+                or "RSS"
+            )
+            suffix = " (גיבוי)" if diag.get("fallback_used") else ""
+            lines.append(
+                f"✅ {label}: {len(recent)} פוסטים ביממה | {source}{suffix}"
+            )
         else:
-            with _V56_MANUAL_RSS_DIAGNOSTICS_LOCK:
-                diag = dict(_V56_MANUAL_RSS_DIAGNOSTICS.get(str(username).casefold(), {}))
-            errors = list(diag.get("errors") or [])
-            timeouts = list(diag.get("timeouts") or [])
-            detail = "; ".join((errors + [f"timeout:{x}" for x in timeouts])[:2])
-            if detail:
-                lines.append(f"❌ {label}: לא נמצאו פוסטים | {short_error(Exception(detail), 180)}")
-            else:
-                lines.append(f"⚠️ {label}: המסלול נבדק במלואו ולא החזיר פוסטים כרגע")
+            attempts = int(diag.get("attempts", 1) or 1)
+            lines.append(
+                f"⚠️ {label}: לא התקבלו פוסטים | נבדקו {attempts} מקור/מקורות"
+            )
+
     lines.extend([
         "",
         f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים. "
@@ -67325,54 +67182,49 @@ def rss_status_text() -> str:
     return "\n".join(lines)
 
 
-def _v56_rss_self_audit() -> None:
+def _v80_self_audit() -> None:
     expected = [
         "https://nitter.net/{username}/rss",
-        "https://twiiit.com/{username}/rss",
-        "https://lightbrd.com/{username}/rss",
-        "https://rsshub.rssforever.com/twitter/user/{username}",
-        "https://rsshub.app/twitter/user/{username}",
+        "https://xcancel.com/{username}/rss",
     ]
-    if list(active_feed_templates())[:5] != expected:
-        raise RuntimeError("v56_feed_source_order_changed")
-    if http_get_feed is not _v56_rss_http_get_feed:
-        raise RuntimeError("v56_http_boundary_not_active")
-    if _final_rss_network_fetch is not _v56_final_rss_network_fetch:
-        raise RuntimeError("v56_network_fetch_boundary_not_active")
-    if fetch_posts is not _v56_fetch_posts:
-        raise RuntimeError("v56_auto_fetch_boundary_not_active")
-    if fetch_control_posts is not _v56_fetch_control_posts:
-        raise RuntimeError("v56_manual_fetch_boundary_not_active")
-    if _continuous_force_probe_account is not _v56_continuous_force_probe_account:
-        raise RuntimeError("v56_continuous_route_not_v23_direct_only")
-    if int(FEED_HTTP_RETRIES) != int(os.environ.get("FEED_HTTP_RETRIES", "2")):
-        raise RuntimeError("v56_retry_setting_changed")
-    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
-        raise RuntimeError("v56_request_timeout_changed")
-    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
-        raise RuntimeError("v56_collection_timeout_changed")
-    if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
-        raise RuntimeError("v56_primary_fallback_count_changed")
-    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v56_auto_cap_not_12")
-    if CHECK_EVERY_SECONDS != 20 or MAX_PARALLEL_ACCOUNT_CHECKS != 4:
-        raise RuntimeError("v56_current_scan_worker_settings_changed")
-    if abs(float(CONTROL_POLL_SECONDS) - 0.40) > 0.001:
-        raise RuntimeError("v56_control_poll_setting_changed")
+    if list(FEED_TEMPLATES) != expected:
+        raise RuntimeError("v80_feed_list_changed")
+    if list(active_feed_templates()) != expected:
+        raise RuntimeError("v80_active_feed_list_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 1:
+        raise RuntimeError("v80_primary_not_one")
+    if int(RSS_FALLBACK_SOURCE_COUNT) != 1:
+        raise RuntimeError("v80_fallback_not_one")
+    if int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 1:
+        raise RuntimeError("v80_feed_parallelism_not_one")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 4.0:
+        raise RuntimeError("v80_request_timeout_changed")
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 4.5:
+        raise RuntimeError("v80_collection_timeout_changed")
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v80_retries_changed")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v80_outer_scan_changed")
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError("v80_continuous_direct_x_active")
+
+    forbidden = {
+        "_v70_direct_x_fallback_rows",
+        "_full_speed_start_live",
+        "_v76_live_rss_rows",
+        "_v35_fetch_posts",
+    }
+    if forbidden.intersection(set(fetch_posts.__code__.co_names)):
+        raise RuntimeError("v80_later_rss_path_still_active")
 
 
-try:
-    _v56_rss_self_audit()
-    logging.info(
-        "V56 active: actual V23/V19 RSS route restored at final boundary; primary RSS -> "
-        "existing direct-X fallback -> existing RSS fallbacks; manual 14-writer check waits "
-        "for the real route; current 20s/4-worker/12-post/0.40s settings and all V55 fixes preserved"
-    )
-except Exception as _v56_rss_audit_exc:
-    logging.error("V56 RSS restore self-audit failed: %s", short_error(_v56_rss_audit_exc, 2200))
-    raise
+_v80_self_audit()
+logging.info(
+    "V80 active: early one-primary RSS restored — Nitter first, "
+    "XCancel only as fallback; no 3/5 mirror fan-out."
+)
 
-# ====== END V56 ACTUAL V23 RSS RESTORE ======
+# ====== END V80 EARLY ONE-PRIMARY RSS RESTORE ======
 
 if __name__ == "__main__":
     main()
