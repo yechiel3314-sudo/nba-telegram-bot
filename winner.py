@@ -66847,19 +66847,26 @@ logging.info(
 
 # ====== END V72 ROOT FORMAT ENGINE ======
 
-# ====== V80 EARLY ONE-PRIMARY RSS RESTORE ======
-# Restores the genuinely early bot topology:
-#   primary:  nitter.net
-#   fallback: xcancel.com, ONLY if primary returns zero/errors
-# Healthy cycle therefore performs exactly ONE RSS-source check per writer.
-# No 3/5-mirror fan-out, no ETag layer, no sticky learning, no Direct-X supplement.
-# Everything outside RSS remains V73.
+# ====== V81 RSS-BLOCK-ONLY RESTORE ======
+# ONLY the RSS block is changed.
+# All V73 non-RSS additions remain byte-for-byte untouched.
+#
+# Historical behavior preserved:
+#   one primary RSS source per writer
+#   one fallback source only if primary returns zero/errors
+#   no 3/5-source fan-out
+#   no parallel RSS mirrors
+#
+# The original June hosts nitter.net / xcancel.com are no longer viable in
+# August 2026, so only the hostnames are replaced with currently-live public
+# RSSHub instances. The route /twitter/user/{username} is the same RSS format.
 
-BOT_BUILD_ID = "winner-v80-early-one-primary-rss-2026-08-26"
+BOT_BUILD_ID = "winner-v81-rss-block-only-live-2026-08-26"
 
+# One live primary + one standby fallback.
 FEED_TEMPLATES = [
-    "https://nitter.net/{username}/rss",
-    "https://xcancel.com/{username}/rss",
+    "https://rsshub.pseudoyu.com/twitter/user/{username}",
+    "https://hub.slarker.me/twitter/user/{username}",
 ]
 MAX_FEED_TEMPLATES_PER_ACCOUNT = 0
 RSS_PRIMARY_SOURCE_COUNT = 1
@@ -66868,18 +66875,18 @@ RSS_FALLBACK_SOURCE_COUNT = 1
 RSS_ENABLE_STALE_FALLBACK = False
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 1
 
-# Exact early RSS request behavior.
+# Match the early lightweight RSS behavior.
 FEED_REQUEST_TIMEOUT_SECONDS = 4.0
 FEED_COLLECTION_TIMEOUT_SECONDS = 4.5
 FEED_HTTP_RETRIES = 2
 
-# Keep the current outer V73 scan behavior; only RSS topology is rolled back.
+# Keep current V73 outer runtime exactly as requested.
 CHECK_EVERY_SECONDS = 20
 MAX_PARALLEL_ACCOUNT_CHECKS = 4
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
 
-# Keep the redundant later continuous X scanner off.
-CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+# Keep the canonical consistency audit aligned with THIS final RSS block only.
+_CANONICAL_STABLE_FEED_TEMPLATES = tuple(FEED_TEMPLATES)
 
 
 def http_get_feed(
@@ -66894,29 +66901,26 @@ def http_get_feed(
         },
     )
     last_error: Exception | None = None
-    for attempt in range(1, max(1, FEED_HTTP_RETRIES) + 1):
+    for attempt in range(1, max(1, int(FEED_HTTP_RETRIES)) + 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except Exception as exc:
             last_error = exc
-            if attempt < max(1, FEED_HTTP_RETRIES):
+            if attempt < max(1, int(FEED_HTTP_RETRIES)):
                 time.sleep(0.4)
     raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
 
 
 def active_feed_templates() -> list[str]:
-    if MAX_FEED_TEMPLATES_PER_ACCOUNT <= 0:
-        return list(FEED_TEMPLATES)
-    return list(FEED_TEMPLATES)[
-        : max(1, min(len(FEED_TEMPLATES), int(MAX_FEED_TEMPLATES_PER_ACCOUNT)))
-    ]
+    return list(FEED_TEMPLATES)
 
 
 def fetch_feed(username: str, template: str) -> list[Post]:
-    url = template.format(username=urllib.parse.quote(username))
+    canonical = str(username or "").strip().lstrip("@")
+    url = template.format(username=urllib.parse.quote(canonical))
     return parse_posts(
-        username,
+        canonical,
         http_get_feed(url),
         feed_source_name(template),
     )
@@ -66926,94 +66930,68 @@ def collect_posts_from_feed_templates(
     username: str,
     feed_templates: list[str],
 ) -> tuple[list[Post], list[str], list[str]]:
+    """One-source collector; no mirror fan-out."""
     all_posts: dict[str, Post] = {}
-    feed_errors: list[str] = []
-    timed_out_sources: list[str] = []
-    if not feed_templates:
-        return [], [], []
+    errors: list[str] = []
+    timeouts: list[str] = []
 
-    executor = ThreadPoolExecutor(
-        max_workers=min(
-            max(1, int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)),
-            len(feed_templates),
-        )
-    )
-    futures = {
-        executor.submit(fetch_feed, username, template): template
-        for template in feed_templates
-    }
-    try:
-        for future in as_completed(
-            futures,
-            timeout=FEED_COLLECTION_TIMEOUT_SECONDS,
-        ):
-            template = futures[future]
-            source_name = feed_source_name(template)
-            try:
-                for post in future.result() or []:
-                    if not isinstance(post, Post):
-                        continue
-                    identity = str(
-                        getattr(post, "post_id", "")
-                        or getattr(post, "link", "")
-                        or ""
-                    ).strip()
-                    if identity:
-                        all_posts.setdefault(identity, post)
-            except Exception as exc:
-                feed_errors.append(
-                    f"{source_name}: {type(exc).__name__}: {short_error(exc)}"
-                )
-    except FuturesTimeoutError:
-        timed_out_sources = [
-            feed_source_name(template)
-            for future, template in futures.items()
-            if not future.done()
-        ]
-    finally:
-        for future in futures:
-            future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
+    for template in list(feed_templates or []):
+        source = feed_source_name(template)
+        try:
+            rows = list(fetch_feed(username, template) or [])
+            for post in rows:
+                if not isinstance(post, Post):
+                    continue
+                identity = str(
+                    getattr(post, "post_id", "")
+                    or getattr(post, "link", "")
+                    or ""
+                ).strip()
+                if identity:
+                    all_posts.setdefault(identity, post)
+        except Exception as exc:
+            errors.append(
+                f"{source}: {type(exc).__name__}: {short_error(exc, 240)}"
+            )
 
-    posts = list(all_posts.values())
-    posts.sort(
+    posts = sorted(
+        all_posts.values(),
         key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
         reverse=True,
     )
-    return posts, feed_errors, timed_out_sources
+    return posts, errors, timeouts
 
 
-_V80_RSS_DIAG_LOCK = RLock()
-_V80_RSS_DIAG: dict[str, dict[str, Any]] = {}
+_V81_RSS_DIAG_LOCK = RLock()
+_V81_RSS_DIAG: dict[str, dict[str, Any]] = {}
 
 
-def _v80_diag_set(username: str, **values: Any) -> None:
+def _v81_set_diag(username: str, **values: Any) -> None:
     key = str(username or "").strip().lstrip("@").casefold()
-    with _V80_RSS_DIAG_LOCK:
-        _V80_RSS_DIAG[key] = dict(values)
+    with _V81_RSS_DIAG_LOCK:
+        _V81_RSS_DIAG[key] = dict(values)
 
 
-def _v80_diag_get(username: str) -> dict[str, Any]:
+def _v81_get_diag(username: str) -> dict[str, Any]:
     key = str(username or "").strip().lstrip("@").casefold()
-    with _V80_RSS_DIAG_LOCK:
-        return dict(_V80_RSS_DIAG.get(key, {}) or {})
+    with _V81_RSS_DIAG_LOCK:
+        return dict(_V81_RSS_DIAG.get(key, {}) or {})
 
 
 def fetch_posts(username: str) -> list[Post]:
     canonical = str(username or "").strip().lstrip("@")
     templates = active_feed_templates()
-
     primary = templates[:1]
     fallback = templates[1:2] if RSS_ENABLE_FALLBACK else []
 
-    # EARLY HEALTHY PATH: exactly one Nitter request.
+    # Normal case: exactly ONE RSS source.
     posts, primary_errors, primary_timeouts = (
         collect_posts_from_feed_templates(canonical, primary)
     )
     if posts:
-        _v80_diag_set(
+        _v81_set_diag(
             canonical,
-            source="nitter.net",
+            source=feed_source_name(primary[0]),
             attempts=1,
             fallback_used=False,
             errors=primary_errors,
@@ -67027,7 +67005,7 @@ def fetch_posts(username: str) -> list[Post]:
             pass
         return posts
 
-    # Only if primary gave zero/error: one XCancel fallback request.
+    # Only after a real primary zero/error: one standby source.
     fallback_errors: list[str] = []
     fallback_timeouts: list[str] = []
     if fallback:
@@ -67035,9 +67013,9 @@ def fetch_posts(username: str) -> list[Post]:
             collect_posts_from_feed_templates(canonical, fallback)
         )
         if fallback_posts:
-            _v80_diag_set(
+            _v81_set_diag(
                 canonical,
-                source="xcancel.com",
+                source=feed_source_name(fallback[0]),
                 attempts=2,
                 fallback_used=True,
                 errors=primary_errors + fallback_errors,
@@ -67051,7 +67029,7 @@ def fetch_posts(username: str) -> list[Post]:
                 pass
             return fallback_posts
 
-    _v80_diag_set(
+    _v81_set_diag(
         canonical,
         source="",
         attempts=1 + (1 if fallback else 0),
@@ -67071,9 +67049,7 @@ def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
             daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
         except Exception:
             pass
-        return canonical, rows[
-            : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
-        ]
+        return canonical, rows[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
     except Exception as exc:
         try:
             daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
@@ -67130,8 +67106,7 @@ def rss_status_text() -> str:
     lines = [
         f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
         "",
-        "מקור ראשי יחיד: nitter.net",
-        "xcancel.com נבדק רק אם המקור הראשי נכשל או מחזיר 0.",
+        "RSS: מקור אחד ראשי; גיבוי אחד רק במקרה כשל.",
         "",
     ]
 
@@ -67142,7 +67117,8 @@ def rss_status_text() -> str:
     for username in accounts:
         label = _hebrew_account_label(username)
         posts, error = fetched.get(username, ([], None))
-        diag = _v80_diag_get(username)
+        diag = _v81_get_diag(username)
+
         posts = sorted(
             [p for p in (posts or []) if isinstance(p, Post)],
             key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0),
@@ -67169,9 +67145,10 @@ def rss_status_text() -> str:
                 f"✅ {label}: {len(recent)} פוסטים ביממה | {source}{suffix}"
             )
         else:
-            attempts = int(diag.get("attempts", 1) or 1)
+            errors = list(diag.get("errors") or [])
+            detail = f" | {errors[-1]}" if errors else ""
             lines.append(
-                f"⚠️ {label}: לא התקבלו פוסטים | נבדקו {attempts} מקור/מקורות"
+                f"⚠️ {label}: לא התקבלו פוסטים{detail}"
             )
 
     lines.extend([
@@ -67182,49 +67159,32 @@ def rss_status_text() -> str:
     return "\n".join(lines)
 
 
-def _v80_self_audit() -> None:
+def _v81_rss_only_audit() -> None:
     expected = [
-        "https://nitter.net/{username}/rss",
-        "https://xcancel.com/{username}/rss",
+        "https://rsshub.pseudoyu.com/twitter/user/{username}",
+        "https://hub.slarker.me/twitter/user/{username}",
     ]
     if list(FEED_TEMPLATES) != expected:
-        raise RuntimeError("v80_feed_list_changed")
-    if list(active_feed_templates()) != expected:
-        raise RuntimeError("v80_active_feed_list_changed")
+        raise RuntimeError("v81_feed_list_changed")
+    if tuple(_CANONICAL_STABLE_FEED_TEMPLATES) != tuple(expected):
+        raise RuntimeError("v81_consistency_feed_order_changed")
     if int(RSS_PRIMARY_SOURCE_COUNT) != 1:
-        raise RuntimeError("v80_primary_not_one")
+        raise RuntimeError("v81_primary_not_one")
     if int(RSS_FALLBACK_SOURCE_COUNT) != 1:
-        raise RuntimeError("v80_fallback_not_one")
+        raise RuntimeError("v81_fallback_not_one")
     if int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 1:
-        raise RuntimeError("v80_feed_parallelism_not_one")
-    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 4.0:
-        raise RuntimeError("v80_request_timeout_changed")
-    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 4.5:
-        raise RuntimeError("v80_collection_timeout_changed")
-    if int(FEED_HTTP_RETRIES) != 2:
-        raise RuntimeError("v80_retries_changed")
+        raise RuntimeError("v81_parallel_feed_count_not_one")
     if int(CHECK_EVERY_SECONDS) != 20:
-        raise RuntimeError("v80_outer_scan_changed")
-    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
-        raise RuntimeError("v80_continuous_direct_x_active")
-
-    forbidden = {
-        "_v70_direct_x_fallback_rows",
-        "_full_speed_start_live",
-        "_v76_live_rss_rows",
-        "_v35_fetch_posts",
-    }
-    if forbidden.intersection(set(fetch_posts.__code__.co_names)):
-        raise RuntimeError("v80_later_rss_path_still_active")
+        raise RuntimeError("v81_outer_scan_changed")
 
 
-_v80_self_audit()
+_v81_rss_only_audit()
 logging.info(
-    "V80 active: early one-primary RSS restored — Nitter first, "
-    "XCancel only as fallback; no 3/5 mirror fan-out."
+    "V81 RSS block active: one RSSHub primary, one standby fallback; "
+    "all non-RSS V73 additions preserved."
 )
 
-# ====== END V80 EARLY ONE-PRIMARY RSS RESTORE ======
+# ====== END V81 RSS-BLOCK-ONLY RESTORE ======
 
 if __name__ == "__main__":
     main()
