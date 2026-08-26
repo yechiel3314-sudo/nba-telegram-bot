@@ -64119,5 +64119,1712 @@ logging.info(
 
 # ====== END V66 ADD-ONLY EXACT ORIGINAL RSS / LIVE FILTER ======
 
+# ====== V67 FINAL SINGLE RSS ENGINE (2026-08-10) ======
+# One active RSS engine. No active RSS call is routed through V20/V23/V35/V56/V65/V66.
+# Older RSS code above remains untouched only for backward compatibility/history.
+# The active runtime below owns ALL RSS settings and entrypoints in one place.
+
+BOT_BUILD_ID = "winner-v67-single-rss-engine-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# A. COMPLETE ACTIVE RSS SETTINGS — one source of truth
+# ---------------------------------------------------------------------------
+V67_RSS_BASE_FEED_TEMPLATES = [
+    "https://nitter.net/{username}/rss",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
+]
+
+# Keep any explicitly configured extra feeds after the proven five.
+FEED_TEMPLATES = list(dict.fromkeys(
+    V67_RSS_BASE_FEED_TEMPLATES + list(globals().get("EXTRA_FEED_TEMPLATES", []) or [])
+))
+MAX_FEED_TEMPLATES_PER_ACCOUNT = 5
+
+FEED_REQUEST_TIMEOUT_SECONDS = 6.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 8.0
+FEED_HTTP_RETRIES = 2
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 3
+FEED_SOURCE_MAX_PARALLEL = 2
+
+RSS_PRIMARY_SOURCE_COUNT = 3
+RSS_ENABLE_FALLBACK = True
+RSS_FALLBACK_SOURCE_COUNT = 2
+RSS_ENABLE_STALE_FALLBACK = False
+RSS_STALE_FALLBACK_SECONDS = 6 * 60 * 60
+
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+
+
+# ---------------------------------------------------------------------------
+# B. LOW-LEVEL RSS HTTP — exact proven behavior
+# ---------------------------------------------------------------------------
+def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        },
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, int(FEED_HTTP_RETRIES)) + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:
+            last_error = exc
+            if attempt < max(1, int(FEED_HTTP_RETRIES)):
+                time.sleep(0.4)
+    raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
+
+
+def active_feed_templates() -> list[str]:
+    if int(MAX_FEED_TEMPLATES_PER_ACCOUNT) <= 0:
+        return list(FEED_TEMPLATES)
+    return list(FEED_TEMPLATES)[
+        : max(1, min(len(FEED_TEMPLATES), int(MAX_FEED_TEMPLATES_PER_ACCOUNT)))
+    ]
+
+
+def feed_source_name(template: str) -> str:
+    try:
+        host = urllib.parse.urlparse(template).netloc.lower()
+    except Exception:
+        return "unknown"
+    return host.removeprefix("www.")
+
+
+def feed_source_semaphore(source_name: str) -> BoundedSemaphore:
+    with FEED_SOURCE_SEMAPHORES_LOCK:
+        semaphore = FEED_SOURCE_SEMAPHORES.get(source_name)
+        if semaphore is None:
+            semaphore = BoundedSemaphore(max(1, int(FEED_SOURCE_MAX_PARALLEL)))
+            FEED_SOURCE_SEMAPHORES[source_name] = semaphore
+        return semaphore
+
+
+def fetch_feed(username: str, template: str) -> list[Post]:
+    url = template.format(username=urllib.parse.quote(username))
+    source_name = feed_source_name(template)
+    with feed_source_semaphore(source_name):
+        return parse_posts(username, http_get_feed(url), source_name)
+
+
+# ---------------------------------------------------------------------------
+# C. MIRROR COLLECTION — exact old-good isolated account race
+# ---------------------------------------------------------------------------
+def collect_posts_from_feed_templates(
+    username: str,
+    feed_templates: list[str],
+) -> tuple[list[Post], list[str], list[str]]:
+    all_posts: dict[str, Post] = {}
+    feed_errors: list[str] = []
+    timed_out_sources: list[str] = []
+    if not feed_templates:
+        return [], [], []
+
+    executor = ThreadPoolExecutor(
+        max_workers=min(
+            max(1, int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)),
+            len(feed_templates),
+        )
+    )
+    futures = {
+        executor.submit(fetch_feed, username, template): template
+        for template in feed_templates
+    }
+    try:
+        for future in as_completed(
+            futures,
+            timeout=FEED_COLLECTION_TIMEOUT_SECONDS,
+        ):
+            template = futures[future]
+            source_name = feed_source_name(template)
+            try:
+                for post in future.result() or []:
+                    if not isinstance(post, Post):
+                        continue
+                    identity = str(post.post_id or post.link or "").strip()
+                    if identity:
+                        all_posts.setdefault(identity, post)
+            except Exception as exc:
+                feed_errors.append(
+                    f"{source_name}: {type(exc).__name__}: {short_error(exc)}"
+                )
+    except FuturesTimeoutError:
+        timed_out_sources = [
+            feed_source_name(template)
+            for future, template in futures.items()
+            if not future.done()
+        ]
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    posts = list(all_posts.values())
+    posts.sort(
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return posts, feed_errors, timed_out_sources
+
+
+# ---------------------------------------------------------------------------
+# D. PRIMARY -> FALLBACK ORCHESTRATION — exact working policy
+# ---------------------------------------------------------------------------
+def _rss_engine_network_fetch(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    feed_templates = list(active_feed_templates())
+
+    primary_count = max(
+        1,
+        min(len(feed_templates), int(RSS_PRIMARY_SOURCE_COUNT)),
+    )
+    primary_templates = feed_templates[:primary_count]
+    fallback_templates = (
+        feed_templates[primary_count:]
+        if RSS_ENABLE_FALLBACK
+        else []
+    )
+    if int(RSS_FALLBACK_SOURCE_COUNT) > 0:
+        fallback_templates = fallback_templates[
+            : int(RSS_FALLBACK_SOURCE_COUNT)
+        ]
+
+    posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(
+        canonical,
+        primary_templates,
+    )
+
+    if posts:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+        latest_age = (
+            max(0.0, time.time() - float(posts[0].published_ts or 0.0))
+            if posts[0].published_ts
+            else 0.0
+        )
+
+        if (
+            RSS_ENABLE_STALE_FALLBACK
+            and fallback_templates
+            and latest_age >= RSS_STALE_FALLBACK_SECONDS
+        ):
+            fallback_posts, fallback_errors, fallback_timeouts = (
+                collect_posts_from_feed_templates(
+                    canonical,
+                    fallback_templates,
+                )
+            )
+            if (
+                fallback_posts
+                and float(fallback_posts[0].published_ts or 0.0)
+                > float(posts[0].published_ts or 0.0)
+            ):
+                logging.info(
+                    "🔁 RSS: המקור הראשי עבור @%s ישן/תקוע, נלקח מקור גיבוי %s עם פוסט חדש יותר.",
+                    canonical,
+                    fallback_posts[0].source_name,
+                )
+                send_rss_stale_latest_alert_if_needed(
+                    canonical,
+                    fallback_posts,
+                )
+                posts = fallback_posts
+            elif fallback_errors or fallback_timeouts:
+                logging.debug(
+                    "RSS: ניסיון גיבוי בגלל מקור ישן עבור @%s לא החזיר מקור חדש יותר. errors=%s timeouts=%s",
+                    canonical,
+                    "; ".join(fallback_errors[:4]),
+                    ", ".join(fallback_timeouts[:4]),
+                )
+
+        send_rss_stale_latest_alert_if_needed(canonical, posts)
+        try:
+            _stable_rss_remember(canonical, posts)
+            _remember_control_rss_posts(canonical, posts)
+            _ten_history_save(canonical, posts)
+        except Exception:
+            pass
+        return posts
+
+    fallback_errors: list[str] = []
+    fallback_timeouts: list[str] = []
+
+    if fallback_templates:
+        fallback_posts, fallback_errors, fallback_timeouts = (
+            collect_posts_from_feed_templates(
+                canonical,
+                fallback_templates,
+            )
+        )
+        if fallback_posts:
+            FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+            send_rss_stale_latest_alert_if_needed(
+                canonical,
+                fallback_posts,
+            )
+            try:
+                _stable_rss_remember(canonical, fallback_posts)
+                _remember_control_rss_posts(
+                    canonical,
+                    fallback_posts,
+                )
+                _ten_history_save(canonical, fallback_posts)
+            except Exception:
+                pass
+            logging.info(
+                "🔁 RSS: מקור גיבוי הופעל עבור @%s. נמצאו %s פוסטים דרך %s",
+                canonical,
+                len(fallback_posts),
+                fallback_posts[0].source_name,
+            )
+            return fallback_posts
+
+    no_posts_failures = FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) + 1
+    FEED_NO_POSTS_FAILURE_COUNTS[canonical] = no_posts_failures
+
+    checked_templates = primary_templates + fallback_templates
+    all_errors = feed_errors + fallback_errors
+    all_timeouts = timed_out_sources + fallback_timeouts
+
+    issue_parts: list[str] = []
+    if all_errors:
+        issue_parts.append("errors: " + "; ".join(all_errors[:8]))
+    if all_timeouts:
+        issue_parts.append("timeouts: " + ", ".join(all_timeouts[:8]))
+    issue_text = " | ".join(issue_parts) or "no items returned"
+
+    logging.debug(
+        "RSS details for @%s: checked sources=%s | %s",
+        canonical,
+        ", ".join(
+            feed_source_name(template)
+            for template in checked_templates
+        ),
+        issue_text,
+    )
+
+    if (
+        FEED_NO_POSTS_WARNING_AFTER_FAILURES > 0
+        and no_posts_failures >= FEED_NO_POSTS_WARNING_AFTER_FAILURES
+    ):
+        log_feed_issue(
+            canonical,
+            "RSS: לא נמצאו פוסטים עבור @%s אחרי %s בדיקות רצופות. נבדקו %s מקורות. ינסה שוב בשקט.",
+            canonical,
+            no_posts_failures,
+            len(checked_templates),
+        )
+
+    send_rss_control_alert_if_needed(
+        canonical,
+        no_posts_failures,
+        len(checked_templates),
+        issue_text,
+    )
+    return []
+
+
+def _rss_engine_cached(username: str, limit: int = 60) -> list[Post]:
+    try:
+        return list(
+            _stable_rss_cached_posts(
+                username,
+                limit=max(1, int(limit)),
+            )
+            or []
+        )
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# E. ONE LOCK PER ACCOUNT — same behavior, one final implementation
+# ---------------------------------------------------------------------------
+_RSS_ENGINE_ROUTE_LOCKS: dict[str, Lock] = {}
+_RSS_ENGINE_ROUTE_LOCKS_GUARD = Lock()
+
+
+def _rss_engine_account_lock(username: str) -> Lock:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _RSS_ENGINE_ROUTE_LOCKS_GUARD:
+        lock = _RSS_ENGINE_ROUTE_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _RSS_ENGINE_ROUTE_LOCKS[key] = lock
+        return lock
+
+
+def _rss_engine_rows(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return []
+
+    with _rss_engine_account_lock(canonical):
+        try:
+            rows = list(_rss_engine_network_fetch(canonical) or [])
+        except Exception as exc:
+            logging.warning(
+                "⚠️ RSS route failed for @%s: %s",
+                canonical,
+                short_error(exc, 500),
+            )
+            rows = []
+
+        if not rows:
+            rows = _rss_engine_cached(canonical, limit=60)
+
+        return rows
+
+
+# ---------------------------------------------------------------------------
+# F. AUTOMATIC FETCH — final single entrypoint
+# Old-good behavior: RSS is synchronous; existing direct-X cache is merged only
+# if already available and its refresh is started without delaying RSS.
+# ---------------------------------------------------------------------------
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+
+    rss_rows = _rss_engine_rows(canonical)
+
+    live_rows: list[Post] = []
+    try:
+        live_rows = list(_full_speed_cache_get(canonical) or [])
+        _full_speed_start_live(canonical)
+    except Exception:
+        live_rows = []
+
+    merged: dict[str, Post] = {}
+    try:
+        _reliable_merge_posts(merged, rss_rows, canonical)
+        _reliable_merge_posts(merged, live_rows, canonical)
+    except Exception:
+        for post in list(rss_rows) + list(live_rows):
+            if not isinstance(post, Post):
+                continue
+            identity = str(post.post_id or post.link or "").strip()
+            if identity:
+                merged.setdefault(identity, post)
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
+        reverse=True,
+    )
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        try:
+            _pipeline_mark_seen(
+                post,
+                "automatic:single_rss_engine",
+                observed,
+                elapsed,
+            )
+        except Exception:
+            pass
+
+    return ordered[
+        : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    ]
+
+
+# ---------------------------------------------------------------------------
+# G. CONTROL FETCH — same engine, no separate historical RSS path
+# ---------------------------------------------------------------------------
+def fetch_control_posts(
+    username: str,
+) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        return canonical, _rss_engine_rows(canonical), None
+    except Exception as exc:
+        cached = _rss_engine_cached(canonical, limit=60)
+        return canonical, cached, None if cached else exc
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    try:
+        rows = list(fetch_posts(canonical) or [])
+        rows = sorted(
+            [post for post in rows if isinstance(post, Post)],
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )[:12]
+        try:
+            daily_stat_add_timing(
+                "scan_seconds",
+                time.perf_counter() - started,
+            )
+        except Exception:
+            pass
+        return canonical, rows
+    except Exception as exc:
+        try:
+            daily_stat_add_timing(
+                "scan_seconds",
+                time.perf_counter() - started,
+            )
+        except Exception:
+            pass
+        logging.warning(
+            "⚠️ RSS fetch failed for @%s: %s",
+            canonical,
+            short_error(exc, 500),
+        )
+        return canonical, []
+
+
+def fetch_control_posts_for_accounts(
+    accounts: list[str],
+) -> dict[str, tuple[list[Post], Exception | None]]:
+    results: dict[str, tuple[list[Post], Exception | None]] = {
+        username: ([], None)
+        for username in accounts
+    }
+    if not accounts:
+        return results
+
+    workers = min(
+        max(1, int(MAX_PARALLEL_ACCOUNT_CHECKS)),
+        max(1, len(accounts)),
+    )
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(fetch_control_posts, username): username
+            for username in accounts
+        }
+        for future in as_completed(future_map):
+            original_username = future_map[future]
+            try:
+                username, posts, error = future.result()
+            except Exception as exc:
+                username, posts, error = (
+                    original_username,
+                    [],
+                    exc,
+                )
+            results[original_username] = (posts, error)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# H. RSS STATUS BUTTON — same single engine
+# ---------------------------------------------------------------------------
+def rss_status_text() -> str:
+    accounts = _general_reporter_control_accounts()
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "מנוע RSS פעיל אחד:",
+        "3 מקורות ראשיים → אם אין פוסטים, 2 מקורות גיבוי.",
+        "אותו מנוע משמש גם את הסריקה האוטומטית וגם את הכפתור הזה.",
+        "",
+    ]
+
+    ok_count = 0
+    recent_total = 0
+    fetched = fetch_control_posts_for_accounts(accounts)
+
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched.get(username, ([], None))
+
+        if error and not posts:
+            lines.append(
+                f"❌ {label}: תקלה ב-RSS — {short_error(error, 150)}"
+            )
+            continue
+
+        posts = sorted(
+            [post for post in (posts or []) if isinstance(post, Post)],
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+
+        if posts:
+            ok_count += 1
+            latest = posts[0]
+            latest_dt = (
+                datetime.fromtimestamp(
+                    float(latest.published_ts),
+                    ZoneInfo(SHABBAT_TIMEZONE),
+                ).strftime("%H:%M %d/%m/%Y")
+                if getattr(latest, "published_ts", 0.0)
+                else "ללא זמן"
+            )
+            source = str(
+                getattr(latest, "source_name", "") or "RSS"
+            )
+            lines.append(
+                f"✅ {label}: {len(recent)} פוסטים ביממה | "
+                f"מקור אחרון: {source} | אחרון: {latest_dt}"
+            )
+        else:
+            lines.append(
+                f"⚠️ {label}: כל 5 מקורות ה-RSS נבדקו ולא החזירו פוסטים"
+            )
+
+    lines.extend([
+        "",
+        f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים. "
+        f"פוסטים מהיממה האחרונה: {recent_total}.",
+    ])
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# I. DETERMINISTIC FINAL AUDIT — verifies there is ONE active RSS engine
+# ---------------------------------------------------------------------------
+def _v67_single_rss_engine_audit() -> None:
+    expected = list(V67_RSS_BASE_FEED_TEMPLATES)
+    if list(active_feed_templates()) != expected:
+        raise RuntimeError("v67_feed_templates_not_exact")
+
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v67_retries_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v67_request_timeout_changed")
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v67_collection_timeout_changed")
+    if int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 3:
+        raise RuntimeError("v67_feed_parallelism_changed")
+    if int(FEED_SOURCE_MAX_PARALLEL) != 2:
+        raise RuntimeError("v67_feed_source_parallelism_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3:
+        raise RuntimeError("v67_primary_count_changed")
+    if not bool(RSS_ENABLE_FALLBACK):
+        raise RuntimeError("v67_fallback_disabled")
+    if int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v67_fallback_count_changed")
+    if bool(RSS_ENABLE_STALE_FALLBACK):
+        raise RuntimeError("v67_stale_fallback_should_be_off")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v67_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v67_account_parallelism_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v67_post_cap_changed")
+
+    # Active public entrypoints must be the functions declared in this block,
+    # not aliases to any historical Vxx function.
+    for name in (
+        "http_get_feed",
+        "fetch_feed",
+        "collect_posts_from_feed_templates",
+        "fetch_posts",
+        "fetch_control_posts",
+        "fetch_posts_safely",
+        "fetch_control_posts_for_accounts",
+        "rss_status_text",
+    ):
+        fn = globals().get(name)
+        if not callable(fn):
+            raise RuntimeError(f"v67_missing_active_entrypoint:{name}")
+
+    if fetch_posts.__name__ != "fetch_posts":
+        raise RuntimeError("v67_fetch_posts_is_alias")
+    if fetch_control_posts.__name__ != "fetch_control_posts":
+        raise RuntimeError("v67_fetch_control_is_alias")
+    if http_get_feed.__name__ != "http_get_feed":
+        raise RuntimeError("v67_http_is_alias")
+
+
+_v67_single_rss_engine_audit()
+logging.info(
+    "V67 active: one consolidated RSS engine owns all active RSS settings and entrypoints; "
+    "3 primary + 2 fallback, 6s/8s, 2 retries, 20s scan, 4 accounts, 12-post cap."
+)
+
+# ====== END V67 FINAL SINGLE RSS ENGINE ======
+
+# ====== V68 ADD-ONLY: PASTED-X PREP + BOT/CHANNEL RTL + SAFE NETO FOOTER ======
+# No existing V67 code is edited or removed.
+# Scope:
+# 1) A pasted X/Twitter status link in the quiet/control chat always prepares
+#    that exact post as a normal report preview (text + original media + Gemini).
+# 2) The existing fast in-place RTL editor also repairs bot-authored channel posts
+#    when needed; it never delete/reposts and remains idempotent.
+# 3) The Neto Sport footer is canonical HTML at every Telegram text/caption send
+#    boundary, with the dot inside the blue link and the pen outside.
+
+BOT_BUILD_ID = "winner-v68-link-prep-rtl-footer-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# 1) PASTE X/TWITTER LINK -> PREPARE EXACT POST IN QUIET CHANNEL
+# ---------------------------------------------------------------------------
+_V68_X_STATUS_URL_RE = re.compile(
+    r"(?iu)https?://(?:www\.)?(?:x\.com|twitter\.com)/"
+    r"(?P<username>[A-Za-z0-9_]{1,30})/status/(?P<tweet_id>\d{10,22})"
+    r"(?:[/?#][^\s<]*)?"
+)
+_V68_LINK_PREP_LOCK = RLock()
+_V68_LINK_PREP_INFLIGHT: set[str] = set()
+_V68_LINK_PREP_DONE: dict[str, float] = {}
+_V68_LINK_PREP_DONE_TTL = 15 * 60
+
+
+def _v68_extract_x_status(text: Any) -> tuple[str, str, str] | None:
+    value = html.unescape(str(text or "")).strip()
+    match = _V68_X_STATUS_URL_RE.search(value)
+    if not match:
+        return None
+    username = str(match.group("username") or "").strip().lstrip("@")
+    tweet_id = str(match.group("tweet_id") or "").strip()
+    if not username or not tweet_id:
+        return None
+    canonical = f"https://x.com/{username}/status/{tweet_id}"
+    return username, tweet_id, canonical
+
+
+def _v68_post_from_x_link(username: str, tweet_id: str, link: str) -> Post:
+    try:
+        published = float(_reliable_snowflake_timestamp(tweet_id) or 0.0)
+    except Exception:
+        published = 0.0
+    post = Post(
+        post_id=tweet_id,
+        username=username,
+        text="",
+        link=link,
+        image_urls=[],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=published or time.time(),
+        dedupe_ids=[
+            tweet_id,
+            f"{username}:{tweet_id}",
+            f"{username}:{link}",
+        ],
+        source_name="manual-x-link",
+    )
+    return post
+
+
+def _v68_prepare_pasted_x_link(
+    username: str,
+    tweet_id: str,
+    link: str,
+    reply_message_id: int = 0,
+) -> None:
+    key = f"{username.casefold()}:{tweet_id}"
+    try:
+        post = _v68_post_from_x_link(username, tweet_id, link)
+
+        # Reuse the bot's established exact-post/media hydration. This is an
+        # on-demand operation only; it adds no continuous polling/server cost.
+        _reliable_hydrate_exact_post(post, force=True)
+
+        source_text = str(
+            getattr(post, "original_text", "")
+            or getattr(post, "text", "")
+            or ""
+        ).strip()
+        if not source_text:
+            try:
+                exact_text, provider = _reliable_fetch_exact_post_text(post)
+            except Exception:
+                exact_text, provider = "", ""
+            if exact_text:
+                post.text = exact_text
+                post.original_text = exact_text
+                post.source_name = provider or post.source_name
+                source_text = exact_text
+
+        if not source_text:
+            send_control_text(
+                "⛔ לא הצלחתי לקרוא את הציוץ מהקישור. הקישור עצמו תקין, אבל מקורות X החיצוניים לא החזירו את תוכן הפוסט כרגע.",
+                reply_message_id or None,
+                control_delete_message_reply_markup(),
+            )
+            return
+
+        # Manual link preparation is intentionally a preparation action, not an
+        # automatic publish decision: use the established force-translation path
+        # and the exact same final renderer/media preview used elsewhere.
+        translated, quoted, author = manual_force_translation(post)
+        token = remember_control_prepared_send(post, translated, quoted, author)
+        rendered = build_message(
+            post,
+            translated,
+            quoted,
+            author,
+            include_video_link=False,
+        )
+        _send_full_control_candidate(post, token, rendered)
+    except Exception as exc:
+        logging.exception("V68 pasted-X preparation failed")
+        try:
+            send_control_text(
+                "⛔ הכנת הציוץ מהקישור נכשלה:\n" + short_error(exc, 900),
+                reply_message_id or None,
+                control_delete_message_reply_markup(),
+            )
+        except Exception:
+            pass
+    finally:
+        with _V68_LINK_PREP_LOCK:
+            _V68_LINK_PREP_INFLIGHT.discard(key)
+            _V68_LINK_PREP_DONE[key] = time.time()
+            cutoff = time.time() - _V68_LINK_PREP_DONE_TTL
+            for old_key, old_ts in list(_V68_LINK_PREP_DONE.items()):
+                if float(old_ts or 0.0) < cutoff:
+                    _V68_LINK_PREP_DONE.pop(old_key, None)
+
+
+def _v68_try_prepare_pasted_x_link(update: dict[str, Any]) -> bool:
+    message = (
+        update.get("message")
+        or update.get("edited_message")
+        or update.get("channel_post")
+        or update.get("edited_channel_post")
+        or {}
+    )
+    if not isinstance(message, dict):
+        return False
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+    if not CONTROL_CHAT_ID or chat_id != str(CONTROL_CHAT_ID):
+        return False
+
+    # Do not reinterpret forwarded/replied report-management messages as a new
+    # pasted-link command; their established details/prepare behavior wins.
+    if (
+        message.get("forward_origin")
+        or message.get("forward_from_chat")
+        or message.get("forward_from_message_id")
+        or isinstance(message.get("reply_to_message"), dict)
+    ):
+        return False
+
+    text = str(message.get("text") or message.get("caption") or "")
+    parsed = _v68_extract_x_status(text)
+    if not parsed:
+        return False
+    username, tweet_id, link = parsed
+    key = f"{username.casefold()}:{tweet_id}"
+
+    with _V68_LINK_PREP_LOCK:
+        if key in _V68_LINK_PREP_INFLIGHT:
+            return True
+        last_done = float(_V68_LINK_PREP_DONE.get(key, 0.0) or 0.0)
+        if last_done and time.time() - last_done < 3.0:
+            return True
+        _V68_LINK_PREP_INFLIGHT.add(key)
+
+    reply_id = int(message.get("message_id", 0) or 0)
+    try:
+        if callable(globals().get("_reliable_submit_control")):
+            _reliable_submit_control(
+                _v68_prepare_pasted_x_link,
+                (username, tweet_id, link, reply_id),
+                f"pasted-x-{tweet_id}",
+            )
+        else:
+            Thread(
+                target=_v68_prepare_pasted_x_link,
+                args=(username, tweet_id, link, reply_id),
+                daemon=True,
+            ).start()
+    except Exception:
+        with _V68_LINK_PREP_LOCK:
+            _V68_LINK_PREP_INFLIGHT.discard(key)
+        raise
+    return True
+
+
+_V68_PRE_PROCESS_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    if _v68_try_prepare_pasted_x_link(update):
+        return
+    return _V68_PRE_PROCESS_CONTROL_TEXT_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 2) FAST IN-PLACE RTL FOR ALL CHANNEL POSTS, INCLUDING BOT-AUTHORED POSTS.
+# The old editor skipped bot-authored posts. Outgoing bot messages normally
+# already arrive wrapped, so this is a no-op. If a copy/manual bot path produced
+# an unwrapped post, it is repaired in place once with Telegram entities preserved.
+# ---------------------------------------------------------------------------
+def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
+    if not V43_ALL_CHANNEL_RTL_EDIT_ENABLED:
+        return False
+    message = update.get("channel_post") or update.get("edited_channel_post") or {}
+    if not isinstance(message, dict):
+        return False
+    chat = message.get("chat") or {}
+    if str(chat.get("type") or "") != "channel":
+        return False
+    chat_id = str(chat.get("id") or "")
+    message_id = int(message.get("message_id", 0) or 0)
+    if not chat_id or not message_id:
+        return False
+
+    kind, original, entities = _v42_message_text_and_entities(message)
+    if not kind or not original or not _v42_message_needs_rtl_repair(original):
+        return False
+
+    transformed = _v42_transform_text_entities(original, entities)
+    if transformed is None:
+        logging.info(
+            "V68 channel RTL skipped only because an entity crosses multiple lines: chat=%s message=%s",
+            chat_id,
+            message_id,
+        )
+        return False
+
+    fixed_text, fixed_entities = transformed
+    key = f"{chat_id}:{message_id}"
+    with _V43_CHANNEL_RTL_EDIT_LOCK:
+        if key in _V43_CHANNEL_RTL_EDIT_INFLIGHT:
+            return True
+        _V43_CHANNEL_RTL_EDIT_INFLIGHT.add(key)
+    try:
+        _v42_edit_message_rtl(
+            chat_id,
+            message_id,
+            kind,
+            fixed_text,
+            fixed_entities,
+        )
+        logging.info("V68 repaired channel post RTL in place: %s", key)
+        return True
+    except Exception as exc:
+        # Never copy/delete/repost: preserve the exact fast behavior requested.
+        logging.warning(
+            "V68 could not edit channel RTL in place (Edit Messages required): %s error=%s",
+            key,
+            short_error(exc, 420),
+        )
+        return False
+    finally:
+        with _V43_CHANNEL_RTL_EDIT_LOCK:
+            _V43_CHANNEL_RTL_EDIT_INFLIGHT.discard(key)
+
+
+# ---------------------------------------------------------------------------
+# 3) ONE CANONICAL NETO SPORT FOOTER AT TELEGRAM BOUNDARY.
+# This prevents literal/raw <a href=...> markup from being shown to users.
+# The period is inside the blue link, the pen is outside.
+# ---------------------------------------------------------------------------
+_V68_NETO_FOOTER_HTML = '<a href="https://t.me/neto_sport">נטו ספורט.</a>📝'
+SIGNATURE_TEXT = "נטו ספורט."
+NETO_SPORT_FOOTER_HTML = _V68_NETO_FOOTER_HTML
+_V31_SIGNATURE_HTML = RTL_MARK + _V68_NETO_FOOTER_HTML
+
+_V68_NETO_FOOTER_PATTERNS = (
+    re.compile(
+        r'(?iu)<a\s+href=["\']https?://t\.me/neto_sport["\'][^>]*>\s*נטו\s+ספורט\.?\s*</a>\s*\.?\s*📝'
+    ),
+    re.compile(
+        r'(?iu)נטו\s+ספורט\.?\s*\(\s*https?://t\.me/neto_sport\s*\)\s*\.?\s*📝'
+    ),
+    re.compile(
+        r'(?iu)\[\s*נטו\s+ספורט\.?\s*\]\(\s*https?://t\.me/neto_sport\s*\)\s*📝'
+    ),
+)
+
+
+def _v68_canonicalize_neto_footer(value: Any) -> Any:
+    if not isinstance(value, str) or (
+        "neto_sport" not in value and "נטו ספורט" not in value
+    ):
+        return value
+    text = html.unescape(value)
+    for pattern in _V68_NETO_FOOTER_PATTERNS:
+        text = pattern.sub(_V68_NETO_FOOTER_HTML, text)
+
+    # Catch a literal escaped/raw anchor footer without touching other HTML.
+    text = re.sub(
+        r'(?iu)\\?<a\s+href=["\']https?\\?[:/]*/?t\.me/?neto_sport["\'][^>]*>'
+        r'\s*נטו\s+ספורט\.?\s*\\?</a>\s*\.?\s*📝',
+        _V68_NETO_FOOTER_HTML,
+        text,
+    )
+    return text
+
+
+_V68_PRE_TELEGRAM_API = telegram_api
+
+
+def telegram_api(
+    method: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    max_attempts: int = HTTP_RETRIES,
+    timeout: int = REQUEST_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    data = dict(payload or {})
+    method_name = str(method or "")
+
+    if method_name in {
+        "sendMessage",
+        "editMessageText",
+        "sendPhoto",
+        "sendVideo",
+        "sendAnimation",
+        "editMessageCaption",
+    }:
+        for field in ("text", "caption"):
+            if isinstance(data.get(field), str):
+                before = data[field]
+                after = _v68_canonicalize_neto_footer(before)
+                data[field] = after
+                if (
+                    _V68_NETO_FOOTER_HTML in str(after)
+                    and "<a " in str(after)
+                ):
+                    # The report renderer already uses Telegram HTML. Make the
+                    # footer interpretation explicit so raw anchor syntax can
+                    # never appear as visible text.
+                    data["parse_mode"] = "HTML"
+                    data.pop("entities", None)
+                    data.pop("caption_entities", None)
+
+    return _V68_PRE_TELEGRAM_API(
+        method_name,
+        data,
+        max_attempts=max_attempts,
+        timeout=timeout,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4) LOCAL SELF-AUDIT — no Telegram/X/Gemini network calls.
+# ---------------------------------------------------------------------------
+def _v68_self_audit() -> None:
+    parsed = _v68_extract_x_status(
+        "https://x.com/FabrizioRomano/status/1234567890123456789?s=20"
+    )
+    if parsed != (
+        "FabrizioRomano",
+        "1234567890123456789",
+        "https://x.com/FabrizioRomano/status/1234567890123456789",
+    ):
+        raise RuntimeError("v68_x_link_parser_failed")
+
+    footer_cases = [
+        '<a href="https://t.me/neto_sport">נטו ספורט</a>.📝',
+        'נטו ספורט (https://t.me/neto_sport).📝',
+        '[נטו ספורט.](https://t.me/neto_sport)📝',
+    ]
+    for case in footer_cases:
+        fixed = _v68_canonicalize_neto_footer(case)
+        if fixed != _V68_NETO_FOOTER_HTML:
+            raise RuntimeError(f"v68_footer_normalization_failed:{case!r}->{fixed!r}")
+
+    # Already-strong text must remain a no-op, preventing edit loops.
+    strong = _v41_strong_rtl_all_lines("🚨 הודעה בעברית עם 20 מיליון אירו")
+    if _v42_message_needs_rtl_repair(strong):
+        raise RuntimeError("v68_rtl_not_idempotent")
+
+    # Exact V67 single RSS engine stays active.
+    if fetch_posts.__name__ != "fetch_posts":
+        raise RuntimeError("v68_v67_rss_fetch_changed")
+    if fetch_control_posts.__name__ != "fetch_control_posts":
+        raise RuntimeError("v68_v67_rss_control_changed")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v68_rss_cadence_changed")
+
+
+_v68_self_audit()
+logging.info(
+    "V68 active: pasted X links prepare exact reports in quiet chat; "
+    "bot/manual channel posts get fast in-place RTL when needed; "
+    "Neto Sport footer HTML is canonical at Telegram boundary; V67 RSS unchanged."
+)
+
+# ====== END V68 ADD-ONLY LINK PREP / RTL / FOOTER ======
+
+# ====== V69 ADD-ONLY: GEMINI KEY FAILOVER + LOW-VALUE INTERVIEW BLOCK + MEN'S FOOTBALL RESCUE ======
+# No existing V68 code is edited or removed.
+# RSS/discovery cadence and the V67 single RSS engine are intentionally untouched.
+
+BOT_BUILD_ID = "winner-v69-reliability-filters-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# 1) Gemini: use the configured key pool for translation reliability.
+# V65/V62 intentionally forced one real request per operation. With multiple
+# independent keys configured, that can drop a publishable post after only one
+# key-specific 429/auth/network failure. Translation may now try up to 10 locally
+# available keys. Model-wide overload still switches model instead of burning
+# every key on the same overloaded model.
+# ---------------------------------------------------------------------------
+_V69_GEMINI_KEY_LIMIT = max(1, min(10, len(GEMINI_API_KEYS) if GEMINI_API_KEYS else 1))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = _V69_GEMINI_KEY_LIMIT
+GEMINI_MAX_KEYS_PER_OPERATION = _V69_GEMINI_KEY_LIMIT
+GEMINI_LOCAL_KEY_SWEEP_SIZE = max(int(GEMINI_LOCAL_KEY_SWEEP_SIZE), _V69_GEMINI_KEY_LIMIT)
+
+
+def gemini_translation_keys_for_operation() -> list[tuple[int, str]]:
+    if gemini_requests_paused_until_refill():
+        return []
+    keys = gemini_key_order()
+    now = time.time()
+    available = [
+        (index, key)
+        for index, key in keys
+        if float(GEMINI_KEY_COOLDOWNS.get(key, 0.0) or 0.0) <= now
+    ]
+    # Never resurrect a cooled key merely to fill the list. If eight of ten are
+    # healthy, try those eight; a failed key waits for its own cooldown.
+    return available[:_V69_GEMINI_KEY_LIMIT]
+
+
+# ---------------------------------------------------------------------------
+# 2) Strong men's-football news rescue.
+# Fixes false "not men's football" classifications caused by odd Unicode names
+# or weak entity matching when the post is plainly a transfer between football clubs.
+# Explicit women's/other-sport markers always win and are never rescued.
+# ---------------------------------------------------------------------------
+_V69_WOMEN_OR_OTHER_SPORT_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bwomen(?:'s)?\b|\bwsl\b|\bwnba\b|\bnba\b|\bnfl\b|\bufc\b|"
+    r"\bbasketball\b|\btennis\b|\bgolf\b|\bformula\s*1\b|\bf1\b|"
+    r"כדורגל\s+נשים|נשים\b.*כדורגל|כדורסל|טניס|גולף|פורמולה"
+    r")"
+)
+
+_V69_MENS_FOOTBALL_ACTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\btransfer\b|\bmove\b|\bsign(?:s|ed|ing)?\b|\bjoin(?:s|ed|ing)?\b|"
+    r"\bdeal\b|\bbid\b|\boffer\b|\bagreement\b|\bterms\b|\bmedical\b|"
+    r"\bnegotiat(?:e|es|ed|ing|ion|ions)\b|\bloan\b|\bcontract\b|"
+    r"\bfee\b|\bclub\b|\bplayer\b|\bmanager\b|\bcoach\b|"
+    r"העבר(?:ה|תו|ת)|מעבר|חתם|חתימה|יחתום|מצטרף|להצטרף|עסקה|"
+    r"הצעה|סיכום|הסכם|תנאים|בדיקות\s+רפואיות|משא\s+ומתן|השאלה|"
+    r"חוזה|דמי\s+העברה|מועדון|שחקן|מאמן"
+    r")"
+)
+
+_V69_KNOWN_FOOTBALL_CONTEXT_RE = re.compile(
+    r"(?iu)(?:"
+    r"Newcastle|Marseille|Barcelona|Real\s+Madrid|Manchester\s+(?:United|City)|"
+    r"Liverpool|Arsenal|Chelsea|Tottenham|Aston\s+Villa|Crystal\s+Palace|"
+    r"PSG|Paris\s+Saint-Germain|Bayern|Dortmund|Juventus|Inter|Milan|Napoli|Roma|"
+    r"Porto|Benfica|Sporting|Galatasaray|Fenerbahce|Fenerbahçe|"
+    r"ניוקאסל|מארסיי|ברצלונה|ריאל\s+מדריד|מנצ'סטר\s+(?:יונייטד|סיטי)|"
+    r"ליברפול|ארסנל|צ'לסי|טוטנהאם|אסטון\s+וילה|קריסטל\s+פאלאס|"
+    r"פריז\s+סן[- ]ז'רמן|פ\.?ס\.?ז|באיירן|דורטמונד|יובנטוס|אינטר|מילאן|"
+    r"נאפולי|רומא|פורטו|בנפיקה|גלאטסראיי|פנרבחצ'ה"
+    r")"
+)
+
+
+def _v69_source_text(post: Post) -> str:
+    try:
+        return html.unescape(str(_final_source_text(post) or ""))
+    except Exception:
+        return html.unescape(
+            "\n".join([
+                str(getattr(post, "text", "") or ""),
+                str(getattr(post, "quoted_text", "") or ""),
+            ])
+        )
+
+
+def _v69_is_plain_mens_football_news(post: Post) -> bool:
+    text = _v69_source_text(post)
+    if not text or _V69_WOMEN_OR_OTHER_SPORT_RE.search(text):
+        return False
+    if not _V69_MENS_FOOTBALL_ACTION_RE.search(text):
+        return False
+    # One known club plus a transfer/contract/club action is enough. Requiring
+    # perfect player-name transliteration is exactly what caused the false block.
+    return bool(_V69_KNOWN_FOOTBALL_CONTEXT_RE.search(text))
+
+
+_V69_PRE_IS_OTHER_SPORT = is_other_sport_post
+
+
+def is_other_sport_post(post: Post) -> bool:
+    if _v69_is_plain_mens_football_news(post):
+        return False
+    return bool(_V69_PRE_IS_OTHER_SPORT(post))
+
+
+# ---------------------------------------------------------------------------
+# 3) Block low-value interviews/commentary regardless of source.
+# Long/heavy video makes the block stronger, but the core rule is editorial:
+# interview/reaction/opinion with no concrete football-news action is blocked.
+# A quote containing a real transfer, contract, injury, official decision, bid,
+# medical, squad call-up, etc. is still allowed to continue through existing rules.
+# ---------------------------------------------------------------------------
+_V69_INTERVIEW_OR_REACTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\binterview\b|\basked\b|\bquestion\b|\bdiscuss(?:ed|es|ing)?\b|"
+    r"\breaction\b|\bthoughts?\b|\bopinion\b|\bspeaking\s+about\b|"
+    r"\bon\s+the\s+question\b|🎙️|🗣️|"
+    r"ראיון|בראיון|נשאל|שאלה|דן\s+ב|תגובה|דעה|מה\s+דעת|מדבר\s+על"
+    r")"
+)
+
+_V69_CONCRETE_NEWS_RE = re.compile(
+    r"(?iu)(?:"
+    r"\btransfer\b|\bsign(?:s|ed|ing)?\b|\bjoin(?:s|ed|ing)?\b|\bdeal\b|"
+    r"\bbid\b|\boffer\b|\bagreement\b|\bpersonal\s+terms\b|\bmedical\b|"
+    r"\bcontract\b|\brenew(?:al|ed|s)?\b|\binjur(?:y|ed)\b|\boperation\b|"
+    r"\bnegotiat(?:e|es|ed|ing|ion|ions)\b|\bloan\b|\brelease\s+clause\b|"
+    r"\bofficial\b|\bappointed\b|\bsacked\b|\bdismissed\b|\bsquad\b|\bcall[- ]?up\b|"
+    r"העבר(?:ה|תו|ת)|מעבר|חתם|חתימה|יחתום|מצטרף|להצטרף|עסקה|"
+    r"הצעה|סיכום|הסכם|תנאים\s+אישיים|בדיקות\s+רפואיות|חוזה|הארכת\s+חוזה|"
+    r"פציעה|ניתוח|משא\s+ומתן|השאלה|סעיף\s+שחרור|רשמי|מונה|פוטר|סגל|זימון"
+    r")"
+)
+
+
+def _v69_is_low_value_interview(post: Post) -> bool:
+    text = _v69_source_text(post)
+    if not text or not _V69_INTERVIEW_OR_REACTION_RE.search(text):
+        return False
+    # Concrete news inside the interview is allowed to be judged by the older
+    # policy engine; this block is for no-punch interviews/reactions only.
+    if _V69_CONCRETE_NEWS_RE.search(text):
+        return False
+    return True
+
+
+_V69_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v69_is_low_value_interview(post):
+        return "low_value_interview_or_reaction"
+    reason = str(_V69_PRE_FINAL_LOCAL_BLOCK(post) or "")
+    # Rescue only the exact false category the user reported. Do not override
+    # duplicate/live/youth/women/podcast/gambling/etc.
+    if reason and _v69_is_plain_mens_football_news(post):
+        low = reason.casefold()
+        if (
+            "other_sport" in low
+            or "not_mens" in low
+            or "not_male" in low
+            or "mens_football" in low
+            or "כדורגל גברים" in reason
+        ):
+            return ""
+    return reason
+
+
+_V69_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "low_value_interview_or_reaction" in raw:
+        return "ראיון, תגובה או פרשנות ללא מידע חדשותי ממשי נחסמו"
+    return str(_V69_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+# ---------------------------------------------------------------------------
+# 4) Preserve V68 link-prep / RTL / footer exactly and audit the requested cases.
+# No RSS/discovery-speed setting is changed in V69.
+# ---------------------------------------------------------------------------
+def _v69_test_post(text: str, username: str = "FabrizioRomano", video: bool = False, pid: str = "v69") -> Post:
+    return Post(
+        post_id=pid,
+        username=username,
+        text=text,
+        link=f"https://x.com/{username}/status/{pid}",
+        image_urls=[],
+        video_urls=["https://example.invalid/video.mp4"] if video else [],
+        has_video=video,
+        primary_has_video=video,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[pid],
+        source_name=username,
+    )
+
+
+def _v69_self_audit() -> None:
+    # Gemini pool: when ten keys are configured, all ten are eligible locally.
+    if GEMINI_API_KEYS:
+        expected = min(10, len(GEMINI_API_KEYS))
+        if int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS) != expected:
+            raise RuntimeError("v69_gemini_real_request_limit_wrong")
+        if int(GEMINI_MAX_KEYS_PER_OPERATION) != expected:
+            raise RuntimeError("v69_gemini_key_limit_wrong")
+
+    # User's false men's-football example must be recognized as football.
+    hoj = _v69_test_post(
+        "🚨⚠️ EXCLUSIVE: Pierre-Emile Højbjerg's move to Newcastle is currently off "
+        "following fresh talks. Newcastle were ready to pay what Marseille wanted, "
+        "but Højbjerg decided to reject the move.",
+        username="FabrizioRomano",
+        pid="v69-hoj",
+    )
+    if not _v69_is_plain_mens_football_news(hoj):
+        raise RuntimeError("v69_hojbjerg_mens_football_rescue_failed")
+
+    # User's no-punch interview example must be blocked.
+    gyok = _v69_test_post(
+        "😲 Viktor Gyokeres is stunned by the question here. We need to change the culture "
+        "in Britain around the Community Shield. In other countries they call it the Super Cup "
+        "and it is a huge game. We seem to think it is a glorified friendly.",
+        username="Footballtweet",
+        video=True,
+        pid="v69-gyok",
+    )
+    if not _v69_is_low_value_interview(gyok):
+        raise RuntimeError("v69_low_value_interview_not_blocked")
+
+    # But a news-bearing quote must not be killed by this new interview rule.
+    news_quote = _v69_test_post(
+        '🗣️ Agent: "The player has agreed personal terms with Newcastle and the clubs are '
+        'negotiating the transfer fee."',
+        username="Footballtweet",
+        video=True,
+        pid="v69-newsquote",
+    )
+    if _v69_is_low_value_interview(news_quote):
+        raise RuntimeError("v69_news_interview_wrongly_blocked")
+
+    # V68 facilities must remain present.
+    if not callable(globals().get("_v68_try_prepare_pasted_x_link")):
+        raise RuntimeError("v69_v68_pasted_link_lost")
+    if not callable(globals().get("_v43_try_edit_any_admin_channel_post")):
+        raise RuntimeError("v69_v68_rtl_lost")
+    if str(globals().get("_V68_NETO_FOOTER_HTML", "")) != '<a href="https://t.me/neto_sport">נטו ספורט.</a>📝':
+        raise RuntimeError("v69_v68_footer_lost")
+
+    # Do not alter V67 discovery speed/RSS configuration in this change.
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v69_rss_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v69_rss_parallelism_changed")
+
+
+_v69_self_audit()
+logging.info(
+    "V69 active: up to %s Gemini keys can fail over for translation; "
+    "low-value interviews/reactions are blocked; strong men's-football transfer news "
+    "cannot be mislabeled as another sport; V68 link/RTL/footer and V67 RSS unchanged.",
+    _V69_GEMINI_KEY_LIMIT,
+)
+
+# ====== END V69 ADD-ONLY RELIABILITY FILTERS ======
+
+# ====== V70 ADD-ONLY: RSS-FIRST DIRECT-X FALLBACK + ETAG/304 CACHE ======
+# Scope is intentionally limited:
+# 1) If live RSS returns posts, automatic discovery returns them immediately and
+#    does NOT wake Direct-X.
+# 2) Direct-X runs only when the live RSS network path returned zero/error.
+# 3) RSS mirrors that support ETag / Last-Modified get conditional requests.
+#    HTTP 304 returns already parsed Post objects from memory, avoiding XML body
+#    download and parse_posts() work.
+#
+# No change to: 20s cadence, feed order, 3-primary/2-fallback policy, filters,
+# Gemini, Telegram, media, RTL, persistence files/keys, Shabbat or buttons.
+
+BOT_BUILD_ID = "winner-v70-rss-first-etag-2026-08-10"
+
+
+# ---------------------------------------------------------------------------
+# 1) Conditional RSS cache.
+# Cache is intentionally in-memory only. A restart simply performs a normal
+# HTTP 200 fetch again and rebuilds the validators; no persistent state changes.
+# ---------------------------------------------------------------------------
+_V70_CONDITIONAL_RSS_LOCK = RLock()
+_V70_CONDITIONAL_RSS_CACHE: dict[str, dict[str, Any]] = {}
+_V70_CONDITIONAL_RSS_URL_LOCKS: dict[str, Lock] = {}
+_V70_CONDITIONAL_RSS_URL_LOCKS_GUARD = Lock()
+
+_V70_RSS_STATS_LOCK = Lock()
+_V70_RSS_STATS: dict[str, int] = {
+    "http_200": 0,
+    "http_304": 0,
+    "etag_requests": 0,
+    "last_modified_requests": 0,
+    "parse_calls": 0,
+    "direct_x_fallbacks": 0,
+    "direct_x_skipped_rss_success": 0,
+}
+
+
+def _v70_stat_inc(name: str, amount: int = 1) -> None:
+    with _V70_RSS_STATS_LOCK:
+        _V70_RSS_STATS[name] = int(_V70_RSS_STATS.get(name, 0)) + int(amount)
+
+
+def _v70_url_lock(url: str) -> Lock:
+    key = str(url or "")
+    with _V70_CONDITIONAL_RSS_URL_LOCKS_GUARD:
+        lock = _V70_CONDITIONAL_RSS_URL_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _V70_CONDITIONAL_RSS_URL_LOCKS[key] = lock
+        return lock
+
+
+def _v70_cached_feed_state(url: str) -> dict[str, Any]:
+    with _V70_CONDITIONAL_RSS_LOCK:
+        state = _V70_CONDITIONAL_RSS_CACHE.get(str(url or ""))
+        return dict(state or {})
+
+
+def _v70_store_feed_state(
+    url: str,
+    *,
+    etag: str,
+    last_modified: str,
+    posts: list[Post],
+) -> None:
+    with _V70_CONDITIONAL_RSS_LOCK:
+        _V70_CONDITIONAL_RSS_CACHE[str(url or "")] = {
+            "etag": str(etag or ""),
+            "last_modified": str(last_modified or ""),
+            "posts": list(posts or []),
+            "updated_at": time.time(),
+        }
+
+
+def _v70_conditional_feed_request(
+    url: str,
+    timeout: float,
+) -> tuple[str, bytes, str, str]:
+    """Return (state, body, etag, last_modified).
+
+    state:
+      "modified"     -> HTTP 2xx with a body
+      "not_modified" -> HTTP 304, cached parsed posts may be reused
+
+    When a mirror does not advertise validators, this behaves exactly like the
+    existing request path: a normal GET on every scan.
+    """
+    cached = _v70_cached_feed_state(url)
+    etag = str(cached.get("etag", "") or "")
+    last_modified = str(cached.get("last_modified", "") or "")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    }
+    if etag:
+        headers["If-None-Match"] = etag
+        _v70_stat_inc("etag_requests")
+    if last_modified:
+        headers["If-Modified-Since"] = last_modified
+        _v70_stat_inc("last_modified_requests")
+
+    request = urllib.request.Request(url, headers=headers)
+    last_error: Exception | None = None
+    attempts = max(1, int(FEED_HTTP_RETRIES))
+
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read()
+                new_etag = str(response.headers.get("ETag", "") or "")
+                new_last_modified = str(
+                    response.headers.get("Last-Modified", "") or ""
+                )
+                _v70_stat_inc("http_200")
+                return "modified", body, new_etag, new_last_modified
+
+        except urllib.error.HTTPError as exc:
+            if int(getattr(exc, "code", 0) or 0) == 304:
+                # We only send validators after a successful cached response,
+                # so 304 has a valid parsed-post cache to reuse.
+                cached_now = _v70_cached_feed_state(url)
+                if cached_now.get("posts") is not None:
+                    _v70_stat_inc("http_304")
+                    return (
+                        "not_modified",
+                        b"",
+                        str(cached_now.get("etag", "") or ""),
+                        str(cached_now.get("last_modified", "") or ""),
+                    )
+                # Defensive fallback: if cache vanished unexpectedly, retry once
+                # without validators instead of treating 304 as a feed failure.
+                bare_request = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": headers["User-Agent"],
+                        "Accept": headers["Accept"],
+                    },
+                )
+                try:
+                    with urllib.request.urlopen(
+                        bare_request,
+                        timeout=timeout,
+                    ) as response:
+                        body = response.read()
+                        new_etag = str(
+                            response.headers.get("ETag", "") or ""
+                        )
+                        new_last_modified = str(
+                            response.headers.get("Last-Modified", "") or ""
+                        )
+                        _v70_stat_inc("http_200")
+                        return (
+                            "modified",
+                            body,
+                            new_etag,
+                            new_last_modified,
+                        )
+                except Exception as retry_exc:
+                    last_error = retry_exc
+            else:
+                last_error = exc
+
+        except Exception as exc:
+            last_error = exc
+
+        if attempt < attempts:
+            time.sleep(0.4)
+
+    raise RuntimeError(
+        f"RSS conditional GET failed: {url}. Last error: {last_error}"
+    )
+
+
+# Final active feed fetcher.
+def fetch_feed(username: str, template: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    url = template.format(username=urllib.parse.quote(canonical))
+    source_name = feed_source_name(template)
+
+    # One in-flight request per exact writer+mirror URL. This also prevents two
+    # overlapping control/automatic checks from both parsing the same fresh body.
+    with _v70_url_lock(url):
+        with feed_source_semaphore(source_name):
+            state, body, etag, last_modified = (
+                _v70_conditional_feed_request(
+                    url,
+                    FEED_REQUEST_TIMEOUT_SECONDS,
+                )
+            )
+
+        if state == "not_modified":
+            cached = _v70_cached_feed_state(url)
+            return list(cached.get("posts", []) or [])
+
+        _v70_stat_inc("parse_calls")
+        posts = list(parse_posts(canonical, body, source_name) or [])
+        _v70_store_feed_state(
+            url,
+            etag=etag,
+            last_modified=last_modified,
+            posts=posts,
+        )
+        return posts
+
+
+# ---------------------------------------------------------------------------
+# 2) Automatic discovery: RSS first. Direct-X is true fallback only.
+# ---------------------------------------------------------------------------
+def _v70_live_rss_network_rows(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return []
+
+    # Use the same account lock as the consolidated RSS engine so a control
+    # button and automatic cycle cannot race the same account's network fetch.
+    with _rss_engine_account_lock(canonical):
+        try:
+            return list(_rss_engine_network_fetch(canonical) or [])
+        except Exception as exc:
+            logging.warning(
+                "⚠️ RSS network path failed for @%s; Direct-X fallback is allowed: %s",
+                canonical,
+                short_error(exc, 500),
+            )
+            return []
+
+
+def _v70_direct_x_fallback_rows(
+    username: str,
+    timeout: float = 4.0,
+) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    _v70_stat_inc("direct_x_fallbacks")
+
+    # First reuse a still-valid Direct-X result if some manual/control action
+    # already fetched it. This costs no new X request.
+    try:
+        cached = list(_full_speed_cache_get(canonical) or [])
+    except Exception:
+        cached = []
+    if cached:
+        return cached
+
+    try:
+        future = _full_speed_start_live(canonical)
+        rows = _full_speed_future_rows(
+            future,
+            max(0.0, float(timeout)),
+        )
+        if rows:
+            return list(rows)
+    except Exception as exc:
+        logging.debug(
+            "Direct-X fallback failed safely for @%s: %s",
+            canonical,
+            short_error(exc, 300),
+        )
+
+    try:
+        return list(_full_speed_cache_get(canonical) or [])
+    except Exception:
+        return []
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+
+    # CRITICAL COST RULE:
+    # A successful live RSS fetch ends discovery for this cycle.
+    rss_rows = _v70_live_rss_network_rows(canonical)
+    if rss_rows:
+        _v70_stat_inc("direct_x_skipped_rss_success")
+
+        ordered = sorted(
+            [post for post in rss_rows if isinstance(post, Post)],
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )
+
+        observed = time.time()
+        elapsed = time.perf_counter() - started
+        for post in ordered:
+            try:
+                _pipeline_mark_seen(
+                    post,
+                    "automatic:rss_success_no_direct_x",
+                    observed,
+                    elapsed,
+                )
+            except Exception:
+                pass
+
+        return ordered[
+            : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+        ]
+
+    # Only a real zero/error from the live RSS network path is allowed to wake X.
+    live_rows = _v70_direct_x_fallback_rows(canonical, timeout=4.0)
+
+    # Last safety net: persistent RSS cache/history. It does not cause an X call;
+    # it is used only after both live RSS and Direct-X produced no rows.
+    if not live_rows:
+        try:
+            live_rows = list(_rss_engine_cached(canonical, limit=60) or [])
+        except Exception:
+            live_rows = []
+
+    ordered = sorted(
+        [post for post in live_rows if isinstance(post, Post)],
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
+        reverse=True,
+    )
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        try:
+            _pipeline_mark_seen(
+                post,
+                "automatic:direct_x_only_after_rss_zero",
+                observed,
+                elapsed,
+            )
+        except Exception:
+            pass
+
+    return ordered[
+        : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 3) Local audit. No external network calls.
+# ---------------------------------------------------------------------------
+def _v70_self_audit() -> None:
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v70_scan_cadence_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3:
+        raise RuntimeError("v70_primary_rss_count_changed")
+    if int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v70_fallback_rss_count_changed")
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v70_rss_retries_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v70_rss_timeout_changed")
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v70_rss_collection_timeout_changed")
+
+    # The active automatic fetcher must contain no unconditional wake-up of
+    # Direct-X before the RSS-success return.
+    names = set(fetch_posts.__code__.co_names)
+    if "_v70_live_rss_network_rows" not in names:
+        raise RuntimeError("v70_rss_first_fetcher_not_active")
+    if "_v70_direct_x_fallback_rows" not in names:
+        raise RuntimeError("v70_direct_x_fallback_missing")
+
+    # Conditional feed fetcher must own both parser and validator path.
+    feed_names = set(fetch_feed.__code__.co_names)
+    if "_v70_conditional_feed_request" not in feed_names:
+        raise RuntimeError("v70_conditional_rss_not_active")
+    if "parse_posts" not in feed_names:
+        raise RuntimeError("v70_rss_parser_missing")
+
+
+_v70_self_audit()
+logging.info(
+    "V70 active: Direct-X wakes only after live RSS returns zero/error; "
+    "ETag/Last-Modified conditional RSS enabled with parsed-post reuse on HTTP 304; "
+    "all V69 filters/Gemini/Telegram behavior unchanged."
+)
+
+# ====== END V70 RSS-FIRST / ETAG ======
+
 if __name__ == "__main__":
     main()
