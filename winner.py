@@ -51,34 +51,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 
-# ====== V85 PRODUCTION STARTUP AUDIT GATE ======
-# The accumulated V21-V72 self-audits are development regression tests, not
-# production dependencies. Historical versions could fail or delay startup even
-# though the runtime bot was healthy. Keep every audit callable for manual use,
-# but never let an audit prevent production startup.
-RUN_STARTUP_SELF_AUDITS = os.environ.get("RUN_STARTUP_SELF_AUDITS", "0") == "1"
-
-
-def _v85_run_startup_audit(name: str, func: Any) -> bool:
-    if not RUN_STARTUP_SELF_AUDITS:
-        return True
-    try:
-        func()
-        return True
-    except Exception as exc:
-        try:
-            detail = short_error(exc, 1200) if "short_error" in globals() else str(exc)
-        except Exception:
-            detail = str(exc)
-        logging.error(
-            "⚠️ Development startup audit %s failed; production continues: %s",
-            name,
-            detail,
-        )
-        return False
-
-# ====== END V85 PRODUCTION STARTUP AUDIT GATE ======
-
 # ====== SETTINGS ======
 
 # ============================================================================
@@ -47685,7 +47657,7 @@ def _v21_startup_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v21_startup_self_audit", _v21_startup_self_audit)
+    _v21_startup_self_audit()
 except Exception as _v21_audit_exc:
     logging.error("V21 startup self-audit crashed safely: %s", short_error(_v21_audit_exc, 400))
 
@@ -47839,7 +47811,7 @@ def _v22_startup_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v22_startup_self_audit", _v22_startup_self_audit)
+    _v22_startup_self_audit()
 except Exception as _v22_audit_exc:
     logging.error("V22 startup self-audit crashed safely: %s", short_error(_v22_audit_exc, 400))
 
@@ -49752,7 +49724,7 @@ def _v31_footer_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v31_footer_self_audit", _v31_footer_self_audit)
+    _v31_footer_self_audit()
     logging.info(
         "V31 active: every report text/photo/album/video route ends with exactly one Neto Sport footer"
     )
@@ -50445,7 +50417,7 @@ def _v32_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v32_self_audit", _v32_self_audit)
+    _v32_self_audit()
     logging.info(
         "V33 active: dangling @ removed, Salah aliases canonicalized, post-HWG duplicates hardened, "
         "CentreGoals/Polymarket official label restored, tag-flag lists preserved"
@@ -51240,8 +51212,8 @@ def _v34_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v34_runtime_configuration_audit", _v34_runtime_configuration_audit)
-    _v85_run_startup_audit("_v34_self_audit", _v34_self_audit)
+    _v34_runtime_configuration_audit()
+    _v34_self_audit()
     logging.info(
         "V34 active: generalized cause-aware formatting/duplicate rules passed; "
         "official after HERE WE GO is a real stage advance, repeated official is deduped, "
@@ -51343,7 +51315,7 @@ def _v36_manual_rss_restore_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v36_manual_rss_restore_audit", _v36_manual_rss_restore_audit)
+    _v36_manual_rss_restore_audit()
     logging.info(
         "V36 active: manual 14-writer RSS test restored to the direct proven "
         "RSS collector; automatic RSS and all non-RSS behavior are unchanged."
@@ -52041,7 +52013,7 @@ def _v37_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v37_self_audit", _v37_self_audit)
+    _v37_self_audit()
     logging.info(
         "V37 active: RSS control alerts silenced, TrollFootball2 facts source registered with source-specific filters, "
         "NBA entities broadened, CentreGoals Messi/Ronaldo concrete facts rescued, lists/Today-before/RTL repaired"
@@ -52187,7 +52159,7 @@ def _v38_rtl_boundary_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v38_rtl_boundary_self_audit", _v38_rtl_boundary_self_audit)
+    _v38_rtl_boundary_self_audit()
     logging.info("V38 active: RTL is enforced at every Telegram text/caption boundary, including the quiet channel")
 except Exception as _v38_audit_exc:
     logging.error("V38 RTL boundary self-audit failed: %s", short_error(_v38_audit_exc, 900))
@@ -52314,7 +52286,7 @@ def _v39_source_edge_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v39_source_edge_self_audit", _v39_source_edge_self_audit)
+    _v39_source_edge_self_audit()
     logging.info("V39 active: extra betting/hatewatch noise blocked; emoji-only source posts retain their original media")
 except Exception as _v39_audit_exc:
     logging.error("V39 source-edge self-audit failed: %s", short_error(_v39_audit_exc, 900))
@@ -53102,7 +53074,7 @@ def _v40_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v40_self_audit", _v40_self_audit)
+    _v40_self_audit()
     logging.info(
         "V40 active: Today-before inline, writer openings inline, camera emoji removed, "
         "translation actor integrity active, positive source gates active, duplicate cache active, "
@@ -53295,7 +53267,7 @@ def _v41_rtl_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v41_rtl_self_audit", _v41_rtl_self_audit)
+    _v41_rtl_self_audit()
     logging.info(
         "V41 active: every new message/caption authored by this bot uses RLM+RTL isolate in every Telegram chat route"
     )
@@ -54185,7 +54157,7 @@ def _v42_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v42_self_audit", _v42_self_audit)
+    _v42_self_audit()
     logging.info(
         "V42 active: inline Today-before, positive-only learned TrollFootball policy, "
         "Footballtweet rescue, local millisecond duplicate gate, bounded fast lane, "
@@ -54627,7 +54599,7 @@ def _v43_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v43_self_audit", _v43_self_audit)
+    _v43_self_audit()
     logging.info(
         "V43 active: admin channel posts are repaired in place when direction is broken; "
         "Bruno/GBP/medical duplicate identity generalized; Facts restored to root; "
@@ -55060,7 +55032,7 @@ def _v44_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v44_self_audit", _v44_self_audit)
+    _v44_self_audit()
     logging.info(
         "V44 active: Troll Football is integrated into Facts controls; birthday openings normalized; "
         "quiet forwarded details take priority over RTL edits; quote HTML boundaries are preserved; "
@@ -55684,7 +55656,7 @@ def _v45_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v45_self_audit", _v45_self_audit)
+    _v45_self_audit()
     logging.info(
         "V45 active: smart cross-source event dedupe; one shared discovery lane; "
         "RSS host circuit breakers with automatic recovery; 12 automatic rows; "
@@ -56722,7 +56694,7 @@ def _v46_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v46_self_audit", _v46_self_audit)
+    _v46_self_audit()
     logging.info(
         "V46 active: one principle-based sent-only event engine; stage/material-delta rules; "
         "paragraph-aware subset dedupe; concept translation integrity; global output invariants; "
@@ -57112,7 +57084,7 @@ def _v48_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v48_self_audit", _v48_self_audit)
+    _v48_self_audit()
     logging.info(
         "V48 active: real RSS restored with per-writer/per-endpoint cooldown; "
         "403/404 no-retry; automatic recovery; accurate live RSS diagnostics; "
@@ -57885,7 +57857,7 @@ def _v49_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v49_self_audit", _v49_self_audit)
+    _v49_self_audit()
     logging.info(
         "V49 active: translated duplicates stay history-only; platform promotions blocked; "
         "emoji/list layout repaired; concrete TrollFootball events + Google translation; "
@@ -58027,7 +57999,7 @@ def _v50_rss_rollback_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v50_rss_rollback_self_audit", _v50_rss_rollback_self_audit)
+    _v50_rss_rollback_self_audit()
     logging.info(
         "V50 active: exact V43 working RSS route restored; V45/V48 circuits and "
         "V49 RSS completion wrappers bypassed; full RSS retrieval retained; "
@@ -58369,7 +58341,7 @@ def _v51_spacing_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v51_spacing_self_audit", _v51_spacing_self_audit)
+    _v51_spacing_self_audit()
     logging.info(
         "V51 active: canonical post spacing at every Telegram text/caption boundary; "
         "one paragraph gap, compact lists, no detached emoji rows, exactly one gap before footer; "
@@ -59372,7 +59344,7 @@ def _v52_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v52_self_audit", _v52_self_audit)
+    _v52_self_audit()
     logging.info(
         "V52 active: robust exact-media recovery with quiet/manual text fallback; "
         "translation candidate scoring and source-marker preservation; betting-ad hard block; "
@@ -60017,7 +59989,7 @@ def _v53_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v53_self_audit", _v53_self_audit)
+    _v53_self_audit()
     logging.info(
         "V53 active: principle same-event duplicate control; same-stage Fabrizio confirmations suppressed; "
         "damaged translations retried/blocked; Puskas/Salah canonical names; structured trophy/salary lists; "
@@ -60342,7 +60314,7 @@ def _v54_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v54_self_audit", _v54_self_audit)
+    _v54_self_audit()
     logging.info(
         "V54 active: Opta tier-A + allowed senior national teams; canonical player spellings; "
         "source-aware goal wording; catalog-driven 'כש'+team typo repair; only standalone leading 'חדש:' removed; "
@@ -60865,7 +60837,7 @@ def _v56_rss_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v56_rss_self_audit", _v56_rss_self_audit)
+    _v56_rss_self_audit()
     logging.info(
         "V56 active: actual V23/V19 RSS route restored at final boundary; primary RSS -> "
         "existing direct-X fallback -> existing RSS fallbacks; manual 14-writer check waits "
@@ -61026,7 +60998,7 @@ def _v35_rss_restore_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v35_rss_restore_audit", _v35_rss_restore_audit)
+    _v35_rss_restore_audit()
     logging.info(
         'V35 RSS restored: exact old-good synchronous RSS route is active; '
         'control tests wait for real RSS results instead of returning early.'
@@ -61224,7 +61196,7 @@ def _v57_final_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v57_final_self_audit", _v57_final_self_audit)
+    _v57_final_self_audit()
     logging.info(
         "V57 active: exact V35 old-good synchronous RSS boundary restored at the final boundary; "
         "callbacks prioritized before all non-button control work; 20 dedicated button workers; "
@@ -61921,7 +61893,7 @@ def _v58_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v58_self_audit", _v58_self_audit)
+    _v58_self_audit()
     logging.info(
         "V58 active: Polo/Monfort fully removed from scans; betting false positives fixed; "
         "explicit-football rescue, kit/young-player policy, substantial-news quote policy, "
@@ -61987,7 +61959,7 @@ def _v59_rss_restore_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v59_rss_restore_self_audit", _v59_rss_restore_self_audit)
+    _v59_rss_restore_self_audit()
     logging.info(
         "V59 RSS restore active: exact uploaded old-good V35/V57 RSS route is the final runtime boundary; "
         "policy/RTL/dedupe fixes remain active and RSS is not wrapped by them."
@@ -62701,7 +62673,7 @@ def _v60_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v60_self_audit", _v60_self_audit)
+    _v60_self_audit()
     logging.info(
         "V60 active: 12-word source threshold, truthful word count, governance rescue, "
         "future-score Troll block, under-20 low-tier block, Hansi/Enzo/VfB/VfL/CJK/parenthesis cleanup, "
@@ -62870,7 +62842,7 @@ def _v61_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v61_self_audit", _v61_self_audit)
+    _v61_self_audit()
     logging.info("V61 active: Footballtweet has one 12-word lane; genuine transfer milestone advances bypass stale duplicate stages; V59 RSS unchanged.")
 except Exception as _v61_exc:
     logging.error("V61 self-audit failed: %s", short_error(_v61_exc, 2400))
@@ -63017,7 +62989,7 @@ def _v62_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v62_self_audit", _v62_self_audit)
+    _v62_self_audit()
     logging.info("V62 active: ordinary word counts use main+quote truth; Shabbat post-long-poll batch is discarded; V59 RSS unchanged.")
 except Exception as _v62_exc:
     logging.error("V62 self-audit failed: %s", short_error(_v62_exc, 2400))
@@ -63384,7 +63356,7 @@ def _v63_self_audit() -> None:
 
 
 try:
-    _v85_run_startup_audit("_v63_self_audit", _v63_self_audit)
+    _v63_self_audit()
     logging.info(
         "V63 active: add-only Matteo activation, material transfer-delta duplicate rescue, "
         "safety-suspension news rescue, retry-only Telegram server copy and button executor recovery; "
@@ -63824,7 +63796,7 @@ def _v65_self_audit() -> None:
     if int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS) != 1:
         raise RuntimeError("v65_gemini_single_request_contract_changed")
 
-_v85_run_startup_audit("_v65_self_audit", _v65_self_audit)
+_v65_self_audit()
 logging.info(
     "V65 active: exact V35/V20 RSS is first; empty-RSS uses only the existing direct-X fallback; "
     "duplicate continuous scanner disabled; RSS executor reused; unchanged ten-history writes debounced; "
@@ -64139,7 +64111,7 @@ def _v66_self_audit() -> None:
         raise RuntimeError("v66_transfer_wrongly_blocked")
 
 
-_v85_run_startup_audit("_v66_self_audit", _v66_self_audit)
+_v66_self_audit()
 logging.info(
     "V66 active: exact original V35/V20 RSS restored at final boundary; "
     "V65 RSS substitutions inactive; global in-match score/play-by-play block active."
@@ -64785,7 +64757,7 @@ def _v67_single_rss_engine_audit() -> None:
         raise RuntimeError("v67_http_is_alias")
 
 
-_v85_run_startup_audit("_v67_single_rss_engine_audit", _v67_single_rss_engine_audit)
+_v67_single_rss_engine_audit()
 logging.info(
     "V67 active: one consolidated RSS engine owns all active RSS settings and entrypoints; "
     "3 primary + 2 fallback, 6s/8s, 2 retries, 20s scan, 4 accounts, 12-post cap."
@@ -65187,7 +65159,7 @@ def _v68_self_audit() -> None:
         raise RuntimeError("v68_rss_cadence_changed")
 
 
-_v85_run_startup_audit("_v68_self_audit", _v68_self_audit)
+_v68_self_audit()
 logging.info(
     "V68 active: pasted X links prepare exact reports in quiet chat; "
     "bot/manual channel posts get fast in-place RTL when needed; "
@@ -65457,7 +65429,7 @@ def _v69_self_audit() -> None:
         raise RuntimeError("v69_rss_parallelism_changed")
 
 
-_v85_run_startup_audit("_v69_self_audit", _v69_self_audit)
+_v69_self_audit()
 logging.info(
     "V69 active: up to %s Gemini keys can fail over for translation; "
     "low-value interviews/reactions are blocked; strong men's-football transfer news "
@@ -65845,7 +65817,7 @@ def _v70_self_audit() -> None:
         raise RuntimeError("v70_rss_parser_missing")
 
 
-_v85_run_startup_audit("_v70_self_audit", _v70_self_audit)
+_v70_self_audit()
 logging.info(
     "V70 active: Direct-X wakes only after live RSS returns zero/error; "
     "ETag/Last-Modified conditional RSS enabled with parsed-post reuse on HTTP 304; "
@@ -66866,7 +66838,7 @@ def _v72_self_audit() -> None:
         raise RuntimeError("v72_rss_policy_changed")
 
 
-_v85_run_startup_audit("_v72_self_audit", _v72_self_audit)
+_v72_self_audit()
 logging.info(
     "V72 active: root formatting engine uses source row provenance + generic Unicode markers + "
     "catalog-driven club normalization + final dangling-credit cleanup + generic keycap bidi isolation; "
@@ -66875,58 +66847,64 @@ logging.info(
 
 # ====== END V72 ROOT FORMAT ENGINE ======
 
-
-# ====== V85 EXACT CONFIRMED WORKING RSS RESTORE (2026-08-26) ======
-# Evidence basis: the 2026-07-27 build that was immediately followed by the
-# operator's explicit confirmation that the bot was working well. Restore ONLY
-# that proven RSS transport/topology at the final runtime boundary.
+# ====== V86 EXACT HISTORICAL NITTER-PRIMARY RSS + CONTROL DIAGNOSTICS ======
+# Restores the runtime behavior documented in the confirmed July working build:
 #
-# Deliberately unchanged: filters, Gemini, Telegram, buttons, RTL, formatting,
-# persistent files/keys, Shabbat, writer configuration, 20-second outer scan,
-# four-account outer parallelism, 12-post processing cap, and V70's later cost
-# rule that Direct-X is allowed only after a real live-RSS zero/error.
+#   1. Nitter RSS is the ONE primary RSS source.
+#   2. If Nitter returns a usable row -> STOP. No other RSS mirror is contacted.
+#   3. If Nitter is empty/fails -> existing public Direct-X safety lane.
+#   4. Only if primary/direct still provide nothing -> the historical fallback
+#      RSS mirrors may be checked.
 #
-# Deliberately absent from the ACTIVE RSS path: ETag/304 conditional fetching,
-# host/endpoint circuit breakers, sticky source learning, source rotation,
-# environment-added RSS sources, and all later experimental RSS replacements.
+# No new RSS source is added.
+# No ETag/circuit/sticky/rotating RSS layer is active at this final boundary.
+# All non-RSS V73 features remain untouched.
 
-BOT_BUILD_ID = "winner-v85-exact-confirmed-working-rss-2026-08-26"
+BOT_BUILD_ID = "winner-v86-nitter-primary-exact-diagnostics-2026-08-26"
 
-V85_CONFIRMED_RSS_FEED_TEMPLATES = [
+V86_RSS_TEMPLATES = [
     "https://nitter.net/{username}/rss",
     "https://twiiit.com/{username}/rss",
     "https://lightbrd.com/{username}/rss",
     "https://rsshub.rssforever.com/twitter/user/{username}",
     "https://rsshub.app/twitter/user/{username}",
 ]
-FEED_TEMPLATES = list(V85_CONFIRMED_RSS_FEED_TEMPLATES)
+FEED_TEMPLATES = list(V86_RSS_TEMPLATES)
 MAX_FEED_TEMPLATES_PER_ACCOUNT = 5
-RSS_PRIMARY_SOURCE_COUNT = 3
+
+# Historical primary-first policy: exactly one RSS primary.
+RSS_PRIMARY_SOURCE_COUNT = 1
 RSS_ENABLE_FALLBACK = True
-RSS_FALLBACK_SOURCE_COUNT = 2
+RSS_FALLBACK_SOURCE_COUNT = 4
 RSS_ENABLE_STALE_FALLBACK = False
-RSS_STALE_FALLBACK_SECONDS = 6 * 60 * 60
 
 FEED_REQUEST_TIMEOUT_SECONDS = 6.0
 FEED_COLLECTION_TIMEOUT_SECONDS = 8.0
 FEED_HTTP_RETRIES = 2
 MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 3
-FEED_SOURCE_MAX_PARALLEL = 2
 
-# These are later operator-approved outer runtime values, intentionally preserved.
+# Preserve current outer runtime.
 CHECK_EVERY_SECONDS = 20
 MAX_PARALLEL_ACCOUNT_CHECKS = 4
 MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
 
-try:
-    with FEED_SOURCE_SEMAPHORES_LOCK:
-        FEED_SOURCE_SEMAPHORES.clear()
-except Exception:
-    pass
+# Do not let a later continuous lane duplicate RSS work.
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+
+_V86_RSS_DIAG_LOCK = RLock()
+_V86_RSS_DIAG: dict[str, dict[str, Any]] = {}
 
 
-def http_get_feed(url: str, timeout: float = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
-    """Confirmed working RSS GET: ordinary GET, two attempts, no circuit state."""
+def active_feed_templates() -> list[str]:
+    """Exact historical configured pool; Nitter remains the only primary."""
+    return list(V86_RSS_TEMPLATES)
+
+
+def http_get_feed(
+    url: str,
+    timeout: int = FEED_REQUEST_TIMEOUT_SECONDS,
+) -> bytes:
+    """Historical simple HTTP behavior: two attempts, no circuit/ETag."""
     request = urllib.request.Request(
         url,
         headers={
@@ -66943,193 +66921,640 @@ def http_get_feed(url: str, timeout: float = FEED_REQUEST_TIMEOUT_SECONDS) -> by
             last_error = exc
             if attempt < max(1, int(FEED_HTTP_RETRIES)):
                 time.sleep(0.4)
-    raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
-
-
-def active_feed_templates() -> list[str]:
-    return list(V85_CONFIRMED_RSS_FEED_TEMPLATES)
-
-
-def feed_source_name(template: str) -> str:
-    try:
-        host = urllib.parse.urlparse(template).netloc.lower()
-    except Exception:
-        return "unknown"
-    return host.removeprefix("www.")
-
-
-def feed_source_semaphore(source_name: str) -> BoundedSemaphore:
-    with FEED_SOURCE_SEMAPHORES_LOCK:
-        semaphore = FEED_SOURCE_SEMAPHORES.get(source_name)
-        if semaphore is None:
-            semaphore = BoundedSemaphore(max(1, int(FEED_SOURCE_MAX_PARALLEL)))
-            FEED_SOURCE_SEMAPHORES[source_name] = semaphore
-        return semaphore
+    raise RuntimeError(
+        f"RSS GET failed: {url}. Last error: {last_error}"
+    )
 
 
 def fetch_feed(username: str, template: str) -> list[Post]:
-    """Confirmed path: exact URL -> ordinary HTTP -> existing parser."""
     canonical = str(username or "").strip().lstrip("@")
-    url = template.format(username=urllib.parse.quote(canonical))
-    source_name = feed_source_name(template)
-    with feed_source_semaphore(source_name):
-        payload = http_get_feed(url, FEED_REQUEST_TIMEOUT_SECONDS)
-    return list(parse_posts(canonical, payload, source_name) or [])
+    url = template.format(
+        username=urllib.parse.quote(canonical)
+    )
+    body = http_get_feed(url, FEED_REQUEST_TIMEOUT_SECONDS)
+    return list(
+        parse_posts(
+            canonical,
+            body,
+            feed_source_name(template),
+        )
+        or []
+    )
 
 
 def collect_posts_from_feed_templates(
     username: str,
     feed_templates: list[str],
 ) -> tuple[list[Post], list[str], list[str]]:
-    """Exact old-good isolated per-account mirror race."""
-    all_posts: dict[str, Post] = {}
-    feed_errors: list[str] = []
-    timed_out_sources: list[str] = []
-    if not feed_templates:
+    """Historical bounded fallback collector; primary Nitter never uses this fan-out."""
+    templates = list(feed_templates or [])
+    if not templates:
         return [], [], []
+
+    posts_by_id: dict[str, Post] = {}
+    errors: list[str] = []
+    timeouts: list[str] = []
 
     executor = ThreadPoolExecutor(
         max_workers=min(
             max(1, int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)),
-            len(feed_templates),
+            len(templates),
         )
     )
-    futures = {
+    future_map = {
         executor.submit(fetch_feed, username, template): template
-        for template in feed_templates
+        for template in templates
     }
+
     try:
-        for future in as_completed(futures, timeout=FEED_COLLECTION_TIMEOUT_SECONDS):
-            template = futures[future]
-            source_name = feed_source_name(template)
+        for future in as_completed(
+            future_map,
+            timeout=float(FEED_COLLECTION_TIMEOUT_SECONDS),
+        ):
+            template = future_map[future]
+            source = feed_source_name(template)
             try:
-                for post in future.result() or []:
-                    if not isinstance(post, Post):
-                        continue
-                    identity = str(post.post_id or post.link or "").strip()
-                    if identity:
-                        all_posts.setdefault(identity, post)
+                rows = list(future.result() or [])
             except Exception as exc:
-                feed_errors.append(
-                    f"{source_name}: {type(exc).__name__}: {short_error(exc)}"
+                errors.append(
+                    f"{source}: {type(exc).__name__}: {short_error(exc, 300)}"
                 )
+                continue
+
+            for post in rows:
+                if not isinstance(post, Post):
+                    continue
+                identity = str(
+                    getattr(post, "post_id", "")
+                    or getattr(post, "link", "")
+                    or ""
+                ).strip()
+                if identity:
+                    posts_by_id.setdefault(identity, post)
+
     except FuturesTimeoutError:
-        timed_out_sources = [
-            feed_source_name(template)
-            for future, template in futures.items()
-            if not future.done()
-        ]
+        for future, template in future_map.items():
+            if not future.done():
+                timeouts.append(feed_source_name(template))
     finally:
-        for future in futures:
+        for future in future_map:
             future.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
 
-    posts = list(all_posts.values())
-    posts.sort(
-        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+    ordered = sorted(
+        posts_by_id.values(),
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
         reverse=True,
     )
-    return posts, feed_errors, timed_out_sources
+    return ordered, errors, timeouts
 
 
-def _rss_engine_network_fetch(username: str) -> list[Post]:
-    """Confirmed primary 3 -> fallback 2; no hidden host/endpoint state."""
+def _v86_ordered_templates() -> list[str]:
+    # Hard-coded historical order: Nitter first.
+    return list(V86_RSS_TEMPLATES)
+
+
+def _v86_error_kind(text: str) -> str:
+    value = str(text or "")
+    lowered = value.casefold()
+    for status in ("410", "429", "404", "403", "503", "502", "500"):
+        if f"http error {status}" in lowered or f"http {status}" in lowered:
+            return f"HTTP {status}"
+    if "timed out" in lowered or "timeout" in lowered:
+        return "TIMEOUT"
+    if "name resolution" in lowered or "temporary failure in name resolution" in lowered:
+        return "DNS"
+    if "ssl" in lowered or "certificate" in lowered:
+        return "SSL"
+    if "parse" in lowered or "xml" in lowered:
+        return "XML/PARSE"
+    if "empty" in lowered:
+        return "EMPTY"
+    return "ERROR"
+
+
+def _v86_store_diag(username: str, diag: dict[str, Any]) -> None:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V86_RSS_DIAG_LOCK:
+        _V86_RSS_DIAG[key] = dict(diag or {})
+        if len(_V86_RSS_DIAG) > 100:
+            for old in list(_V86_RSS_DIAG)[:25]:
+                _V86_RSS_DIAG.pop(old, None)
+
+
+def _v86_get_diag(username: str) -> dict[str, Any]:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V86_RSS_DIAG_LOCK:
+        return dict(_V86_RSS_DIAG.get(key, {}) or {})
+
+
+def _v86_fetch_one(
+    username: str,
+    template: str,
+) -> tuple[list[Post], str]:
+    source = feed_source_name(template)
+    started = time.perf_counter()
+    try:
+        posts = [
+            post
+            for post in (fetch_feed(username, template) or [])
+            if isinstance(post, Post)
+        ]
+        elapsed = round(time.perf_counter() - started, 3)
+        if posts:
+            return posts, ""
+        return [], f"{source}: EMPTY feed ({elapsed}s)"
+    except Exception as exc:
+        elapsed = round(time.perf_counter() - started, 3)
+        return [], (
+            f"{source}: {type(exc).__name__}: "
+            f"{short_error(exc, 350)} ({elapsed}s)"
+        )
+
+
+def _v86_network_fetch(
+    username: str,
+    limit: int = 30,
+    *,
+    allow_direct_x: bool = True,
+    allow_fallback_rss: bool = True,
+) -> tuple[list[Post], dict[str, Any]]:
+    """Exact historical runtime: Nitter -> Direct-X -> fallback RSS."""
     canonical = str(username or "").strip().lstrip("@")
-    feed_templates = list(active_feed_templates())
-    primary_templates = feed_templates[:3]
-    fallback_templates = feed_templates[3:5] if RSS_ENABLE_FALLBACK else []
+    requested = max(1, int(limit))
 
-    posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(
-        canonical, primary_templates
+    diag: dict[str, Any] = {
+        "primary": "nitter.net",
+        "primary_ok": False,
+        "primary_error": "",
+        "direct_x_attempted": False,
+        "direct_x_ok": False,
+        "direct_x_error": "",
+        "fallback_attempted": False,
+        "fallback_sources": {},
+        "fallback_errors": [],
+        "fallback_timeouts": [],
+        "path": [],
+        "returned": 0,
+    }
+
+    merged: dict[str, Post] = {}
+
+    # 1) NITTER — one RSS request path first. If it works, stop immediately.
+    primary_template = V86_RSS_TEMPLATES[0]
+    primary_rows, primary_error = _v86_fetch_one(
+        canonical,
+        primary_template,
     )
-    if posts:
-        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
-        send_rss_stale_latest_alert_if_needed(canonical, posts)
+    if primary_rows:
         try:
-            _stable_rss_remember(canonical, posts)
-            _remember_control_rss_posts(canonical, posts)
-            _ten_history_save(canonical, posts)
+            _reliable_merge_posts(merged, primary_rows, canonical)
+        except Exception:
+            for post in primary_rows:
+                identity = str(
+                    getattr(post, "post_id", "")
+                    or getattr(post, "link", "")
+                    or ""
+                ).strip()
+                if identity:
+                    merged.setdefault(identity, post)
+
+        diag["primary_ok"] = True
+        diag["path"].append("primary_nitter")
+        ordered = sorted(
+            merged.values(),
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )
+        diag["returned"] = len(ordered)
+        _v86_store_diag(canonical, diag)
+
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
         except Exception:
             pass
-        return posts
 
-    fallback_errors: list[str] = []
-    fallback_timeouts: list[str] = []
-    if fallback_templates:
-        fallback_posts, fallback_errors, fallback_timeouts = collect_posts_from_feed_templates(
-            canonical, fallback_templates
-        )
-        if fallback_posts:
-            FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
-            send_rss_stale_latest_alert_if_needed(canonical, fallback_posts)
-            try:
-                _stable_rss_remember(canonical, fallback_posts)
-                _remember_control_rss_posts(canonical, fallback_posts)
-                _ten_history_save(canonical, fallback_posts)
-            except Exception:
-                pass
-            logging.info(
-                "🔁 RSS: מקור גיבוי הופעל עבור @%s. נמצאו %s פוסטים דרך %s",
-                canonical, len(fallback_posts), fallback_posts[0].source_name,
+        # Critical historical rule: Nitter success => no more RSS/X discovery.
+        return ordered[:requested], diag
+
+    diag["primary_error"] = primary_error or "nitter.net: EMPTY"
+
+    # 2) EXISTING DIRECT PUBLIC-X SAFETY LANE — not an RSS source.
+    if allow_direct_x:
+        diag["direct_x_attempted"] = True
+        try:
+            direct_rows = list(
+                _reliable_direct_profile_posts(
+                    canonical,
+                    limit=max(20, requested),
+                    force=True,
+                )
+                or []
             )
-            return fallback_posts
+            if direct_rows:
+                diag["direct_x_ok"] = True
+                diag["path"].append("direct_x_no_key")
+                try:
+                    _reliable_merge_posts(
+                        merged,
+                        direct_rows,
+                        canonical,
+                    )
+                except Exception:
+                    for post in direct_rows:
+                        if not isinstance(post, Post):
+                            continue
+                        identity = str(
+                            getattr(post, "post_id", "")
+                            or getattr(post, "link", "")
+                            or ""
+                        ).strip()
+                        if identity:
+                            merged.setdefault(identity, post)
+        except Exception as exc:
+            diag["direct_x_error"] = (
+                f"{type(exc).__name__}: {short_error(exc, 350)}"
+            )
 
-    no_posts_failures = FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) + 1
-    FEED_NO_POSTS_FAILURE_COUNTS[canonical] = no_posts_failures
-    checked_templates = primary_templates + fallback_templates
-    all_errors = feed_errors + fallback_errors
-    all_timeouts = timed_out_sources + fallback_timeouts
-    issue_parts: list[str] = []
-    if all_errors:
-        issue_parts.append("errors: " + "; ".join(all_errors[:8]))
-    if all_timeouts:
-        issue_parts.append("timeouts: " + ", ".join(all_timeouts[:8]))
-    issue_text = " | ".join(issue_parts) or "no items returned"
-
-    logging.debug(
-        "RSS details for @%s: checked sources=%s | %s",
-        canonical,
-        ", ".join(feed_source_name(template) for template in checked_templates),
-        issue_text,
-    )
-    if (
-        FEED_NO_POSTS_WARNING_AFTER_FAILURES > 0
-        and no_posts_failures >= FEED_NO_POSTS_WARNING_AFTER_FAILURES
-    ):
-        log_feed_issue(
-            canonical,
-            "RSS: לא נמצאו פוסטים עבור @%s אחרי %s בדיקות רצופות. נבדקו %s מקורות. ינסה שוב בשקט.",
-            canonical, no_posts_failures, len(checked_templates),
+    # Historical fast exit: Direct-X recovered a row, so do not burn fallback RSS.
+    if merged:
+        ordered = sorted(
+            merged.values(),
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
         )
-    send_rss_control_alert_if_needed(
-        canonical, no_posts_failures, len(checked_templates), issue_text
+        diag["returned"] = len(ordered)
+        _v86_store_diag(canonical, diag)
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+        return ordered[:requested], diag
+
+    # 3) Historical fallback mirrors — only after Nitter AND Direct-X gave nothing.
+    if allow_fallback_rss:
+        diag["fallback_attempted"] = True
+        fallback_templates = V86_RSS_TEMPLATES[1:]
+        rows, errors, timeouts = collect_posts_from_feed_templates(
+            canonical,
+            fallback_templates,
+        )
+        diag["fallback_errors"] = list(errors or [])
+        diag["fallback_timeouts"] = list(timeouts or [])
+
+        for template in fallback_templates:
+            diag["fallback_sources"].setdefault(
+                feed_source_name(template),
+                "checked",
+            )
+
+        if rows:
+            diag["path"].append("fallback_rss")
+            try:
+                _reliable_merge_posts(merged, rows, canonical)
+            except Exception:
+                for post in rows:
+                    if not isinstance(post, Post):
+                        continue
+                    identity = str(
+                        getattr(post, "post_id", "")
+                        or getattr(post, "link", "")
+                        or ""
+                    ).strip()
+                    if identity:
+                        merged.setdefault(identity, post)
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
+        reverse=True,
     )
-    return []
+    diag["returned"] = len(ordered)
+    _v86_store_diag(canonical, diag)
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+
+    return ordered[:requested], diag
 
 
-# Preserve V70's later cost optimization without its ETag layer: its active
-# fetch_posts calls _v70_live_rss_network_rows(), which dynamically calls the
-# exact restored _rss_engine_network_fetch above. Direct-X is therefore still
-# skipped whenever the restored RSS returns posts, and used only after RSS zero.
+def fetch_posts(username: str) -> list[Post]:
+    """Automatic route: exact Nitter-first behavior; never let RSS outage kill loop."""
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows, _diag = _v86_network_fetch(
+            canonical,
+            limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+            allow_direct_x=True,
+            allow_fallback_rss=True,
+        )
+    except Exception as exc:
+        logging.warning(
+            "⚠️ RSS/Direct-X route failed safely for @%s: %s",
+            canonical,
+            short_error(exc, 500),
+        )
+        rows = []
 
-try:
-    with _V70_CONDITIONAL_RSS_LOCK:
-        _V70_CONDITIONAL_RSS_CACHE.clear()
-except Exception:
-    pass
+    if not rows:
+        # Network-free last safety net, preserving state behavior.
+        try:
+            rows = list(
+                _stable_rss_cached_posts(
+                    canonical,
+                    limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+                )
+                or []
+            )
+        except Exception:
+            rows = []
 
-try:
-    _CANONICAL_STABLE_FEED_TEMPLATES = tuple(V85_CONFIRMED_RSS_FEED_TEMPLATES)
-except Exception:
-    pass
+    return list(rows)[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
 
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        return canonical, list(fetch_posts(canonical) or [])
+    except Exception as exc:
+        logging.warning(
+            "⚠️ סריקת @%s נכשלה בבטחה: %s",
+            canonical,
+            short_error(exc, 400),
+        )
+        return canonical, []
+
+
+def fetch_control_posts(
+    username: str,
+) -> tuple[str, list[Post], Exception | None]:
+    """Control diagnostic runs the SAME historical route and stores all failures."""
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        rows, _diag = _v86_network_fetch(
+            canonical,
+            limit=30,
+            allow_direct_x=True,
+            allow_fallback_rss=True,
+        )
+        return canonical, rows, None
+    except Exception as exc:
+        _v86_store_diag(
+            canonical,
+            {
+                "primary": "nitter.net",
+                "primary_ok": False,
+                "primary_error": (
+                    f"fatal: {type(exc).__name__}: {short_error(exc, 500)}"
+                ),
+                "path": [],
+                "returned": 0,
+            },
+        )
+        return canonical, [], exc
+
+
+def fetch_control_posts_for_accounts(
+    accounts: list[str],
+) -> dict[str, tuple[list[Post], Exception | None]]:
+    results: dict[str, tuple[list[Post], Exception | None]] = {
+        username: ([], None) for username in accounts
+    }
+    if not accounts:
+        return results
+
+    workers = min(
+        max(1, int(MAX_PARALLEL_ACCOUNT_CHECKS)),
+        max(1, len(accounts)),
+    )
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(fetch_control_posts, username): username
+            for username in accounts
+        }
+        for future in as_completed(futures):
+            username = futures[future]
+            try:
+                _canonical, posts, error = future.result()
+            except Exception as exc:
+                posts, error = [], exc
+            results[username] = (posts, error)
+    return results
+
+
+def _v86_compact_problem(text: str) -> str:
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    kind = _v86_error_kind(text)
+    # Keep status + useful tail, without flooding Telegram with full URLs.
+    cleaned = re.sub(r"https?://\S+", "", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:|")
+    if len(cleaned) > 105:
+        cleaned = cleaned[:102].rstrip() + "..."
+    return f"{kind}: {cleaned}" if kind not in cleaned else cleaned
+
+
+def rss_status_text() -> str:
+    """Detailed operational alert: every relevant RSS-route problem is surfaced here."""
+    accounts = _general_reporter_control_accounts()
+    fetched = fetch_control_posts_for_accounts(accounts)
+
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "סדר היסטורי פעיל: Nitter ראשי יחיד.",
+        "אם Nitter עובד — לא נבדק שום RSS נוסף.",
+        "אם Nitter נכשל — X ישיר; ורק אם גם הוא ריק, RSS גיבוי היסטורי.",
+        "",
+    ]
+
+    ok_count = 0
+    nitter_ok = 0
+    direct_rescues = 0
+    fallback_rescues = 0
+    hard_failures = 0
+    recent_total = 0
+    problem_counts: dict[str, int] = {}
+    unique_problem_samples: dict[str, str] = {}
+
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, outer_error = fetched.get(username, ([], None))
+        diag = _v86_get_diag(username)
+
+        posts = sorted(
+            [p for p in (posts or []) if isinstance(p, Post)],
+            key=lambda p: float(
+                getattr(p, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+
+        path = list(diag.get("path") or [])
+        primary_error = str(diag.get("primary_error") or "")
+        direct_error = str(diag.get("direct_x_error") or "")
+        fallback_errors = list(diag.get("fallback_errors") or [])
+        fallback_timeouts = list(diag.get("fallback_timeouts") or [])
+
+        problems: list[str] = []
+        if primary_error:
+            problems.append("Nitter " + _v86_compact_problem(primary_error))
+        if direct_error:
+            problems.append("Direct-X " + _v86_compact_problem(direct_error))
+        for item in fallback_errors:
+            problems.append(_v86_compact_problem(item))
+        for item in fallback_timeouts:
+            problems.append(f"TIMEOUT: {item}")
+        if outer_error:
+            problems.append(
+                "FATAL " + _v86_compact_problem(
+                    f"{type(outer_error).__name__}: {outer_error}"
+                )
+            )
+
+        for problem in problems:
+            kind = problem.split(":", 1)[0].strip()
+            problem_counts[kind] = problem_counts.get(kind, 0) + 1
+            unique_problem_samples.setdefault(kind, problem)
+
+        if "primary_nitter" in path and posts:
+            ok_count += 1
+            nitter_ok += 1
+            lines.append(
+                f"✅ {label}: Nitter תקין | {len(recent)} פוסטים ביממה | "
+                "לא הופעל שום RSS נוסף"
+            )
+            continue
+
+        if "direct_x_no_key" in path and posts:
+            ok_count += 1
+            direct_rescues += 1
+            issue = _v86_compact_problem(primary_error) or "Nitter לא החזיר"
+            lines.append(
+                f"🟠 {label}: Nitter לא תקין ({issue}) | X ישיר הציל את המסלול"
+            )
+            continue
+
+        if "fallback_rss" in path and posts:
+            ok_count += 1
+            fallback_rescues += 1
+            issue = _v86_compact_problem(primary_error) or "Nitter לא החזיר"
+            source = str(
+                getattr(posts[0], "source_name", "")
+                or "RSS גיבוי"
+            )
+            lines.append(
+                f"🟡 {label}: Nitter לא תקין ({issue}) | גיבוי הצליח: {source}"
+            )
+            continue
+
+        hard_failures += 1
+        detail_parts = problems[:2]
+        detail = " | ".join(detail_parts) if detail_parts else "לא התקבלו נתונים משום מסלול"
+        lines.append(
+            f"❌ {label}: כשל מלא | {detail}"
+        )
+
+    lines.extend(
+        [
+            "",
+            "📊 סיכום מסלול:",
+            f"• Nitter תקין: {nitter_ok}/{len(accounts)}",
+            f"• הצלה דרך X ישיר: {direct_rescues}",
+            f"• הצלה דרך RSS גיבוי: {fallback_rescues}",
+            f"• כשל מלא: {hard_failures}",
+            f"• פוסטים מהיממה האחרונה: {recent_total}",
+        ]
+    )
+
+    if problem_counts:
+        lines.extend(["", "🚨 בעיות שנמצאו בבדיקה:"])
+        # Up to 8 categories/samples keeps the control message within Telegram limits.
+        for kind, count in list(
+            sorted(
+                problem_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        )[:8]:
+            sample = unique_problem_samples.get(kind, "")
+            lines.append(
+                f"• {kind} ×{count}"
+                + (f" — {sample}" if sample else "")
+            )
+    else:
+        lines.extend(["", "✅ לא נמצאה שום תקלה במסלול RSS."])
+
+    lines.extend(
+        [
+            "",
+            f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו נתונים חיים.",
+        ]
+    )
+    return "\n".join(lines)[:4000]
+
+
+def _v86_self_audit() -> None:
+    if list(active_feed_templates()) != list(V86_RSS_TEMPLATES):
+        raise RuntimeError("v86_feed_order_changed")
+    if V86_RSS_TEMPLATES[0] != "https://nitter.net/{username}/rss":
+        raise RuntimeError("v86_nitter_not_primary")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 1:
+        raise RuntimeError("v86_primary_count_not_one")
+    if int(RSS_FALLBACK_SOURCE_COUNT) != 4:
+        raise RuntimeError("v86_historical_fallback_count_changed")
+    if not bool(RSS_ENABLE_FALLBACK):
+        raise RuntimeError("v86_fallback_disabled")
+    if bool(RSS_ENABLE_STALE_FALLBACK):
+        raise RuntimeError("v86_stale_fallback_enabled")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v86_timeout_changed")
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v86_retries_changed")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v86_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v86_account_workers_changed")
+
+    # Prevent the regressions that caused the last attempts to behave differently.
+    http_names = set(http_get_feed.__code__.co_names)
+    if "_v70_conditional_feed_request" in http_names:
+        raise RuntimeError("v86_etag_still_active")
+    if "_V45_RSS_CB" in http_names or "_V48_RSS_ENDPOINT_STATE" in http_names:
+        raise RuntimeError("v86_circuit_breaker_still_active")
+
+    fetch_names = set(fetch_posts.__code__.co_names)
+    if "_v86_network_fetch" not in fetch_names:
+        raise RuntimeError("v86_final_fetch_boundary_not_active")
+
+
+_v86_self_audit()
 logging.info(
-    "V85 active: exact confirmed-working RSS at final boundary — five exact feeds; "
-    "primary 3 + fallback 2; 6s request / 8s collection / 2 attempts / 3 feed workers; "
-    "no ETag, no circuit, no sticky/rotation/extra feeds."
+    "V86 active: exact historical Nitter-primary route restored; "
+    "Nitter success stops discovery immediately; Direct-X then historical RSS fallback only "
+    "after Nitter failure; detailed RSS control diagnostics enabled."
 )
 
-# ====== END V85 EXACT CONFIRMED WORKING RSS RESTORE ======
+# ====== END V86 EXACT HISTORICAL NITTER-PRIMARY RSS ======
 
 if __name__ == "__main__":
     main()
