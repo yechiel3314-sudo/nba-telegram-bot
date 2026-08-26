@@ -65003,5 +65003,781 @@ logging.info(
 )
 # ====== END V66 PRODUCTION STABILITY FINALIZER ======
 
+# ====== V87 NITTER ALL-WRITERS DIAGNOSTIC + DIRECT-X SYNDICATION FIX ======
+# Scope:
+# - DO NOT change the proven V66 automatic RSS boundary.
+# - Nitter remains the key historical RSS diagnostic and is checked for EVERY writer.
+# - Fix/strengthen the existing no-key Direct-X fallback based on X's current
+#   syndication __NEXT_DATA__ -> props.pageProps.timeline.entries structure.
+# - Pace Direct-X requests globally to prevent 10 writers from bursting the
+#   unofficial embed endpoint at once.
+# - The RSS control button reports Nitter + Direct-X health for every writer.
+#
+# Automatic RSS remains:
+#   http_get_feed = _v20_active_http_get_feed
+#   fetch_posts = _v35_fetch_posts
+#   fetch_control_posts = _v35_fetch_control_posts
+#
+# Existing V66 filters/Gemini/Telegram/RTL/media/Shabbat/state remain untouched.
+
+BOT_BUILD_ID_DIAGNOSTIC = "winner-v87-nitter-all-writers-directx-fix-2026-08-26"
+
+# ---------------------------------------------------------------------------
+# Direct-X pacing/cache diagnostics
+# ---------------------------------------------------------------------------
+_V87_DIRECT_LOCK = RLock()
+_V87_DIRECT_SEMAPHORE = BoundedSemaphore(
+    max(1, int(os.environ.get("DIRECT_X_MAX_PARALLEL", "1") or "1"))
+)
+_V87_DIRECT_MIN_GAP_SECONDS = max(
+    0.20,
+    float(os.environ.get("DIRECT_X_MIN_GAP_SECONDS", "0.75") or "0.75"),
+)
+_V87_DIRECT_LAST_REQUEST_AT = 0.0
+_V87_DIRECT_GLOBAL_COOLDOWN_UNTIL = 0.0
+_V87_DIRECT_DIAG: dict[str, dict[str, Any]] = {}
+_V87_DIRECT_COOKIE = str(
+    os.environ.get("X_SYNDICATION_COOKIE", "")
+    or os.environ.get("TWITTER_SYNDICATION_COOKIE", "")
+    or ""
+).strip()
+
+
+def _v87_direct_key(username: str) -> str:
+    return str(username or "").strip().lstrip("@").casefold()
+
+
+def _v87_set_direct_diag(username: str, **values: Any) -> None:
+    key = _v87_direct_key(username)
+    with _V87_DIRECT_LOCK:
+        _V87_DIRECT_DIAG[key] = dict(values)
+        if len(_V87_DIRECT_DIAG) > 100:
+            for old in list(_V87_DIRECT_DIAG)[:25]:
+                _V87_DIRECT_DIAG.pop(old, None)
+
+
+def _v87_get_direct_diag(username: str) -> dict[str, Any]:
+    with _V87_DIRECT_LOCK:
+        return dict(_V87_DIRECT_DIAG.get(_v87_direct_key(username), {}) or {})
+
+
+def _v87_wait_direct_slot() -> None:
+    global _V87_DIRECT_LAST_REQUEST_AT
+    while True:
+        with _V87_DIRECT_LOCK:
+            now = time.time()
+            cooldown = float(_V87_DIRECT_GLOBAL_COOLDOWN_UNTIL or 0.0)
+            last = float(_V87_DIRECT_LAST_REQUEST_AT or 0.0)
+            wait_for = max(
+                0.0,
+                cooldown - now,
+                _V87_DIRECT_MIN_GAP_SECONDS - (now - last),
+            )
+            if wait_for <= 0:
+                _V87_DIRECT_LAST_REQUEST_AT = now
+                return
+        time.sleep(min(wait_for, 1.0))
+
+
+def _v87_retry_after(headers: Any) -> float:
+    try:
+        raw = str(headers.get("Retry-After", "") or "").strip()
+        if raw.isdigit():
+            return max(15.0, min(15 * 60.0, float(raw)))
+    except Exception:
+        pass
+    return 60.0
+
+
+def _v87_tweet_media(tweet: dict[str, Any]) -> tuple[list[str], list[str]]:
+    images: list[str] = []
+    videos: list[str] = []
+
+    candidates: list[Any] = []
+    entities = tweet.get("entities")
+    if isinstance(entities, dict):
+        candidates.extend(entities.get("media") or [])
+    candidates.extend(tweet.get("mediaDetails") or [])
+    extended = tweet.get("extended_entities")
+    if isinstance(extended, dict):
+        candidates.extend(extended.get("media") or [])
+
+    for media in candidates:
+        if not isinstance(media, dict):
+            continue
+        kind = str(media.get("type") or "").casefold()
+        for key in ("media_url_https", "media_url", "url", "preview_image_url"):
+            value = media.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                if kind in {"video", "animated_gif"} or "video.twimg.com" in value:
+                    videos.append(value)
+                elif "pbs.twimg.com" in value or kind == "photo":
+                    images.append(value)
+
+        video_info = media.get("video_info")
+        if isinstance(video_info, dict):
+            for variant in video_info.get("variants") or []:
+                if not isinstance(variant, dict):
+                    continue
+                value = variant.get("url")
+                content_type = str(variant.get("content_type") or "").casefold()
+                if isinstance(value, str) and value.startswith("http"):
+                    if "video" in content_type or "video.twimg.com" in value:
+                        videos.append(value)
+
+    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
+
+
+def _v87_posts_from_syndication_next_data(
+    username: str,
+    next_data: dict[str, Any],
+    limit: int,
+) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = canonical.casefold()
+
+    page_props = (
+        ((next_data or {}).get("props") or {}).get("pageProps")
+        if isinstance(next_data, dict)
+        else None
+    )
+    if not isinstance(page_props, dict):
+        return []
+
+    timeline = page_props.get("timeline")
+    entries = timeline.get("entries") if isinstance(timeline, dict) else None
+    if not isinstance(entries, list):
+        return []
+
+    result: list[Post] = []
+    seen: set[str] = set()
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        content = entry.get("content")
+        if not isinstance(content, dict):
+            continue
+        tweet = content.get("tweet")
+        if not isinstance(tweet, dict):
+            continue
+
+        tweet_id = str(
+            tweet.get("id_str")
+            or tweet.get("id")
+            or ""
+        ).strip()
+        if not re.fullmatch(r"\d{15,22}", tweet_id):
+            continue
+
+        user = tweet.get("user")
+        author = ""
+        if isinstance(user, dict):
+            author = str(user.get("screen_name") or "").strip().lstrip("@")
+        if author and author.casefold() != wanted:
+            continue
+
+        text_value = _reliable_normalize_x_text(
+            str(tweet.get("full_text") or tweet.get("text") or "")
+        )
+        if not text_value:
+            continue
+
+        if tweet_id in seen:
+            continue
+        seen.add(tweet_id)
+
+        images, videos = _v87_tweet_media(tweet)
+        link = str(tweet.get("permalink") or "").strip()
+        if not link.startswith("http"):
+            link = f"https://x.com/{canonical}/status/{tweet_id}"
+
+        post = Post(
+            post_id=tweet_id,
+            username=canonical,
+            text=text_value,
+            link=link,
+            image_urls=images,
+            video_urls=videos,
+            has_video=bool(videos),
+            primary_has_video=bool(videos),
+            quoted_has_video=False,
+            quoted_author="",
+            quoted_text="",
+            published_ts=_reliable_snowflake_timestamp(tweet_id),
+            dedupe_ids=[
+                tweet_id,
+                f"{canonical}:{tweet_id}",
+                f"{canonical}:{link}",
+                post_content_signature(canonical, text_value, ""),
+            ],
+            source_name="x-syndication-v87",
+        )
+        post.original_text = text_value
+        post.source_structure_available = True
+        post.exact_source_structure = True
+        post.exact_source_provider = "x-syndication-v87"
+        result.append(post)
+
+        if len(result) >= max(1, int(limit)):
+            break
+
+    result.sort(
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return result[:max(1, int(limit))]
+
+
+def _v87_syndication_profile_posts(
+    username: str,
+    limit: int,
+    *,
+    diagnostic: bool = False,
+) -> list[Post]:
+    """Current X embed timeline parser, with bounded global pacing."""
+    global _V87_DIRECT_GLOBAL_COOLDOWN_UNTIL
+
+    canonical = str(username or "").strip().lstrip("@")
+    encoded = urllib.parse.quote(canonical)
+    url = (
+        "https://syndication.twitter.com/srv/timeline-profile/"
+        f"screen-name/{encoded}"
+    )
+
+    started = time.perf_counter()
+    diag: dict[str, Any] = {
+        "provider": "syndication.twitter.com",
+        "url": url,
+        "status": 0,
+        "bytes": 0,
+        "content_type": "",
+        "next_data": False,
+        "entries": 0,
+        "posts": 0,
+        "seconds": 0.0,
+        "error": "",
+        "classification": "",
+    }
+
+    with _V87_DIRECT_SEMAPHORE:
+        _v87_wait_direct_slot()
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/137.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://publish.x.com/",
+            "Cache-Control": "no-cache",
+        }
+        if _V87_DIRECT_COOKIE:
+            headers["Cookie"] = _V87_DIRECT_COOKIE
+
+        request = urllib.request.Request(url, headers=headers)
+        raw = ""
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=max(4.0, float(RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)),
+            ) as response:
+                diag["status"] = int(getattr(response, "status", 200) or 200)
+                try:
+                    diag["content_type"] = str(
+                        response.headers.get("Content-Type", "") or ""
+                    )
+                except Exception:
+                    pass
+                body = response.read(4_000_000)
+            diag["bytes"] = len(body)
+            raw = body.decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            status = int(getattr(exc, "code", 0) or 0)
+            diag["status"] = status
+            diag["error"] = f"HTTPError: {exc}"
+            diag["classification"] = f"HTTP {status}"
+            if status == 429:
+                with _V87_DIRECT_LOCK:
+                    _V87_DIRECT_GLOBAL_COOLDOWN_UNTIL = max(
+                        float(_V87_DIRECT_GLOBAL_COOLDOWN_UNTIL or 0.0),
+                        time.time() + _v87_retry_after(getattr(exc, "headers", None)),
+                    )
+            diag["seconds"] = round(time.perf_counter() - started, 3)
+            _v87_set_direct_diag(canonical, **diag)
+            return []
+        except Exception as exc:
+            diag["error"] = f"{type(exc).__name__}: {exc}"
+            diag["classification"] = _v66diag_classify_exception(exc)
+            diag["seconds"] = round(time.perf_counter() - started, 3)
+            _v87_set_direct_diag(canonical, **diag)
+            return []
+
+    # Explicit current Next.js payload path.
+    match = re.search(
+        r'<script\b[^>]*\bid=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        raw,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    next_data: dict[str, Any] | None = None
+    if match:
+        try:
+            next_data = json.loads(html.unescape(match.group(1)).strip())
+            diag["next_data"] = isinstance(next_data, dict)
+        except Exception as exc:
+            diag["error"] = f"NEXT_DATA JSON: {type(exc).__name__}: {exc}"
+
+    if isinstance(next_data, dict):
+        try:
+            page_props = ((next_data.get("props") or {}).get("pageProps") or {})
+            timeline = page_props.get("timeline") if isinstance(page_props, dict) else {}
+            entries = timeline.get("entries") if isinstance(timeline, dict) else []
+            diag["entries"] = len(entries) if isinstance(entries, list) else 0
+        except Exception:
+            diag["entries"] = 0
+
+        rows = _v87_posts_from_syndication_next_data(
+            canonical,
+            next_data,
+            limit=max(1, int(limit)),
+        )
+        if not rows:
+            # Preserve the older generic deep parser as a compatibility fallback.
+            try:
+                rows = list(
+                    _reliable_posts_from_profile_payload(canonical, next_data)
+                    or []
+                )[:max(1, int(limit))]
+            except Exception:
+                rows = []
+    else:
+        rows = []
+
+    diag["posts"] = len(rows)
+    diag["seconds"] = round(time.perf_counter() - started, 3)
+    if rows:
+        diag["classification"] = "OK"
+    elif diag["status"] == 200 and not diag["next_data"]:
+        low = raw[:20_000].casefold()
+        if "captcha" in low or "cloudflare" in low or "just a moment" in low:
+            diag["classification"] = "HTML/WAF"
+        else:
+            diag["classification"] = "HTTP 200 אבל __NEXT_DATA__ חסר"
+    elif diag["status"] == 200 and diag["entries"] == 0:
+        diag["classification"] = "__NEXT_DATA__ קיים אבל timeline.entries ריק"
+    elif diag["status"] == 200:
+        diag["classification"] = "entries קיימים אבל parser החזיר 0"
+
+    _v87_set_direct_diag(canonical, **diag)
+    return rows
+
+
+# Replace ONLY the existing no-key Direct-X reader.
+# The rest of V66's live/background machinery dynamically calls this symbol.
+_V87_PRE_RELIABLE_DIRECT_PROFILE_POSTS = _reliable_direct_profile_posts
+
+
+def _reliable_direct_profile_posts(
+    username: str,
+    limit: int = 30,
+    force: bool = False,
+) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+
+    with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+        cached = _RELIABLE_DIRECT_PROFILE_CACHE.get(key)
+        if (
+            not force
+            and cached
+            and time.time() - cached[0] <= RELIABLE_DIRECT_PROFILE_CACHE_SECONDS
+        ):
+            return list(cached[1][:max(1, int(limit))])
+
+    # Official X API stays first if the operator already configured a bearer token.
+    official_rows: list[Post] = []
+    token_present = bool(
+        str(os.environ.get("X_BEARER_TOKEN", "") or "").strip()
+        or str(os.environ.get("TWITTER_BEARER_TOKEN", "") or "").strip()
+        or str(os.environ.get("X_API_BEARER_TOKEN", "") or "").strip()
+    )
+    if token_present:
+        try:
+            official_rows = list(
+                _reliable_official_x_profile_posts(
+                    canonical,
+                    limit=max(20, int(limit)),
+                )
+                or []
+            )
+        except Exception as exc:
+            _v87_set_direct_diag(
+                canonical,
+                provider="api.x.com",
+                status=0,
+                posts=0,
+                error=f"{type(exc).__name__}: {exc}",
+                classification="official X API failed",
+                token_present=True,
+            )
+
+    result = official_rows
+    if not result:
+        result = _v87_syndication_profile_posts(
+            canonical,
+            limit=max(20, int(limit)),
+        )
+
+    for post in result:
+        post.image_urls = [
+            u for u in (post.image_urls or []) if _real_tweet_photo_url(u)
+        ]
+        post.video_urls = [
+            u for u in (post.video_urls or []) if _real_tweet_video_url(u)
+        ]
+        post.has_video = bool(post.video_urls)
+        post.primary_has_video = bool(post.video_urls)
+        post.exact_media_checked = True
+
+    if result:
+        with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
+            _RELIABLE_DIRECT_PROFILE_CACHE[key] = (
+                time.time(),
+                list(result),
+            )
+        try:
+            _stable_rss_remember(canonical, result)
+        except Exception:
+            pass
+
+    return list(result)[:max(1, int(limit))]
+
+
+# Avoid the old continuous duplicate direct-X lane; V35 already starts the
+# background direct reader once per normal account cycle.
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+
+
+# ---------------------------------------------------------------------------
+# Nitter diagnostic for every writer
+# ---------------------------------------------------------------------------
+def _v87_nitter_probe_writer(username: str) -> dict[str, Any]:
+    """Exactly one diagnostic request; no production retry/circuit side effects."""
+    canonical = str(username or "").strip().lstrip("@")
+    url = (
+        "https://nitter.net/"
+        + urllib.parse.quote(canonical)
+        + "/rss"
+    )
+    result = {
+        "status": 0,
+        "ok": False,
+        "classification": "",
+        "bytes": 0,
+        "items": 0,
+        "parser_posts": 0,
+        "error": "",
+        "seconds": 0.0,
+    }
+    started = time.perf_counter()
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/137.0 Safari/537.36"
+            ),
+            "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+        },
+    )
+    body = b""
+    try:
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            result["status"] = int(getattr(response, "status", 200) or 200)
+            body = response.read(2_000_000)
+        result["bytes"] = len(body)
+    except urllib.error.HTTPError as exc:
+        result["status"] = int(getattr(exc, "code", 0) or 0)
+        result["classification"] = _v66diag_classify_exception(exc)
+        result["error"] = f"HTTPError: {exc}"
+        result["seconds"] = round(time.perf_counter() - started, 3)
+        return result
+    except Exception as exc:
+        result["classification"] = _v66diag_classify_exception(exc)
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["seconds"] = round(time.perf_counter() - started, 3)
+        return result
+
+    xml = _v66diag_xml_inspect(body)
+    result["items"] = int(xml.get("items", 0) or 0)
+    if not xml.get("xml_ok"):
+        result["classification"] = (
+            "HTML/WAF במקום RSS"
+            if xml.get("html")
+            else "XML לא תקין"
+        )
+        result["error"] = str(xml.get("error") or "")
+        result["seconds"] = round(time.perf_counter() - started, 3)
+        return result
+
+    try:
+        posts = list(parse_posts(canonical, body, "nitter.net") or [])
+        result["parser_posts"] = len(posts)
+    except Exception as exc:
+        result["classification"] = "PARSER"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["seconds"] = round(time.perf_counter() - started, 3)
+        return result
+
+    result["ok"] = result["parser_posts"] > 0
+    result["classification"] = (
+        "OK"
+        if result["ok"]
+        else "RSS תקין אבל parser/פיד החזיר 0"
+    )
+    result["seconds"] = round(time.perf_counter() - started, 3)
+    return result
+
+
+def _v87_direct_probe_writer(username: str) -> dict[str, Any]:
+    canonical = str(username or "").strip().lstrip("@")
+    token_present = bool(
+        str(os.environ.get("X_BEARER_TOKEN", "") or "").strip()
+        or str(os.environ.get("TWITTER_BEARER_TOKEN", "") or "").strip()
+        or str(os.environ.get("X_API_BEARER_TOKEN", "") or "").strip()
+    )
+    started = time.perf_counter()
+    try:
+        rows = list(
+            _reliable_direct_profile_posts(
+                canonical,
+                limit=8,
+                force=True,
+            )
+            or []
+        )
+    except Exception as exc:
+        rows = []
+        _v87_set_direct_diag(
+            canonical,
+            provider="direct-x",
+            posts=0,
+            error=f"{type(exc).__name__}: {exc}",
+            classification="Direct-X exception",
+        )
+
+    diag = _v87_get_direct_diag(canonical)
+    diag["token_present"] = token_present
+    diag["total_seconds"] = round(time.perf_counter() - started, 3)
+    diag["result_posts"] = len(rows)
+    return diag
+
+
+def rss_status_text() -> str:
+    """Check Nitter AND Direct-X for every configured writer, as requested."""
+    accounts = _general_reporter_control_accounts()
+    if not accounts:
+        return "🧪 בדיקת RSS/Nitter: אין כתבים פעילים."
+
+    runtime = _v66diag_runtime()
+    storage = _v66diag_storage()
+
+    lines = [
+        f"🧪 בדיקת Nitter + Direct-X לכל {len(accounts)} הכתבים",
+        "",
+        "Nitter נבדק בנפרד לכל כתב.",
+        "Direct-X נבדק לכל כתב דרך X Syndication במבנה __NEXT_DATA__ העדכני.",
+        "הבדיקה ידנית; מסלול RSS האוטומטי של V66 לא שונה.",
+        "",
+    ]
+
+    nitter_ok = 0
+    direct_ok = 0
+    both_fail = 0
+    nitter_status_counts: dict[str, int] = {}
+    direct_class_counts: dict[str, int] = {}
+
+    # Intentionally sequential here: this is a diagnostic button, and pacing
+    # prevents the diagnostic itself from manufacturing a 429 burst.
+    for username in accounts:
+        label = _hebrew_account_label(username)
+
+        nitter = _v87_nitter_probe_writer(username)
+        nitter_class = str(
+            nitter.get("classification")
+            or f"HTTP {nitter.get('status', 0)}"
+        )
+        nitter_status_counts[nitter_class] = (
+            nitter_status_counts.get(nitter_class, 0) + 1
+        )
+
+        direct = _v87_direct_probe_writer(username)
+        direct_posts = int(direct.get("result_posts", 0) or 0)
+        direct_class = str(
+            direct.get("classification")
+            or ("OK" if direct_posts else "לא ידוע")
+        )
+        direct_class_counts[direct_class] = (
+            direct_class_counts.get(direct_class, 0) + 1
+        )
+
+        if nitter.get("ok"):
+            nitter_ok += 1
+        if direct_posts > 0:
+            direct_ok += 1
+        if not nitter.get("ok") and direct_posts <= 0:
+            both_fail += 1
+
+        nitter_status = int(nitter.get("status", 0) or 0)
+        nitter_part = (
+            f"Nitter ✅ {nitter.get('parser_posts')} פוסטים"
+            if nitter.get("ok")
+            else f"Nitter ❌ {nitter_class}"
+        )
+
+        if direct_posts > 0:
+            direct_part = (
+                f"Direct-X ✅ {direct_posts} | "
+                f"entries={int(direct.get('entries', 0) or 0)}"
+            )
+        else:
+            status = int(direct.get("status", 0) or 0)
+            extra = (
+                f"HTTP {status}"
+                if status
+                else direct_class
+            )
+            if direct.get("next_data"):
+                extra += (
+                    f" | NEXT_DATA=yes | entries={int(direct.get('entries', 0) or 0)}"
+                )
+            direct_part = f"Direct-X ❌ {extra}"
+
+        lines.append(
+            f"{'✅' if (nitter.get('ok') or direct_posts > 0) else '❌'} "
+            f"{label}: {nitter_part} | {direct_part}"
+        )
+
+    lines.extend(
+        [
+            "",
+            "📊 סיכום:",
+            f"• Nitter עובד: {nitter_ok}/{len(accounts)}",
+            f"• Direct-X עובד: {direct_ok}/{len(accounts)}",
+            f"• שני המסלולים נכשלו: {both_fail}/{len(accounts)}",
+        ]
+    )
+
+    lines.extend(["", "🚨 Nitter:"])
+    for issue, count in sorted(
+        nitter_status_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[:5]:
+        lines.append(f"• {issue}: {count}")
+
+    lines.extend(["", "🚨 Direct-X:"])
+    for issue, count in sorted(
+        direct_class_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[:5]:
+        lines.append(f"• {issue}: {count}")
+
+    # Runtime/storage facts which can independently break a deployment.
+    lines.extend(["", "⚙️ מערכת:"])
+    issues = list(runtime.get("consistency_issues") or [])
+    lines.append(
+        "• consistency: "
+        + ("✅ תקין" if not issues else f"❌ {len(issues)} בעיות")
+    )
+
+    token_present = any(
+        bool(str(os.environ.get(name, "") or "").strip())
+        for name in (
+            "X_BEARER_TOKEN",
+            "TWITTER_BEARER_TOKEN",
+            "X_API_BEARER_TOKEN",
+        )
+    )
+    lines.append(
+        "• X Bearer Token: "
+        + ("✅ מוגדר" if token_present else "ℹ️ לא מוגדר — משתמשים ב-Syndication")
+    )
+    lines.append(
+        "• X Syndication Cookie: "
+        + ("✅ מוגדר" if _V87_DIRECT_COOKIE else "ℹ️ לא מוגדר")
+    )
+
+    if storage.get("configured") and storage.get("writable") and storage.get("railway_volume"):
+        lines.append(f"• /data: ✅ {storage.get('path')}")
+    elif storage.get("writable"):
+        lines.append(
+            f"• /data: ⚠️ ניתן לכתיבה אבל לא Volume קבוע: {storage.get('path')}"
+        )
+    else:
+        lines.append(
+            "• /data: ❌ FOOTBALL_BOT_DATA_DIR=/data לא מוגדר/לא ניתן לכתיבה"
+        )
+
+    # Direct root-cause conclusion.
+    if nitter_ok == 0 and direct_ok > 0:
+        lines.extend(
+            [
+                "",
+                "🩺 מסקנה: Nitter חיצוני למטה, אבל Direct-X עובד. "
+                "הבוט יכול להמשיך דרך מסלול X החלופי.",
+            ]
+        )
+    elif nitter_ok == 0 and direct_ok == 0:
+        lines.extend(
+            [
+                "",
+                "🩺 מסקנה: Nitter וגם Direct-X נכשלים. "
+                "הפירוט לכל כתב למעלה יראה אם Direct-X חסום ב-HTTP/429, "
+                "אם __NEXT_DATA__ חסר, או אם parser מחזיר 0.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "🩺 מסקנה: לפחות Nitter/Direct-X אחד פעיל. "
+                "אפשר להתמקד רק בכתבים המסומנים ❌.",
+            ]
+        )
+
+    return "\n".join(lines)[:4050]
+
+
+def _v87_self_audit() -> None:
+    # Proven RSS route must stay V66.
+    if http_get_feed is not _v20_active_http_get_feed:
+        raise RuntimeError("v87_changed_v66_http")
+    if fetch_posts is not _v35_fetch_posts:
+        raise RuntimeError("v87_changed_v66_fetch_posts")
+    if fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError("v87_changed_v66_control_fetch")
+
+    # Direct-X final symbol must be the strengthened reader.
+    if _reliable_direct_profile_posts.__name__ != "_reliable_direct_profile_posts":
+        raise RuntimeError("v87_direct_symbol_missing")
+
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError("v87_duplicate_continuous_direct_lane_enabled")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v87_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v87_self_audit")
+
+logging.info(
+    "V87 active: V66 RSS unchanged; Nitter diagnostic checks every writer; "
+    "Direct-X syndication parser updated for __NEXT_DATA__/timeline.entries with global pacing."
+)
+
+# ====== END V87 NITTER ALL-WRITERS DIAGNOSTIC + DIRECT-X FIX ======
+
 if __name__ == "__main__":
     main()
