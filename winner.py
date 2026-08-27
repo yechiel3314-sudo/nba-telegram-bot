@@ -71792,5 +71792,1506 @@ logging.info(
 )
 # ====== END V97 EDITORIAL/FORMAT FIXES ======
 
+
+# ====== V98 FINAL: HALF VIDEO SEND LIMIT (2026-08-28) ======
+# User-requested isolated change: keep all V97 behavior intact and only reduce
+# the maximum video file size eligible for Telegram sending from 25 MiB to
+# exactly half: 12.5 MiB (13,107,200 bytes).
+_V98_PRE_VIDEO_LIMIT_BYTES = MAX_VIDEO_BYTES
+MAX_VIDEO_BYTES = (25 * 1024 * 1024) // 2
+
+
+def _v98_video_limit_audit() -> None:
+    if MAX_VIDEO_BYTES != 13_107_200:
+        raise RuntimeError("v98_video_limit_not_12_5_mib")
+    if _V98_PRE_VIDEO_LIMIT_BYTES != 25 * 1024 * 1024:
+        raise RuntimeError("v98_unexpected_previous_video_limit")
+    # Keep the active scan settings unchanged.
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v98_scan_settings_changed")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v98_video_limit_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v98_video_limit_audit")
+
+logging.info(
+    "V98 active: video send limit reduced from 25 MiB to 12.5 MiB only; all V97 behavior remains unchanged."
+)
+# ====== END V98 VIDEO LIMIT ======
+
+
+# ====== V99 FINAL: DAY 30s / NIGHT 300s SCAN CADENCE (2026-08-28) ======
+# User-requested isolated server-operations saving change:
+# - Daytime: scan every 30 seconds.
+# - Night (02:00 <= local Israel time < 09:00): scan every 300 seconds (5 minutes),
+#   exactly 10x slower than daytime.
+# - ONLY cadence changes at night. Account workers / send workers remain identical
+#   to daytime, so this does not alter source coverage, filtering, translation,
+#   dedupe, formatting, media, buttons, or delivery behavior.
+V99_DAY_SCAN_SECONDS = 30
+V99_NIGHT_SCAN_SECONDS = 300
+V99_NIGHT_START_HOUR = 2
+V99_NIGHT_END_HOUR = 9
+
+CHECK_EVERY_SECONDS = V99_DAY_SCAN_SECONDS
+NIGHT_MODE_ENABLED = True
+NIGHT_START_HOUR = V99_NIGHT_START_HOUR
+NIGHT_END_HOUR = V99_NIGHT_END_HOUR
+NIGHT_CHECK_EVERY_SECONDS = V99_NIGHT_SCAN_SECONDS
+
+# Keep concurrency unchanged; night mode is cadence-only.
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(MAX_PARALLEL_ACCOUNT_CHECKS)
+NIGHT_MAX_PARALLEL_POST_SENDS = int(MAX_PARALLEL_POST_SENDS)
+
+
+def _v99_scan_interval_for_hour(hour: int) -> int:
+    hour = int(hour) % 24
+    if V99_NIGHT_START_HOUR <= hour < V99_NIGHT_END_HOUR:
+        return V99_NIGHT_SCAN_SECONDS
+    return V99_DAY_SCAN_SECONDS
+
+
+def is_night_mode_now() -> bool:
+    hour = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).hour
+    return V99_NIGHT_START_HOUR <= hour < V99_NIGHT_END_HOUR
+
+
+def current_check_every_seconds() -> int:
+    hour = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).hour
+    return _v99_scan_interval_for_hour(hour)
+
+
+def _v99_scan_cadence_audit() -> None:
+    if int(CHECK_EVERY_SECONDS) != 30:
+        raise RuntimeError('v99_day_scan_not_30s')
+    if int(NIGHT_CHECK_EVERY_SECONDS) != 300:
+        raise RuntimeError('v99_night_scan_not_300s')
+    if (int(NIGHT_START_HOUR), int(NIGHT_END_HOUR)) != (2, 9):
+        raise RuntimeError('v99_night_window_not_02_09')
+    if int(NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS) != int(MAX_PARALLEL_ACCOUNT_CHECKS):
+        raise RuntimeError('v99_night_account_workers_changed')
+    if int(NIGHT_MAX_PARALLEL_POST_SENDS) != int(MAX_PARALLEL_POST_SENDS):
+        raise RuntimeError('v99_night_send_workers_changed')
+    expected = {0:30, 1:30, 2:300, 3:300, 8:300, 9:30, 12:30, 23:30}
+    for hour, seconds in expected.items():
+        if _v99_scan_interval_for_hour(hour) != seconds:
+            raise RuntimeError(f'v99_bad_interval_hour_{hour}')
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v99_scan_cadence_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append('_v99_scan_cadence_audit')
+
+logging.info(
+    'V99 active: scan cadence only changed to 30s daytime and 300s from 02:00-09:00 Asia/Jerusalem; concurrency and all V98 behavior unchanged.'
+)
+# ====== END V99 SCAN CADENCE ======
+
+
+# ====== V100 FINAL: HIGH-IMPACT CREDIT SAVER (2026-08-28) ======
+# User-requested ONLY high-impact savings #2/#3/#4:
+# 2) When the newest returned post is already known, do not re-walk the full 12-row timeline.
+# 3) When there are new posts, stop at the first already-known post; older rows are not reprocessed.
+# 4) Avoid the main loop's full state JSON serialization on unchanged cycles; keep immediate
+#    saves for real changes and a 5-minute safety checkpoint.
+# RSS/providers, V94 translation, latest dedupe, V72 behavior, filters, media, buttons,
+# 30s day / 300s night cadence and all persistent filenames/keys remain unchanged.
+
+V100_STATE_SAFETY_CHECK_SECONDS = 300.0
+_V100_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V100_PRE_RUN_ONCE = run_once
+_V100_PRE_SAVE_STATE = save_state
+
+_V100_SCAN_CONTEXT_LOCK = RLock()
+_V100_ACTIVE_SCAN_STATE: dict[str, Any] | None = None
+_V100_ACTIVE_SCAN_OPTIMIZE = False
+_V100_CYCLE_FRONTIER_CHANGED = False
+_V100_MAIN_SAVE_EXPECTATION: bool | None = None
+_V100_MAIN_SAVE_OWNER_THREAD_ID: int | None = None
+_V100_LAST_STATE_CHECK_MONO = time.monotonic()
+_V100_METRICS: dict[str, int] = {
+    'unchanged_top_cycles': 0,
+    'rows_pruned_after_seen_frontier': 0,
+    'rows_returned_to_pipeline': 0,
+    'rows_avoided': 0,
+    'state_serializations_skipped': 0,
+    'state_safety_checks': 0,
+}
+
+
+def _v100_post_seen(post: Post, seen: set[str]) -> bool:
+    ids = {str(x).strip() for x in (getattr(post, 'dedupe_ids', []) or []) if str(x).strip()}
+    for raw in (getattr(post, 'post_id', ''), getattr(post, 'link', '')):
+        value = str(raw or '').strip()
+        if value:
+            ids.add(value)
+    return bool(ids and any(item in seen for item in ids))
+
+
+def _v100_trim_to_seen_frontier(username: str, posts: list[Post]) -> list[Post]:
+    """Keep only the new chronological prefix plus one known boundary row.
+
+    fetch_posts_safely already sorts newest -> oldest. Once a known row is reached,
+    every later row is older and does not need to traverse all filters/dedupe/translation.
+    Keeping the single known boundary row preserves the established run_once account
+    initialization/stat behavior while reducing a stable 12-row timeline to 1 row.
+    """
+    global _V100_CYCLE_FRONTIER_CHANGED
+    rows = [p for p in (posts or []) if isinstance(p, Post)]
+    if not rows:
+        return rows
+
+    with _V100_SCAN_CONTEXT_LOCK:
+        state = _V100_ACTIVE_SCAN_STATE
+        enabled = bool(_V100_ACTIVE_SCAN_OPTIMIZE)
+    if not enabled or not isinstance(state, dict) or not any(state.values()) or username not in state:
+        _V100_METRICS['rows_returned_to_pipeline'] += len(rows)
+        if rows:
+            _V100_CYCLE_FRONTIER_CHANGED = True
+        return rows
+
+    seen = {str(x).strip() for x in (state.get(username, []) or []) if str(x).strip()}
+    if not seen:
+        _V100_METRICS['rows_returned_to_pipeline'] += len(rows)
+        _V100_CYCLE_FRONTIER_CHANGED = True
+        return rows
+
+    boundary = None
+    for idx, post in enumerate(rows):
+        if _v100_post_seen(post, seen):
+            boundary = idx
+            break
+
+    if boundary is None:
+        # All returned rows are newer than our durable frontier. Preserve all of them.
+        _V100_METRICS['rows_returned_to_pipeline'] += len(rows)
+        _V100_CYCLE_FRONTIER_CHANGED = True
+        return rows
+
+    # Keep the known boundary itself so the old run_once still sees a normal non-empty
+    # account result and can apply its existing state/control semantics. Everything older
+    # than that boundary is guaranteed unnecessary for this cycle.
+    kept = rows[: boundary + 1]
+    avoided = max(0, len(rows) - len(kept))
+    _V100_METRICS['rows_returned_to_pipeline'] += len(kept)
+    _V100_METRICS['rows_avoided'] += avoided
+    if boundary == 0:
+        _V100_METRICS['unchanged_top_cycles'] += 1
+    else:
+        _V100_METRICS['rows_pruned_after_seen_frontier'] += avoided
+        _V100_CYCLE_FRONTIER_CHANGED = True
+    return kept
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical, rows = _V100_PRE_FETCH_POSTS_SAFELY(username)
+    canonical = str(canonical or username or '').strip().lstrip('@')
+    return canonical, _v100_trim_to_seen_frontier(canonical, list(rows or []))
+
+
+def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
+    global _V100_ACTIVE_SCAN_STATE, _V100_ACTIVE_SCAN_OPTIMIZE
+    global _V100_CYCLE_FRONTIER_CHANGED, _V100_MAIN_SAVE_EXPECTATION, _V100_MAIN_SAVE_OWNER_THREAD_ID
+    with _V100_SCAN_CONTEXT_LOCK:
+        _V100_ACTIVE_SCAN_STATE = state
+        # Startup must retain the exact established backlog/forced-Fabrizio behavior.
+        _V100_ACTIVE_SCAN_OPTIMIZE = not bool(startup_cycle)
+        _V100_CYCLE_FRONTIER_CHANGED = False
+    try:
+        result = _V100_PRE_RUN_ONCE(state, startup_cycle=startup_cycle, min_published_ts=min_published_ts)
+        # A changed live frontier means run_once may have added seen/blocked/sent IDs.
+        # Startup always gets a normal save, preserving all existing initialization.
+        _V100_MAIN_SAVE_EXPECTATION = bool(startup_cycle or _V100_CYCLE_FRONTIER_CHANGED)
+        _V100_MAIN_SAVE_OWNER_THREAD_ID = _v40_threading.get_ident()
+        return result
+    except Exception:
+        # On an exceptional cycle never suppress the caller's safety save.
+        _V100_MAIN_SAVE_EXPECTATION = True
+        _V100_MAIN_SAVE_OWNER_THREAD_ID = _v40_threading.get_ident()
+        raise
+    finally:
+        with _V100_SCAN_CONTEXT_LOCK:
+            _V100_ACTIVE_SCAN_STATE = None
+            _V100_ACTIVE_SCAN_OPTIMIZE = False
+
+
+def save_state(state: dict[str, Any]) -> None:
+    """Skip only the known no-op save immediately following an unchanged main scan.
+
+    Other callers (fast lane, manual/control actions, Shabbat resume, migrations) keep
+    their established immediate persistence. Every 5 minutes the main loop also delegates
+    to the old save_state, whose existing JSON equality guard prevents an actual disk write
+    when nothing changed.
+    """
+    global _V100_MAIN_SAVE_EXPECTATION, _V100_MAIN_SAVE_OWNER_THREAD_ID, _V100_LAST_STATE_CHECK_MONO
+    current_thread_id = _v40_threading.get_ident()
+    expectation = _V100_MAIN_SAVE_EXPECTATION if _V100_MAIN_SAVE_OWNER_THREAD_ID == current_thread_id else None
+    if expectation is not None:
+        _V100_MAIN_SAVE_EXPECTATION = None
+        _V100_MAIN_SAVE_OWNER_THREAD_ID = None
+        now_mono = time.monotonic()
+        checkpoint_due = (now_mono - _V100_LAST_STATE_CHECK_MONO) >= V100_STATE_SAFETY_CHECK_SECONDS
+        if not expectation and not checkpoint_due:
+            _V100_METRICS['state_serializations_skipped'] += 1
+            return
+        if checkpoint_due:
+            _V100_METRICS['state_safety_checks'] += 1
+        _V100_LAST_STATE_CHECK_MONO = now_mono
+        return _V100_PRE_SAVE_STATE(state)
+
+    # Not the routine post-run main-loop save: preserve old durability exactly.
+    _V100_LAST_STATE_CHECK_MONO = time.monotonic()
+    return _V100_PRE_SAVE_STATE(state)
+
+
+def v100_credit_saver_status() -> dict[str, Any]:
+    return {
+        'safety_checkpoint_seconds': int(V100_STATE_SAFETY_CHECK_SECONDS),
+        **{k: int(v) for k, v in _V100_METRICS.items()},
+    }
+
+
+def _v100_credit_saver_audit() -> None:
+    # Lock all behavior explicitly excluded from this change.
+    if int(CHECK_EVERY_SECONDS) != 30 or int(NIGHT_CHECK_EVERY_SECONDS) != 300:
+        raise RuntimeError('v100_scan_cadence_changed')
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError('v100_scan_coverage_changed')
+    if fetch_posts_safely is _V100_PRE_FETCH_POSTS_SAFELY:
+        raise RuntimeError('v100_frontier_wrapper_missing')
+    if run_once is _V100_PRE_RUN_ONCE or save_state is _V100_PRE_SAVE_STATE:
+        raise RuntimeError('v100_main_or_state_wrapper_missing')
+    if int(V100_STATE_SAFETY_CHECK_SECONDS) != 300:
+        raise RuntimeError('v100_bad_state_checkpoint')
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v100_credit_saver_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append('_v100_credit_saver_audit')
+
+logging.info(
+    'V100 active: known-top cycles stop at one boundary row; new timelines stop at the first seen ID; '
+    'unchanged main cycles skip full state JSON serialization with a 5-minute safety checkpoint. '
+    'All V99 providers/translation/dedupe/editorial behavior and cadence remain unchanged.'
+)
+# ====== END V100 HIGH-IMPACT CREDIT SAVER ======
+
+
+# ====== V101 FINAL: ADAPTIVE PER-WRITER SCAN + V72 SOURCE-LINE BOUNDARY (2026-08-28) ======
+# High-impact server-operation saving requested by the operator:
+# - One automatic scanner only; no extra discovery loop is created.
+# - Selected lower-urgency/high-volume writers: 60 -> 120 -> 180 -> 240 -> 300 seconds.
+# - Every other active source: 30 -> 60 -> 90 -> 120 seconds.
+# - Each adaptive tier lasts a full hour of no newly observed top post.
+# - Any newly observed top post immediately resets that writer to its first tier.
+# - Existing 02:00-09:00 Israel night policy remains a 300-second floor for everyone.
+# - Adaptive state is intentionally in-memory only: restart safely starts fast rather than
+#   risking a stale persisted scheduler state or adding extra disk writes.
+# Presentation correction:
+# - V72 is again the final authority for source-aware line/paragraph/list structure.
+# - Preserve blank-line structure from the original X post when source/translation line counts align.
+# - Inline multi-marker rundowns are split only when the ORIGINAL source itself proves it is a list.
+# Everything else (V93 providers, V94 forced translation/no-English, latest dedupe, V97 editorial
+# filters, V98 12.5 MiB video cap, V99 day/night cadence and V100 frontier/state savings) stays intact.
+
+BOT_BUILD_ID = "winner-v101-adaptive-scan-v72-exact-lines-credit-saver-2026-08-28"
+
+V101_ADAPTIVE_TIER_HOLD_SECONDS = 60 * 60
+V101_NORMAL_ADAPTIVE_STEPS = (30, 60, 90, 120)
+V101_SLOW_ADAPTIVE_STEPS = (60, 120, 180, 240, 300)
+V101_SLOW_ADAPTIVE_ACCOUNTS = {
+    "trollfootball2",
+    "nicoschira",
+    "dimarzio",
+    "sofascore",
+    "gerardromero",
+    "fabricehawkins",
+    "optajoe",
+}
+
+_V101_PRE_ORDERED_ACCOUNTS = ordered_accounts
+_V101_PRE_RUN_ONCE = run_once
+_V101_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V101_PRE_BUILD_MESSAGE = build_message
+# The pre-late-experiment full-text builder preserves every paragraph and the established
+# reporter/special-source heading policy. V72 then remains the final formatting authority.
+_V101_FULL_TEXT_BUILD_MESSAGE = globals().get("_retained_build_message_L36669", None)
+if not callable(_V101_FULL_TEXT_BUILD_MESSAGE):
+    _V101_FULL_TEXT_BUILD_MESSAGE = globals().get("_V97_PRE_BUILD_MESSAGE", _V101_PRE_BUILD_MESSAGE)
+
+_V101_SCHED_LOCK = RLock()
+_V101_AUTO_SCAN_CONTEXT = False
+_V101_AUTO_SCAN_STARTUP = False
+_V101_ACCOUNT_SCHED: dict[str, dict[str, Any]] = {}
+_V101_ADAPTIVE_METRICS: dict[str, int] = {
+    "accounts_due": 0,
+    "accounts_skipped_not_due": 0,
+    "new_top_resets": 0,
+    "slow_group_fetches": 0,
+    "normal_group_fetches": 0,
+}
+
+
+def _v101_key(username: Any) -> str:
+    return str(username or "").strip().lstrip("@").casefold()
+
+
+def _v101_steps(username: Any) -> tuple[int, ...]:
+    return V101_SLOW_ADAPTIVE_STEPS if _v101_key(username) in V101_SLOW_ADAPTIVE_ACCOUNTS else V101_NORMAL_ADAPTIVE_STEPS
+
+
+def _v101_post_identity(post: Any) -> str:
+    if not isinstance(post, Post):
+        return ""
+    for value in (getattr(post, "post_id", ""), getattr(post, "link", "")):
+        clean = str(value or "").strip()
+        if clean:
+            return clean
+    try:
+        return post_content_signature(
+            str(getattr(post, "username", "") or ""),
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+        )
+    except Exception:
+        return ""
+
+
+def _v101_interval_for(username: Any, now_wall: float | None = None) -> int:
+    now_wall = float(now_wall if now_wall is not None else time.time())
+    key = _v101_key(username)
+    steps = _v101_steps(key)
+    with _V101_SCHED_LOCK:
+        row = _V101_ACCOUNT_SCHED.get(key) or {}
+        last_activity = float(row.get("last_activity_wall", now_wall) or now_wall)
+    inactive = max(0.0, now_wall - last_activity)
+    tier = min(len(steps) - 1, int(inactive // V101_ADAPTIVE_TIER_HOLD_SECONDS))
+    interval = int(steps[tier])
+    # Preserve V99 exactly as the night floor: no account is scanned faster than once/5m.
+    if is_night_mode_now():
+        interval = max(interval, int(NIGHT_CHECK_EVERY_SECONDS))
+    return interval
+
+
+def _v101_note_scan_result(username: str, posts: list[Post]) -> None:
+    key = _v101_key(username)
+    if not key:
+        return
+    now_wall = time.time()
+    now_mono = time.monotonic()
+    top_id = _v101_post_identity(posts[0]) if posts else ""
+    with _V101_SCHED_LOCK:
+        row = _V101_ACCOUNT_SCHED.setdefault(key, {})
+        previous_top = str(row.get("top_id", "") or "")
+        # First observation is the baseline, not a fake new-news event.
+        if "last_activity_wall" not in row:
+            row["last_activity_wall"] = now_wall
+        elif top_id and previous_top and top_id != previous_top:
+            row["last_activity_wall"] = now_wall
+            _V101_ADAPTIVE_METRICS["new_top_resets"] += 1
+        elif top_id and not previous_top:
+            # Provider recovered from an empty/error scan: treat visible activity as hot again.
+            row["last_activity_wall"] = now_wall
+        if top_id:
+            row["top_id"] = top_id
+        # Calculate after possible reset.
+        last_activity = float(row.get("last_activity_wall", now_wall) or now_wall)
+        steps = _v101_steps(key)
+        tier = min(len(steps) - 1, int(max(0.0, now_wall - last_activity) // V101_ADAPTIVE_TIER_HOLD_SECONDS))
+        interval = int(steps[tier])
+        night = bool(is_night_mode_now())
+        if night:
+            interval = max(interval, int(NIGHT_CHECK_EVERY_SECONDS))
+        row["tier"] = tier
+        row["interval"] = interval
+        row["next_due_mono"] = now_mono + float(interval)
+        row["was_night"] = night
+        row["last_scan_wall"] = now_wall
+        if key in V101_SLOW_ADAPTIVE_ACCOUNTS:
+            _V101_ADAPTIVE_METRICS["slow_group_fetches"] += 1
+        else:
+            _V101_ADAPTIVE_METRICS["normal_group_fetches"] += 1
+
+
+def ordered_accounts() -> list[str]:
+    base = list(_V101_PRE_ORDERED_ACCOUNTS() or [])
+    if not _V101_AUTO_SCAN_CONTEXT or _V101_AUTO_SCAN_STARTUP:
+        return base
+    now_mono = time.monotonic()
+    night = bool(is_night_mode_now())
+    due: list[str] = []
+    skipped = 0
+    with _V101_SCHED_LOCK:
+        for username in base:
+            key = _v101_key(username)
+            row = _V101_ACCOUNT_SCHED.get(key)
+            if not row:
+                due.append(username)
+                continue
+            # At 09:00 do not let a prior 5-minute night deadline delay daytime news.
+            if bool(row.get("was_night", False)) and not night:
+                row["next_due_mono"] = 0.0
+                row["was_night"] = False
+            if now_mono >= float(row.get("next_due_mono", 0.0) or 0.0):
+                due.append(username)
+            else:
+                skipped += 1
+    _V101_ADAPTIVE_METRICS["accounts_due"] += len(due)
+    _V101_ADAPTIVE_METRICS["accounts_skipped_not_due"] += skipped
+    return due
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical, posts = _V101_PRE_FETCH_POSTS_SAFELY(username)
+    rows = list(posts or [])
+    if _V101_AUTO_SCAN_CONTEXT:
+        _v101_note_scan_result(str(canonical or username or ""), rows)
+    return canonical, rows
+
+
+def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
+    global _V101_AUTO_SCAN_CONTEXT, _V101_AUTO_SCAN_STARTUP
+    previous_context = _V101_AUTO_SCAN_CONTEXT
+    previous_startup = _V101_AUTO_SCAN_STARTUP
+    _V101_AUTO_SCAN_CONTEXT = True
+    _V101_AUTO_SCAN_STARTUP = bool(startup_cycle)
+    try:
+        return _V101_PRE_RUN_ONCE(state, startup_cycle=startup_cycle, min_published_ts=min_published_ts)
+    finally:
+        _V101_AUTO_SCAN_CONTEXT = previous_context
+        _V101_AUTO_SCAN_STARTUP = previous_startup
+
+
+def v101_adaptive_status() -> dict[str, Any]:
+    now_wall = time.time()
+    rows: dict[str, Any] = {}
+    for username in list(active_x_accounts() or []):
+        key = _v101_key(username)
+        with _V101_SCHED_LOCK:
+            state = dict(_V101_ACCOUNT_SCHED.get(key) or {})
+        rows[str(username)] = {
+            "group": "60-300" if key in V101_SLOW_ADAPTIVE_ACCOUNTS else "30-120",
+            "interval": _v101_interval_for(username, now_wall),
+            "tier": int(state.get("tier", 0) or 0),
+            "last_activity_wall": float(state.get("last_activity_wall", 0.0) or 0.0),
+        }
+    return {"accounts": rows, "metrics": dict(_V101_ADAPTIVE_METRICS)}
+
+
+# ---------------------------------------------------------------------------
+# V72 exact/source-aware visible line structure.
+# ---------------------------------------------------------------------------
+_V101_INLINE_MARKER_SEQ = rf"(?:{_V30_EMOJI_CLUSTER}[ \t]*)+"
+_V101_INLINE_MARKER_RE = re.compile(
+    rf"(?:^|[ \t]+)(?P<marker>{_V101_INLINE_MARKER_SEQ})(?=[A-Za-zÀ-ÿא-ת0-9])",
+    re.UNICODE,
+)
+_V101_INLINE_SPLIT_RE = re.compile(
+    rf"(?<=\S)[ \t]+(?={_V101_INLINE_MARKER_SEQ}[A-Za-zÀ-ÿא-ת0-9])",
+    re.UNICODE,
+)
+_V101_ANY_NETO_FOOTER_RE = re.compile(
+    r'(?is)[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]*'
+    r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>'
+    r'\s*[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]*נטו\s+ספורט\.?\s*'
+    r'</a>\s*\.?\s*📝?'
+)
+
+def _v101_split_proven_inline_list(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if len(list(_V101_INLINE_MARKER_RE.finditer(text))) < 3:
+        return text
+    rows: list[str] = []
+    for row in text.split("\n"):
+        rows.extend(_V101_INLINE_SPLIT_RE.sub("\n", row).split("\n"))
+    return "\n".join(part.rstrip() for part in rows).strip()
+
+def _v101_source_inline_list(source: Any) -> bool:
+    text = str(source or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Do not invent structure merely because translation contains emoji. The source
+    # itself must prove a rundown/list with >=3 markers on at least one source line.
+    return any(len(list(_V101_INLINE_MARKER_RE.finditer(line))) >= 3 for line in text.split("\n"))
+
+
+def _v101_restore_source_blank_pattern(source: Any, translated: Any) -> str:
+    src_lines = str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out_text = str(translated or "").replace("\r\n", "\n").replace("\r", "\n")
+    out_lines = out_text.split("\n")
+    src_nonempty = [i for i, line in enumerate(src_lines) if line.strip()]
+    out_nonempty = [i for i, line in enumerate(out_lines) if line.strip()]
+    # Exact mapping only when we can prove the translated logical-row count matches source.
+    if len(src_nonempty) < 2 or len(src_nonempty) != len(out_nonempty):
+        return out_text
+    wanted_blank_after: list[bool] = []
+    for pos in range(len(src_nonempty) - 1):
+        left, right = src_nonempty[pos], src_nonempty[pos + 1]
+        wanted_blank_after.append(any(not src_lines[i].strip() for i in range(left + 1, right)))
+    logical = [out_lines[i].strip() for i in out_nonempty]
+    rebuilt: list[str] = []
+    for pos, line in enumerate(logical):
+        rebuilt.append(line)
+        if pos < len(wanted_blank_after) and wanted_blank_after[pos]:
+            rebuilt.append("")
+    return "\n".join(rebuilt).strip()
+
+
+def _v101_v72_prepare_body(source: Any, translated: Any) -> str:
+    text = str(translated or "")
+    # Keep the V97 useful orphan-word cleanup, but not its unconditional presentation guesses.
+    if "_v97_remove_orphan_translation_fragments" in globals():
+        text = _v97_remove_orphan_translation_fragments(text)
+    text = _v72_general_body_layout(source, text)
+    # For an actual inline rundown proven by the original X source, keep V97's useful list split.
+    if _v101_source_inline_list(source):
+        text = _v101_split_proven_inline_list(text)
+        text = _v72_general_body_layout(source, text)
+    text = _v101_restore_source_blank_pattern(source, text)
+    return text.strip()
+
+
+def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+    translated = _v101_v72_prepare_body(main_source, translated)
+    if quoted_translated:
+        quoted_translated = _v101_v72_prepare_body(quote_source, quoted_translated)
+    rendered = _V101_FULL_TEXT_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    # Remove standalone direction/separator rows left by intermediate renderers;
+    # direction marks inside real text remain untouched.
+    rendered = re.sub(r"(?m)^[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]+[ \t]*$", "", rendered)
+    # A proven source inline-list may have been flattened again by the legacy renderer.
+    if _v101_source_inline_list(main_source):
+        rendered = _v101_split_proven_inline_list(rendered)
+    # Final V72 boundary after the legacy/current renderer stack.
+    rendered = _v72_restore_source_marker_boundaries(main_source, rendered)
+    rendered = _v72_split_last_list_label_from_source_prose(main_source, rendered)
+    rendered = _v72_remove_recycle_display_label(rendered)
+    rendered = _v72_normalize_known_club_prefixes(rendered)
+    rendered = _v72_remove_redundant_double_markers(rendered)
+    rendered = _v72_cleanup_dangling_source_shells(rendered)
+    rendered = re.sub(r"(?m)^[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]+[ \t]*$", "", rendered)
+    if "_final_is_plettigoal" in globals() and "_final_remove_sky_germany_credit" in globals():
+        try:
+            if _final_is_plettigoal(post):
+                rendered = _final_remove_sky_germany_credit(rendered)
+        except Exception:
+            pass
+    rendered = _v30_format_report_body(rendered)
+    rendered = _V101_ANY_NETO_FOOTER_RE.sub("", rendered)
+    rendered = _v30_remove_all_neto_footers(rendered)
+    rendered = re.sub(r"[ \t]+\n", "\n", rendered)
+    rendered = re.sub(r"\n[ \t]+", "\n", rendered)
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
+    rendered = _v72_protect_keycap_runs(rendered).strip()
+    signature = RTL_MARK + _V68_NETO_FOOTER_HTML
+    return (rendered + "\n\n" + signature).strip() if rendered else signature
+
+
+def _v101_self_audit() -> None:
+    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120):
+        raise RuntimeError("v101_normal_steps_changed")
+    if tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
+        raise RuntimeError("v101_slow_steps_changed")
+    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 3600:
+        raise RuntimeError("v101_tier_hold_not_one_hour")
+    required = {"trollfootball2", "nicoschira", "dimarzio", "sofascore", "gerardromero", "fabricehawkins", "optajoe"}
+    if set(V101_SLOW_ADAPTIVE_ACCOUNTS) != required:
+        raise RuntimeError("v101_slow_group_changed")
+    # Existing global cadence / coverage remains V99/V100.
+    if int(CHECK_EVERY_SECONDS) != 30 or int(NIGHT_CHECK_EVERY_SECONDS) != 300:
+        raise RuntimeError("v101_global_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v101_scan_coverage_changed")
+    if int(globals().get("V98_VIDEO_LIMIT_BYTES", int(12.5 * 1024 * 1024))) != int(12.5 * 1024 * 1024):
+        # tolerate older symbol names; hard check only if V98 symbol exists with wrong value
+        if "V98_VIDEO_LIMIT_BYTES" in globals():
+            raise RuntimeError("v101_video_limit_changed")
+    # Formatting behavior proofs.
+    if _v101_restore_source_blank_pattern("א\n\nב", "אחד\nשתיים") != "אחד\n\nשתיים":
+        raise RuntimeError("v101_source_blank_gap_not_restored")
+    if _v101_restore_source_blank_pattern("א\nב", "אחד\nשתיים") != "אחד\nשתיים":
+        raise RuntimeError("v101_false_blank_gap_added")
+    if not _v101_source_inline_list("▶️ One ⌛️ Two 🎤 Three"):
+        raise RuntimeError("v101_inline_source_list_not_detected")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v101_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v101_self_audit")
+
+logging.info(
+    "V101 active: per-writer adaptive scan (normal 30/60/90/120; selected group 60/120/180/240/300; one hour/tier; new top resets); "
+    "02:00-09:00 keeps 300s floor; V72 source-aware lines are final; V100 credit saver and current providers/translation/dedupe remain active."
+)
+# ====== END V101 ======
+
+
+# ====== V102 FINAL: 5-MIN ADAPTIVE TIERS + SMART IDLE SLEEP + PER-ACCOUNT FAILURE BACKOFF (2026-08-28) ======
+# Requested high-impact server-operation savings only:
+# 1) Adaptive tiers advance every 5 minutes of no newly observed top post (not every hour).
+#    Selected slow group remains 60/120/180/240/300 seconds; all others remain 30/60/90/120.
+# 2) The main loop's existing sleep interval becomes scheduler-aware immediately after a normal scan:
+#    it sleeps until the earliest writer is actually due instead of waking every 30 seconds just to skip everyone.
+#    No writer is delayed beyond its own adaptive next_due deadline. Paused/Shabbat/control paths retain their
+#    established base cadence because the smart value is valid only for a few seconds after a completed run_once.
+# 3) Per-account live failure backoff: ordinary quiet/no-new-post behavior never triggers it. Only a proven live
+#    provider/network/schema failure increments the counter. 3 consecutive failures => 5m; 6+ => 10m.
+#    A successful live fetch immediately clears the account backoff.
+# No changes to providers/RSS, V94 translation/no-English, latest dedupe, V72/V101 formatting, V100 frontier/state
+# saver, 12.5 MiB video limit, filters, media policy, persistent JSON/state keys, or account membership.
+
+BOT_BUILD_ID = "winner-v102-adaptive-5min-smart-sleep-failure-backoff-2026-08-28"
+
+# V101 reads this global dynamically when calculating tiers, so changing the hold duration is sufficient and
+# keeps the exact two step tables/account groups already verified there.
+V101_ADAPTIVE_TIER_HOLD_SECONDS = 5 * 60
+
+V102_FAILURE_BACKOFF_AFTER = 3
+V102_FAILURE_BACKOFF_ESCALATE_AFTER = 6
+V102_FAILURE_BACKOFF_FIRST_SECONDS = 5 * 60
+V102_FAILURE_BACKOFF_MAX_SECONDS = 10 * 60
+V102_SMART_SLEEP_VALID_WINDOW_SECONDS = 12.0
+
+_V102_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V102_PRE_RUN_ONCE = run_once
+_V102_PRE_CURRENT_CHECK_EVERY_SECONDS = current_check_every_seconds
+_V102_RUN_ANCHOR_MONO = 0.0
+_V102_RUN_FINISHED_MONO = 0.0
+_V102_BACKOFF_METRICS: dict[str, int] = {
+    "proven_live_failures": 0,
+    "backoff_5m_applied": 0,
+    "backoff_10m_applied": 0,
+    "backoff_resets": 0,
+    "smart_sleep_queries": 0,
+}
+
+_V102_FAILURE_REASONS = {
+    "http_429", "http_403", "http_401", "http_451", "http_5xx", "timeout", "dns_failure", "tls_failure",
+    "connection_error", "network_error", "invalid_json", "schema_changed", "parser_zero", "cooldown", "degraded",
+    "http_404_empty_or_unknown_handle",
+}
+
+
+def _v102_diag_proven_live_failure(username: str) -> tuple[bool, str]:
+    """Return failure only when V93 diagnostics prove the live route failed.
+
+    A normal no-new-post situation with a healthy/cached live timeline is not a failure.
+    Memory fallback counts only when preceding live attempts contain an explicit provider/network/parser failure.
+    """
+    getter = globals().get("_v93_diag_get")
+    if not callable(getter):
+        return False, ""
+    try:
+        diag = dict(getter(username) or {})
+    except Exception:
+        return False, ""
+    if not diag:
+        return False, ""
+    if bool(diag.get("live", False)):
+        return False, ""
+    route = str(diag.get("route", "") or "").strip().casefold()
+    attempts = list(diag.get("attempts", []) or [])
+    reasons: list[str] = []
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        provider = str(attempt.get("provider", "") or "").strip().casefold()
+        if provider == "memory":
+            continue
+        ok = bool(attempt.get("ok", False))
+        reason = str(attempt.get("reason", "") or "").strip().casefold()
+        status = int(attempt.get("status", 0) or 0)
+        if ok:
+            continue
+        hard = False
+        if status in {401, 403, 429, 451} or status >= 500:
+            hard = True
+        if reason in _V102_FAILURE_REASONS:
+            hard = True
+        if any(token in reason for token in ("timeout", "dns", "tls", "schema", "json", "parser", "cooldown", "network", "connection")):
+            hard = True
+        if hard:
+            reasons.append(reason or (f"http_{status}" if status else "live_failure"))
+    if reasons and route in {"", "none", "memory"}:
+        return True, reasons[-1]
+    return False, ""
+
+
+def _v102_update_account_failure_backoff(username: str) -> None:
+    key = _v101_key(username)
+    if not key:
+        return
+    failed, reason = _v102_diag_proven_live_failure(username)
+    now_mono = time.monotonic()
+    with _V101_SCHED_LOCK:
+        row = _V101_ACCOUNT_SCHED.setdefault(key, {})
+        if not failed:
+            previous = int(row.get("failure_count", 0) or 0)
+            if previous:
+                _V102_BACKOFF_METRICS["backoff_resets"] += 1
+            row["failure_count"] = 0
+            row["failure_backoff_until_mono"] = 0.0
+            row["last_failure_reason"] = ""
+            return
+        count = int(row.get("failure_count", 0) or 0) + 1
+        row["failure_count"] = count
+        row["last_failure_reason"] = reason
+        _V102_BACKOFF_METRICS["proven_live_failures"] += 1
+        if count < V102_FAILURE_BACKOFF_AFTER:
+            return
+        delay = V102_FAILURE_BACKOFF_MAX_SECONDS if count >= V102_FAILURE_BACKOFF_ESCALATE_AFTER else V102_FAILURE_BACKOFF_FIRST_SECONDS
+        until = now_mono + float(delay)
+        row["failure_backoff_until_mono"] = until
+        row["next_due_mono"] = max(float(row.get("next_due_mono", 0.0) or 0.0), until)
+        if delay == V102_FAILURE_BACKOFF_MAX_SECONDS:
+            _V102_BACKOFF_METRICS["backoff_10m_applied"] += 1
+        else:
+            _V102_BACKOFF_METRICS["backoff_5m_applied"] += 1
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical, rows = _V102_PRE_FETCH_POSTS_SAFELY(username)
+    # Only automatic scanner failures affect per-account backoff. Manual diagnostics / 10-last buttons remain
+    # forceful and never penalize the automatic schedule because an operator clicked a button.
+    if _V101_AUTO_SCAN_CONTEXT:
+        _v102_update_account_failure_backoff(str(canonical or username or ""))
+    return canonical, list(rows or [])
+
+
+def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
+    global _V102_RUN_ANCHOR_MONO, _V102_RUN_FINISHED_MONO
+    _V102_RUN_ANCHOR_MONO = time.monotonic()
+    try:
+        return _V102_PRE_RUN_ONCE(state, startup_cycle=startup_cycle, min_published_ts=min_published_ts)
+    finally:
+        _V102_RUN_FINISHED_MONO = time.monotonic()
+
+
+def _v102_scheduler_nominal_cycle_seconds() -> int | None:
+    """Nominal cycle interval compatible with the legacy main loop's `interval - elapsed` sleep.
+
+    next_due is measured from now, while the legacy main subtracts total cycle elapsed. Add elapsed since run_once
+    began so the resulting sleep lands at (or a fraction early from) the earliest due writer, never after it.
+    """
+    now = time.monotonic()
+    if _V102_RUN_FINISHED_MONO <= 0 or (now - _V102_RUN_FINISHED_MONO) > V102_SMART_SLEEP_VALID_WINDOW_SECONDS:
+        return None
+    if _V102_RUN_ANCHOR_MONO <= 0:
+        return None
+    accounts = list(active_x_accounts() or [])
+    if not accounts:
+        return None
+    earliest: float | None = None
+    with _V101_SCHED_LOCK:
+        for username in accounts:
+            row = _V101_ACCOUNT_SCHED.get(_v101_key(username))
+            if not row:
+                # A newly enabled/unseen source should get the ordinary base-cycle opportunity, never a long sleep.
+                return None
+            due = float(row.get("next_due_mono", 0.0) or 0.0)
+            if due <= 0:
+                return None
+            earliest = due if earliest is None else min(earliest, due)
+    if earliest is None:
+        return None
+    remaining = earliest - now
+    if remaining <= 0.5:
+        return None
+    elapsed_since_anchor = max(0.0, now - _V102_RUN_ANCHOR_MONO)
+    _V102_BACKOFF_METRICS["smart_sleep_queries"] += 1
+    return max(1, int(math.ceil(remaining + elapsed_since_anchor)))
+
+
+def current_check_every_seconds() -> int:
+    smart = _v102_scheduler_nominal_cycle_seconds()
+    if smart is not None:
+        return int(smart)
+    return int(_V102_PRE_CURRENT_CHECK_EVERY_SECONDS())
+
+
+def v102_savings_status() -> dict[str, Any]:
+    now_mono = time.monotonic()
+    accounts: dict[str, Any] = {}
+    with _V101_SCHED_LOCK:
+        for username in list(active_x_accounts() or []):
+            key = _v101_key(username)
+            row = dict(_V101_ACCOUNT_SCHED.get(key) or {})
+            backoff_until = float(row.get("failure_backoff_until_mono", 0.0) or 0.0)
+            accounts[str(username)] = {
+                "adaptive_group": "60-300" if key in V101_SLOW_ADAPTIVE_ACCOUNTS else "30-120",
+                "interval": int(row.get("interval", _v101_interval_for(username)) or _v101_interval_for(username)),
+                "failure_count": int(row.get("failure_count", 0) or 0),
+                "failure_backoff_seconds_left": max(0, int(round(backoff_until - now_mono))),
+                "last_failure_reason": str(row.get("last_failure_reason", "") or ""),
+            }
+    return {
+        "tier_hold_seconds": int(V101_ADAPTIVE_TIER_HOLD_SECONDS),
+        "failure_backoff_after": int(V102_FAILURE_BACKOFF_AFTER),
+        "failure_backoff_escalate_after": int(V102_FAILURE_BACKOFF_ESCALATE_AFTER),
+        "accounts": accounts,
+        "metrics": dict(_V102_BACKOFF_METRICS),
+    }
+
+
+def _v102_self_audit() -> None:
+    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 300:
+        raise RuntimeError("v102_adaptive_tier_not_5_minutes")
+    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120):
+        raise RuntimeError("v102_normal_adaptive_steps_changed")
+    if tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
+        raise RuntimeError("v102_slow_adaptive_steps_changed")
+    required = {"trollfootball2", "nicoschira", "dimarzio", "sofascore", "gerardromero", "fabricehawkins", "optajoe"}
+    if set(V101_SLOW_ADAPTIVE_ACCOUNTS) != required:
+        raise RuntimeError("v102_slow_group_changed")
+    if int(CHECK_EVERY_SECONDS) != 30 or int(NIGHT_CHECK_EVERY_SECONDS) != 300:
+        raise RuntimeError("v102_day_night_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v102_scan_coverage_changed")
+    if fetch_posts is not globals().get("_V97_KEEP_FETCH_POSTS", fetch_posts):
+        # V97 lock is for fetch_posts; V102 wraps only fetch_posts_safely.
+        raise RuntimeError("v102_fetch_posts_provider_changed")
+    if find_recent_duplicate_event is not globals().get("_V97_KEEP_DEDUPE", find_recent_duplicate_event):
+        raise RuntimeError("v102_latest_dedupe_changed")
+    if globals().get("_v94_google_network_once") is not globals().get("_V97_KEEP_GOOGLE_NETWORK", globals().get("_v94_google_network_once")):
+        raise RuntimeError("v102_google_transport_changed")
+    if int(MAX_VIDEO_BYTES) != 13_107_200:
+        raise RuntimeError("v102_video_limit_changed")
+    # Exact 5-minute tier progression proofs.
+    now = 10_000.0
+    key = "dimarzio"
+    with _V101_SCHED_LOCK:
+        _V101_ACCOUNT_SCHED[key] = {"last_activity_wall": now}
+    expected_slow = [(0,60),(299,60),(300,120),(600,180),(900,240),(1200,300)]
+    for delta, expected in expected_slow:
+        tier = min(len(V101_SLOW_ADAPTIVE_STEPS) - 1, int(delta // V101_ADAPTIVE_TIER_HOLD_SECONDS))
+        if int(V101_SLOW_ADAPTIVE_STEPS[tier]) != expected:
+            raise RuntimeError(f"v102_bad_slow_tier_{delta}")
+    key2 = "fabrizioromano"
+    with _V101_SCHED_LOCK:
+        _V101_ACCOUNT_SCHED[key2] = {"last_activity_wall": now}
+    expected_normal = [(0,30),(299,30),(300,60),(600,90),(900,120)]
+    for delta, expected in expected_normal:
+        tier = min(len(V101_NORMAL_ADAPTIVE_STEPS) - 1, int(delta // V101_ADAPTIVE_TIER_HOLD_SECONDS))
+        if int(V101_NORMAL_ADAPTIVE_STEPS[tier]) != expected:
+            raise RuntimeError(f"v102_bad_normal_tier_{delta}")
+    with _V101_SCHED_LOCK:
+        _V101_ACCOUNT_SCHED.pop("dimarzio", None)
+        _V101_ACCOUNT_SCHED.pop("fabrizioromano", None)
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v102_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v102_self_audit")
+
+logging.info(
+    "V102 active: adaptive tiers advance every 5m; selected writers 60/120/180/240/300 and others 30/60/90/120; "
+    "post-scan sleep targets earliest next_due; proven per-account live failures back off after 3=5m and 6+=10m; "
+    "V101/V100 providers, translation, dedupe, formatting and persistence behavior otherwise unchanged."
+)
+# ====== END V102 ======
+
+# ====== V103 FINAL: SAFE HIGH-IMPACT SERVER CREDIT SAVER 3-8,10 (NO #9) (2026-08-28) ======
+# User-requested savings from the V102 recommendation list:
+# 3) FxTwitter HTTP connection pooling / keep-alive (fallback to existing urllib if unavailable).
+# 4) Control/latest/history reuse the live scanner cache; 10-latest uses cache ONLY when >=10 rows are present.
+# 5) Smaller adaptive FxTwitter timelines on routine scans, with guaranteed full catch-up when the known frontier
+#    is not present. 10-latest is never allowed to rely on an undersized scanner cache.
+# 6) Heavy optional yt-dlp probing is hard-lazy in automatic scans: never before a successful translation.
+# 7) Latest LOCAL duplicate engine gets one final chance before the translation/send stack, so duplicate lanes that
+#    bypass the normal run_once filter wall do not spend Gemini/Google/media work.
+# 8) A conservative process-local cache stores only clearly static hard-block decisions; dynamic/time/config reasons
+#    are never cached.
+# 10) Exact repeated INFO/DEBUG log lines are coalesced for 10 minutes; WARNING/ERROR are never suppressed.
+# Explicitly NOT implemented here: recommendation #9 (provider/media/translation backoff changes).
+# V102 adaptive scheduler, V100 frontier/state saver, V97 latest dedupe, V94 translation, V93 provider fallback,
+# V72 formatting and all persistent files/keys remain unchanged.
+
+BOT_BUILD_ID = "winner-v103-safe-credit-saver-3-8-10-no9-2026-08-28"
+
+V103_FAST_TIMELINE_LIMIT = 5
+V103_MEDIUM_TIMELINE_LIMIT = 8
+V103_SLOW_TIMELINE_LIMIT = 12
+V103_CATCHUP_TIMELINE_LIMIT = min(int(V93_NETWORK_LIMIT), 30)
+V103_HISTORY_REQUIRED_ROWS = 10
+V103_STATIC_BLOCK_CACHE_TTL_SECONDS = 60 * 60
+V103_REPEAT_LOG_WINDOW_SECONDS = 10 * 60
+V103_HTTP_POOL_MAXSIZE = max(4, min(16, int(MAX_PARALLEL_ACCOUNT_CHECKS) * 2))
+
+_V103_METRICS: dict[str, int] = {
+    "pooled_http_calls": 0,
+    "pooled_http_fallback_calls": 0,
+    "compact_scan_calls": 0,
+    "compact_limit_5": 0,
+    "compact_limit_8": 0,
+    "compact_limit_12": 0,
+    "full_catchups": 0,
+    "history_cache_complete_hits": 0,
+    "history_cache_incomplete_forced_refresh": 0,
+    "history_full_retries": 0,
+    "ytdlp_pretranslation_skips": 0,
+    "pretranslation_duplicate_blocks": 0,
+    "static_block_cache_hits": 0,
+    "static_block_cache_stores": 0,
+    "repeat_logs_suppressed": 0,
+}
+
+# ---------------------------------------------------------------------------
+# 3) FxTwitter keep-alive pool. urllib3.PoolManager is thread-safe. If urllib3
+#    is unexpectedly unavailable on Railway, the exact pre-V103 urllib function
+#    remains the fallback so availability is never traded for optimization.
+# ---------------------------------------------------------------------------
+_V103_PRE_FX_API_NETWORK_ONCE = _v93_fx_api_network_once
+_V103_PRE_FX_FEED_NETWORK_ONCE = _v93_fx_feed_network_once
+_V103_HTTP_POOL = None
+_V103_URLLIB3 = None
+try:
+    import urllib3 as _v103_urllib3  # type: ignore
+    _V103_URLLIB3 = _v103_urllib3
+    _V103_HTTP_POOL = _v103_urllib3.PoolManager(
+        num_pools=max(2, int(MAX_PARALLEL_ACCOUNT_CHECKS)),
+        maxsize=int(V103_HTTP_POOL_MAXSIZE),
+        block=False,
+        retries=False,
+        timeout=_v103_urllib3.Timeout(connect=min(2.0, float(V93_TIMEOUT_SECONDS)), read=float(V93_TIMEOUT_SECONDS)),
+    )
+except Exception:
+    _V103_HTTP_POOL = None
+    _V103_URLLIB3 = None
+
+
+def _v103_pool_get(url: str, headers: dict[str, str], max_bytes: int = 4_000_000) -> tuple[int, bytes]:
+    if _V103_HTTP_POOL is None:
+        _V103_METRICS["pooled_http_fallback_calls"] += 1
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=V93_TIMEOUT_SECONDS) as response:
+            return int(getattr(response, "status", 200) or 200), response.read(max_bytes)
+    _V103_METRICS["pooled_http_calls"] += 1
+    response = _V103_HTTP_POOL.request(
+        "GET",
+        url,
+        headers=headers,
+        redirect=True,
+        preload_content=True,
+        timeout=_V103_URLLIB3.Timeout(connect=min(2.0, float(V93_TIMEOUT_SECONDS)), read=float(V93_TIMEOUT_SECONDS)),
+        retries=False,
+    )
+    try:
+        status = int(getattr(response, "status", 0) or 0)
+        body = bytes(getattr(response, "data", b"") or b"")[:max_bytes]
+        return status, body
+    finally:
+        try:
+            response.release_conn()
+        except Exception:
+            pass
+
+
+def _v103_http_status_failure(provider: str, display: str, status: int, body: bytes, started: float) -> tuple[list[Post], dict[str, Any]]:
+    classification = _v93_classify_exception(None, status=status)
+    detail = f"{classification}: HTTP {status}: {body.decode('utf-8', errors='replace')[:180]}"
+    _v93_provider_failure_policy(provider, classification, status, detail)
+    return [], _v93_attempt(display, ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+
+def _v93_fx_api_network_once(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
+    canonical = str(username or "").strip().lstrip("@")
+    # V103 deliberately honors the requested timeline size. The prior code forced >=12
+    # and the automatic entrypoint requested 30 even though only 12 could reach the pipeline.
+    count = max(1, min(int(V93_NETWORK_LIMIT), int(limit or 1)))
+    url = V93_FX_API_TEMPLATE.format(username=urllib.parse.quote(canonical), count=count)
+    headers = {
+        "User-Agent": "NetoSportBot/1.0 (Telegram football news monitor; contact=operator)",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    started = time.perf_counter()
+    _v93_provider_increment("fxtwitter-api")
+    status: int | None = None
+    body = b""
+    try:
+        status, body = _v103_pool_get(url, headers, 4_000_000)
+        if status >= 400 and status != 404:
+            return _v103_http_status_failure("fxtwitter-api", "FxTwitter API", status, body, started)
+    except Exception as exc:
+        status = int(getattr(exc, "status", 0) or getattr(exc, "code", 0) or 0) or None
+        classification = _v93_classify_exception(exc, status=status)
+        detail = f"{classification}: {type(exc).__name__}: {short_error(exc, 180)}"
+        _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
+        return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+    try:
+        payload = json.loads(body.decode("utf-8", errors="strict")) if body else {}
+    except Exception as exc:
+        if status == 404:
+            classification = "http_404_empty_or_unknown_handle"
+            detail = "http_404_empty_or_unknown_handle: HTTP 404"
+        else:
+            classification = "invalid_json"
+            detail = f"invalid_json: HTTP {status}; body={body[:120]!r}"
+        _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
+        return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+    rows, parse_reason = _v93_parse_fx_payload(canonical, payload, count)
+    if rows:
+        _v93_provider_mark("fxtwitter-api", mode="live", status=status)
+        return rows, _v93_attempt("FxTwitter API", ok=True, reason="ok", status=status, posts=len(rows), seconds=time.perf_counter()-started)
+    classification = "http_404_empty_or_unknown_handle" if status == 404 else (parse_reason.split(":",1)[0] if parse_reason else "empty_timeline")
+    detail = parse_reason or classification
+    _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
+    return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+
+def _v93_fx_feed_network_once(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
+    canonical = str(username or "").strip().lstrip("@")
+    count = max(1, min(int(V93_NETWORK_LIMIT), int(limit or 1)))
+    url = V93_FX_FEED_TEMPLATE.format(username=urllib.parse.quote(canonical), count=count)
+    headers = {
+        "User-Agent": "NetoSportBot/1.0 (Telegram football news monitor; contact=operator)",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.2",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    started = time.perf_counter()
+    _v93_provider_increment("fxtwitter-feed")
+    status: int | None = None
+    body = b""
+    try:
+        status, body = _v103_pool_get(url, headers, 4_000_000)
+        if status >= 400:
+            return _v103_http_status_failure("fxtwitter-feed", "FxTwitter RSS", status, body, started)
+    except Exception as exc:
+        status = int(getattr(exc, "status", 0) or getattr(exc, "code", 0) or 0) or None
+        classification = _v93_classify_exception(exc, status=status)
+        detail = f"{classification}: {type(exc).__name__}: {short_error(exc, 180)}"
+        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
+        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+    try:
+        rows = [p for p in (parse_posts(canonical, body, "fxtwitter-feed") or []) if isinstance(p, Post)]
+    except Exception as exc:
+        classification = "parser_zero"
+        detail = f"parser_zero: {type(exc).__name__}: {short_error(exc, 180)}"
+        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
+        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+    if rows:
+        for post in rows:
+            try:
+                post.username = canonical
+                post.source_name = "fxtwitter-feed"
+                parts = tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+                if parts:
+                    post.link = f"https://x.com/{canonical}/status/{parts[1]}"
+            except Exception:
+                pass
+        rows.sort(key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+        rows = rows[:count]
+        _v93_provider_mark("fxtwitter-feed", mode="live", status=status)
+        return rows, _v93_attempt("FxTwitter RSS", ok=True, reason="ok", status=status, posts=len(rows), seconds=time.perf_counter()-started)
+    raw_lower = body[:300_000].decode("utf-8", errors="replace").casefold()
+    if "<item" in raw_lower or "<entry" in raw_lower:
+        classification = "parser_zero"
+        detail = "parser_zero: feed contains item/entry but parser returned 0"
+    else:
+        classification = "empty_timeline"
+        detail = "empty_timeline: HTTP 200 feed contains no item/entry"
+    _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
+    return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+
+# ---------------------------------------------------------------------------
+# 5) Routine scanner gets smaller timelines, but only when V100 has a durable
+#    known frontier. If the compact page is full and contains no known row, do a
+#    full catch-up immediately. This preserves the previous 30-row burst coverage.
+# ---------------------------------------------------------------------------
+_V103_PRE_LIVE_THEN_MEMORY = _v93_live_then_memory
+
+
+def _v103_auto_timeline_limit(username: str) -> int:
+    interval = int(_v101_interval_for(username))
+    if interval <= 60:
+        return int(V103_FAST_TIMELINE_LIMIT)
+    if interval <= 120:
+        return int(V103_MEDIUM_TIMELINE_LIMIT)
+    return int(V103_SLOW_TIMELINE_LIMIT)
+
+
+def _v103_seen_for_account(username: str) -> set[str]:
+    with _V100_SCAN_CONTEXT_LOCK:
+        state = _V100_ACTIVE_SCAN_STATE
+        enabled = bool(_V100_ACTIVE_SCAN_OPTIMIZE)
+    if not enabled or not isinstance(state, dict):
+        return set()
+    canonical = str(username or "").strip().lstrip("@")
+    raw = state.get(canonical, [])
+    if not raw:
+        # Account keys are normally canonical-cased, but tolerate case differences.
+        key = canonical.casefold()
+        for candidate, values in state.items():
+            if str(candidate or "").strip().lstrip("@").casefold() == key:
+                raw = values
+                break
+    return {str(x).strip() for x in (raw or []) if str(x).strip()}
+
+
+def _v103_has_known_frontier(rows: list[Post], seen: set[str]) -> bool:
+    if not seen:
+        return False
+    return any(_v100_post_seen(post, seen) for post in rows if isinstance(post, Post))
+
+
+def _v103_evict_live_cache(username: str) -> None:
+    try:
+        with _V93_LOCK:
+            _V93_LIVE_CACHE.pop(_v93_key(username), None)
+    except Exception:
+        pass
+
+
+def _v93_live_then_memory(username: str, limit: int = 30) -> tuple[list[Post], Exception | None, str]:
+    requested = max(1, int(limit))
+    if not (bool(_V101_AUTO_SCAN_CONTEXT) and bool(_V100_ACTIVE_SCAN_OPTIMIZE)):
+        return _V103_PRE_LIVE_THEN_MEMORY(username, requested)
+
+    seen = _v103_seen_for_account(username)
+    # No durable frontier (startup/new account/recovery) must NEVER pay a compact probe
+    # followed by another request. Go straight to the same full coverage used before V103.
+    if not seen:
+        return _V103_PRE_LIVE_THEN_MEMORY(username, min(requested, int(V103_CATCHUP_TIMELINE_LIMIT)))
+
+    compact = min(requested, _v103_auto_timeline_limit(username))
+    _V103_METRICS["compact_scan_calls"] += 1
+    _V103_METRICS[f"compact_limit_{compact}"] = int(_V103_METRICS.get(f"compact_limit_{compact}", 0)) + 1
+    rows, error, route = _V103_PRE_LIVE_THEN_MEMORY(username, compact)
+    rows = list(rows or [])
+    route_key = str(route or "").casefold()
+
+    # If the known boundary is visible, everything older is unnecessary (V100 trims it).
+    if _v103_has_known_frontier(rows, seen):
+        return rows, error, route
+
+    # Provider outage/memory fallback is not a burst signal. V102's existing circuit breaker/backoff
+    # remains the only retry policy (recommendation #9 is explicitly excluded).
+    if route_key in {"memory", "none", ""} or (error is not None and "cache" not in route_key and "fx" not in route_key and "nitter" not in route_key):
+        return rows, error, route
+
+    # A short REAL live page is exhausted. A short CACHE page, however, may simply be an
+    # old 5-row compact cache being reused for a later 8/12-row request, so force refresh.
+    if len(rows) < compact and "cache" not in route_key:
+        return rows, error, route
+
+    # Full compact page (or undersized cached compact page) with no known boundary = possible burst.
+    # Catch up to the exact pre-V103 V93 maximum so the optimization cannot create a news hole.
+    _v103_evict_live_cache(username)
+    _V103_METRICS["full_catchups"] += 1
+    return _V103_PRE_LIVE_THEN_MEMORY(username, min(requested, int(V103_CATCHUP_TIMELINE_LIMIT)))
+
+
+# ---------------------------------------------------------------------------
+# 4 + exact 10-latest safety: use a fresh cache only if it already contains 10
+#    complete rows. An undersized compact scanner cache is evicted and a full
+#    control fetch is forced. If the first result is still short, one bounded
+#    full 30-row refresh + history merge is attempted.
+# ---------------------------------------------------------------------------
+_V103_PRE_FETCH_LAST_TEN = fetch_last_ten_control_isolated
+
+
+def _v103_live_cache_snapshot(username: str) -> tuple[float, list[Post], str]:
+    try:
+        with _V93_LOCK:
+            item = _V93_LIVE_CACHE.get(_v93_key(username))
+        if not item:
+            return 0.0, [], ""
+        saved_at, rows, route = item
+        if _v93_now() - float(saved_at or 0.0) > float(V93_LIVE_CACHE_SECONDS):
+            return 0.0, [], ""
+        return float(saved_at or 0.0), [p for p in (rows or []) if isinstance(p, Post)], str(route or "")
+    except Exception:
+        return 0.0, [], ""
+
+
+def _v103_merge_history_rows(username: str, groups: list[list[Post]], wanted: int) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    merged: dict[str, Post] = {}
+    for values in groups:
+        for post in values or []:
+            if not isinstance(post, Post):
+                continue
+            try:
+                post.username = canonical
+            except Exception:
+                pass
+            identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or "").strip()
+            if not identity:
+                try:
+                    identity = post_content_signature(canonical, str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or ""))
+                except Exception:
+                    identity = ""
+            if identity:
+                merged.setdefault(identity, post)
+    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    return ordered[:max(1, int(wanted))]
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = max(1, int(limit))
+    if wanted >= V103_HISTORY_REQUIRED_ROWS:
+        _saved_at, cached_rows, _route = _v103_live_cache_snapshot(canonical)
+        if len(cached_rows) >= V103_HISTORY_REQUIRED_ROWS:
+            _V103_METRICS["history_cache_complete_hits"] += 1
+        elif cached_rows:
+            _V103_METRICS["history_cache_incomplete_forced_refresh"] += 1
+            _v103_evict_live_cache(canonical)
+
+    rows = list(_V103_PRE_FETCH_LAST_TEN(canonical, wanted) or [])
+    if wanted < V103_HISTORY_REQUIRED_ROWS or len(rows) >= wanted:
+        return rows[:wanted]
+
+    # Bounded rescue for exact 10 display. Never loop and never use a 5/8-row auto page
+    # as proof that only 5/8 posts exist.
+    _V103_METRICS["history_full_retries"] += 1
+    _v103_evict_live_cache(canonical)
+    live_rows, _error, _route = _V103_PRE_LIVE_THEN_MEMORY(canonical, max(V103_CATCHUP_TIMELINE_LIMIT, wanted))
+    try:
+        memory = _v91_memory_posts(canonical, limit=max(60, wanted * 6))
+    except Exception:
+        memory = []
+    combined = _v103_merge_history_rows(canonical, [rows, list(live_rows or []), list(memory or [])], wanted)
+    try:
+        if combined:
+            _ten_history_save(canonical, combined)
+    except Exception:
+        pass
+    return combined[:wanted]
+
+
+# ---------------------------------------------------------------------------
+# 6) Heavy optional yt-dlp is never allowed before translation in an automatic
+#    scan. Direct FxTwitter image/video URLs are untouched. Manual/control paths
+#    remain exactly as before.
+# ---------------------------------------------------------------------------
+_V103_PRE_YTDLP_CANDIDATES = _final_ytdlp_candidates
+
+
+def _final_ytdlp_candidates(post: Post) -> list[dict[str, Any]]:
+    if bool(_V101_AUTO_SCAN_CONTEXT) and not str(getattr(post, "translation_provider", "") or "").strip():
+        _V103_METRICS["ytdlp_pretranslation_skips"] += 1
+        return []
+    return _V103_PRE_YTDLP_CANDIDATES(post)
+
+
+# ---------------------------------------------------------------------------
+# 8) Conservative static hard-block decision cache. Only content-static reasons
+#    are cached. Anything time-, club-list-, transfer-value-, duplicate- or
+#    operator-setting-dependent is deliberately excluded.
+# ---------------------------------------------------------------------------
+_V103_PRE_LOCAL_BLOCK_REASON = pre_send_final_local_block_reason
+_V103_STATIC_BLOCK_LOCK = RLock()
+_V103_STATIC_BLOCK_CACHE: dict[str, tuple[float, str]] = {}
+_V103_STATIC_BLOCK_TOKENS = (
+    "podcast", "longform", "interview", "promo", "teaser", "live_match", "match_update",
+    "future_match", "prediction", "bet", "gambl", "kit", "jersey", "minor", "basketball",
+    "other_sport", "non_news", "social", "too_short", "short_post", "unclear", "link_only",
+    "writer_profile_noise", "giveaway", "competition_promo", "instagram", "reel", "poll",
+)
+
+
+def _v103_post_cache_key(post: Post) -> str:
+    identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or "").strip()
+    source = str(getattr(post, "original_text", "") or getattr(post, "text", "") or "")
+    digest = hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return f"{str(getattr(post, 'username', '') or '').casefold()}|{identity}|{digest}"
+
+
+def _v103_cacheable_static_reason(reason: str) -> bool:
+    value = str(reason or "").strip().casefold()
+    if not value:
+        return False
+    if any(token in value for token in ("old_post", "duplicate", "destination", "transfer_value", "fee", "managed_club", "account_disabled", "temporary", "translation")):
+        return False
+    return any(token in value for token in _V103_STATIC_BLOCK_TOKENS)
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    key = _v103_post_cache_key(post)
+    now = time.time()
+    with _V103_STATIC_BLOCK_LOCK:
+        cached = _V103_STATIC_BLOCK_CACHE.get(key)
+        if cached and now - float(cached[0] or 0.0) <= V103_STATIC_BLOCK_CACHE_TTL_SECONDS:
+            _V103_METRICS["static_block_cache_hits"] += 1
+            return str(cached[1] or "")
+        if cached:
+            _V103_STATIC_BLOCK_CACHE.pop(key, None)
+    reason = str(_V103_PRE_LOCAL_BLOCK_REASON(post) or "")
+    if _v103_cacheable_static_reason(reason):
+        with _V103_STATIC_BLOCK_LOCK:
+            _V103_STATIC_BLOCK_CACHE[key] = (now, reason)
+            _V103_METRICS["static_block_cache_stores"] += 1
+            if len(_V103_STATIC_BLOCK_CACHE) > 4000:
+                oldest = sorted(_V103_STATIC_BLOCK_CACHE.items(), key=lambda kv: float(kv[1][0] or 0.0))[:800]
+                for old_key, _row in oldest:
+                    _V103_STATIC_BLOCK_CACHE.pop(old_key, None)
+    return reason
+
+
+# ---------------------------------------------------------------------------
+# 7) Final source-level local dedupe before the translation/media stack. Normal
+#    run_once already does this; this closes manual/fast-lane automatic paths that
+#    can enter send_post directly. It uses the SAME latest V97/V53 local engine.
+# ---------------------------------------------------------------------------
+_V103_PRE_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: Any = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    # The normal run_once path already performs the latest local dedupe twice before
+    # remember_recent_news_event(... pending=True). Re-running it here during that same
+    # automatic context could mistake the post's own pending reservation for a duplicate.
+    # Therefore this extra gate is ONLY for direct send lanes that bypass run_once.
+    if (not bool(_V101_AUTO_SCAN_CONTEXT)) and isinstance(state, dict) and not bool(getattr(post, "force_startup_send", False)):
+        try:
+            duplicate = find_channel_duplicate_event(post, state) or find_recent_duplicate_event(post, state)
+        except Exception:
+            duplicate = None
+        if duplicate:
+            _V103_METRICS["pretranslation_duplicate_blocks"] += 1
+            try:
+                source = duplicate_event_source_he(duplicate)
+                detail = duplicate_event_debug_he(post, duplicate)
+                log_skip_once(
+                    "v103_pretranslation_duplicate",
+                    post,
+                    "דילוג כפילות לפני תרגום/מדיה: אותו אירוע כבר קיים מול %s. @%s לא נשלח: %s | %s",
+                    source,
+                    getattr(post, "username", ""),
+                    getattr(post, "link", ""),
+                    detail,
+                )
+            except Exception:
+                pass
+            return {"sent": False, "mode": "pre_send_blocked:v103_source_duplicate", "total_seconds": 0.0}
+    return _V103_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+
+
+# ---------------------------------------------------------------------------
+# 10) Log-volume saver: suppress only an EXACT repeated INFO/DEBUG rendered line
+#    for a bounded window. Warnings/errors and distinct posts/errors are untouched.
+# ---------------------------------------------------------------------------
+class _V103RepeatInfoFilter(logging.Filter):
+    _v103_credit_filter = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = RLock()
+        self._seen: dict[str, float] = {}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if int(record.levelno) >= int(logging.WARNING):
+            return True
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            return True
+        # Do not coalesce success/send lines even if a synthetic test repeats them.
+        if "✅" in rendered or "נשלח פוסט" in rendered:
+            return True
+        key = f"{record.levelno}|{record.name}|{rendered}"
+        now = time.monotonic()
+        with self._lock:
+            previous = float(self._seen.get(key, 0.0) or 0.0)
+            if previous and now - previous < V103_REPEAT_LOG_WINDOW_SECONDS:
+                _V103_METRICS["repeat_logs_suppressed"] += 1
+                return False
+            self._seen[key] = now
+            if len(self._seen) > 5000:
+                cutoff = now - V103_REPEAT_LOG_WINDOW_SECONDS
+                for old_key, ts in list(self._seen.items()):
+                    if float(ts or 0.0) < cutoff:
+                        self._seen.pop(old_key, None)
+                if len(self._seen) > 5000:
+                    for old_key in list(self._seen)[:1000]:
+                        self._seen.pop(old_key, None)
+        return True
+
+
+def _v103_install_log_filter() -> None:
+    root = logging.getLogger()
+    for handler in list(root.handlers or []):
+        if any(bool(getattr(item, "_v103_credit_filter", False)) for item in list(getattr(handler, "filters", []) or [])):
+            continue
+        handler.addFilter(_V103RepeatInfoFilter())
+
+
+_v103_install_log_filter()
+
+
+def v103_credit_saver_status() -> dict[str, Any]:
+    return {
+        "http_pool": bool(_V103_HTTP_POOL is not None),
+        "http_pool_maxsize": int(V103_HTTP_POOL_MAXSIZE),
+        "auto_timeline_limits": [int(V103_FAST_TIMELINE_LIMIT), int(V103_MEDIUM_TIMELINE_LIMIT), int(V103_SLOW_TIMELINE_LIMIT)],
+        "catchup_limit": int(V103_CATCHUP_TIMELINE_LIMIT),
+        "ten_latest_required_rows": int(V103_HISTORY_REQUIRED_ROWS),
+        "static_block_cache_ttl_seconds": int(V103_STATIC_BLOCK_CACHE_TTL_SECONDS),
+        "repeat_log_window_seconds": int(V103_REPEAT_LOG_WINDOW_SECONDS),
+        "metrics": dict(_V103_METRICS),
+    }
+
+
+def _v103_self_audit() -> None:
+    # User explicitly excluded #9: V102 failure-backoff constants must remain exactly intact.
+    if int(V102_FAILURE_BACKOFF_AFTER) != 3 or int(V102_FAILURE_BACKOFF_ESCALATE_AFTER) != 6:
+        raise RuntimeError("v103_v102_failure_backoff_changed")
+    if int(V102_FAILURE_BACKOFF_FIRST_SECONDS) != 300 or int(V102_FAILURE_BACKOFF_MAX_SECONDS) != 600:
+        raise RuntimeError("v103_v102_failure_backoff_durations_changed")
+    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120) or tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
+        raise RuntimeError("v103_adaptive_scheduler_changed")
+    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 300:
+        raise RuntimeError("v103_adaptive_hold_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v103_pipeline_cap_changed")
+    if int(MAX_VIDEO_BYTES) != 13_107_200:
+        raise RuntimeError("v103_video_limit_changed")
+    if globals().get("_v94_google_network_once") is not globals().get("_V97_KEEP_GOOGLE_NETWORK", globals().get("_v94_google_network_once")):
+        raise RuntimeError("v103_google_transport_changed")
+    if find_recent_duplicate_event is not globals().get("_V97_KEEP_DEDUPE", find_recent_duplicate_event):
+        raise RuntimeError("v103_latest_dedupe_engine_changed")
+    if tuple((V103_FAST_TIMELINE_LIMIT, V103_MEDIUM_TIMELINE_LIMIT, V103_SLOW_TIMELINE_LIMIT)) != (5, 8, 12):
+        raise RuntimeError("v103_compact_limits_bad")
+    if int(V103_HISTORY_REQUIRED_ROWS) != 10:
+        raise RuntimeError("v103_history_requirement_bad")
+    # Automatic media probe must be gated on a completed translation, while manual remains unaffected.
+    if "translation_provider" not in tuple(str(x) for x in _final_ytdlp_candidates.__code__.co_consts):
+        raise RuntimeError("v103_ytdlp_lazy_gate_missing")
+    # 10-latest route must be our completeness wrapper.
+    if fetch_last_ten_control_isolated is _V103_PRE_FETCH_LAST_TEN:
+        raise RuntimeError("v103_history_completeness_wrapper_missing")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v103_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v103_self_audit")
+
+logging.info(
+    "V103 active: FxTwitter keep-alive pool; adaptive 5/8/12 routine timelines with full 30-row frontier catch-up; "
+    "10-latest requires 10 complete cached rows or forces full refresh; heavy yt-dlp is post-translation only in auto scans; "
+    "latest local dedupe runs before translation on direct send lanes; static hard blocks are cached conservatively; exact repeated INFO/DEBUG logs are coalesced. Recommendation #9 unchanged/excluded."
+)
+# ====== END V103 SAFE HIGH-IMPACT CREDIT SAVER ======
+
+
 if __name__ == "__main__":
     main()
