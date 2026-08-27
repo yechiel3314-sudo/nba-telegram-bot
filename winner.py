@@ -71222,5 +71222,575 @@ logging.info(
 # ====== END V95 V72 BEHAVIOR + CURRENT RSS/TRANSLATION ======
 
 
+# ====== V96 FINAL: USER AUG-07..28 FIXES + LATEST DEDUPE PRESERVED (2026-08-28) ======
+# Add-only compatibility layer above V95.
+# - V72 remains the behavior / presentation baseline.
+# - V93 live providers / scan mechanics remain untouched.
+# - V94 forced translation / no-English safeguards remain untouched underneath.
+# - Latest event-level dedupe and same-status album delivery lock are preserved exactly.
+# - This layer only closes concrete editorial/name-normalization gaps reported by the operator.
+
+BOT_BUILD_ID = "winner-v96-v72-current-rss-translation-latest-dedupe-user-fixes-2026-08-28"
+
+# Hard locks: V96 must never replace these working mechanisms.
+_V96_KEEP_FETCH_POSTS = fetch_posts
+_V96_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V96_KEEP_DEDUPE = find_recent_duplicate_event
+_V96_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
+_V96_KEEP_DELIVERY_KEY = _v58_delivery_key
+_V96_KEEP_SEND_POST = send_post
+_V96_KEEP_GOOGLE_NETWORK = globals().get("_v94_google_network_once")
+
+# ---------------------------------------------------------------------------
+# 1) Final post-translation canonical Hebrew spellings.
+# These repairs are deterministic and cost zero AI/network requests.
+# ---------------------------------------------------------------------------
+PLAYER_REPLACEMENTS.update({
+    "Thiago Pitarch": "תיאגו פיטארץ'",
+    "Tiago Pitarch": "תיאגו פיטארץ'",
+})
+
+_V96_MAN_CITY_BAD_RE = re.compile(
+    r"(?u)(?<![א-ת])(?:מאן\s*סיטי|מאנסיטי|מאנ\s*סיי|מאן\s*סיי|מן\s*סיטי)(?![א-ת])"
+)
+_V96_ATHLETIC_CLUB_BAD_RE = re.compile(
+    r"(?u)(?<![א-ת])(?:אתלטיק\s+קלאב(?:\s+בילבאו)?|אתלטיקו\s+בילבאו)(?![א-ת])"
+)
+_V96_RIVER_PLATE_REPEAT_RE = re.compile(
+    r"(?u)(?<![א-ת])ריבר\s+פלייט(?:\s+פלייט)+(?![א-ת])"
+)
+_V96_HANSI_FLICK_BAD_RE = re.compile(
+    r"(?u)(?<![א-ת])(?:הנס|האנס|האנצי|הנזי|הנזי|הנצי)\s+פליק(?![א-ת])"
+)
+_V96_PITARCH_BAD_RE = re.compile(
+    r"(?u)(?<![א-ת])(?:טיאגו|תיאגו)\s+פיטאר(?:ק|ץ['׳]?)(?![א-ת])"
+)
+
+
+def _v96_hebrew_canonicalize(value: Any) -> str:
+    text = html.unescape(str(value or ""))
+    if not text:
+        return ""
+
+    # English aliases that Google/Gemini sometimes leaves intact.
+    text = re.sub(r"(?iu)(?<![A-Za-z])Man\s+City(?![A-Za-z])", "מנצ'סטר סיטי", text)
+    text = re.sub(r"(?iu)(?<![A-Za-z])Athletic\s+Club(?![A-Za-z])", "אתלטיק בילבאו", text)
+    text = re.sub(r"(?iu)(?<![A-Za-z])(?:Thiago|Tiago)\s+Pitarch(?![A-Za-z])", "תיאגו פיטארץ'", text)
+
+    # User-approved Hebrew canonicals after machine translation.
+    text = _V96_MAN_CITY_BAD_RE.sub("מנצ'סטר סיטי", text)
+    text = _V96_ATHLETIC_CLUB_BAD_RE.sub("אתלטיק בילבאו", text)
+    text = _V96_RIVER_PLATE_REPEAT_RE.sub("ריבר פלייט", text)
+    text = _V96_HANSI_FLICK_BAD_RE.sub("האנזי פליק", text)
+    text = _V96_PITARCH_BAD_RE.sub("תיאגו פיטארץ'", text)
+
+    # Collapse accidental duplicate canonical club names without touching prose.
+    text = re.sub(r"(?u)(ריבר\s+פלייט)(?:\s+\1)+", r"\1", text)
+    text = re.sub(r"(?u)(מנצ'סטר\s+סיטי)(?:\s+\1)+", r"\1", text)
+    text = re.sub(r"(?u)(אתלטיק\s+בילבאו)(?:\s+\1)+", r"\1", text)
+    return text
+
+
+# Wrap V94's forced Google return so old successful-cache entries also receive the
+# canonical spelling fix. No network/retry/validation policy is changed.
+_V96_PRE_GOOGLE_FORCED = _v94_google_translate_forced
+
+
+def _v94_google_translate_forced(source: str, max_chars: int = 2500) -> str:
+    return _v96_hebrew_canonicalize(_V96_PRE_GOOGLE_FORCED(source, max_chars))
+
+
+# Gemini can also produce the same bad Hebrew aliases, so canonicalize only after
+# the already-working V94 translation decision has finished.
+_V96_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    main, quote, author = _V96_PRE_TRANSLATE_POST_FOR_SEND(post)
+    return (
+        _v96_hebrew_canonicalize(main),
+        _v96_hebrew_canonicalize(quote) if quote else quote,
+        _v96_hebrew_canonicalize(author) if author else author,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2) Final live-match / result / engagement hard gates.
+# These are editorial exclusions and must not be rescued by reporter priority.
+# ---------------------------------------------------------------------------
+_V96_LIVE_SENT_OFF_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bsent\s+off\b|\bshown\s+(?:a\s+)?red\s+card\b|\breceiv(?:e|ed|es)\s+(?:one|two|\d+)?\s*red\s+cards?\b|"
+    r"\bdown\s+to\s+(?:9|10|nine|ten)\s+(?:men|players)\b|\bdismissed\s+(?:in|on)\s+the\s+\d{1,3}(?:st|nd|rd|th)?\s+minute\b|"
+    r"הורחק(?:ה|ו)?|קיבל(?:ה|ו)?\s+(?:שני\s+|2\s+)?כרטיס(?:ים)?\s+אדומ(?:ים|ות)|"
+    r"ירד(?:ה|ו)?\s+ל[-־]?\s*(?:9|10)\s+שחקנים"
+    r")"
+)
+_V96_LIVE_MINUTE_RE = re.compile(
+    r"(?iu)(?:"
+    r"\b(?:in\s+the\s+)?\d{1,3}(?:st|nd|rd|th)\s+minute\b|"
+    r"\b\d{1,3}\s*(?:'|’|′)\b|"
+    r"בדקה\s+(?:ה[-־]?)?\d{1,3}\b|דקה\s+(?:ה[-־]?)?\d{1,3}\b"
+    r")"
+)
+_V96_RESULT_ACTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bbeat(?:s)?\b|\bdefeat(?:s|ed)?\b|\bwon\b|\bwins?\b|\bvictory\b|"
+    r"ניצח(?:ה|ו)?|גבר(?:ה|ו)?\s+על|הביס(?:ה|ו)?|ניצחון"
+    r")"
+)
+_V96_AUDIENCE_RE = re.compile(
+    r"(?iu)(?:"
+    r"who\s+was\s+(?:your|the)\s+man\s+of\s+the\s+match|"
+    r"who\s+was\s+your\s+player\s+of\s+the\s+match|"
+    r"vote\s+(?:now|below)|your\s+motm|"
+    r"מי\s+היה\s+איש\s+המשחק|מי\s+איש\s+המשחק|הצביעו|מה\s+דעתכם"
+    r")"
+)
+_V96_UNCLEAR_FRAGMENT_RE = re.compile(
+    r"(?iu)(?:^|\n)\s*(?:created|prepared|made)\s+(?:ahead\s+of|for)\s+(?:the\s+)?arrival\s+of\b|"
+    r"(?:^|\n)\s*(?:נוצר|הוכן)\s+לקראת\s+הגעת(?:ו|ה)?\s+של\b"
+)
+
+
+def _v96_is_hard_live_update(post: Post) -> bool:
+    text = _v66_raw_source_text(post) if "_v66_raw_source_text" in globals() else html.unescape(str(_final_source_text(post) or ""))
+    if not text:
+        return False
+    # Preserve the established weather/safety/administrative rescue.
+    if "_V66_ADMIN_RESCUE_RE" in globals() and _V66_ADMIN_RESCUE_RE.search(text):
+        return False
+    if _V96_LIVE_SENT_OFF_RE.search(text) and (
+        _V96_LIVE_MINUTE_RE.search(text)
+        or re.search(r"(?iu)\b(?:red\s+cards?|down\s+to\s+(?:9|10))\b|כרטיס(?:ים)?\s+אדומ|ל[-־]?\s*(?:9|10)\s+שחקנים", text)
+    ):
+        return True
+    return False
+
+
+def _v96_is_match_result_or_engagement(post: Post) -> bool:
+    text = _v66_raw_source_text(post) if "_v66_raw_source_text" in globals() else html.unescape(str(_final_source_text(post) or ""))
+    if not text:
+        return False
+    if "_V66_ADMIN_RESCUE_RE" in globals() and _V66_ADMIN_RESCUE_RE.search(text):
+        return False
+    # Reuse the long-established classifier, but enforce it at the final boundary
+    # so writer-priority rescue cannot re-enable a result/poll.
+    try:
+        if is_match_result_or_engagement_post(post):
+            return True
+    except Exception:
+        pass
+    return bool(_V96_RESULT_ACTION_RE.search(text) and _V96_AUDIENCE_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
+# 3) Final policy wrapper: governance rescue + narrow unclear-fragment block.
+# ---------------------------------------------------------------------------
+_V96_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v96_is_hard_live_update(post):
+        return "v96_global_live_card_or_minute_update"
+    if _v96_is_match_result_or_engagement(post):
+        return "v96_match_result_or_engagement"
+
+    reason = str(_V96_PRE_FINAL_LOCAL_BLOCK(post) or "")
+
+    # V95's restored V69 interview layer sits above the V60 governance rescue.
+    # An official FIFA/UEFA/federation statement/investigation is real governance
+    # news, not low-value pundit reaction.
+    if reason == "low_value_interview_or_reaction":
+        try:
+            if _v60_governance_story(post):
+                return ""
+        except Exception:
+            pass
+
+    # Narrow protection against contextless feed fragments such as
+    # "Created ahead of the arrival of ...". Existing ordinary word-count rules
+    # already catch most of these; this only closes translations that happen to
+    # cross the word threshold without gaining a real news action.
+    text = _v66_raw_source_text(post) if "_v66_raw_source_text" in globals() else html.unescape(str(_final_source_text(post) or ""))
+    if not reason and _V96_UNCLEAR_FRAGMENT_RE.search(text):
+        try:
+            words = count_regular_words(text)
+        except Exception:
+            words = len(text.split())
+        if words <= 12 and not _V69_CONCRETE_NEWS_RE.search(text):
+            return "v96_unclear_arrival_fragment"
+    return reason
+
+
+_V96_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "v96_global_live_card_or_minute_update" in raw:
+        return "עדכון חי מתוך משחק — כרטיס אדום, הרחקה או אירוע בדקה מסוימת — נחסם"
+    if "v96_match_result_or_engagement" in raw:
+        return "תוצאת משחק, עדכון משחק או שאלת קהל/איש המשחק נחסמו"
+    if "v96_unclear_arrival_fragment" in raw:
+        return "דיווח חלקי ולא ברור ללא פעולה חדשותית ממשית נחסם"
+    return str(_V96_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+# ---------------------------------------------------------------------------
+# 4) Regression audit: the reported examples + immutable working mechanisms.
+# ---------------------------------------------------------------------------
+def _v96_test_post(username: str, text: str, pid: str, *, media: bool = False) -> Post:
+    return Post(
+        post_id=pid,
+        username=username,
+        text=text,
+        link=f"https://x.com/{username}/status/{pid}",
+        image_urls=["https://pbs.twimg.com/media/test.jpg"] if media else [],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[pid],
+        source_name=username,
+    )
+
+
+def _v96_self_audit() -> None:
+    # Working transport/scan mechanism remains exactly V95/V93.
+    if fetch_posts is not _V96_KEEP_FETCH_POSTS or fetch_posts_safely is not _V96_KEEP_FETCH_POSTS_SAFELY:
+        raise RuntimeError("v96_rss_provider_boundary_changed")
+    if globals().get("_v94_google_network_once") is not _V96_KEEP_GOOGLE_NETWORK:
+        raise RuntimeError("v96_google_transport_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v96_scan_settings_changed")
+
+    # Latest semantic duplicate engine + same-status delivery lock are not replaced.
+    if find_recent_duplicate_event is not _V96_KEEP_DEDUPE:
+        raise RuntimeError("v96_latest_dedupe_replaced")
+    if find_recent_duplicate_event_ai_aware is not _V96_KEEP_DEDUPE_AI:
+        raise RuntimeError("v96_latest_ai_aware_dedupe_replaced")
+    if _v58_delivery_key is not _V96_KEEP_DELIVERY_KEY or send_post is not _V96_KEEP_SEND_POST:
+        raise RuntimeError("v96_album_delivery_lock_replaced")
+
+    # User-requested zero-cost spelling canonicals.
+    cases = {
+        "מאן סיטי צפויה להגיש הצעה": "מנצ'סטר סיטי צפויה להגיש הצעה",
+        "אתלטיק קלאב הפסידה לברצלונה": "אתלטיק בילבאו הפסידה לברצלונה",
+        "ריבר פלייט פלייט": "ריבר פלייט",
+        "הנס פליק נפרד מהשחקן": "האנזי פליק נפרד מהשחקן",
+        "טיאגו פיטארק צפוי להישאר": "תיאגו פיטארץ' צפוי להישאר",
+    }
+    for raw, expected in cases.items():
+        fixed = _v96_hebrew_canonicalize(raw)
+        if expected not in fixed:
+            raise RuntimeError("v96_canonicalization_failed:" + raw + "=>" + fixed)
+
+    # Live red-card/minute report must be blocked even without a scoreline.
+    red = _v96_test_post(
+        "TrollFootball2",
+        "Trabzonspor received two red cards and went down to 9 men. Mohamed Salah was sent off in the 64th minute.",
+        "2091000000000000001",
+    )
+    if pre_send_final_local_block_reason(red) != "v96_global_live_card_or_minute_update":
+        raise RuntimeError("v96_live_red_card_update_not_blocked")
+
+    # Completed match + MOTM engagement must never be rescued by a priority writer.
+    result_poll = _v96_test_post(
+        "FabrizioRomano",
+        "Barcelona beat Athletic Club with Raphinha and Fermin already on three goals in two games. Who was your man of the match?",
+        "2091000000000000002",
+    )
+    if pre_send_final_local_block_reason(result_poll) != "v96_match_result_or_engagement":
+        raise RuntimeError("v96_result_poll_not_blocked")
+
+    # Official governance statement is concrete football news, not pundit reaction.
+    gov = _v96_test_post(
+        "JacobsBen",
+        'FIFA issued an official statement claiming there is a coordinated and sustained effort by some to undermine FIFA and its president, following discussions with member associations.',
+        "2091000000000000003",
+    )
+    if pre_send_final_local_block_reason(gov):
+        raise RuntimeError("v96_governance_statement_false_block")
+
+    # Album/media mirrors carrying the same canonical X status must share one lock key.
+    p1 = _v96_test_post("FabrizioRomano", "Same album item", "2091000000000000004", media=True)
+    p2 = _v96_test_post("FabrizioRomano", "Same album item second mirror", "2091000000000000005", media=True)
+    p1.link = "https://x.com/FabrizioRomano/status/2091999999999999999"
+    p2.link = "https://twitter.com/FabrizioRomano/status/2091999999999999999?ref=mirror"
+    if _v58_delivery_key(p1) != _v58_delivery_key(p2):
+        raise RuntimeError("v96_same_status_album_delivery_key_mismatch")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v96_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v96_self_audit")
+
+logging.info(
+    "V96 active: V72 behavior + V93 live providers + V94 forced translation preserved; "
+    "latest semantic dedupe and album same-status lock preserved; final live/result gates and "
+    "zero-cost Hebrew canonical team/player fixes applied."
+)
+# ====== END V96 USER FIXES + LATEST DEDUPE PRESERVED ======
+
+
+# ====== V97 FINAL: ORPHAN TRANSLATION FRAGMENTS + PROMO/PODCAST GATE + INLINE LIST RESTORE (2026-08-28) ======
+# Add-only layer above V96.  Working V93/V94 providers/translation and the latest
+# semantic duplicate/album-delivery mechanisms are immutable here.
+BOT_BUILD_ID = "winner-v97-v72-current-rss-translation-latest-dedupe-editorial-format-2026-08-28"
+
+# Immutable working boundaries.
+_V97_KEEP_FETCH_POSTS = fetch_posts
+_V97_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V97_KEEP_GOOGLE_NETWORK = globals().get("_v94_google_network_once")
+_V97_KEEP_TRANSLATE_POST_FOR_SEND_UNDER = translate_post_for_send
+_V97_KEEP_DEDUPE = find_recent_duplicate_event
+_V97_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
+_V97_KEEP_DELIVERY_KEY = _v58_delivery_key
+_V97_KEEP_SEND_POST = send_post
+
+# ---------------------------------------------------------------------------
+# A) Remove ONLY orphan Hebrew glue-word fragments created by translation.
+#    Example: "... Chelsea. 🇦🇷 עם. ✍" -> "... Chelsea. 🇦🇷 ✍"
+#    Normal syntax such as "עם צ'לסי" / "אם תוגש הצעה" is untouched.
+# ---------------------------------------------------------------------------
+_V97_ORPHAN_GLUE_WORD = r"(?:עם|של|על|אל|או|גם|כי|אם|אך|אבל|מול|אצל|עבור|לפי)"
+_V97_ORPHAN_GLUE_FRAGMENT_RE = re.compile(
+    rf"(?iu)(?<![א-ת]){_V97_ORPHAN_GLUE_WORD}\s*[.!?…;:,]+(?=\s*(?:$|[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]))"
+)
+_V97_ORPHAN_GLUE_WHOLE_LINE_RE = re.compile(
+    rf"(?iu)^\s*(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]\ufe0f?\s*)*"
+    rf"{_V97_ORPHAN_GLUE_WORD}\s*[.!?…;:,]*\s*"
+    rf"(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]\ufe0f?\s*)*$"
+)
+
+
+def _v97_remove_orphan_translation_fragments(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = _V97_ORPHAN_GLUE_FRAGMENT_RE.sub("", text)
+    rows = text.split("\n")
+    nonempty = [row for row in rows if row.strip()]
+    cleaned: list[str] = []
+    for row in rows:
+        visible = re.sub(r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", row).strip()
+        if len(nonempty) > 1 and visible and _V97_ORPHAN_GLUE_WHOLE_LINE_RE.match(visible):
+            # If the entire row is only decorative emoji + a broken glue word,
+            # remove the broken row rather than publishing meaningless grammar.
+            continue
+        row = re.sub(r"[ \t]{2,}", " ", row).rstrip()
+        cleaned.append(row)
+    text = "\n".join(cleaned)
+    text = re.sub(r"\s+([,.!?…;:])", r"\1", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# B) Generic inline structured-list repair.
+# V72 restores physical rows when the source has physical rows. Some provider
+# payloads arrive flattened into one line. In that case, split only when the
+# line proves list structure through >=3 semantic emoji-led items; for the old
+# V71 restricted marker vocabulary, keep its >=2-marker safety rule.
+# ---------------------------------------------------------------------------
+_V97_GENERIC_MARKER_UNIT = _V72_EMOJI_UNIT
+_V97_GENERIC_MARKER_SEQ = _V72_EMOJI_SEQUENCE
+_V97_INLINE_MARKER_START_RE = re.compile(
+    rf"(?:^|[ \t]+)(?P<marker>{_V97_GENERIC_MARKER_SEQ})(?=[ \t]*[A-Za-zÀ-ÿא-ת0-9])",
+    re.UNICODE,
+)
+_V97_INLINE_SPLIT_RE = re.compile(
+    rf"(?<=\S)[ \t]+(?=(?:{_V97_GENERIC_MARKER_SEQ})[ \t]*[A-Za-zÀ-ÿא-ת0-9])",
+    re.UNICODE,
+)
+
+
+def _v97_split_inline_structured_items(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Decide list-ness at message scope, not per physical row. Providers may
+    # preserve one row break while flattening the rest of the same list.
+    generic_total = len(list(_V97_INLINE_MARKER_START_RE.finditer(text)))
+    output: list[str] = []
+    for row in text.split("\n"):
+        if not row.strip():
+            output.append(row)
+            continue
+        old_count = 0
+        try:
+            old_count = len(re.findall(_V71_EXTRA_MARKER_TOKEN, row, re.UNICODE))
+        except Exception:
+            pass
+        if generic_total >= 3:
+            row = _V97_INLINE_SPLIT_RE.sub("\n", row)
+        elif old_count >= 2:
+            try:
+                row = re.sub(
+                    rf"(?<=\S)[ \t]+(?=(?:{_V71_EXTRA_MARKER_TOKEN})(?:\s+(?:{_V71_EXTRA_MARKER_TOKEN}))*\s*\S)",
+                    "\n",
+                    row,
+                    flags=re.UNICODE,
+                )
+            except Exception:
+                pass
+        output.extend(row.split("\n"))
+
+    # Add one visual space after an emoji marker when translation attached the
+    # first word directly to it ("⌛️עדכון" -> "⌛️ עדכון").
+    normalized: list[str] = []
+    for row in output:
+        row = re.sub(
+            rf"^(?P<marker>{_V97_GENERIC_MARKER_SEQ})(?=[A-Za-zÀ-ÿא-ת0-9])",
+            lambda m: str(m.group("marker")) + " ",
+            row,
+            flags=re.UNICODE,
+        )
+        normalized.append(row.rstrip())
+    text = "\n".join(normalized)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+# Apply the zero-cost cleanup to BOTH new translations and already-cached Hebrew.
+_V97_PRE_TIDY_TRANSLATED_TEXT = tidy_translated_text
+
+def tidy_translated_text(text: str) -> str:
+    rendered = _V97_PRE_TIDY_TRANSLATED_TEXT(text)
+    rendered = _v97_remove_orphan_translation_fragments(rendered)
+    rendered = _v97_split_inline_structured_items(rendered)
+    return rendered.strip()
+
+
+_V97_PRE_BUILD_MESSAGE = build_message
+
+def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
+    translated = _v97_split_inline_structured_items(_v97_remove_orphan_translation_fragments(translated))
+    if quoted_translated:
+        quoted_translated = _v97_split_inline_structured_items(_v97_remove_orphan_translation_fragments(quoted_translated))
+    rendered = _V97_PRE_BUILD_MESSAGE(post, translated, quoted_translated, quoted_author_translated, include_video_link)
+    # Last display boundary: protects cached/prepared text that bypassed tidy.
+    rendered = _v97_remove_orphan_translation_fragments(rendered)
+    rendered = _v97_split_inline_structured_items(rendered)
+    return rendered.strip()
+
+
+# ---------------------------------------------------------------------------
+# C) Final podcast/show/interview-PROMO gate.
+# Do not globally ban a factual news quote. Block a post whose *purpose* is to
+# advertise an episode/show/interview/guest appearance or teaser rundown.
+# ---------------------------------------------------------------------------
+_V97_PODCAST_SHOW_PROMO_RE = re.compile(
+    r"(?iu)(?:"
+    r"\bpodcast\b|\bnew\s+episode\b|\bfull\s+episode\b|\bepisode\s+\d+\b|"
+    r"\bcoming\s+up(?:\s+next)?\b|\bwhat(?:'|’)s\s+coming\s+up\b|"
+    r"\b(?:our|the)\s+guest\b|\bguest\s*[:\-]|\bhost\s*[:\-]|"
+    r"\bjoin(?:s|ing)?\s+us\b|\btune\s+in\b|\blisten\s+(?:now|here|to)\b|"
+    r"\bwatch\s+(?:now|live|the\s+full)\b|\bfull\s+interview\b|\bexclusive\s+interview\b|"
+    r"\binterview\s+with\b|\bon\s+(?:our|the)\s+(?:show|podcast)\b|"
+    r"פודקאסט|פודקסט|פרק\s+חדש|פרק\s+מלא|מגיע\s+הבא|מה\s+בהמשך|"
+    r"אורח\s*[:\-]|האורח|מנחה\s*[:\-]|האזינו|צפו\s+(?:עכשיו|בלייב|בפרק)|"
+    r"ראיון\s+מלא|ראיון\s+בלעדי|ראיון\s+עם"
+    r")"
+)
+_V97_TEASER_RUNDOWN_RE = re.compile(
+    r"(?iu)(?:\btransfer\s+window\s+update\b|עדכון\s+חלון\s+(?:ההעברות|העברה))"
+)
+
+
+def _v97_is_podcast_show_or_interview_promo(post: Post) -> bool:
+    text = html.unescape("\n".join([
+        str(getattr(post, "text", "") or ""),
+        str(getattr(post, "quoted_text", "") or ""),
+    ]))
+    if not text:
+        return False
+    if _V97_PODCAST_SHOW_PROMO_RE.search(text):
+        return True
+    # Teaser/rundown posts often omit the literal word "podcast". Require a
+    # rundown cue plus multiple semantic markers so a normal transfer update is safe.
+    if _V97_TEASER_RUNDOWN_RE.search(text):
+        marker_count = len(list(_V97_INLINE_MARKER_START_RE.finditer(text)))
+        if marker_count >= 3:
+            return True
+    return False
+
+
+_V97_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v97_is_podcast_show_or_interview_promo(post):
+        return "v97_podcast_show_interview_promo"
+    return str(_V97_PRE_FINAL_LOCAL_BLOCK(post) or "")
+
+
+_V97_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "v97_podcast_show_interview_promo" in raw:
+        return "פודקאסט, תוכנית, ראיון פרסומי או פוסט טיזר/אורחים נחסם"
+    return str(_V97_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+# ---------------------------------------------------------------------------
+# D) Regression audit for the exact reported failures + immutable dedupe/provider locks.
+# ---------------------------------------------------------------------------
+def _v97_self_audit() -> None:
+    if fetch_posts is not _V97_KEEP_FETCH_POSTS or fetch_posts_safely is not _V97_KEEP_FETCH_POSTS_SAFELY:
+        raise RuntimeError("v97_live_provider_changed")
+    if globals().get("_v94_google_network_once") is not _V97_KEEP_GOOGLE_NETWORK:
+        raise RuntimeError("v97_google_transport_changed")
+    if find_recent_duplicate_event is not _V97_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V97_KEEP_DEDUPE_AI:
+        raise RuntimeError("v97_latest_dedupe_changed")
+    if _v58_delivery_key is not _V97_KEEP_DELIVERY_KEY or send_post is not _V97_KEEP_SEND_POST:
+        raise RuntimeError("v97_delivery_or_send_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v97_scan_settings_changed")
+
+    broken = "מנצ'סטר סיטי בטוחה בהחתמת אנזו פרננדס, שצ'אבי אלונסו מתעקש שנשאר בחוץ מול לוטון בשל ההחלטה שלו ושל צ'לסי. 🇦🇷 עם. ✍"
+    fixed = _v97_remove_orphan_translation_fragments(broken)
+    if "עם." in fixed or "עם ." in fixed:
+        raise RuntimeError("v97_orphan_glue_not_removed:" + fixed)
+    valid = "מנצ'סטר סיטי הגיעה להסכם עם צ'לסי על אנזו פרננדס."
+    if _v97_remove_orphan_translation_fragments(valid) != valid:
+        raise RuntimeError("v97_valid_with_phrase_damaged")
+
+    inline = "▶️מגיע הבא! ⌛️עדכון חלון העברה! 🎤אורח: בן ג'ייקובס ✍️מרמוש חתום 🧩מרדף גאקפו 👋יציאות אפשריות"
+    split = _v97_split_inline_structured_items(inline)
+    if len([x for x in split.splitlines() if x.strip()]) < 6:
+        raise RuntimeError("v97_inline_list_not_split:" + repr(split))
+
+    promo = _v96_test_post(
+        "JacobsBen",
+        "Coming up next! Transfer window update! Guest: Ben Jacobs. Marmoush signed. Potential signings and exits.",
+        "2092000000000000001",
+    )
+    if pre_send_final_local_block_reason(promo) != "v97_podcast_show_interview_promo":
+        raise RuntimeError("v97_promo_not_blocked")
+
+    # A genuine concrete report containing the word 'interview' only as context
+    # must not be converted into a blanket interview ban unless it is a promo form.
+    news = _v96_test_post(
+        "JacobsBen",
+        "Chelsea submitted a formal bid for the player after talks today; the club expects an answer tomorrow.",
+        "2092000000000000002",
+    )
+    if pre_send_final_local_block_reason(news) == "v97_podcast_show_interview_promo":
+        raise RuntimeError("v97_real_news_false_promo_block")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v97_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v97_self_audit")
+
+logging.info(
+    "V97 active: V96/V72 behavior, V93 live providers, V94 forced translation and latest dedupe remain locked; "
+    "orphan translation glue fragments removed, podcast/show/interview promos blocked, flattened structured lists restored."
+)
+# ====== END V97 EDITORIAL/FORMAT FIXES ======
+
 if __name__ == "__main__":
     main()
