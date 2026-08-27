@@ -65779,5 +65779,1451 @@ logging.info(
 
 # ====== END V87 NITTER ALL-WRITERS DIAGNOSTIC + DIRECT-X FIX ======
 
+# ====== V88 LIVE-FIRST / TRANSLATION RELIABILITY ROOT FIX (2026-08-27) ======
+# Root causes fixed here, after the confirmed-working V87 boundary:
+#
+# 1) The real automatic loop calls fetch_posts_safely(), not fetch_posts().
+#    The final V87 fetch_posts_safely was still bound to an older captured V40/V50
+#    route. General reporters now use the strengthened V87 Direct-X reader first,
+#    so dead RSS mirrors cannot delay fresh discovery or age posts past two hours.
+#    Special sources keep their existing dedicated V66/V60 routes unchanged.
+#
+# 2) Historical RSS endpoints are currently failing externally. Automatic general-
+#    reporter discovery therefore never waits synchronously for them. Manual RSS
+#    diagnostics still check Nitter for EVERY writer. The historical RSS route and
+#    functions remain available and untouched for special/manual compatibility.
+#
+# 3) Translation had mutually conflicting historical policies: one Gemini request
+#    per attempt, a four-attempt/150-second retry scheduler, and a Google fallback
+#    that was blocked from the main channel. V88 keeps one paid Gemini attempt,
+#    then uses a validated FREE Google translation immediately. If neither produces
+#    real Hebrew, the post is NOT sent and remains pending for a short retry.
+#
+# 4) 10-latest always executed slow network RSS loaders even after enough rows were
+#    already in memory, and Google failure silently returned the original English.
+#    V88 uses direct-X + local history only for that screen, and never displays raw
+#    untranslated English as if it were a translation.
+#
+# The two-hour news-age rule and editorial filters are NOT relaxed.
+
+BOT_BUILD_ID_FINAL = 'winner-v88-live-first-translation-reliable-2026-08-27'
+
+# ---------------------------------------------------------------------------
+# A. General reporters: live Direct-X discovery is the non-blocking primary path.
+# ---------------------------------------------------------------------------
+_V88_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V88_GENERAL_REPORTERS = {
+    str(item or '').strip().lstrip('@').casefold()
+    for item in (_general_reporter_control_accounts() or [])
+}
+
+# A 20-second scanner should not reuse a 180-second direct-X cache.
+V88_DIRECT_CACHE_SECONDS = max(
+    8,
+    min(25, int(os.environ.get('V88_DIRECT_CACHE_SECONDS', '16') or '16')),
+)
+RELIABLE_DIRECT_PROFILE_CACHE_SECONDS = V88_DIRECT_CACHE_SECONDS
+FULL_SPEED_LIVE_REFRESH_SECONDS = max(
+    15,
+    min(30, int(os.environ.get('FULL_SPEED_LIVE_REFRESH_SECONDS', '20') or '20')),
+)
+
+# Controlled concurrency: fast enough for 10 writers, but still protects the
+# unofficial syndication endpoint. HTTP 429 continues to activate V87's global
+# cooldown automatically.
+V88_DIRECT_MAX_PARALLEL = max(
+    1,
+    min(4, int(os.environ.get('V88_DIRECT_MAX_PARALLEL', '3') or '3')),
+)
+V88_DIRECT_MIN_GAP_SECONDS = max(
+    0.08,
+    min(0.75, float(os.environ.get('V88_DIRECT_MIN_GAP_SECONDS', '0.18') or '0.18')),
+)
+_V87_DIRECT_SEMAPHORE = BoundedSemaphore(V88_DIRECT_MAX_PARALLEL)
+_V87_DIRECT_MIN_GAP_SECONDS = V88_DIRECT_MIN_GAP_SECONDS
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+
+_V88_DISCOVERY_LOCK = RLock()
+_V88_DISCOVERY_DIAG: dict[str, dict[str, Any]] = {}
+
+
+def _v88_store_discovery_diag(username: str, **values: Any) -> None:
+    key = str(username or '').strip().lstrip('@').casefold()
+    with _V88_DISCOVERY_LOCK:
+        _V88_DISCOVERY_DIAG[key] = dict(values)
+        if len(_V88_DISCOVERY_DIAG) > 120:
+            for old in list(_V88_DISCOVERY_DIAG)[:30]:
+                _V88_DISCOVERY_DIAG.pop(old, None)
+
+
+def _v88_discovery_diag(username: str) -> dict[str, Any]:
+    key = str(username or '').strip().lstrip('@').casefold()
+    with _V88_DISCOVERY_LOCK:
+        return dict(_V88_DISCOVERY_DIAG.get(key, {}) or {})
+
+
+def _v88_merge_live_and_memory(username: str, live_rows: list[Post]) -> list[Post]:
+    canonical = str(username or '').strip().lstrip('@')
+    merged: dict[str, Post] = {}
+    try:
+        _reliable_merge_posts(merged, live_rows, canonical)
+    except Exception:
+        pass
+
+    # Memory is network-free and only a safety net. Fresh direct-X rows sort first.
+    for loader in (
+        lambda: _full_speed_cache_get(canonical),
+        lambda: _working_rss_cached(canonical, limit=30),
+        lambda: _ten_history_load(canonical),
+    ):
+        try:
+            rows = list(loader() or [])
+        except Exception:
+            rows = []
+        try:
+            _reliable_merge_posts(merged, rows, canonical)
+        except Exception:
+            for post in rows:
+                if not isinstance(post, Post):
+                    continue
+                identity = str(getattr(post, 'post_id', '') or getattr(post, 'link', '') or '').strip()
+                if identity:
+                    merged.setdefault(identity, post)
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, 'published_ts', 0.0) or 0.0),
+        reverse=True,
+    )
+    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    """Actual scanner entrypoint: live-first for the 10 general reporters.
+
+    No dead RSS wait is allowed on this path. Special sources retain the exact
+    previously working dedicated route by delegating to the captured function.
+    """
+    canonical = str(username or '').strip().lstrip('@')
+    if canonical.casefold() not in _V88_GENERAL_REPORTERS:
+        return _V88_PRE_FETCH_POSTS_SAFELY(canonical)
+
+    started = time.perf_counter()
+    direct_rows: list[Post] = []
+    direct_error = ''
+    try:
+        direct_rows = list(
+            _reliable_direct_profile_posts(
+                canonical,
+                limit=max(20, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+                force=False,
+            )
+            or []
+        )
+    except Exception as exc:
+        direct_error = f'{type(exc).__name__}: {short_error(exc, 300)}'
+        direct_rows = []
+
+    ordered = _v88_merge_live_and_memory(canonical, direct_rows)
+    fresh_direct = bool(direct_rows)
+    newest_ts = max(
+        (float(getattr(post, 'published_ts', 0.0) or 0.0) for post in direct_rows),
+        default=0.0,
+    )
+    newest_age = max(0.0, time.time() - newest_ts) if newest_ts else None
+
+    _v88_store_discovery_diag(
+        canonical,
+        live_rows=len(direct_rows),
+        returned=len(ordered),
+        fresh_direct=fresh_direct,
+        newest_age_seconds=newest_age,
+        error=direct_error,
+        seconds=round(time.perf_counter() - started, 3),
+        provider=str((_v87_get_direct_diag(canonical) or {}).get('provider') or 'direct-x'),
+    )
+
+    try:
+        daily_stat_add_timing('scan_seconds', time.perf_counter() - started)
+    except Exception:
+        pass
+
+    return canonical, ordered[:12]
+
+
+# ---------------------------------------------------------------------------
+# B. Robust free Google Translate transport + diagnostics.
+# ---------------------------------------------------------------------------
+_V88_GOOGLE_LOCK = RLock()
+_V88_GOOGLE_CACHE: dict[str, tuple[float, str]] = {}
+_V88_GOOGLE_LAST_DIAG: dict[str, Any] = {}
+_V88_GOOGLE_SEMAPHORE = BoundedSemaphore(
+    max(2, min(6, int(os.environ.get('V88_GOOGLE_MAX_PARALLEL', '5') or '5')))
+)
+_V88_GOOGLE_CACHE_SECONDS = 6 * 60 * 60
+_V88_GOOGLE_TIMEOUT_SECONDS = max(
+    2.5,
+    min(7.0, float(os.environ.get('V88_GOOGLE_TIMEOUT_SECONDS', '4.5') or '4.5')),
+)
+
+
+def _v88_google_set_diag(**values: Any) -> None:
+    with _V88_GOOGLE_LOCK:
+        _V88_GOOGLE_LAST_DIAG.clear()
+        _V88_GOOGLE_LAST_DIAG.update(values)
+
+
+def _v88_google_diag() -> dict[str, Any]:
+    with _V88_GOOGLE_LOCK:
+        return dict(_V88_GOOGLE_LAST_DIAG)
+
+
+def _v88_google_parse_payload(body: bytes) -> str:
+    data = json.loads(body.decode('utf-8', errors='replace'))
+    rows = data[0] if isinstance(data, list) and data else []
+    parts: list[str] = []
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, list) and row and isinstance(row[0], str):
+                parts.append(row[0])
+    return ''.join(parts).strip()
+
+
+def _v88_google_one(text: str) -> str:
+    source = str(text or '').strip()
+    if not source:
+        return ''
+    key = hashlib.sha1(source.encode('utf-8', errors='ignore')).hexdigest()
+    now = time.time()
+    with _V88_GOOGLE_LOCK:
+        cached = _V88_GOOGLE_CACHE.get(key)
+        if cached and now - float(cached[0] or 0.0) <= _V88_GOOGLE_CACHE_SECONDS:
+            return str(cached[1] or '')
+
+    params = urllib.parse.urlencode({
+        'client': 'gtx',
+        'sl': 'auto',
+        'tl': TARGET_LANGUAGE,
+        'dt': 't',
+        'q': source,
+    })
+    endpoints = (
+        'https://translate.googleapis.com/translate_a/single?',
+        'https://translate.google.com/translate_a/single?',
+    )
+    last_error: Exception | None = None
+
+    with _V88_GOOGLE_SEMAPHORE:
+        for endpoint in endpoints:
+            url = endpoint + params
+            started = time.perf_counter()
+            request = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0',
+                    'Accept': 'application/json,text/plain,*/*',
+                    'Accept-Language': 'he,en-US;q=0.8,en;q=0.7',
+                    'Referer': 'https://translate.google.com/',
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=_V88_GOOGLE_TIMEOUT_SECONDS) as response:
+                    status = int(getattr(response, 'status', 200) or 200)
+                    body = response.read(1_500_000)
+                translated = _v88_google_parse_payload(body)
+                if not translated:
+                    raise RuntimeError('Google returned an empty translation')
+                with _V88_GOOGLE_LOCK:
+                    _V88_GOOGLE_CACHE[key] = (time.time(), translated)
+                    if len(_V88_GOOGLE_CACHE) > 2500:
+                        for old in list(_V88_GOOGLE_CACHE)[:600]:
+                            _V88_GOOGLE_CACHE.pop(old, None)
+                _v88_google_set_diag(
+                    ok=True,
+                    endpoint=urllib.parse.urlsplit(endpoint).netloc,
+                    status=status,
+                    seconds=round(time.perf_counter() - started, 3),
+                    error='',
+                )
+                return translated
+            except Exception as exc:
+                last_error = exc
+                _v88_google_set_diag(
+                    ok=False,
+                    endpoint=urllib.parse.urlsplit(endpoint).netloc,
+                    status=int(getattr(exc, 'code', 0) or 0),
+                    seconds=round(time.perf_counter() - started, 3),
+                    error=f'{type(exc).__name__}: {short_error(exc, 400)}',
+                )
+                continue
+
+    raise RuntimeError(f'Google Translate unavailable: {last_error}')
+
+
+def google_translate(text: str) -> str:
+    """Robust Google transport. Long bodies are split to avoid URL/edge limits."""
+    source = str(text or '').strip()
+    if not source:
+        return ''
+    # Most X posts fit in one call. Split only genuinely long bodies.
+    if len(source) <= 1150:
+        return _v88_google_one(source)
+    units = split_translation_units(source)
+    if not units:
+        units = [source[i:i + 900] for i in range(0, len(source), 900)]
+    translated: list[str] = []
+    for unit in units:
+        unit = str(unit or '').strip()
+        if not unit:
+            continue
+        translated.append(_v88_google_one(unit))
+    return ' '.join(part for part in translated if part).strip()
+
+
+def _v88_translation_valid(source: str, translated: str) -> tuple[bool, str]:
+    src = clean_before_translation(str(source or '')).strip()
+    out = clean_before_translation(str(translated or '')).strip()
+    if not out:
+        return False, 'empty'
+    if not has_meaningful_text(out):
+        return False, 'not_meaningful'
+
+    src_hebrew = len(re.findall(r'[א-ת]', src))
+    out_hebrew = len(re.findall(r'[א-ת]', out))
+    src_latin = len(re.findall(r'[A-Za-z]', src))
+    out_latin = len(re.findall(r'[A-Za-z]', out))
+
+    # Already-Hebrew source is valid without artificial retranslation.
+    if src_hebrew >= 8 and src_latin <= max(5, src_hebrew // 5):
+        return out_hebrew >= 8, '' if out_hebrew >= 8 else 'hebrew_source_damaged'
+
+    if out_hebrew < 8:
+        return False, 'too_little_hebrew'
+    if re.search(r'[\u0400-\u052F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u3400-\u4DBF\u4E00-\u9FFF]{2,}', out):
+        return False, 'foreign_script_leftover'
+    if out_latin > 0 and latin_ratio(out) > 0.24:
+        return False, 'too_much_latin'
+    try:
+        leftovers = non_hebrew_leftovers(out)
+    except Exception:
+        leftovers = []
+    # A few names/acronyms are acceptable, but a surviving English clause is not.
+    if len(leftovers) > 3:
+        return False, 'untranslated_latin_fragments'
+
+    # If a primarily Latin source comes back nearly identical, Google did not translate it.
+    if src_latin >= 12:
+        src_norm = re.sub(r'\W+', '', src, flags=re.UNICODE).casefold()
+        out_norm = re.sub(r'\W+', '', out, flags=re.UNICODE).casefold()
+        if src_norm and out_norm == src_norm:
+            return False, 'unchanged_source'
+    return True, ''
+
+
+def _v88_google_translate_strict(source: str, max_chars: int = 2500) -> str:
+    original = compact_debug_text(clean_before_translation(source or ''), max_chars).strip()
+    if not original:
+        return ''
+    if len(re.findall(r'[א-ת]', original)) >= 8 and latin_ratio(original) < 0.10:
+        return final_visual_cleanup(final_hebrew_polish(original))
+
+    # Preserve genuine source paragraph/list structure while using the new transport.
+    try:
+        translated = _google_translate_preserve_full_layout(original)
+    except Exception:
+        translated = google_translate(original)
+    translated = final_visual_cleanup(final_hebrew_polish(str(translated or '')))
+    # Translate any meaningful Latin clause that survived the whole-text pass.
+    # Common football acronyms in LATIN_KEEP remain untouched by this helper.
+    try:
+        translated = google_translate_latin_fragments_to_hebrew(translated)
+    except Exception:
+        pass
+    try:
+        translated = _v60_translation_cleanup(original, translated)
+    except Exception:
+        pass
+    translated = final_visual_cleanup(final_hebrew_polish(str(translated or '')))
+    ok, reason = _v88_translation_valid(original, translated)
+    if not ok:
+        raise TranslationUnavailable(f'Google translation invalid: {reason}')
+    return translated.strip()
+
+
+# ---------------------------------------------------------------------------
+# C. Publishing translation: Gemini once -> validated Google immediately.
+# ---------------------------------------------------------------------------
+_V88_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+# Remove the old multi-minute retry delay. A post that truly cannot be translated
+# stays pending and is retried quickly; it is never published raw.
+TRANSLATION_TOTAL_ATTEMPTS = 2
+TRANSLATION_RETRY_INTERVAL_SECONDS = 30
+AUTO_GEMINI_RETRY_ATTEMPTS = TRANSLATION_TOTAL_ATTEMPTS
+AUTO_GEMINI_RETRY_WAIT_SECONDS = TRANSLATION_RETRY_INTERVAL_SECONDS
+
+
+def _v88_source_for_translation(post: Post, quoted: bool = False) -> str:
+    try:
+        value = _final_corresponding_source_text(post, quoted=quoted)
+    except Exception:
+        value = ''
+    if value:
+        return str(value)
+    if quoted:
+        return str(getattr(post, 'quoted_text', '') or '')
+    return str(getattr(post, 'text', '') or '')
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    """Never publish untranslated text. Gemini is preferred; Google is free fallback."""
+    try:
+        main, quote, author = _V88_PRE_TRANSLATE_POST_FOR_SEND(post)
+        main_source = _v88_source_for_translation(post, quoted=False)
+        quote_source = _v88_source_for_translation(post, quoted=True)
+        ok_main, _ = _v88_translation_valid(main_source, main)
+        ok_quote = True
+        if quote_source and quote:
+            ok_quote, _ = _v88_translation_valid(quote_source, quote)
+        if ok_main and ok_quote:
+            try:
+                setattr(post, 'translation_provider', 'gemini')
+            except Exception:
+                pass
+            return main, quote, author
+        raise TranslationUnavailable('Gemini output failed final Hebrew validation')
+    except Exception as gemini_exc:
+        main_source = _v88_source_for_translation(post, quoted=False)
+        quote_source = _v88_source_for_translation(post, quoted=True)
+        try:
+            main = _v88_google_translate_strict(main_source, 1800)
+            quote = ''
+            if quote_source and TRANSLATE_QUOTED_POSTS and not is_self_quote(post):
+                quote = _v88_google_translate_strict(quote_source, 1000)
+            author = ''
+            if quote:
+                try:
+                    author = translate_short_label(str(getattr(post, 'quoted_author', '') or ''))
+                except Exception:
+                    author = ''
+            try:
+                setattr(post, 'translation_provider', 'google')
+                setattr(post, 'gemini_translation_failure', short_error(gemini_exc, 400))
+            except Exception:
+                pass
+            logging.info(
+                '🌐 Google Translate fallback used safely for @%s after Gemini failure: %s',
+                getattr(post, 'username', ''),
+                gemini_error_summary(gemini_exc),
+            )
+            return main, quote, author
+        except Exception as google_exc:
+            raise TranslationUnavailable(
+                'No valid Hebrew translation. Gemini: '
+                + short_error(gemini_exc, 220)
+                + ' | Google: '
+                + short_error(google_exc, 220)
+            ) from google_exc
+
+
+def is_publishable_hebrew_for_main_channel(main_text: str, quoted_text: str = '') -> tuple[bool, str]:
+    """Provider-neutral final gate: only real Hebrew is publishable."""
+    combined = '\n'.join([str(main_text or ''), str(quoted_text or '')]).strip()
+    if not combined:
+        return False, 'אין תרגום'
+    cleaned = remove_urls(clean_before_translation(strip_google_translate_markers(combined)))
+    if not has_meaningful_text(cleaned):
+        return False, 'אין טקסט משמעותי לאחר תרגום'
+    if len(re.findall(r'[א-ת]', cleaned)) < 8:
+        return False, 'הטקסט אינו מתורגם לעברית'
+    if re.search(r'[\u0400-\u052F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u3400-\u4DBF\u4E00-\u9FFF]{2,}', cleaned):
+        return False, 'נשארה שפה זרה לא תקינה בתרגום'
+    if latin_ratio(cleaned) > 0.36:
+        return False, 'נשאר יותר מדי טקסט לא מתורגם'
+    return True, ''
+
+
+# Translation quality failures are retryable technical failures, not permanent
+# editorial blocks. Do not mark a good news post as seen just because a translator
+# produced one damaged candidate.
+_V88_PRE_SEND_POST = send_post
+
+
+def send_post(post: Post, reply_message_ids: Any = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = _V88_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    if isinstance(result, dict):
+        mode = str(result.get('mode', '') or '')
+        if mode in {'translation_quality_blocked', 'main_blocked_untranslated'}:
+            result['mode'] = 'translation_unavailable_retry'
+    return result
+
+
+# Manual "prepare report" must not sleep 150 seconds between Gemini failures.
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    return translate_post_for_send(post)
+
+
+# ---------------------------------------------------------------------------
+# D. Fast 10-latest: direct-X + local history, no dead RSS sweep.
+# ---------------------------------------------------------------------------
+try:
+    _RELIABLE_HISTORY_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+except Exception:
+    pass
+RELIABLE_HISTORY_TRANSLATION_WORKERS = max(
+    3,
+    min(6, int(os.environ.get('RELIABLE_HISTORY_TRANSLATION_WORKERS', '5') or '5')),
+)
+_RELIABLE_HISTORY_EXECUTOR = _ReliableExecutor(
+    max_workers=RELIABLE_HISTORY_TRANSLATION_WORKERS,
+    thread_name_prefix='history-v88',
+)
+CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS = max(
+    8.0,
+    min(18.0, float(os.environ.get('CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS', '12') or '12')),
+)
+
+
+def _translate_history_post(post: Post) -> str:
+    source = clean_for_ai_translation(html.unescape(str(getattr(post, 'text', '') or ''))).strip()
+    if not source:
+        source = remove_external_links(html.unescape(str(getattr(post, 'title', '') or ''))).strip()
+    if not source:
+        return 'אין טקסט זמין לתרגום'
+    try:
+        return _v88_google_translate_strict(source, 1600)
+    except Exception as exc:
+        logging.warning(
+            'Google translation for 10-latest failed for @%s: %s',
+            getattr(post, 'username', ''),
+            short_error(exc, 350),
+        )
+        # Never disguise raw English as a translation.
+        return '⚠️ תרגום לא זמין כרגע — הפוסט לא יוצג באנגלית במקום תרגום'
+
+
+def _v88_history_merge(target: dict[str, Post], username: str, rows: Any) -> None:
+    canonical = str(username or '').strip().lstrip('@')
+    for post in rows or []:
+        if not isinstance(post, Post):
+            continue
+        try:
+            _ensure_post_original_structure(post)
+        except Exception:
+            pass
+        post.username = canonical
+        identity = str(
+            getattr(post, 'post_id', '')
+            or getattr(post, 'link', '')
+            or post_content_signature(
+                canonical,
+                str(getattr(post, 'text', '') or ''),
+                str(getattr(post, 'quoted_text', '') or ''),
+            )
+        ).strip()
+        if identity:
+            target.setdefault(identity, post)
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    """Fast current history. Never waits for the known-dead RSS mirror sweep."""
+    canonical = str(username or '').strip().lstrip('@')
+    wanted = max(1, int(limit))
+    merged: dict[str, Post] = {}
+    diagnostics: dict[str, Any] = {
+        'sources': {},
+        'errors': [],
+        'requested': wanted,
+        'route': 'v88_direct_x_plus_memory_no_dead_rss_wait',
+    }
+
+    # First take everything already available without network.
+    for name, loader in (
+        ('direct_cache', lambda: _full_speed_cache_get(canonical)),
+        ('rss_memory', lambda: _working_rss_cached(canonical, max(60, wanted * 6))),
+        ('saved_history', lambda: _ten_history_load(canonical)),
+        ('control_state', lambda: _ten_history_collect_existing_state_posts(canonical)),
+        ('stable_cache', lambda: _stable_rss_cached_posts(canonical, limit=max(60, wanted * 6))),
+    ):
+        before = len(merged)
+        try:
+            _v88_history_merge(merged, canonical, loader() or [])
+        except Exception as exc:
+            diagnostics['errors'].append(f'{name}: {short_error(exc, 220)}')
+        diagnostics['sources'][name] = len(merged) - before
+
+    # One fresh Direct-X lookup gives the current posts. No fetch_posts()/RSS call.
+    before = len(merged)
+    try:
+        direct_rows = list(
+            _reliable_direct_profile_posts(
+                canonical,
+                limit=max(20, wanted),
+                force=True,
+            )
+            or []
+        )
+        _v88_history_merge(merged, canonical, direct_rows)
+    except Exception as exc:
+        diagnostics['errors'].append('direct_x: ' + short_error(exc, 260))
+    diagnostics['sources']['direct_x_live'] = len(merged) - before
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, 'published_ts', 0.0) or 0.0),
+        reverse=True,
+    )
+    diagnostics['after_dedupe'] = len(ordered)
+    diagnostics['returned'] = min(wanted, len(ordered))
+    try:
+        LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diagnostics
+    except Exception:
+        pass
+    if ordered:
+        try:
+            _ten_history_save(canonical, ordered[:max(60, wanted * 6)])
+        except Exception:
+            pass
+    return ordered[:wanted]
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    return fetch_last_ten_control_isolated(username, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# E. Faster all-writer Nitter/Direct-X + translation diagnostic.
+# ---------------------------------------------------------------------------
+def _v88_direct_probe_writer(username: str) -> dict[str, Any]:
+    canonical = str(username or '').strip().lstrip('@')
+    started = time.perf_counter()
+    rows: list[Post] = []
+    try:
+        rows = list(
+            _reliable_direct_profile_posts(canonical, limit=8, force=False)
+            or []
+        )
+    except Exception as exc:
+        _v87_set_direct_diag(
+            canonical,
+            provider='direct-x',
+            status=int(getattr(exc, 'code', 0) or 0),
+            posts=0,
+            error=f'{type(exc).__name__}: {short_error(exc, 300)}',
+            classification=_v66diag_classify_exception(exc),
+        )
+    diag = _v87_get_direct_diag(canonical)
+    newest = max(
+        (float(getattr(post, 'published_ts', 0.0) or 0.0) for post in rows),
+        default=0.0,
+    )
+    diag.update({
+        'result_posts': len(rows),
+        'latest_age_minutes': round(max(0.0, time.time() - newest) / 60.0, 1) if newest else None,
+        'total_seconds': round(time.perf_counter() - started, 3),
+    })
+    return diag
+
+
+def _v88_google_health_probe() -> dict[str, Any]:
+    sample = 'Fabrizio Romano reports a new transfer agreement with a major European club.'
+    started = time.perf_counter()
+    try:
+        translated = _v88_google_translate_strict(sample, 400)
+        ok, reason = _v88_translation_valid(sample, translated)
+        diag = _v88_google_diag()
+        return {
+            'ok': bool(ok),
+            'reason': reason,
+            'translated': translated[:120],
+            'seconds': round(time.perf_counter() - started, 3),
+            'endpoint': diag.get('endpoint', ''),
+            'status': diag.get('status', 0),
+            'error': diag.get('error', ''),
+        }
+    except Exception as exc:
+        diag = _v88_google_diag()
+        return {
+            'ok': False,
+            'reason': 'request_failed',
+            'translated': '',
+            'seconds': round(time.perf_counter() - started, 3),
+            'endpoint': diag.get('endpoint', ''),
+            'status': diag.get('status', 0),
+            'error': f'{type(exc).__name__}: {short_error(exc, 300)}',
+        }
+
+
+def rss_status_text() -> str:
+    """Fast diagnostic: all writers, live age, and translation health."""
+    accounts = list(_general_reporter_control_accounts() or [])
+    if not accounts:
+        return '🧪 בדיקה: אין כתבים רגילים פעילים.'
+
+    started = time.perf_counter()
+    nitter_results: dict[str, dict[str, Any]] = {}
+    direct_results: dict[str, dict[str, Any]] = {}
+
+    # Nitter is independent per writer; run the 10 probes in parallel.
+    with ThreadPoolExecutor(max_workers=min(6, len(accounts))) as executor:
+        futures = {executor.submit(_v87_nitter_probe_writer, username): username for username in accounts}
+        for future in as_completed(futures):
+            username = futures[future]
+            try:
+                nitter_results[username] = dict(future.result() or {})
+            except Exception as exc:
+                nitter_results[username] = {
+                    'ok': False,
+                    'status': int(getattr(exc, 'code', 0) or 0),
+                    'classification': _v66diag_classify_exception(exc),
+                    'error': short_error(exc, 220),
+                }
+
+    # Direct-X is intentionally bounded to avoid making the diagnostic create 429.
+    with ThreadPoolExecutor(max_workers=min(V88_DIRECT_MAX_PARALLEL, len(accounts))) as executor:
+        futures = {executor.submit(_v88_direct_probe_writer, username): username for username in accounts}
+        for future in as_completed(futures):
+            username = futures[future]
+            try:
+                direct_results[username] = dict(future.result() or {})
+            except Exception as exc:
+                direct_results[username] = {
+                    'result_posts': 0,
+                    'classification': _v66diag_classify_exception(exc),
+                    'error': short_error(exc, 220),
+                }
+
+    google_health = _v88_google_health_probe()
+    storage = _v66diag_storage()
+    runtime_issues = []
+    try:
+        runtime_issues = list(runtime_consistency_audit() or [])
+    except Exception as exc:
+        runtime_issues = [short_error(exc, 200)]
+
+    nitter_ok = 0
+    direct_ok = 0
+    direct_fresh = 0
+    both_fail = 0
+    lines = [
+        f'🧪 בדיקת קליטה + תרגום לכל {len(accounts)} הכתבים',
+        '',
+        'הסורק האוטומטי: Direct-X חי קודם; RSS מת לא מעכב את הכתבים.',
+        'Nitter עדיין נבדק כאן לכל כתב כדי לזהות מיד אם הוא חוזר.',
+        '',
+    ]
+
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        nit = nitter_results.get(username, {})
+        direct = direct_results.get(username, {})
+        nit_ok = bool(nit.get('ok'))
+        dcount = int(direct.get('result_posts', 0) or 0)
+        age = direct.get('latest_age_minutes')
+        if nit_ok:
+            nitter_ok += 1
+        if dcount > 0:
+            direct_ok += 1
+            if age is not None and float(age) <= 15.0:
+                direct_fresh += 1
+        if not nit_ok and dcount <= 0:
+            both_fail += 1
+
+        nitter_text = (
+            f'Nitter ✅ {int(nit.get("parser_posts", 0) or 0)}'
+            if nit_ok
+            else f'Nitter ❌ {nit.get("classification") or ("HTTP " + str(nit.get("status", 0)))}'
+        )
+        if dcount > 0:
+            age_text = f' | אחרון לפני {age} דק׳' if age is not None else ''
+            direct_text = f'Direct-X ✅ {dcount}{age_text}'
+        else:
+            direct_text = (
+                'Direct-X ❌ '
+                + str(direct.get('classification') or direct.get('error') or '0 posts')[:90]
+            )
+        icon = '✅' if dcount > 0 else '❌'
+        lines.append(f'{icon} {label}: {nitter_text} | {direct_text}')
+
+    lines.extend([
+        '',
+        '📊 קליטה:',
+        f'• Nitter עובד: {nitter_ok}/{len(accounts)}',
+        f'• Direct-X עובד: {direct_ok}/{len(accounts)}',
+        f'• Direct-X עם פוסט עד 15 דקות: {direct_fresh}/{len(accounts)}',
+        f'• שני המסלולים נכשלו: {both_fail}/{len(accounts)}',
+        '',
+        '🌐 תרגום:',
+    ])
+
+    if google_health.get('ok'):
+        lines.append(
+            f'✅ Google Translate עובד | {google_health.get("endpoint") or "Google"} '
+            f'| {google_health.get("seconds")}s | {google_health.get("translated")}'
+        )
+    else:
+        lines.append(
+            f'❌ Google Translate נכשל | HTTP {google_health.get("status", 0)} '
+            f'| {google_health.get("error") or google_health.get("reason")}'
+        )
+
+    configured_keys = len(list(GEMINI_API_KEYS or []))
+    try:
+        available = len(list(gemini_translation_keys_for_operation() or []))
+    except Exception:
+        available = 0
+    lines.append(
+        f'• Gemini: {configured_keys} מפתחות מוגדרים | {available} זמינים מקומית '
+        '| בקשת Gemini אחת ואז Google בחינם'
+    )
+    lines.append('• כלל שליחה: אין עברית תקינה = אין שליחה. הפוסט נשאר לניסיון חוזר.')
+
+    lines.extend(['', '⚙️ מערכת:'])
+    lines.append(
+        '✅ fetch_posts_safely = V88 live-first'
+        if fetch_posts_safely.__name__ == 'fetch_posts_safely'
+        else f'⚠️ fetch_posts_safely={fetch_posts_safely.__name__}'
+    )
+    lines.append(
+        f'• Direct-X: עד {V88_DIRECT_MAX_PARALLEL} במקביל | cache={V88_DIRECT_CACHE_SECONDS}s '
+        f'| gap={V88_DIRECT_MIN_GAP_SECONDS:.2f}s'
+    )
+    lines.append(
+        '✅ consistency ללא בעיות'
+        if not runtime_issues
+        else f'⚠️ consistency: {len(runtime_issues)} — {" | ".join(str(x)[:80] for x in runtime_issues[:2])}'
+    )
+    if storage.get('configured') and storage.get('writable') and storage.get('railway_volume'):
+        lines.append(f'✅ /data: {storage.get("path")}')
+    elif storage.get('writable'):
+        lines.append(f'⚠️ /data לא קבוע: {storage.get("path") or "לא הוגדר"}')
+    else:
+        lines.append('⚠️ FOOTBALL_BOT_DATA_DIR=/data עדיין לא מוגדר/לא זמין')
+
+    elapsed = round(time.perf_counter() - started, 2)
+    lines.extend([
+        '',
+        f'⏱️ זמן בדיקה כולל: {elapsed}s',
+        '',
+        '🩺 מסקנה:',
+    ])
+    if direct_ok == len(accounts) and direct_fresh >= max(1, len(accounts) - 2):
+        lines.append('✅ קליטת הכתבים חיה ורעננה. חסימות גיל אמורות לרדת משמעותית.')
+    elif direct_ok > 0:
+        lines.append('🟠 Direct-X עובד רק בחלק מהכתבים/מחזיר חומר ישן בחלקם; רואים למעלה בדיוק מי.')
+    else:
+        lines.append('🔴 Direct-X לא מספק אף כתב; הבעיה כרגע בשכבת X/סינדיקציה ולא במסנן החדשות.')
+    if not google_health.get('ok'):
+        lines.append('🔴 גם Google Translate לא זמין כרגע; במקרה כזה הקוד לא ישלח אנגלית.')
+
+    return '\n'.join(lines)[:4050]
+
+
+# ---------------------------------------------------------------------------
+# F. Final audit: verify the scanner, not only fetch_posts().
+# ---------------------------------------------------------------------------
+def _v88_self_audit() -> None:
+    if fetch_posts is not _v35_fetch_posts:
+        raise RuntimeError('v88_historical_fetch_posts_changed')
+    if fetch_control_posts is not _v35_fetch_control_posts:
+        raise RuntimeError('v88_control_rss_changed')
+    # The actual automatic loop must use V88, not the captured V40/V50 safe route.
+    names = set(fetch_posts_safely.__code__.co_names)
+    if '_reliable_direct_profile_posts' not in names:
+        raise RuntimeError('v88_scanner_not_live_first')
+    if '_V50_WORKING_FETCH_POSTS_SAFELY' in names:
+        raise RuntimeError('v88_scanner_still_bound_to_old_v50_route')
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError('v88_scan_settings_changed')
+    if int(MAX_POST_AGE_SECONDS) != 2 * 60 * 60:
+        raise RuntimeError('v88_two_hour_age_rule_changed')
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError('v88_duplicate_continuous_discovery_enabled')
+    if TRANSLATION_RETRY_INTERVAL_SECONDS > 30:
+        raise RuntimeError('v88_translation_retry_still_too_slow')
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v88_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append('_v88_self_audit')
+
+logging.info(
+    'V88 active: actual scanner is Direct-X live-first for general reporters; '
+    'dead RSS no longer blocks discovery; one Gemini attempt -> validated Google fallback; '
+    'never publish untranslated; fast 10-latest and faster all-writer diagnostics.'
+)
+
+# ====== END V88 LIVE-FIRST / TRANSLATION RELIABILITY ROOT FIX ======
+
+# ====== V89 PRODUCTION SMOOTH / ALL OBSERVED LOG FIXES (2026-08-27) ======
+# Base: V88 (the latest build before this patch).
+# Scope is deliberately narrow:
+#   1) Gemini: ONE real network request per translation operation, then Google.
+#   2) Google: stronger second-pass + exact factual fidelity gate.
+#   3) Telegram control: resilient long-poll, no 2x retries on 502/timeouts,
+#      exponential backoff and throttled warnings.
+#   4) RTL admin edit: "message is not modified" is success; permanently
+#      uneditable messages are skipped in-process instead of warning repeatedly.
+#   5) yt-dlp optional "no video" probe is silent.
+#
+# Do NOT change:
+# - V88 live-first scanner
+# - 20 second scan cadence / 4 account workers
+# - two-hour original-publication age limit
+# - duplicate/editorial/source filters
+# - memory filenames/keys
+# - Shabbat policy
+# - main-channel Hebrew-only publishing invariant
+
+BOT_BUILD_ID = "winner-v89-production-smooth-all-log-fixes-2026-08-27"
+
+# ---------------------------------------------------------------------------
+# A. Translation: one Gemini HTTP call only, then Google immediately.
+# ---------------------------------------------------------------------------
+# The historical translation transaction itself loops while this global budget
+# remains >1. V88 already installed Google as the provider-neutral fallback, so
+# spending 3 Gemini calls before reaching Google only adds latency and overload.
+FINAL_GEMINI_NETWORK_BUDGET = 1
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = 1
+GEMINI_MAX_KEYS_PER_OPERATION = 1
+GEMINI_TRANSLATION_TIMEOUT_SECONDS = max(
+    6,
+    min(10, int(os.environ.get("V89_GEMINI_TIMEOUT_SECONDS", "9") or "9")),
+)
+
+# Initial try + one quick retry if BOTH providers are unavailable/invalid.
+TRANSLATION_TOTAL_ATTEMPTS = 2
+TRANSLATION_RETRY_INTERVAL_SECONDS = 25
+AUTO_GEMINI_RETRY_ATTEMPTS = 2
+AUTO_GEMINI_RETRY_WAIT_SECONDS = 25
+
+# Broaden only valid Hebrew equivalents in the existing concept completeness
+# gate. This removes false failures such as a perfectly valid "בכירי המועדון"
+# for "club officials" while preserving the requirement that the fact exists.
+_V46_TRANSLATION_CONCEPTS = (
+    (
+        "officials_or_staff",
+        re.compile(r"(?iu)officials?|staff|club\s+personnel"),
+        re.compile(
+            r"(?u)אנשי\s+צוות|גורמי(?:ם)?|אנשי\s+המועדון|צוות|"
+            r"בכירי\s+המועדון|ראשי\s+המועדון|הנהלת\s+המועדון|"
+            r"אנשי\s+הנהלה|בכירי(?:ם)?"
+        ),
+    ),
+    (
+        "fans_or_supporters",
+        re.compile(r"(?iu)fans?|supporters?"),
+        re.compile(r"(?u)אוהדים?|קהל|תומכים?"),
+    ),
+    (
+        "agreement",
+        re.compile(r"(?iu)agreement|deal\s+agreed"),
+        re.compile(
+            r"(?u)הסכם|סיכום|הסכמה|הסכמות|סוכם|סוכמה|סיכמו|"
+            r"עסקה\s+(?:סגורה|מסוכמת)|הושגה\s+הסכמה"
+        ),
+    ),
+    (
+        "loan",
+        re.compile(r"(?iu)\bloan\b"),
+        re.compile(r"(?u)השאלה|מושאל|בהשאלה"),
+    ),
+    (
+        "option",
+        re.compile(r"(?iu)option\s+to\s+buy"),
+        re.compile(r"(?u)אופצי(?:ה|ית)\s+רכישה|אפשרות\s+רכישה|זכות\s+רכישה"),
+    ),
+    (
+        "medical",
+        re.compile(r"(?iu)medical(?:s)?"),
+        re.compile(r"(?u)בדיקות?\s+רפואי|בדיקה\s+רפואית"),
+    ),
+    (
+        "rejected",
+        re.compile(r"(?iu)rejected|turned\s+down"),
+        re.compile(r"(?u)נדח|דחה|דחתה|סירב|סירבה|סורב"),
+    ),
+)
+
+
+def _v89_translation_fidelity_issues(source: str, translated: str) -> list[str]:
+    """Provider-neutral factual gate: Google must preserve critical facts too."""
+    issues: list[str] = []
+    try:
+        issues.extend(_final_translation_completeness_issues(source, translated) or [])
+    except Exception as exc:
+        logging.debug("V89 translation fidelity helper unavailable: %s", short_error(exc, 180))
+
+    # Preserve percentage symbols explicitly. Number matching is already handled
+    # by _final_translation_completeness_issues.
+    src = str(source or "")
+    out = str(translated or "")
+    if "%" in src and "%" not in out:
+        issues.append("חסר סימן אחוז מהמקור")
+
+    # Never allow a provider to invent HERE WE GO.
+    src_hwg = bool(re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO", src))
+    out_hwg = bool(
+        re.search(
+            r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO|היר\s+וי\s+גו|הנה\s+זה\s+קורה",
+            out,
+        )
+    )
+    if out_hwg and not src_hwg:
+        issues.append("התרגום המציא HERE WE GO")
+
+    return list(dict.fromkeys(str(item) for item in issues if str(item).strip()))
+
+
+_V89_PRE_GOOGLE_STRICT = _v88_google_translate_strict
+
+
+def _v89_google_translate_strict(source: str, max_chars: int = 2500) -> str:
+    """Two bounded Google forms before giving up; never returns raw source."""
+    original = compact_debug_text(clean_before_translation(source or ""), max_chars).strip()
+    if not original:
+        return ""
+
+    first_error: Exception | None = None
+    candidates: list[str] = []
+
+    # Attempt 1: V88 layout-preserving path.
+    try:
+        first = _V89_PRE_GOOGLE_STRICT(original, max_chars)
+        if first:
+            candidates.append(str(first))
+    except Exception as exc:
+        first_error = exc
+
+    # Attempt 2: whole-text Google call. This is useful when a single line in
+    # the layout-preserving path had a transient failure and was left untranslated.
+    try:
+        second = google_translate(original)
+        second = final_visual_cleanup(final_hebrew_polish(str(second or "")))
+        try:
+            second = google_translate_latin_fragments_to_hebrew(second)
+        except Exception:
+            pass
+        try:
+            second = _v60_translation_cleanup(original, second)
+        except Exception:
+            pass
+        second = final_visual_cleanup(final_hebrew_polish(str(second or "")))
+        if second and second not in candidates:
+            candidates.append(second)
+    except Exception as exc:
+        if first_error is None:
+            first_error = exc
+
+    rejection_reasons: list[str] = []
+    for candidate in candidates:
+        ok, reason = _v88_translation_valid(original, candidate)
+        if not ok:
+            rejection_reasons.append(reason)
+            continue
+        fidelity = _v89_translation_fidelity_issues(original, candidate)
+        if fidelity:
+            rejection_reasons.extend(fidelity)
+            continue
+        return candidate.strip()
+
+    raise TranslationUnavailable(
+        "Google translation unavailable/invalid: "
+        + ("; ".join(dict.fromkeys(rejection_reasons)) if rejection_reasons else short_error(first_error, 300))
+    )
+
+
+# Make every V88 publishing/history/manual caller use the stronger final Google gate.
+_v88_google_translate_strict = _v89_google_translate_strict
+
+
+# ---------------------------------------------------------------------------
+# B. Telegram getUpdates: temporary 502/timeouts must never stall or spam.
+# ---------------------------------------------------------------------------
+_V89_CONTROL_LOG_LOCK = RLock()
+_V89_CONTROL_LAST_WARNING_AT: dict[str, float] = {}
+_V89_CONTROL_WARN_EVERY_SECONDS = max(
+    60,
+    int(os.environ.get("V89_CONTROL_WARN_EVERY_SECONDS", "300") or "300"),
+)
+
+
+def _v89_control_error_kind(exc: Exception) -> str:
+    value = str(exc or "").casefold()
+    if "http 502" in value or "bad gateway" in value:
+        return "telegram_502"
+    if "timed out" in value or "timeout" in value:
+        return "telegram_timeout"
+    if "http 429" in value:
+        return "telegram_429"
+    if "http 409" in value or "conflict" in value:
+        return "telegram_conflict"
+    return "telegram_other"
+
+
+def _v89_control_warn_throttled(exc: Exception) -> None:
+    kind = _v89_control_error_kind(exc)
+    now = time.time()
+    with _V89_CONTROL_LOG_LOCK:
+        last = float(_V89_CONTROL_LAST_WARNING_AT.get(kind, 0.0) or 0.0)
+        if now - last < _V89_CONTROL_WARN_EVERY_SECONDS:
+            return
+        _V89_CONTROL_LAST_WARNING_AT[kind] = now
+    logging.warning(
+        "⚠️ לוח שליטה: תקלה זמנית (%s), הבוט ממשיך לעבוד וינסה שוב אוטומטית: %s",
+        kind,
+        short_error(exc, 500),
+    )
+
+
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+
+    try:
+        delete_control_webhook_if_needed()
+    except Exception as exc:
+        _v89_control_warn_throttled(exc)
+
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    startup_panel_done = False
+    transient_failures = 0
+
+    while True:
+        try:
+            if is_shabbat_now():
+                transient_failures = 0
+                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
+                continue
+
+            if not startup_panel_done:
+                startup_panel_done = True
+                try:
+                    if CONTROL_SEND_PANEL_ON_STARTUP:
+                        send_quick_control_panel(force_new=True)
+                    else:
+                        ensure_control_panel_once_if_requested()
+                except Exception as exc:
+                    logging.debug("לוח שליטה: יצירת לוח בתחילת ריצה נכשלה זמנית: %s", exc)
+
+            poll_seconds = int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "20") or "20")
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": poll_seconds,
+                    "allowed_updates": [
+                        "callback_query",
+                        "message",
+                        "edited_message",
+                        "channel_post",
+                        "edited_channel_post",
+                    ],
+                },
+                # One long HTTP request is enough. Retrying the same getUpdates
+                # inside http_post_json doubles latency and request pressure.
+                timeout=max(8, poll_seconds + 12),
+                max_attempts=1,
+            )
+
+            transient_failures = 0
+
+            # Shabbat may begin while Telegram is holding the long poll.
+            if is_shabbat_now():
+                continue
+
+            updates = list(response.get("result", []) or [])
+            if not updates:
+                continue
+
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+                    callbacks.append(update)
+                else:
+                    noncallbacks.append(update)
+
+            for update in callbacks:
+                process_control_update(update)
+
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try:
+                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+
+            if batch_offset != offset:
+                offset = batch_offset
+                try:
+                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
+                except RuntimeError:
+                    pass
+
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api(
+                            "deleteWebhook",
+                            {"drop_pending_updates": True},
+                            timeout=12,
+                            max_attempts=1,
+                        )
+                    except Exception as cleanup_exc:
+                        _v89_control_warn_throttled(cleanup_exc)
+                time.sleep(max(0.5, CONTROL_POLL_SECONDS))
+                continue
+
+            transient_failures = min(8, transient_failures + 1)
+            _v89_control_warn_throttled(exc)
+            # 1, 2, 4, 5, 5... seconds. This is only the control thread.
+            time.sleep(min(5.0, float(2 ** max(0, transient_failures - 1))))
+
+
+# ---------------------------------------------------------------------------
+# C. RTL edit noise: benign Telegram 400s are not production failures.
+# ---------------------------------------------------------------------------
+_V89_RTL_SKIP_LOCK = RLock()
+_V89_RTL_UNEDITABLE_KEYS: set[str] = set()
+
+
+def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
+    if not V43_ALL_CHANNEL_RTL_EDIT_ENABLED:
+        return False
+
+    message = update.get("channel_post") or update.get("edited_channel_post")
+    if not isinstance(message, dict):
+        return False
+
+    chat = message.get("chat") or {}
+    if not isinstance(chat, dict):
+        return False
+
+    chat_id = str(chat.get("id") or "").strip()
+    message_id = int(message.get("message_id") or 0)
+    if not chat_id or not message_id:
+        return False
+
+    key = f"{chat_id}:{message_id}"
+    with _V89_RTL_SKIP_LOCK:
+        if key in _V89_RTL_UNEDITABLE_KEYS:
+            return False
+
+    kind, original, entities = _v42_message_text_and_entities(message)
+    if not kind or not original or not _v42_message_needs_rtl_repair(original):
+        return False
+    if _v42_is_bot_authored_update(message, original):
+        return False
+
+    transformed = _v42_transform_text_entities(original, entities)
+    if transformed is None:
+        logging.debug(
+            "V89 RTL skipped safely to preserve formatting entity: chat=%s message=%s",
+            chat_id,
+            message_id,
+        )
+        return False
+
+    fixed_text, fixed_entities = transformed
+
+    with _V43_CHANNEL_RTL_EDIT_LOCK:
+        if key in _V43_CHANNEL_RTL_EDIT_INFLIGHT:
+            return True
+        _V43_CHANNEL_RTL_EDIT_INFLIGHT.add(key)
+
+    try:
+        _v42_edit_message_rtl(chat_id, message_id, kind, fixed_text, fixed_entities)
+        logging.info("V89 repaired human/admin channel post RTL in place: %s", key)
+        return True
+    except Exception as exc:
+        lowered = str(exc or "").casefold()
+
+        if "message is not modified" in lowered:
+            # Telegram says the target is already exactly what we asked for.
+            logging.debug("V89 RTL already correct/no-op: %s", key)
+            return True
+
+        if (
+            "message can't be edited" in lowered
+            or "message can not be edited" in lowered
+            or "message to edit not found" in lowered
+            or "not enough rights" in lowered
+        ):
+            with _V89_RTL_SKIP_LOCK:
+                _V89_RTL_UNEDITABLE_KEYS.add(key)
+                if len(_V89_RTL_UNEDITABLE_KEYS) > 2000:
+                    # Process-local cache only; safe to trim.
+                    for old in list(_V89_RTL_UNEDITABLE_KEYS)[:500]:
+                        _V89_RTL_UNEDITABLE_KEYS.discard(old)
+            logging.debug("V89 RTL edit unavailable for this message; skipped: %s", key)
+            return False
+
+        logging.warning(
+            "V89 RTL edit failed unexpectedly: %s error=%s",
+            key,
+            short_error(exc, 420),
+        )
+        return False
+    finally:
+        with _V43_CHANNEL_RTL_EDIT_LOCK:
+            _V43_CHANNEL_RTL_EDIT_INFLIGHT.discard(key)
+
+
+# ---------------------------------------------------------------------------
+# D. Optional yt-dlp probe: no-video is normal, not an ERROR log.
+# ---------------------------------------------------------------------------
+class _V89SilentYTDLPLogger:
+    def debug(self, msg: Any) -> None:
+        return None
+
+    def warning(self, msg: Any) -> None:
+        return None
+
+    def error(self, msg: Any) -> None:
+        return None
+
+
+def _final_ytdlp_candidates(post: Post) -> list[dict[str, Any]]:
+    link = str(getattr(post, "link", "") or "")
+    if not link:
+        return []
+
+    out: dict[str, dict[str, Any]] = {}
+
+    try:
+        import yt_dlp  # type: ignore
+
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": False,
+            "socket_timeout": FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS,
+            "extractor_args": {"twitter": {"api": ["syndication"]}},
+            "logger": _V89SilentYTDLPLogger(),
+        }
+        with yt_dlp.YoutubeDL(options) as downloader:
+            info = downloader.extract_info(link, download=False)
+        _final_walk_video_variants(info, out)
+    except Exception as exc:
+        logging.debug(
+            "Optional yt-dlp video probe returned no usable video: %s",
+            short_error(exc, 180),
+        )
+
+    if out:
+        return list(out.values())
+
+    executable = shutil.which("yt-dlp")
+    if not executable:
+        return []
+
+    try:
+        import subprocess
+
+        completed = subprocess.run(
+            [
+                executable,
+                "-J",
+                "--quiet",
+                "--no-warnings",
+                "--extractor-args",
+                "twitter:api=syndication",
+                link,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(15.0, FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS * 2),
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            _final_walk_video_variants(json.loads(completed.stdout), out)
+    except Exception as exc:
+        logging.debug(
+            "Optional yt-dlp command probe failed safely: %s",
+            short_error(exc, 180),
+        )
+
+    return list(out.values())
+
+
+
+# V40 had an older paired-actor validator underneath V46. Broaden its Hebrew
+# output vocabulary too, otherwise valid translations such as "בכירי המועדון"
+# are still rejected before the newer concept gate can accept them.
+_V40_STAFF_OUTPUT_RE = re.compile(
+    r"(?iu)"
+    r"אנשי\s+צוות|גורמי(?:\s+המועדון)?|צוות(?:\s+המועדון)?|"
+    r"הנהלת\s+המועדון|בכירי\s+המועדון|ראשי\s+המועדון|"
+    r"אנשי\s+הנהלה|בכירי(?:ם)?|"
+    r"\bofficials?\b|\bstaff\b"
+)
+_V40_FANS_OUTPUT_RE = re.compile(
+    r"(?iu)אוהדים|קהל|תומכים|\bfans?\b|\bsupporters?\b"
+)
+
+
+# ---------------------------------------------------------------------------
+# E. Final regression contract.
+# ---------------------------------------------------------------------------
+def _v89_self_audit() -> None:
+    if int(FINAL_GEMINI_NETWORK_BUDGET) != 1:
+        raise RuntimeError("v89_gemini_budget_not_one")
+    if int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS) != 1:
+        raise RuntimeError("v89_gemini_requests_not_one")
+    if int(AUTO_GEMINI_RETRY_ATTEMPTS) != 2:
+        raise RuntimeError("v89_translation_retry_count_changed")
+    if int(AUTO_GEMINI_RETRY_WAIT_SECONDS) > 25:
+        raise RuntimeError("v89_translation_retry_wait_too_long")
+    if int(MAX_POST_AGE_SECONDS) != 2 * 60 * 60:
+        raise RuntimeError("v89_two_hour_rule_changed")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v89_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v89_account_workers_changed")
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError("v89_duplicate_discovery_enabled")
+
+    scanner_names = set(fetch_posts_safely.__code__.co_names)
+    if "_reliable_direct_profile_posts" not in scanner_names:
+        raise RuntimeError("v89_live_first_scanner_missing")
+    if "_V50_WORKING_FETCH_POSTS_SAFELY" in scanner_names:
+        raise RuntimeError("v89_old_v50_scanner_reappeared")
+
+    control_names = set(control_loop.__code__.co_names)
+    if "telegram_api" not in control_names:
+        raise RuntimeError("v89_control_longpoll_missing")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v89_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v89_self_audit")
+
+logging.info(
+    "V89 active: V88 live-first preserved; one Gemini request then factual Google fallback; "
+    "Telegram control 502/timeouts hardened; benign RTL/yt-dlp log noise removed."
+)
+
+# ====== END V89 PRODUCTION SMOOTH / ALL OBSERVED LOG FIXES ======
+
 if __name__ == "__main__":
     main()
