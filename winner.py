@@ -68677,5 +68677,921 @@ logging.info(
 
 # ====== END V92 NITTER OUTAGE-AWARE LIVE RESTORE ======
 
+
+
+# ====== V93 FINAL: FXTWITTER PRIMARY + DEEP PROVIDER DIAGNOSTICS (2026-08-27) ======
+# Root-cause restore after nitter.net 410 shutdown and Railway X-syndication 429.
+# Provider order is intentionally bounded and low-operation:
+#   1) Nitter: V92 single process-wide probe only (currently 410 -> globally disabled)
+#   2) FxTwitter API v2 profile timeline: free/no API key, one request/account
+#   3) FxTwitter RSS profile feed: only when API v2 did not produce rows
+#   4) X public syndication: only when both FxTwitter lanes did not produce rows
+#   5) Official X API: OPTIONAL and OFF by default even if a token exists
+#   6) Existing local memory/history
+# Every failure lane records a classified reason so the control diagnostic explains
+# whether the problem is rate-limit, provider removal, DNS/TLS/timeout, auth/policy,
+# invalid JSON/XML, schema change, parser zero, empty timeline, or stale data.
+
+BOT_BUILD_ID = "winner-v93-fxtwitter-primary-deep-diagnostic-2026-08-27"
+
+V93_FX_API_TEMPLATE = os.environ.get(
+    "V93_FX_API_TEMPLATE",
+    "https://api.fxtwitter.com/2/profile/{username}/statuses?count={count}",
+).strip()
+V93_FX_FEED_TEMPLATE = os.environ.get(
+    "V93_FX_FEED_TEMPLATE",
+    "https://fxtwitter.com/{username}/feed.xml?count={count}&with_replies=1",
+).strip()
+V93_TIMEOUT_SECONDS = max(2.0, min(8.0, float(os.environ.get("V93_TIMEOUT_SECONDS", "4.0"))))
+V93_LIVE_CACHE_SECONDS = max(8.0, min(30.0, float(os.environ.get("V93_LIVE_CACHE_SECONDS", "16.0"))))
+V93_PROVIDER_COOLDOWN_SECONDS = max(20.0, min(600.0, float(os.environ.get("V93_PROVIDER_COOLDOWN_SECONDS", "60.0"))))
+V93_NETWORK_LIMIT = max(12, min(60, int(os.environ.get("V93_NETWORK_LIMIT", "30"))))
+V93_ENABLE_FX_FEED_FALLBACK = os.environ.get("V93_ENABLE_FX_FEED_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
+# Paid X API must never activate merely because a token happens to exist.
+V93_ENABLE_OFFICIAL_X_FALLBACK = os.environ.get("V93_ENABLE_OFFICIAL_X_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+_V93_LOCK = RLock()
+_V93_PROVIDER_PROBE_LOCKS = {
+    "fxtwitter-api": Lock(),
+    "fxtwitter-feed": Lock(),
+    "x-syndication": Lock(),
+}
+_V93_PROVIDER_STATE: dict[str, dict[str, Any]] = {
+    "fxtwitter-api": {"mode": "unknown", "reason": "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0},
+    "fxtwitter-feed": {"mode": "unknown", "reason": "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0},
+    "official-x": {"mode": "disabled" if not V93_ENABLE_OFFICIAL_X_FALLBACK else "unknown", "reason": "opt-in required" if not V93_ENABLE_OFFICIAL_X_FALLBACK else "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0},
+}
+_V93_ACCOUNT_DIAG: dict[str, dict[str, Any]] = {}
+_V93_LIVE_CACHE: dict[str, tuple[float, list[Post], str]] = {}
+
+
+def _v93_key(username: str) -> str:
+    return str(username or "").strip().lstrip("@").casefold()
+
+
+def _v93_now() -> float:
+    return time.time()
+
+
+def _v93_classify_exception(exc: BaseException | None, *, status: int | None = None, context: str = "") -> str:
+    if status is None and exc is not None:
+        try:
+            status = _v92_extract_http_status(exc)
+        except Exception:
+            status = None
+    if status == 410:
+        return "http_410_provider_removed"
+    if status == 429:
+        return "http_429_rate_limit"
+    if status == 401:
+        return "http_401_auth_or_user_agent"
+    if status == 403:
+        return "http_403_blocked"
+    if status == 404:
+        return "http_404_empty_or_unknown_handle"
+    if status == 451:
+        return "http_451_policy_block"
+    if status is not None and 500 <= int(status) <= 599:
+        return "http_5xx_provider_upstream"
+    text = (f"{type(exc).__name__}: {exc}" if exc is not None else str(context or "")).casefold()
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if "name or service not known" in text or "temporary failure in name resolution" in text or "nodename nor servname" in text or "getaddrinfo" in text:
+        return "dns_failure"
+    if "ssl" in text or "certificate" in text or "tls" in text:
+        return "tls_failure"
+    if "json" in text or "expecting value" in text:
+        return "invalid_json"
+    if "schema" in text:
+        return "schema_changed"
+    if "parser" in text:
+        return "parser_zero"
+    if "empty" in text or "no results" in text or "no posts" in text:
+        return "empty_timeline"
+    if status is not None:
+        return f"http_{int(status)}"
+    return "network_or_provider_error"
+
+
+def _v93_attempt(provider: str, *, ok: bool, reason: str, status: int | None = None, posts: int = 0, seconds: float = 0.0, detail: str = "", cached: bool = False) -> dict[str, Any]:
+    return {
+        "provider": str(provider),
+        "ok": bool(ok),
+        "reason": str(reason or ("ok" if ok else "unknown")),
+        "status": status,
+        "posts": int(posts or 0),
+        "seconds": round(max(0.0, float(seconds or 0.0)), 3),
+        "detail": str(detail or "")[:300],
+        "cached": bool(cached),
+    }
+
+
+def _v93_diag_begin(username: str) -> None:
+    key = _v93_key(username)
+    with _V93_LOCK:
+        _V93_ACCOUNT_DIAG[key] = {"username": str(username or "").strip().lstrip("@"), "attempts": [], "route": "", "live": False, "posts": 0, "recent": 0, "finished_at": 0.0}
+
+
+def _v93_diag_add(username: str, attempt: dict[str, Any]) -> None:
+    key = _v93_key(username)
+    with _V93_LOCK:
+        row = _V93_ACCOUNT_DIAG.setdefault(key, {"username": str(username or "").strip().lstrip("@"), "attempts": []})
+        row.setdefault("attempts", []).append(dict(attempt))
+        row["attempts"] = row["attempts"][-10:]
+
+
+def _v93_diag_finish(username: str, route: str, rows: list[Post], *, live: bool) -> None:
+    key = _v93_key(username)
+    recent = 0
+    try:
+        recent = len(recent_24h_posts(rows or []))
+    except Exception:
+        recent = 0
+    with _V93_LOCK:
+        row = _V93_ACCOUNT_DIAG.setdefault(key, {"username": str(username or "").strip().lstrip("@"), "attempts": []})
+        row.update({"route": str(route or ""), "live": bool(live), "posts": len(rows or []), "recent": recent, "finished_at": _v93_now()})
+
+
+def _v93_diag_get(username: str) -> dict[str, Any]:
+    with _V93_LOCK:
+        return dict(_V93_ACCOUNT_DIAG.get(_v93_key(username), {}) or {})
+
+
+def _v93_provider_state(provider: str) -> dict[str, Any]:
+    with _V93_LOCK:
+        return dict(_V93_PROVIDER_STATE.get(provider, {}) or {})
+
+
+def _v93_provider_available(provider: str) -> tuple[bool, str]:
+    now = _v93_now()
+    with _V93_LOCK:
+        state = _V93_PROVIDER_STATE.setdefault(provider, {"mode": "unknown", "reason": "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0})
+        mode = str(state.get("mode", "unknown") or "unknown")
+        until = float(state.get("disabled_until", 0.0) or 0.0)
+        reason = str(state.get("reason", "") or "")
+        if mode in {"cooldown", "degraded"} and now >= until:
+            state.update({"mode": "unknown", "reason": "", "disabled_until": 0.0})
+            return True, ""
+        if mode in {"cooldown", "degraded", "disabled"} and now < until:
+            return False, reason or mode
+        if mode == "disabled":
+            return False, reason or "disabled"
+        return True, ""
+
+
+def _v93_provider_mark(provider: str, *, mode: str, reason: str = "", status: int | None = None, cooldown: float = 0.0) -> None:
+    with _V93_LOCK:
+        state = _V93_PROVIDER_STATE.setdefault(provider, {"network_calls": 0})
+        state.update({
+            "mode": str(mode),
+            "reason": str(reason or "")[:400],
+            "last_status": status,
+            "checked_at": _v93_now(),
+            "disabled_until": (_v93_now() + max(1.0, float(cooldown))) if cooldown > 0 else 0.0,
+        })
+
+
+def _v93_provider_increment(provider: str) -> None:
+    with _V93_LOCK:
+        state = _V93_PROVIDER_STATE.setdefault(provider, {"mode": "unknown", "reason": "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0})
+        state["network_calls"] = int(state.get("network_calls", 0) or 0) + 1
+
+
+def _v93_provider_failure_policy(provider: str, classification: str, status: int | None, detail: str) -> None:
+    # Account-specific 404/empty results do not mark the whole provider down.
+    if classification in {"http_404_empty_or_unknown_handle", "empty_timeline"}:
+        _v93_provider_mark(provider, mode="live", reason="", status=status)
+        return
+    if classification in {"http_429_rate_limit"}:
+        _v93_provider_mark(provider, mode="cooldown", reason=detail or classification, status=status, cooldown=max(60.0, V93_PROVIDER_COOLDOWN_SECONDS))
+        return
+    if classification in {"http_401_auth_or_user_agent", "http_403_blocked", "http_451_policy_block"}:
+        _v93_provider_mark(provider, mode="cooldown", reason=detail or classification, status=status, cooldown=max(300.0, V93_PROVIDER_COOLDOWN_SECONDS))
+        return
+    if classification in {"http_5xx_provider_upstream", "timeout", "dns_failure", "tls_failure", "network_or_provider_error"}:
+        _v93_provider_mark(provider, mode="cooldown", reason=detail or classification, status=status, cooldown=max(30.0, V93_PROVIDER_COOLDOWN_SECONDS))
+        return
+    if classification in {"invalid_json", "schema_changed", "parser_zero"}:
+        _v93_provider_mark(provider, mode="degraded", reason=detail or classification, status=status, cooldown=max(180.0, V93_PROVIDER_COOLDOWN_SECONDS))
+        return
+    _v93_provider_mark(provider, mode="live", reason="", status=status)
+
+
+def _v93_cached_live(username: str, limit: int) -> tuple[list[Post], str]:
+    key = _v93_key(username)
+    with _V93_LOCK:
+        cached = _V93_LIVE_CACHE.get(key)
+    if not cached:
+        return [], ""
+    saved_at, rows, route = cached
+    if _v93_now() - float(saved_at or 0.0) > V93_LIVE_CACHE_SECONDS:
+        return [], ""
+    return list(rows or [])[:max(1, int(limit))], str(route or "cache")
+
+
+def _v93_store_live(username: str, rows: list[Post], route: str) -> None:
+    if not rows:
+        return
+    with _V93_LOCK:
+        _V93_LIVE_CACHE[_v93_key(username)] = (_v93_now(), list(rows[:80]), str(route or "live"))
+        if len(_V93_LIVE_CACHE) > 200:
+            oldest = sorted(_V93_LIVE_CACHE.items(), key=lambda kv: float(kv[1][0] or 0.0))[:40]
+            for key, _value in oldest:
+                _V93_LIVE_CACHE.pop(key, None)
+
+
+def _v93_timestamp_from_fx(node: dict[str, Any], tweet_id: str) -> float:
+    raw_ts = node.get("created_timestamp")
+    try:
+        value = float(raw_ts)
+        if value > 1_000_000_000:
+            return value
+    except Exception:
+        pass
+    raw = str(node.get("created_at") or "").strip()
+    if raw:
+        try:
+            normalized = raw.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+            return dt.timestamp()
+        except Exception:
+            pass
+        try:
+            return parsedate_to_datetime(raw).timestamp()
+        except Exception:
+            pass
+    try:
+        return float(_reliable_snowflake_timestamp(tweet_id) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _v93_media_from_fx(node: dict[str, Any]) -> tuple[list[str], list[str]]:
+    images: list[str] = []
+    videos: list[str] = []
+    try:
+        i, v = _precise_tweet_media(node)
+        images.extend(i or [])
+        videos.extend(v or [])
+    except Exception:
+        pass
+    media = node.get("media") if isinstance(node.get("media"), dict) else {}
+    for item in list(media.get("photos") or []) + list(media.get("all") or []):
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").casefold()
+        url = str(item.get("url") or item.get("thumbnail_url") or "").strip()
+        if url:
+            if kind in {"video", "gif", "animated_gif"} or ".mp4" in url.casefold():
+                videos.append(url)
+            else:
+                images.append(url)
+    for item in list(media.get("videos") or []):
+        if not isinstance(item, dict):
+            continue
+        for candidate in (item.get("url"), item.get("transcode_url")):
+            if isinstance(candidate, str) and candidate.strip():
+                videos.append(candidate.strip())
+        thumb = item.get("thumbnail_url")
+        if isinstance(thumb, str) and thumb.strip():
+            images.append(thumb.strip())
+    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
+
+
+def _v93_fx_status_nodes(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").casefold() == "thread":
+            for key in ("statuses", "thread", "posts"):
+                child = item.get(key)
+                if isinstance(child, list):
+                    out.extend(x for x in child if isinstance(x, dict))
+                    break
+        else:
+            out.append(item)
+    return out
+
+
+def _v93_parse_fx_payload(username: str, payload: Any, limit: int) -> tuple[list[Post], str]:
+    canonical = str(username or "").strip().lstrip("@")
+    if not isinstance(payload, dict):
+        return [], "schema_changed: top-level JSON is not an object"
+    if "results" not in payload:
+        return [], "schema_changed: missing results"
+    if not isinstance(payload.get("results"), list):
+        return [], "schema_changed: results is not a list"
+    nodes = _v93_fx_status_nodes(payload)
+    if not nodes:
+        return [], "empty_timeline"
+    merged: dict[str, Post] = {}
+    parser_candidates = 0
+    for node in nodes:
+        tweet_id = str(node.get("id") or "").strip()
+        if not re.fullmatch(r"\d{15,22}", tweet_id):
+            continue
+        text_value = _reliable_normalize_x_text(str(node.get("text") or ""))
+        if not text_value:
+            continue
+        parser_candidates += 1
+        author = node.get("author") if isinstance(node.get("author"), dict) else {}
+        author_handle = str(author.get("screen_name") or author.get("username") or "").strip().lstrip("@")
+        # Timeline APIs may include reposted content authored by another account.
+        # Keep it attached to the configured source account while preserving author in text.
+        reposted_by = node.get("reposted_by") if isinstance(node.get("reposted_by"), dict) else {}
+        repost_handle = str(reposted_by.get("screen_name") or reposted_by.get("username") or "").strip().lstrip("@")
+        if author_handle and author_handle.casefold() != canonical.casefold() and repost_handle.casefold() == canonical.casefold():
+            text_value = f"RT @{author_handle}: {text_value}"
+        link = str(node.get("url") or "").strip()
+        if not link or "/status/" not in link:
+            link = f"https://x.com/{canonical}/status/{tweet_id}"
+        else:
+            try:
+                parsed = urllib.parse.urlparse(link)
+                if parsed.netloc.casefold() not in {"x.com", "twitter.com", "www.x.com", "www.twitter.com"}:
+                    link = f"https://x.com/{canonical}/status/{tweet_id}"
+            except Exception:
+                link = f"https://x.com/{canonical}/status/{tweet_id}"
+        images, videos = _v93_media_from_fx(node)
+        quote = node.get("quote") if isinstance(node.get("quote"), dict) else {}
+        quoted_text = _reliable_normalize_x_text(str(quote.get("text") or "")) if quote else ""
+        quote_author_obj = quote.get("author") if isinstance(quote.get("author"), dict) else {}
+        quoted_author = str(quote_author_obj.get("screen_name") or quote_author_obj.get("username") or "").strip().lstrip("@") if quote else ""
+        q_images: list[str] = []
+        q_videos: list[str] = []
+        if quote:
+            q_images, q_videos = _v93_media_from_fx(quote)
+        post = Post(
+            tweet_id,
+            canonical,
+            text_value,
+            link,
+            images,
+            videos,
+            bool(videos or q_videos),
+            bool(videos),
+            bool(q_videos),
+            quoted_author,
+            quoted_text,
+            _v93_timestamp_from_fx(node, tweet_id),
+            [tweet_id, f"{canonical}:{tweet_id}", f"{canonical}:{link}", post_content_signature(canonical, text_value, quoted_text)],
+            "fxtwitter-v2",
+        )
+        post.original_text = text_value
+        post.source_structure_available = True
+        post.exact_source_structure = True
+        post.exact_source_provider = "fxtwitter-v2"
+        post.exact_media_checked = True
+        if q_images and not images:
+            # Keep quote image available if the primary post has no image.
+            try:
+                post.image_urls = list(dict.fromkeys(list(post.image_urls or []) + q_images))
+            except Exception:
+                pass
+        merged.setdefault(tweet_id, post)
+    if not merged:
+        if parser_candidates:
+            return [], "parser_zero: candidates existed but no Post survived"
+        return [], "parser_zero: results existed but no valid status id/text"
+    rows = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    return rows[:max(1, int(limit))], ""
+
+
+def _v93_http_error_body(exc: urllib.error.HTTPError) -> bytes:
+    try:
+        return exc.read(4_000_000)
+    except TypeError:
+        try:
+            return exc.read()
+        except Exception:
+            return b""
+    except Exception:
+        return b""
+
+
+def _v93_fx_api_network_once(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
+    canonical = str(username or "").strip().lstrip("@")
+    count = max(5, min(V93_NETWORK_LIMIT, max(int(limit), 12)))
+    url = V93_FX_API_TEMPLATE.format(username=urllib.parse.quote(canonical), count=count)
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "NetoSportBot/1.0 (Telegram football news monitor; contact=operator)",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+    })
+    started = time.perf_counter()
+    _v93_provider_increment("fxtwitter-api")
+    status: int | None = None
+    body = b""
+    try:
+        with urllib.request.urlopen(request, timeout=V93_TIMEOUT_SECONDS) as response:
+            status = int(getattr(response, "status", 200) or 200)
+            body = response.read(4_000_000)
+    except urllib.error.HTTPError as exc:
+        status = int(getattr(exc, "code", 0) or 0) or None
+        body = _v93_http_error_body(exc)
+        # FxTwitter list endpoints document 404 for both unknown/empty timelines.
+        if status != 404:
+            classification = _v93_classify_exception(exc, status=status)
+            detail = f"{classification}: HTTP {status}: {body.decode('utf-8', errors='replace')[:180]}"
+            _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
+            return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+    except Exception as exc:
+        classification = _v93_classify_exception(exc)
+        detail = f"{classification}: {type(exc).__name__}: {short_error(exc, 180)}"
+        _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
+        return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+    try:
+        payload = json.loads(body.decode("utf-8", errors="strict")) if body else {}
+    except Exception as exc:
+        classification = "invalid_json"
+        detail = f"invalid_json: HTTP {status}; body={body[:120]!r}"
+        _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
+        return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+    rows, parse_reason = _v93_parse_fx_payload(canonical, payload, max(1, int(limit)))
+    if rows:
+        _v93_provider_mark("fxtwitter-api", mode="live", status=status)
+        return rows, _v93_attempt("FxTwitter API", ok=True, reason="ok", status=status, posts=len(rows), seconds=time.perf_counter()-started)
+    classification = "http_404_empty_or_unknown_handle" if status == 404 else (parse_reason.split(":",1)[0] if parse_reason else "empty_timeline")
+    detail = parse_reason or classification
+    _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
+    return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+
+def _v93_provider_guarded_call(provider: str, callback, username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
+    available, reason = _v93_provider_available(provider)
+    if not available:
+        return [], _v93_attempt(provider, ok=False, reason="cooldown", detail=f"provider cooldown: {reason}")
+    state = _v93_provider_state(provider)
+    if str(state.get("mode", "unknown")) == "live":
+        return callback(username, limit)
+    # First request after startup/cooldown is single-flight. If it discovers a
+    # provider-wide 429/403/schema outage, the other account workers skip it.
+    lock = _V93_PROVIDER_PROBE_LOCKS[provider]
+    with lock:
+        available, reason = _v93_provider_available(provider)
+        if not available:
+            return [], _v93_attempt(provider, ok=False, reason="cooldown", detail=f"provider cooldown: {reason}")
+        state = _v93_provider_state(provider)
+        if str(state.get("mode", "unknown")) == "live":
+            return callback(username, limit)
+        return callback(username, limit)
+
+
+def _v93_fx_feed_network_once(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
+    canonical = str(username or "").strip().lstrip("@")
+    count = max(5, min(V93_NETWORK_LIMIT, max(int(limit), 12)))
+    url = V93_FX_FEED_TEMPLATE.format(username=urllib.parse.quote(canonical), count=count)
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "NetoSportBot/1.0 (Telegram football news monitor; contact=operator)",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.2",
+        "Cache-Control": "no-cache",
+    })
+    started = time.perf_counter()
+    _v93_provider_increment("fxtwitter-feed")
+    status: int | None = None
+    body = b""
+    try:
+        with urllib.request.urlopen(request, timeout=V93_TIMEOUT_SECONDS) as response:
+            status = int(getattr(response, "status", 200) or 200)
+            body = response.read(4_000_000)
+    except urllib.error.HTTPError as exc:
+        status = int(getattr(exc, "code", 0) or 0) or None
+        raw = _v93_http_error_body(exc)
+        classification = _v93_classify_exception(exc, status=status)
+        detail = f"{classification}: HTTP {status}: {raw.decode('utf-8', errors='replace')[:180]}"
+        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
+        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+    except Exception as exc:
+        classification = _v93_classify_exception(exc)
+        detail = f"{classification}: {type(exc).__name__}: {short_error(exc, 180)}"
+        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
+        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+    try:
+        rows = [p for p in (parse_posts(canonical, body, "fxtwitter-feed") or []) if isinstance(p, Post)]
+    except Exception as exc:
+        classification = "parser_zero"
+        detail = f"parser_zero: {type(exc).__name__}: {short_error(exc, 180)}"
+        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
+        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+    if rows:
+        for post in rows:
+            try:
+                post.username = canonical
+                post.source_name = "fxtwitter-feed"
+                parts = tweet_parts_from_link(str(getattr(post, "link", "") or ""))
+                if parts:
+                    post.link = f"https://x.com/{canonical}/status/{parts[1]}"
+            except Exception:
+                pass
+        rows.sort(key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+        _v93_provider_mark("fxtwitter-feed", mode="live", status=status)
+        return rows[:max(1, int(limit))], _v93_attempt("FxTwitter RSS", ok=True, reason="ok", status=status, posts=len(rows), seconds=time.perf_counter()-started)
+    raw_lower = body[:300_000].decode("utf-8", errors="replace").casefold()
+    if "<item" in raw_lower or "<entry" in raw_lower:
+        classification = "parser_zero"
+        detail = "parser_zero: feed contains item/entry but parser returned 0"
+    else:
+        classification = "empty_timeline"
+        detail = "empty_timeline: HTTP 200 feed contains no item/entry"
+    _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
+    return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
+
+
+def _v93_syndication_guarded(username: str, limit: int) -> tuple[list[Post], Exception | None]:
+    """Single-flight X syndication fallback. Rechecks cooldown after the lock.
+
+    V92 already serializes network calls, but concurrent workers could queue before
+    the first 429 flips the global cooldown. This extra lock makes one 429 enough.
+    """
+    cooldown = _v92_direct_cooldown_error()
+    if cooldown is not None:
+        return [], cooldown
+    lock = _V93_PROVIDER_PROBE_LOCKS["x-syndication"]
+    with lock:
+        cooldown = _v92_direct_cooldown_error()
+        if cooldown is not None:
+            return [], cooldown
+        return _v92_syndication_network_once(username, limit)
+
+
+def _v93_optional_official_x(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
+    if not V93_ENABLE_OFFICIAL_X_FALLBACK:
+        return [], _v93_attempt("Official X API", ok=False, reason="disabled", detail="V93_ENABLE_OFFICIAL_X_FALLBACK=0")
+    token = (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    )
+    if not token:
+        return [], _v93_attempt("Official X API", ok=False, reason="not_configured", detail="no bearer token")
+    started = time.perf_counter()
+    try:
+        # Existing reader performs two official requests: username lookup + timeline.
+        with _V93_LOCK:
+            _V93_PROVIDER_STATE["official-x"]["network_calls"] = int(_V93_PROVIDER_STATE["official-x"].get("network_calls", 0) or 0) + 2
+        rows = list(_reliable_official_x_profile_posts(str(username or "").strip().lstrip("@"), max(5, int(limit))) or [])
+        if rows:
+            _v93_provider_mark("official-x", mode="live")
+            return rows[:max(1, int(limit))], _v93_attempt("Official X API", ok=True, reason="ok", posts=len(rows), seconds=time.perf_counter()-started)
+        return [], _v93_attempt("Official X API", ok=False, reason="empty_timeline", seconds=time.perf_counter()-started)
+    except Exception as exc:
+        status = _v92_extract_http_status(exc)
+        classification = _v93_classify_exception(exc, status=status)
+        return [], _v93_attempt("Official X API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=short_error(exc, 180))
+
+
+def _v93_remember(username: str, rows: list[Post]) -> None:
+    if not rows:
+        return
+    try:
+        _v91_remember_nitter_rows(username, rows)
+    except Exception:
+        pass
+
+
+def _v93_live_then_memory(username: str, limit: int = 30) -> tuple[list[Post], Exception | None, str]:
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = max(1, int(limit))
+    _v93_diag_begin(canonical)
+
+    cached, cached_route = _v93_cached_live(canonical, wanted)
+    if cached:
+        _v93_diag_add(canonical, _v93_attempt(cached_route, ok=True, reason="cache_hit", posts=len(cached), cached=True))
+        _v93_diag_finish(canonical, cached_route + "-cache", cached, live=True)
+        return cached, None, cached_route + "-cache"
+
+    # 1) Preserve V92's one-time Nitter health probe. 410 is process-wide and
+    # immediately prevents the remaining account workers from touching it.
+    nitter_rows: list[Post] = []
+    nitter_error: Exception | None = None
+    nitter_started = time.perf_counter()
+    try:
+        nitter_rows, nitter_error = _v92_try_nitter(canonical, wanted)
+    except Exception as exc:
+        nitter_error = exc
+        nitter_rows = []
+    if nitter_rows:
+        attempt = _v93_attempt("Nitter RSS", ok=True, reason="ok", posts=len(nitter_rows), seconds=time.perf_counter()-nitter_started)
+        _v93_diag_add(canonical, attempt)
+        _v93_remember(canonical, nitter_rows)
+        _v93_store_live(canonical, nitter_rows, "nitter-rss")
+        _v93_diag_finish(canonical, "nitter-rss", nitter_rows, live=True)
+        return nitter_rows[:wanted], None, "nitter-rss"
+    n_status = _v92_extract_http_status(nitter_error) if nitter_error else None
+    n_class = _v93_classify_exception(nitter_error, status=n_status, context="nitter unavailable")
+    if nitter_error and "globally unavailable" in str(nitter_error).casefold():
+        with _V92_STATE_LOCK:
+            n_reason = str(_V92_NITTER_STATE.get("reason", "") or "")
+        n_class = "http_410_provider_removed" if "410" in n_reason else "provider_disabled"
+    _v93_diag_add(canonical, _v93_attempt("Nitter RSS", ok=False, reason=n_class, status=n_status, seconds=time.perf_counter()-nitter_started, detail=short_error(nitter_error, 180) if nitter_error else "no rows"))
+
+    # 2) FxTwitter v2 structured JSON timeline. Single-flight only while provider
+    # health is unknown, then the existing four account workers may use it normally.
+    fx_rows, fx_attempt = _v93_provider_guarded_call("fxtwitter-api", _v93_fx_api_network_once, canonical, wanted)
+    _v93_diag_add(canonical, fx_attempt)
+    if fx_rows:
+        _v93_remember(canonical, fx_rows)
+        _v93_store_live(canonical, fx_rows, "fxtwitter-api")
+        _v93_diag_finish(canonical, "fxtwitter-api", fx_rows, live=True)
+        return fx_rows[:wanted], None, "fxtwitter-api"
+
+    # 3) Independent RSS surface on FxTwitter, consulted only if v2 JSON did not
+    # produce rows. This costs no extra operation on healthy v2 cycles.
+    if V93_ENABLE_FX_FEED_FALLBACK:
+        feed_rows, feed_attempt = _v93_provider_guarded_call("fxtwitter-feed", _v93_fx_feed_network_once, canonical, wanted)
+        _v93_diag_add(canonical, feed_attempt)
+        if feed_rows:
+            _v93_remember(canonical, feed_rows)
+            _v93_store_live(canonical, feed_rows, "fxtwitter-feed")
+            _v93_diag_finish(canonical, "fxtwitter-feed", feed_rows, live=True)
+            return feed_rows[:wanted], None, "fxtwitter-feed"
+
+    # 4) Existing X syndication is now only the third free provider. Its V92
+    # global 429 circuit breaker remains active, so a Railway IP block cannot fan
+    # out into 17 repeated calls.
+    syn_started = time.perf_counter()
+    try:
+        syn_rows, syn_error = _v93_syndication_guarded(canonical, wanted)
+    except Exception as exc:
+        syn_rows, syn_error = [], exc
+    if syn_rows:
+        _v93_diag_add(canonical, _v93_attempt("X Syndication", ok=True, reason="ok", posts=len(syn_rows), seconds=time.perf_counter()-syn_started))
+        _v93_remember(canonical, syn_rows)
+        _v93_store_live(canonical, syn_rows, "x-syndication")
+        _v93_diag_finish(canonical, "x-syndication", syn_rows, live=True)
+        return syn_rows[:wanted], None, "x-syndication"
+    s_status = _v92_extract_http_status(syn_error) if syn_error else None
+    s_class = _v93_classify_exception(syn_error, status=s_status, context="syndication empty")
+    if syn_error and "cooldown" in str(syn_error).casefold():
+        s_class = "cooldown"
+    _v93_diag_add(canonical, _v93_attempt("X Syndication", ok=False, reason=s_class, status=s_status, seconds=time.perf_counter()-syn_started, detail=short_error(syn_error, 180) if syn_error else "no rows"))
+
+    # 5) Optional paid official API is deliberately opt-in, protecting credits.
+    official_rows, official_attempt = _v93_optional_official_x(canonical, wanted)
+    _v93_diag_add(canonical, official_attempt)
+    if official_rows:
+        _v93_remember(canonical, official_rows)
+        _v93_store_live(canonical, official_rows, "official-x")
+        _v93_diag_finish(canonical, "official-x", official_rows, live=True)
+        return official_rows[:wanted], None, "official-x"
+
+    # 6) Local history is always last and never renamed/reset.
+    memory = _v91_memory_posts(canonical, limit=max(60, wanted * 3))
+    if memory:
+        _v93_diag_add(canonical, _v93_attempt("Memory", ok=True, reason="local_history", posts=len(memory), cached=True))
+        _v93_diag_finish(canonical, "memory", memory[:wanted], live=False)
+        return memory[:wanted], RuntimeError("all live providers failed; local memory used"), "memory"
+    _v93_diag_add(canonical, _v93_attempt("Memory", ok=False, reason="empty", detail="no stored posts for this source"))
+    _v93_diag_finish(canonical, "none", [], live=False)
+    attempts = _v93_diag_get(canonical).get("attempts", [])
+    chain = " -> ".join(f"{a.get('provider')}:{a.get('reason')}" for a in attempts if not a.get("ok"))
+    return [], RuntimeError(chain or "all live providers failed"), "none"
+
+
+def fetch_posts(username: str) -> list[Post]:
+    rows, _error, _route = _v93_live_then_memory(username, max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
+    return rows
+
+
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    rows, error, _route = _v93_live_then_memory(canonical, 30)
+    return canonical, rows, error
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    rows, error, route = _v93_live_then_memory(canonical, max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
+    try:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+    except Exception:
+        pass
+    if error and route in {"memory", "none"}:
+        failures = int(FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) or 0) + 1
+        FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
+        if failures == 1 or failures % 30 == 0:
+            logging.warning("⚠️ live providers failed for @%s; route=%s memory=%s: %s", canonical, route, len(rows), short_error(error, 300))
+    else:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+    ordered = sorted([p for p in (rows or []) if isinstance(p, Post)], key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    return canonical, ordered[:int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)]
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    rows, _error, _route = _v93_live_then_memory(username, max(1, int(limit)))
+    return rows[:max(1, int(limit))]
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = max(1, int(limit))
+    live_rows, error, route = _v93_live_then_memory(canonical, max(20, wanted))
+    merged: dict[str, Post] = {}
+    for post in list(live_rows or []) + _v91_memory_posts(canonical, limit=max(60, wanted * 6)):
+        if not isinstance(post, Post):
+            continue
+        try:
+            post.username = canonical
+        except Exception:
+            pass
+        identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or post_content_signature(canonical, str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or ""))).strip()
+        if identity:
+            merged.setdefault(identity, post)
+    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    try:
+        LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = {
+            "route": "v93_" + route,
+            "live": len(live_rows or []),
+            "memory_after_merge": len(ordered),
+            "errors": [short_error(error, 300)] if error else [],
+            "returned": min(wanted, len(ordered)),
+        }
+    except Exception:
+        pass
+    return ordered[:wanted]
+
+
+def fetch_latest_post_fast(username: str) -> Post | None:
+    rows, _error, _route = _v93_live_then_memory(username, 1)
+    return rows[0] if rows else None
+
+
+def fetch_control_posts_for_accounts(accounts: list[str]) -> dict[str, tuple[list[Post], Exception | None]]:
+    ordered_names = [str(x or "").strip().lstrip("@") for x in list(accounts or []) if str(x or "").strip()]
+    result: dict[str, tuple[list[Post], Exception | None]] = {name: ([], None) for name in ordered_names}
+    if not ordered_names:
+        return result
+    workers = min(max(1, int(MAX_PARALLEL_ACCOUNT_CHECKS)), len(ordered_names))
+    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="live-control-v93") as executor:
+        future_map = {executor.submit(fetch_control_posts, name): name for name in ordered_names}
+        for future in as_completed(future_map):
+            name = future_map[future]
+            try:
+                _canonical, posts, error = future.result()
+                result[name] = (list(posts or []), error)
+            except Exception as exc:
+                result[name] = ([], exc)
+    return result
+
+
+def _v93_attempt_short(attempt: dict[str, Any]) -> str:
+    provider = str(attempt.get("provider", "?") or "?")
+    aliases = {
+        "Nitter RSS": "Nit",
+        "FxTwitter API": "FxAPI",
+        "fxtwitter-api": "FxAPI",
+        "FxTwitter RSS": "FxRSS",
+        "fxtwitter-feed": "FxRSS",
+        "X Syndication": "XSyn",
+        "Official X API": "XAPI",
+        "Memory": "Mem",
+    }
+    provider = aliases.get(provider, provider)
+    reason = str(attempt.get("reason", "?") or "?")
+    reason_aliases = {
+        "http_410_provider_removed": "410",
+        "http_429_rate_limit": "429",
+        "http_401_auth_or_user_agent": "401",
+        "http_403_blocked": "403",
+        "http_404_empty_or_unknown_handle": "404/empty",
+        "http_451_policy_block": "451",
+        "http_5xx_provider_upstream": "5xx",
+        "network_or_provider_error": "network",
+        "schema_changed": "schema",
+        "invalid_json": "bad-json",
+        "parser_zero": "parser0",
+        "empty_timeline": "empty",
+        "cache_hit": "cache",
+        "local_history": "history",
+        "not_configured": "off",
+        "disabled": "off",
+        "cooldown": "cooldown",
+    }
+    reason = reason_aliases.get(reason, reason)
+    if attempt.get("ok"):
+        cache = "C" if attempt.get("cached") else "OK"
+        return f"{provider}:{cache}({int(attempt.get('posts', 0) or 0)})"
+    return f"{provider}:{reason}"
+
+def _v93_status_lines(accounts: list[str], title: str) -> str:
+    fetched = fetch_control_posts_for_accounts(accounts)
+    with _V92_STATE_LOCK:
+        nitter_mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
+        nitter_reason = str(_V92_NITTER_STATE.get("reason", "") or "")
+        nitter_calls = int(_V92_NITTER_STATE.get("network_calls", 0) or 0)
+        synd_mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
+        synd_reason = str(_V92_DIRECT_STATE.get("reason", "") or "")
+        synd_calls = int(_V92_DIRECT_STATE.get("network_calls", 0) or 0)
+    fx_api = _v93_provider_state("fxtwitter-api")
+    fx_feed = _v93_provider_state("fxtwitter-feed")
+    official = _v93_provider_state("official-x")
+    lines = [title, ""]
+    lines.append(f"• Nitter: {nitter_mode} | calls={nitter_calls}" + (f" | {nitter_reason[:90]}" if nitter_reason else ""))
+    lines.append(f"• FxTwitter API v2: {fx_api.get('mode','unknown')} | calls={int(fx_api.get('network_calls',0) or 0)}" + (f" | {str(fx_api.get('reason',''))[:90]}" if fx_api.get('reason') else ""))
+    lines.append(f"• FxTwitter RSS: {fx_feed.get('mode','unknown')} | calls={int(fx_feed.get('network_calls',0) or 0)}" + (f" | {str(fx_feed.get('reason',''))[:90]}" if fx_feed.get('reason') else ""))
+    lines.append(f"• X Syndication: {synd_mode} | calls={synd_calls}" + (f" | {synd_reason[:90]}" if synd_reason else ""))
+    if V93_ENABLE_OFFICIAL_X_FALLBACK:
+        lines.append(f"• Official X API: {official.get('mode','unknown')} | calls≈{int(official.get('network_calls',0) or 0)}")
+    else:
+        lines.append("• Official X API: כבוי בכוונה כדי לא לצרוך קרדיטים (opt-in בלבד)")
+    lines.append("")
+
+    route_counts: dict[str, int] = {}
+    recent_total = 0
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched.get(username, ([], None))
+        diag = _v93_diag_get(username)
+        route = str(diag.get("route", "none") or "none")
+        route_counts[route] = route_counts.get(route, 0) + 1
+        recent = len(recent_24h_posts(posts)) if posts else 0
+        recent_total += recent
+        attempts = [
+            a for a in list(diag.get("attempts", []) or [])
+            if not (str(a.get("provider", "")) == "Official X API" and str(a.get("reason", "")) in {"disabled", "not_configured"})
+        ]
+        chain = "→".join(_v93_attempt_short(a) for a in attempts)
+        if bool(diag.get("live")) and posts:
+            lines.append(f"✅ {label}: {route} | {recent}/24h | {chain}"[:205])
+        elif posts:
+            lines.append(f"🟡 {label}: memory | {recent}/24h | {chain}"[:205])
+        else:
+            detail = short_error(error, 120) if error else "no data"
+            lines.append(f"❌ {label}: {chain or detail}"[:205])
+
+    summary = ", ".join(f"{k}={v}" for k, v in sorted(route_counts.items()))
+    lines.extend([
+        "",
+        f"תוצאה: {summary}; פוסטים מהיממה={recent_total}.",
+        f"הגדרות: scan={int(CHECK_EVERY_SECONDS)}s | account-workers={int(MAX_PARALLEL_ACCOUNT_CHECKS)} | cap={int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)} | live-cache={V93_LIVE_CACHE_SECONDS:.0f}s.",
+        "ℹ️ כל ❌ מציג שרשרת סיבות לפי ספק; 429=rate-limit/IP, 410=provider removed, schema_changed=שינוי מבנה, parser_zero=הגיע תוכן אך parser לא הצליח.",
+    ])
+    return "\n".join(lines)[:4050]
+
+
+def rss_status_text() -> str:
+    accounts = _v91_active_rss_accounts()
+    return _v93_status_lines(accounts, f"📡 בדיקת עומק לכל {len(accounts)} המקורות הפעילים")
+
+
+def facts_rss_status_text() -> str:
+    accounts = [source for source in list(FACTS_SOURCE_ORDER or []) if not control_state_account_disabled(source)]
+    return _v93_status_lines(accounts, f"📡 בדיקת עומק ל־{len(accounts)} מקורות העובדות הפעילים")
+
+
+def check_all_accounts_now_text() -> str:
+    accounts = _v91_active_rss_accounts()
+    return _v93_status_lines(accounts, f"🔄 בדיקה מלאה עכשיו — {len(accounts)} מקורות פעילים")
+
+
+def _v93_final_audit() -> None:
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v93_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v93_account_workers_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v93_post_cap_changed")
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError("v93_duplicate_discovery_enabled")
+    names = set(fetch_posts_safely.__code__.co_names)
+    if "_v93_live_then_memory" not in names:
+        raise RuntimeError("v93_final_scanner_not_active")
+    executor = globals().get("_V52_BUTTON_EXECUTOR")
+    if executor is None or int(getattr(executor, "_max_workers", 0) or 0) < 20:
+        raise RuntimeError("v93_fast_button_pool_not_preserved")
+    if V93_ENABLE_OFFICIAL_X_FALLBACK and not (
+        os.environ.get("X_BEARER_TOKEN", "").strip()
+        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
+    ):
+        logging.warning("V93 official X fallback opt-in is enabled but no bearer token is configured.")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v93_final_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v93_final_audit")
+
+logging.info(
+    "V93 active: Nitter one-time probe -> FxTwitter v2 timeline -> FxTwitter RSS -> "
+    "X syndication circuit-breaker -> optional official X opt-in -> persistent memory; "
+    "classified provider diagnostics enabled; V92/V91 translation, filters, Telegram, "
+    "RTL, media, Shabbat and persistent state preserved."
+)
+
+# ====== END V93 FXTWITTER PRIMARY + DEEP PROVIDER DIAGNOSTICS ======
+
 if __name__ == "__main__":
     main()
