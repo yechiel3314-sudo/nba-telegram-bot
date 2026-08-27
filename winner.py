@@ -68075,5 +68075,607 @@ logging.info(
 
 # ====== END V91 NITTER-ONLY FAST ALL-SOURCE BOUNDARY ======
 
+# ====== V92 FINAL: NITTER OUTAGE-AWARE LIVE RESTORE (2026-08-27) ======
+# Live production finding (2026-08-27): nitter.net /{user}/rss returns HTTP 410
+# for every configured account because the public Nitter service is offline.
+#
+# Final discovery policy:
+#   1) Probe Nitter RSS only once per process while health is unknown.
+#   2) HTTP 410/451/404 on that global service disables Nitter immediately for
+#      the process, so the remaining writers never repeat the same dead request.
+#   3) Use the already-existing public X syndication timeline as the live rescue
+#      route. It requires no API key and performs at most one network request per
+#      writer when its short live cache is cold.
+#   4) Local durable memory/history is last; it is never cleared or renamed.
+#   5) No Twiiit, Lightbrd, RSSHub, XCancel, mirror fan-out, or same-cycle retry.
+#
+# Everything outside discovery is inherited unchanged from V91: Google/Gemini
+# translation gates, filters, Telegram delivery, fast buttons, RTL, media,
+# Shabbat behavior, duplicate memory and all persistent JSON files/keys.
+
+BOT_BUILD_ID = "winner-v92-nitter-outage-aware-live-restore-2026-08-27"
+
+V92_NITTER_RSS_TEMPLATE = "https://nitter.net/{username}/rss"
+V92_SYNDICATION_TEMPLATE = "https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}"
+V92_LIVE_TIMEOUT_SECONDS = max(2.5, float(os.environ.get("V92_LIVE_TIMEOUT_SECONDS", "4.0") or "4.0"))
+V92_LIVE_CACHE_SECONDS = max(3.0, float(os.environ.get("V92_LIVE_CACHE_SECONDS", "12.0") or "12.0"))
+V92_DIRECT_MAX_PARALLEL = 1  # serialize public syndication; prevents 17-account 429 bursts
+V92_DIRECT_MIN_GAP_SECONDS = max(0.20, float(os.environ.get("V92_DIRECT_MIN_GAP_SECONDS", "0.75") or "0.75"))
+V92_PROVIDER_COOLDOWN_SECONDS = max(20.0, float(os.environ.get("V92_PROVIDER_COOLDOWN_SECONDS", "60.0") or "60.0"))
+
+# Keep the operator-approved outer runtime exactly as before.
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+FEED_HTTP_RETRIES = 1
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 1
+
+_V92_STATE_LOCK = RLock()
+_V92_NITTER_PROBE_LOCK = Lock()
+_V92_DIRECT_PROBE_LOCK = Lock()
+_V92_DIRECT_REQUEST_LOCK = Lock()
+_V92_DIRECT_LAST_REQUEST_AT = 0.0
+_V92_DIRECT_SEMAPHORE = BoundedSemaphore(V92_DIRECT_MAX_PARALLEL)
+_V92_NITTER_STATE: dict[str, Any] = {
+    "mode": "unknown",          # unknown | live | gone | cooldown
+    "reason": "",
+    "checked_at": 0.0,
+    "disabled_until": 0.0,
+    "network_calls": 0,
+}
+_V92_DIRECT_STATE: dict[str, Any] = {
+    "mode": "unknown",          # unknown | live | cooldown
+    "reason": "",
+    "checked_at": 0.0,
+    "disabled_until": 0.0,
+    "network_calls": 0,
+}
+_V92_DIAG: dict[str, dict[str, Any]] = {}
+_V92_LIVE_CACHE: dict[str, tuple[float, list[Post]]] = {}
+
+
+def _v92_key(username: str) -> str:
+    return str(username or "").strip().lstrip("@").casefold()
+
+
+def _v92_diag_set(username: str, **values: Any) -> None:
+    key = _v92_key(username)
+    if not key:
+        return
+    with _V92_STATE_LOCK:
+        current = dict(_V92_DIAG.get(key, {}) or {})
+        current.update(values)
+        current["checked_at"] = time.time()
+        _V92_DIAG[key] = current
+        if len(_V92_DIAG) > 180:
+            for old_key in list(_V92_DIAG)[:40]:
+                _V92_DIAG.pop(old_key, None)
+
+
+def _v92_diag_get(username: str) -> dict[str, Any]:
+    with _V92_STATE_LOCK:
+        return dict(_V92_DIAG.get(_v92_key(username), {}) or {})
+
+
+def _v92_extract_http_status(exc: BaseException | None) -> int:
+    try:
+        return int(getattr(exc, "code", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _v92_nitter_disable(reason: str, *, permanent: bool = False) -> None:
+    now = time.time()
+    with _V92_STATE_LOCK:
+        _V92_NITTER_STATE["mode"] = "gone" if permanent else "cooldown"
+        _V92_NITTER_STATE["reason"] = str(reason or "")[:400]
+        _V92_NITTER_STATE["checked_at"] = now
+        _V92_NITTER_STATE["disabled_until"] = (now + 365 * 24 * 3600) if permanent else (now + 10 * 60)
+
+
+def _v92_nitter_available_for_probe() -> bool:
+    now = time.time()
+    with _V92_STATE_LOCK:
+        mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
+        until = float(_V92_NITTER_STATE.get("disabled_until", 0.0) or 0.0)
+        if mode == "gone":
+            return False
+        if mode == "cooldown" and now < until:
+            return False
+        if mode == "cooldown" and now >= until:
+            _V92_NITTER_STATE["mode"] = "unknown"
+            _V92_NITTER_STATE["reason"] = ""
+        return True
+
+
+def _v92_nitter_rss_request_once(username: str, limit: int) -> tuple[list[Post], Exception | None]:
+    """One ordinary Nitter RSS request; never retries and never contacts a mirror."""
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return [], ValueError("empty_username")
+    url = V92_NITTER_RSS_TEMPLATE.format(username=urllib.parse.quote(canonical))
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "Cache-Control": "no-cache",
+        },
+    )
+    started = time.perf_counter()
+    try:
+        with _V92_STATE_LOCK:
+            _V92_NITTER_STATE["network_calls"] = int(_V92_NITTER_STATE.get("network_calls", 0) or 0) + 1
+        with urllib.request.urlopen(request, timeout=V92_LIVE_TIMEOUT_SECONDS) as response:
+            body = response.read(4_000_000)
+        rows = [p for p in (parse_posts(canonical, body, "nitter.net") or []) if isinstance(p, Post)]
+        rows.sort(key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+        with _V92_STATE_LOCK:
+            _V92_NITTER_STATE.update({"mode": "live", "reason": "", "checked_at": time.time(), "disabled_until": 0.0})
+        _v92_diag_set(canonical, route="nitter-rss", live=True, posts=len(rows), seconds=time.perf_counter() - started, error="")
+        return rows[:max(1, int(limit))], None
+    except Exception as exc:
+        status = _v92_extract_http_status(exc)
+        detail = f"{type(exc).__name__}: {short_error(exc, 260)}"
+        if status in {404, 410, 451}:
+            _v92_nitter_disable(detail, permanent=True)
+        else:
+            _v92_nitter_disable(detail, permanent=False)
+        _v92_diag_set(canonical, route="nitter-rss", live=False, posts=0, seconds=time.perf_counter() - started, error=detail, http_status=status)
+        return [], exc
+
+
+def _v92_try_nitter(username: str, limit: int) -> tuple[list[Post], Exception | None]:
+    """Single-flight Nitter health probe prevents 17 identical 410 requests."""
+    if not _v92_nitter_available_for_probe():
+        with _V92_STATE_LOCK:
+            reason = str(_V92_NITTER_STATE.get("reason", "Nitter disabled") or "Nitter disabled")
+        return [], RuntimeError("Nitter globally unavailable: " + reason)
+
+    with _V92_STATE_LOCK:
+        mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
+    if mode == "live":
+        return _v92_nitter_rss_request_once(username, limit)
+
+    # Only the first concurrent writer is allowed to discover global Nitter health.
+    with _V92_NITTER_PROBE_LOCK:
+        if not _v92_nitter_available_for_probe():
+            with _V92_STATE_LOCK:
+                reason = str(_V92_NITTER_STATE.get("reason", "Nitter disabled") or "Nitter disabled")
+            return [], RuntimeError("Nitter globally unavailable: " + reason)
+        with _V92_STATE_LOCK:
+            mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
+        if mode == "live":
+            return _v92_nitter_rss_request_once(username, limit)
+        return _v92_nitter_rss_request_once(username, limit)
+
+
+def _v92_cached_live(username: str, limit: int) -> list[Post]:
+    key = _v92_key(username)
+    with _V92_STATE_LOCK:
+        row = _V92_LIVE_CACHE.get(key)
+    if not row:
+        return []
+    saved_at, posts = row
+    if time.time() - float(saved_at or 0.0) > V92_LIVE_CACHE_SECONDS:
+        return []
+    return list(posts or [])[:max(1, int(limit))]
+
+
+def _v92_store_live_cache(username: str, rows: list[Post]) -> None:
+    key = _v92_key(username)
+    if not key or not rows:
+        return
+    with _V92_STATE_LOCK:
+        _V92_LIVE_CACHE[key] = (time.time(), list(rows[:80]))
+        if len(_V92_LIVE_CACHE) > 180:
+            for old_key in list(_V92_LIVE_CACHE)[:40]:
+                _V92_LIVE_CACHE.pop(old_key, None)
+
+
+def _v92_direct_cooldown_error() -> Exception | None:
+    now = time.time()
+    with _V92_STATE_LOCK:
+        mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
+        until = float(_V92_DIRECT_STATE.get("disabled_until", 0.0) or 0.0)
+        reason = str(_V92_DIRECT_STATE.get("reason", "") or "")
+        if mode == "cooldown" and now < until:
+            return RuntimeError("X syndication cooldown: " + (reason or "provider temporarily unavailable"))
+        if mode == "cooldown" and now >= until:
+            _V92_DIRECT_STATE.update({"mode": "unknown", "reason": "", "disabled_until": 0.0})
+    return None
+
+
+def _v92_set_direct_cooldown(reason: str, seconds: float | None = None) -> None:
+    wait_seconds = V92_PROVIDER_COOLDOWN_SECONDS if seconds is None else max(10.0, float(seconds))
+    with _V92_STATE_LOCK:
+        _V92_DIRECT_STATE.update({
+            "mode": "cooldown",
+            "reason": str(reason or "")[:400],
+            "checked_at": time.time(),
+            "disabled_until": time.time() + wait_seconds,
+        })
+
+
+def _v92_parse_syndication_html(username: str, raw: str, limit: int) -> list[Post]:
+    match = re.search(
+        r'<script\b[^>]*\bid=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        str(raw or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return []
+    try:
+        payload = json.loads(html.unescape(match.group(1)).strip())
+    except Exception:
+        return []
+    rows: list[Post] = []
+    try:
+        rows = list(_v87_posts_from_syndication_next_data(username, payload, max(1, int(limit))) or [])
+    except Exception:
+        rows = []
+    if not rows:
+        try:
+            rows = [p for p in (_reliable_posts_from_profile_payload(username, payload) or []) if isinstance(p, Post)]
+        except Exception:
+            rows = []
+    rows.sort(key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    return rows[:max(1, int(limit))]
+
+
+def _v92_syndication_network_once(username: str, limit: int) -> tuple[list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return [], ValueError("empty_username")
+
+    cooldown_error = _v92_direct_cooldown_error()
+    if cooldown_error is not None:
+        _v92_diag_set(canonical, route="x-syndication-cooldown", live=False, posts=0, seconds=0.0, error=short_error(cooldown_error, 260))
+        return [], cooldown_error
+
+    cached = _v92_cached_live(canonical, limit)
+    if cached:
+        _v92_diag_set(canonical, route="x-syndication-cache", live=True, posts=len(cached), seconds=0.0, error="")
+        return cached, None
+
+    url = V92_SYNDICATION_TEMPLATE.format(username=urllib.parse.quote(canonical))
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://publish.x.com/",
+        "Cache-Control": "no-cache",
+    }
+    if globals().get("_V87_DIRECT_COOKIE"):
+        headers["Cookie"] = str(globals().get("_V87_DIRECT_COOKIE") or "")
+    request = urllib.request.Request(url, headers=headers)
+    started = time.perf_counter()
+    try:
+        global _V92_DIRECT_LAST_REQUEST_AT
+        with _V92_DIRECT_SEMAPHORE:
+            # The syndication profile endpoint is aggressively rate-limited.  Keep
+            # the old V87 production pacing principle: one request at a time with
+            # a small global gap.  Button acknowledgement is separate, so this
+            # does not freeze Telegram controls while the data check is running.
+            with _V92_DIRECT_REQUEST_LOCK:
+                now_mono = time.monotonic()
+                wait_for = max(0.0, V92_DIRECT_MIN_GAP_SECONDS - (now_mono - float(_V92_DIRECT_LAST_REQUEST_AT or 0.0)))
+                if wait_for > 0:
+                    time.sleep(wait_for)
+                _V92_DIRECT_LAST_REQUEST_AT = time.monotonic()
+            with _V92_STATE_LOCK:
+                _V92_DIRECT_STATE["network_calls"] = int(_V92_DIRECT_STATE.get("network_calls", 0) or 0) + 1
+            with urllib.request.urlopen(request, timeout=V92_LIVE_TIMEOUT_SECONDS) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                body = response.read(4_000_000)
+        raw = body.decode("utf-8", errors="replace")
+        rows = _v92_parse_syndication_html(canonical, raw, max(1, int(limit)))
+        if not rows:
+            error = RuntimeError(f"X syndication HTTP {status} returned no parsable timeline posts")
+            _v92_diag_set(canonical, route="x-syndication", live=False, posts=0, seconds=time.perf_counter() - started, error=str(error), http_status=status)
+            # A 200 with globally unparseable HTML is often a provider-format/WAF event.
+            # Do not globally kill the provider on the first account; other writers may differ.
+            return [], error
+        with _V92_STATE_LOCK:
+            _V92_DIRECT_STATE.update({"mode": "live", "reason": "", "checked_at": time.time(), "disabled_until": 0.0})
+        _v92_store_live_cache(canonical, rows)
+        _v92_diag_set(canonical, route="x-syndication", live=True, posts=len(rows), seconds=time.perf_counter() - started, error="", http_status=status)
+        return rows, None
+    except urllib.error.HTTPError as exc:
+        status = _v92_extract_http_status(exc)
+        detail = f"HTTPError: {short_error(exc, 260)}"
+        if status in {401, 403, 429, 451} or status >= 500:
+            retry_after = 0.0
+            try:
+                raw_retry = str(getattr(exc, "headers", {}).get("Retry-After", "") or "").strip()
+                if raw_retry.isdigit():
+                    retry_after = min(15 * 60.0, max(V92_PROVIDER_COOLDOWN_SECONDS, float(raw_retry)))
+            except Exception:
+                retry_after = 0.0
+            _v92_set_direct_cooldown(detail, retry_after or V92_PROVIDER_COOLDOWN_SECONDS)
+        _v92_diag_set(canonical, route="x-syndication", live=False, posts=0, seconds=time.perf_counter() - started, error=detail, http_status=status)
+        return [], exc
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {short_error(exc, 260)}"
+        _v92_diag_set(canonical, route="x-syndication", live=False, posts=0, seconds=time.perf_counter() - started, error=detail)
+        return [], exc
+
+
+def _v92_syndication_once(username: str, limit: int) -> tuple[list[Post], Exception | None]:
+    """Single-flight the very first provider check, then allow normal 4-way outer parallelism."""
+    with _V92_STATE_LOCK:
+        direct_mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
+    if direct_mode != "unknown":
+        return _v92_syndication_network_once(username, limit)
+    with _V92_DIRECT_PROBE_LOCK:
+        with _V92_STATE_LOCK:
+            direct_mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
+        if direct_mode != "unknown":
+            return _v92_syndication_network_once(username, limit)
+        return _v92_syndication_network_once(username, limit)
+
+
+def _v92_remember_live_rows(username: str, rows: list[Post]) -> None:
+    if not rows:
+        return
+    canonical = str(username or "").strip().lstrip("@")
+    # Reuse the existing durable stores without changing any filename/key/schema.
+    try:
+        _stable_rss_remember(canonical, rows)
+    except Exception:
+        pass
+    try:
+        _remember_control_rss_posts(canonical, rows)
+    except Exception:
+        pass
+    try:
+        _ten_history_save(canonical, rows[:80])
+    except Exception:
+        pass
+
+
+def _v92_live_then_memory(username: str, limit: int = 30) -> tuple[list[Post], Exception | None, str]:
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = max(1, int(limit))
+
+    nitter_rows: list[Post] = []
+    nitter_error: Exception | None = None
+    if _v92_nitter_available_for_probe():
+        nitter_rows, nitter_error = _v92_try_nitter(canonical, max(wanted, 30))
+        if nitter_rows:
+            _v92_store_live_cache(canonical, nitter_rows)
+            _v92_remember_live_rows(canonical, nitter_rows)
+            return nitter_rows[:wanted], None, "nitter-rss"
+
+    direct_rows, direct_error = _v92_syndication_once(canonical, max(wanted, 30))
+    if direct_rows:
+        _v92_remember_live_rows(canonical, direct_rows)
+        return direct_rows[:wanted], None, "x-syndication"
+
+    cached = _v91_memory_posts(canonical, limit=max(wanted, 60))
+    combined_error: Exception | None = direct_error or nitter_error
+    final_route = "memory" if cached else "none"
+    _v92_diag_set(
+        canonical,
+        route=final_route,
+        live=False,
+        posts=len(cached),
+        seconds=float(_v92_diag_get(canonical).get("seconds", 0.0) or 0.0),
+        error=short_error(combined_error, 260) if combined_error else "",
+    )
+    return cached[:wanted], combined_error, final_route
+
+
+def fetch_posts(username: str) -> list[Post]:
+    rows, _error, _route = _v92_live_then_memory(username, max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
+    return rows
+
+
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    rows, error, _route = _v92_live_then_memory(canonical, 30)
+    return canonical, rows, error
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    rows, error, route = _v92_live_then_memory(canonical, max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
+    try:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+    except Exception:
+        pass
+    if error and route in {"memory", "none"}:
+        failures = int(FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) or 0) + 1
+        FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
+        if failures == 1 or failures % 30 == 0:
+            logging.warning(
+                "⚠️ מקור חי לא החזיר נתונים עבור @%s; route=%s memory=%s: %s",
+                canonical,
+                route,
+                len(rows),
+                short_error(error, 260),
+            )
+    else:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+    ordered = sorted(
+        [p for p in (rows or []) if isinstance(p, Post)],
+        key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return canonical, ordered[:int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)]
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    rows, _error, _route = _v92_live_then_memory(username, max(1, int(limit)))
+    return rows[:max(1, int(limit))]
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = max(1, int(limit))
+    live_rows, error, route = _v92_live_then_memory(canonical, max(20, wanted))
+    merged: dict[str, Post] = {}
+    for post in list(live_rows or []) + _v91_memory_posts(canonical, limit=max(60, wanted * 6)):
+        if not isinstance(post, Post):
+            continue
+        try:
+            post.username = canonical
+        except Exception:
+            pass
+        identity = str(
+            getattr(post, "post_id", "")
+            or getattr(post, "link", "")
+            or post_content_signature(canonical, str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or ""))
+        ).strip()
+        if identity:
+            merged.setdefault(identity, post)
+    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    try:
+        LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = {
+            "route": "v92_" + route,
+            "live": len(live_rows or []),
+            "memory_after_merge": len(ordered),
+            "errors": [short_error(error, 300)] if error else [],
+            "returned": min(wanted, len(ordered)),
+        }
+    except Exception:
+        pass
+    return ordered[:wanted]
+
+
+def fetch_latest_post_fast(username: str) -> Post | None:
+    rows, _error, _route = _v92_live_then_memory(username, 1)
+    return rows[0] if rows else None
+
+
+def fetch_control_posts_for_accounts(accounts: list[str]) -> dict[str, tuple[list[Post], Exception | None]]:
+    """All-source control check with one live request/account at most; provider outages short-circuit."""
+    ordered_accounts = [str(x or "").strip().lstrip("@") for x in list(accounts or []) if str(x or "").strip()]
+    result: dict[str, tuple[list[Post], Exception | None]] = {name: ([], None) for name in ordered_accounts}
+    if not ordered_accounts:
+        return result
+    workers = min(max(1, V91_CONTROL_NITTER_WORKERS), len(ordered_accounts))
+    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="live-control-v92") as executor:
+        future_map = {executor.submit(fetch_control_posts, name): name for name in ordered_accounts}
+        for future in as_completed(future_map):
+            name = future_map[future]
+            try:
+                _canonical, posts, error = future.result()
+                result[name] = (list(posts or []), error)
+            except Exception as exc:
+                result[name] = ([], exc)
+    return result
+
+
+def _v92_status_lines(accounts: list[str], title: str) -> str:
+    fetched = fetch_control_posts_for_accounts(accounts)
+    with _V92_STATE_LOCK:
+        nitter_mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
+        nitter_reason = str(_V92_NITTER_STATE.get("reason", "") or "")
+        nitter_calls = int(_V92_NITTER_STATE.get("network_calls", 0) or 0)
+        direct_calls = int(_V92_DIRECT_STATE.get("network_calls", 0) or 0)
+        direct_mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
+    lines = [title, ""]
+    if nitter_mode == "gone":
+        lines.append("⛔ nitter.net RSS הושבת גלובלית אחרי HTTP 410/Gone; לא מבוצעות עוד 17 בקשות מתות.")
+    elif nitter_mode == "live":
+        lines.append("✅ nitter.net RSS חי ונשאר המקור הראשון.")
+    else:
+        lines.append(f"ℹ️ מצב Nitter: {nitter_mode}.")
+    lines.append("🔁 כש-Nitter אינו זמין: X syndication ציבורי ללא API key — בקשה אחת לכל מקור, ללא RSS mirrors וללא retry באותו סבב.")
+    lines.append("")
+
+    live_nitter = 0
+    live_direct = 0
+    memory_used = 0
+    recent_total = 0
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched.get(username, ([], None))
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        diag = _v92_diag_get(username)
+        route = str(diag.get("route", "") or "")
+        seconds = float(diag.get("seconds", 0.0) or 0.0)
+        if route == "nitter-rss" and bool(diag.get("live")):
+            live_nitter += 1
+            lines.append(f"✅ {label}: Nitter RSS | {len(recent)} ביממה | {seconds:.2f}s")
+        elif route in {"x-syndication", "x-syndication-cache"} and bool(diag.get("live")):
+            live_direct += 1
+            cache_note = " cache" if route.endswith("cache") else ""
+            lines.append(f"✅ {label}: X public{cache_note} | {len(recent)} ביממה | {seconds:.2f}s")
+        elif posts:
+            memory_used += 1
+            lines.append(f"🟡 {label}: מקור חי נכשל; זיכרון מקומי | {len(recent)} ביממה")
+        else:
+            detail = str(diag.get("error", "") or (short_error(error, 170) if error else "לא התקבל פוסט"))
+            lines.append(f"❌ {label}: אין נתונים חיים | {detail[:170]}")
+
+    lines.extend([
+        "",
+        f"תוצאה: Nitter={live_nitter}, X-public={live_direct}, זיכרון={memory_used}, פוסטים מהיממה={recent_total}.",
+        f"פעולות רשת בתהליך מאז העלייה: Nitter={nitter_calls}, X-public={direct_calls}. מצב X-public={direct_mode}.",
+    ])
+    if nitter_reason and nitter_mode == "gone":
+        lines.append("סיבת השבתת Nitter: " + nitter_reason[:220])
+    return "\n".join(lines)[:4050]
+
+
+def rss_status_text() -> str:
+    accounts = _v91_active_rss_accounts()
+    return _v92_status_lines(accounts, f"📡 בדיקת מקורות חיים לכל {len(accounts)} המקורות הפעילים")
+
+
+def facts_rss_status_text() -> str:
+    accounts = [source for source in list(FACTS_SOURCE_ORDER or []) if not control_state_account_disabled(source)]
+    return _v92_status_lines(accounts, f"📡 בדיקת מקורות חיים ל־{len(accounts)} מקורות העובדות הפעילים")
+
+
+def check_all_accounts_now_text() -> str:
+    accounts = _v91_active_rss_accounts()
+    return _v92_status_lines(accounts, f"🔄 בדיקה מלאה עכשיו — {len(accounts)} מקורות פעילים")
+
+
+def _v92_final_audit() -> None:
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v92_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v92_account_workers_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v92_post_cap_changed")
+    if int(FEED_HTTP_RETRIES) != 1 or int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 1:
+        raise RuntimeError("v92_duplicate_network_retry_enabled")
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError("v92_duplicate_discovery_enabled")
+    names = set(fetch_posts_safely.__code__.co_names)
+    if "_v92_live_then_memory" not in names:
+        raise RuntimeError("v92_final_scanner_not_active")
+    # Critical regression guard: no old multi-mirror collector in the final scanner.
+    forbidden = {"_v56_final_rss_network_fetch", "collect_posts_from_feed_templates", "_v90_network_then_memory"}
+    if names.intersection(forbidden):
+        raise RuntimeError("v92_old_multi_source_route_leaked")
+    executor = globals().get("_V52_BUTTON_EXECUTOR")
+    if executor is None or int(getattr(executor, "_max_workers", 0) or 0) < 20:
+        raise RuntimeError("v92_fast_button_pool_not_preserved")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v92_final_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v92_final_audit")
+
+logging.info(
+    "V92 active: global Nitter 410 short-circuit + one-request X public syndication live rescue; "
+    "no RSS mirror fan-out or same-cycle retry; short live cache reduces button/scan duplication; "
+    "V91 translation, filters, Telegram, RTL, media, Shabbat and persistent state preserved."
+)
+
+# ====== END V92 NITTER OUTAGE-AWARE LIVE RESTORE ======
+
 if __name__ == "__main__":
     main()
