@@ -67225,5 +67225,313 @@ logging.info(
 
 # ====== END V89 PRODUCTION SMOOTH / ALL OBSERVED LOG FIXES ======
 
+
+# ====== V90 FINAL: RESTORE MID-JULY WORKING RSS ROUTE (2026-08-27) ======
+# Operator request: restore the RSS mechanism from the proven mid-history build
+# without reverting V89 translation, Telegram, filtering, media, memory or RTL fixes.
+#
+# Actual automatic route restored here:
+#   1) Nitter RSS primary first.
+#   2) If Nitter returned a usable row, stop immediately (normal automatic scan).
+#   3) If Nitter is empty/failing, use the existing public Direct-X safety lane.
+#   4) Only if primary + Direct-X are still insufficient, try the existing fallback RSS mirrors.
+#   5) Only after the live network route is empty, use already-known local cache/history.
+#
+# This deliberately replaces V88's final Direct-X-first fetch_posts_safely boundary.
+# It reuses the already-present _v56_final_rss_network_fetch implementation, which
+# is the exact primary-RSS -> Direct-X -> fallback-RSS mechanism restored from the
+# older working branch. No persistent filename/key is changed.
+
+BOT_BUILD_ID = "winner-v90-mid-july-old-working-rss-restored-2026-08-27"
+
+_V90_PRE_FETCH_POSTS = fetch_posts
+_V90_PRE_FETCH_CONTROL_POSTS = fetch_control_posts
+_V90_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V90_GENERAL_REPORTERS = {
+    str(item or "").strip().lstrip("@").casefold()
+    for item in (_general_reporter_control_accounts() or [])
+}
+_V90_RSS_DIAGNOSTICS_LOCK = RLock()
+_V90_RSS_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
+
+
+def _v90_remember_diag(username: str, diagnostics: dict[str, Any]) -> None:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V90_RSS_DIAGNOSTICS_LOCK:
+        _V90_RSS_DIAGNOSTICS[key] = dict(diagnostics or {})
+        if len(_V90_RSS_DIAGNOSTICS) > 120:
+            for old_key in list(_V90_RSS_DIAGNOSTICS)[:30]:
+                _V90_RSS_DIAGNOSTICS.pop(old_key, None)
+
+
+def _v90_network_then_memory(
+    username: str,
+    *,
+    limit: int = 30,
+    exhaustive: bool = False,
+) -> list[Post]:
+    """Run the proven old RSS route, then use local memory only if the network is empty."""
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return []
+
+    rows: list[Post] = []
+    diagnostics: dict[str, Any] = {}
+    try:
+        rows, diagnostics = _v56_final_rss_network_fetch(
+            canonical,
+            limit=max(1, int(limit)),
+            exhaustive=bool(exhaustive),
+        )
+        rows = [post for post in (rows or []) if isinstance(post, Post)]
+    except Exception as exc:
+        diagnostics = {
+            "errors": [f"final_old_rss_route: {type(exc).__name__}: {short_error(exc, 350)}"],
+            "timeouts": [],
+            "sources": {},
+            "variants": [canonical],
+            "path": [],
+            "returned_network": 0,
+        }
+        rows = []
+
+    _v90_remember_diag(canonical, diagnostics)
+
+    if rows:
+        ordered = sorted(
+            rows,
+            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+        return ordered[:max(1, int(limit))]
+
+    # The old working route used known history only after every live source failed.
+    merged: dict[str, Post] = {}
+    for loader in (
+        lambda: _working_rss_cached(canonical, limit=max(60, int(limit))),
+        lambda: _stable_rss_cached_posts(canonical, limit=max(60, int(limit))),
+        lambda: _ten_history_load(canonical),
+    ):
+        try:
+            cached = [post for post in (loader() or []) if isinstance(post, Post)]
+        except Exception:
+            cached = []
+        try:
+            _reliable_merge_posts(merged, cached, canonical)
+        except Exception:
+            for post in cached:
+                identity = str(
+                    getattr(post, "post_id", "")
+                    or getattr(post, "link", "")
+                    or ""
+                ).strip()
+                if identity:
+                    merged.setdefault(identity, post)
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    if ordered:
+        with _V90_RSS_DIAGNOSTICS_LOCK:
+            diag = dict(_V90_RSS_DIAGNOSTICS.get(canonical.casefold(), {}) or {})
+            path = list(diag.get("path") or [])
+            if "local_memory" not in path:
+                path.append("local_memory")
+            diag["path"] = path
+            diag["returned_memory"] = len(ordered)
+            _V90_RSS_DIAGNOSTICS[canonical.casefold()] = diag
+    return ordered[:max(1, int(limit))]
+
+
+def _v90_fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    if canonical.casefold() not in _V90_GENERAL_REPORTERS:
+        return list(_V90_PRE_FETCH_POSTS(canonical) or [])
+    return _v90_network_then_memory(
+        canonical,
+        limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+        exhaustive=False,
+    )
+
+
+def _v90_fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    if canonical.casefold() not in _V90_GENERAL_REPORTERS:
+        return _V90_PRE_FETCH_CONTROL_POSTS(canonical)
+    try:
+        # Status/control checks need a real current source result, but they do not
+        # need to crawl every fallback merely to fill ten rows. This keeps the
+        # button fast while exercising exactly the same primary-first route.
+        rows = _v90_network_then_memory(canonical, limit=30, exhaustive=False)
+        return canonical, rows, None
+    except Exception as exc:
+        return canonical, [], exc
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    """Final automatic scanner: old working RSS first for general reporters."""
+    canonical = str(username or "").strip().lstrip("@")
+    if canonical.casefold() not in _V90_GENERAL_REPORTERS:
+        return _V90_PRE_FETCH_POSTS_SAFELY(canonical)
+
+    started = time.perf_counter()
+    try:
+        rows = _v90_network_then_memory(
+            canonical,
+            limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+            exhaustive=False,
+        )
+        rows = sorted(
+            [post for post in (rows or []) if isinstance(post, Post)],
+            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )
+        try:
+            daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        except Exception:
+            pass
+        return canonical, rows[:12]
+    except Exception as exc:
+        try:
+            daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        except Exception:
+            pass
+        logging.warning(
+            "⚠️ שליפת RSS הישנה נכשלה עבור @%s: %s",
+            canonical,
+            short_error(exc, 400),
+        )
+        return canonical, []
+
+
+# Public/manual entrypoints now agree with the automatic scanner.
+fetch_posts = _v90_fetch_posts
+fetch_control_posts = _v90_fetch_control_posts
+
+
+def _v90_route_text(username: str) -> str:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V90_RSS_DIAGNOSTICS_LOCK:
+        diag = dict(_V90_RSS_DIAGNOSTICS.get(key, {}) or {})
+    path = list(dict.fromkeys(diag.get("path") or []))
+    if "primary_rss" in path:
+        return "Nitter RSS ראשי"
+    if "direct_x_no_key" in path:
+        return "X ישיר אחרי RSS ראשי"
+    if "fallback_rss" in path:
+        return "RSS גיבוי אחרי Nitter/X"
+    if "local_memory" in path:
+        return "זיכרון מקומי אחרי כשל כל המקורות"
+    return "לא התקבל מקור חי"
+
+
+def rss_status_text() -> str:
+    """Fast status using the same restored automatic RSS-first route."""
+    accounts = list(_general_reporter_control_accounts() or [])
+    lines = [
+        f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
+        "",
+        "המסלול הפעיל עכשיו: Nitter RSS ראשון → X ישיר רק אם צריך → RSS גיבוי רק אם עדיין חסר.",
+        "הזיכרון המקומי משמש רק אחרי שכל המקורות החיים לא החזירו פוסט.",
+        "",
+    ]
+    ok_count = 0
+    recent_total = 0
+    fetched_by_account = fetch_control_posts_for_accounts(accounts)
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched_by_account.get(username, ([], None))
+        posts = sorted(
+            [post for post in (posts or []) if isinstance(post, Post)],
+            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+            reverse=True,
+        )
+        if error and not posts:
+            lines.append(f"❌ {label}: תקלה בקריאה — {short_error(error, 150)}")
+            continue
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        route = _v90_route_text(username)
+        if posts:
+            ok_count += 1
+            latest = posts[0]
+            latest_dt = (
+                datetime.fromtimestamp(
+                    float(getattr(latest, "published_ts", 0.0) or 0.0),
+                    ZoneInfo(SHABBAT_TIMEZONE),
+                ).strftime("%H:%M %d/%m/%Y")
+                if getattr(latest, "published_ts", 0.0)
+                else "ללא זמן"
+            )
+            lines.append(
+                f"✅ {label}: {len(recent)} פוסטים ביממה | מסלול: {route} | אחרון: {latest_dt}"
+            )
+        else:
+            with _V90_RSS_DIAGNOSTICS_LOCK:
+                diag = dict(_V90_RSS_DIAGNOSTICS.get(str(username).casefold(), {}) or {})
+            errors = list(diag.get("errors") or [])
+            timeouts = list(diag.get("timeouts") or [])
+            detail = "; ".join((errors + [f"timeout:{x}" for x in timeouts])[:2])
+            if detail:
+                lines.append(f"❌ {label}: לא התקבל פוסט | {detail[:180]}")
+            else:
+                lines.append(f"⚠️ {label}: לא התקבל פוסט מהמסלול החי")
+    lines.extend([
+        "",
+        f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו נתונים. פוסטים מהיממה האחרונה: {recent_total}.",
+    ])
+    return "\n".join(lines)
+
+
+def _v90_rss_restore_audit() -> None:
+    expected = [
+        "https://nitter.net/{username}/rss",
+        "https://twiiit.com/{username}/rss",
+        "https://lightbrd.com/{username}/rss",
+        "https://rsshub.rssforever.com/twitter/user/{username}",
+        "https://rsshub.app/twitter/user/{username}",
+    ]
+    if list(active_feed_templates())[:5] != expected:
+        raise RuntimeError("v90_rss_source_order_changed")
+    if fetch_posts is not _v90_fetch_posts:
+        raise RuntimeError("v90_fetch_posts_not_active")
+    if fetch_control_posts is not _v90_fetch_control_posts:
+        raise RuntimeError("v90_control_fetch_not_active")
+    if fetch_posts_safely.__name__ != "fetch_posts_safely":
+        raise RuntimeError("v90_scanner_name_changed")
+    scanner_names = set(fetch_posts_safely.__code__.co_names)
+    if "_v90_network_then_memory" not in scanner_names:
+        raise RuntimeError("v90_scanner_not_using_old_rss_route")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v90_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v90_account_workers_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v90_post_cap_changed")
+    if int(MAX_POST_AGE_SECONDS) != 2 * 60 * 60:
+        raise RuntimeError("v90_two_hour_rule_changed")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v90_rss_restore_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v90_rss_restore_audit")
+
+logging.info(
+    "V90 active: mid-July working RSS route restored at the real automatic scanner boundary: "
+    "Nitter primary -> existing Direct-X -> fallback RSS -> local memory; "
+    "V89 translation/Telegram/filter/media/state fixes preserved."
+)
+
+# ====== END V90 FINAL OLD-WORKING RSS RESTORE ======
+
 if __name__ == "__main__":
     main()
