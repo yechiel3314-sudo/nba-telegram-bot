@@ -67533,5 +67533,547 @@ logging.info(
 
 # ====== END V90 FINAL OLD-WORKING RSS RESTORE ======
 
+
+# ====== V91 FINAL: NITTER-ONLY / ONE REQUEST PER SOURCE / FAST CONTROL (2026-08-27) ======
+# Operator decision after live observation:
+# - nitter.net is the only RSS source that is useful in production.
+# - Do not contact Twiiit, Lightbrd, RSSHub or Direct-X from the active discovery path.
+# - One Nitter HTTP attempt per active source per scan/check; if it fails, use only
+#   already-existing local memory and try Nitter again on the next normal cycle.
+# - Automatic scan stays 20s / 4 accounts in parallel / 12-post processing cap.
+# - Manual all-source checks use a separate bounded pool so control buttons remain responsive.
+# - 10-latest/history stays Google-only for display and must never fall back to raw English.
+# Persistent files/keys, filtering, Telegram delivery, RTL, media and Shabbat are unchanged.
+
+BOT_BUILD_ID = "winner-v91-nitter-only-fast-all-smooth-2026-08-27"
+
+V91_NITTER_TEMPLATE = "https://nitter.net/{username}/rss"
+FEED_TEMPLATES = [V91_NITTER_TEMPLATE]
+MAX_FEED_TEMPLATES_PER_ACCOUNT = 1
+RSS_PRIMARY_SOURCE_COUNT = 1
+RSS_ENABLE_FALLBACK = False
+RSS_FALLBACK_SOURCE_COUNT = 0
+RSS_ENABLE_STALE_FALLBACK = False
+
+# The old one-primary experiment used a 4s request boundary. With Nitter as the
+# only source, waiting longer only delays the next account/button; the next 20s
+# automatic cycle is the retry mechanism, so there is no same-cycle retry burst.
+FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("NITTER_ONLY_REQUEST_TIMEOUT_SECONDS", "4.0"))
+FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("NITTER_ONLY_COLLECTION_TIMEOUT_SECONDS", "4.5"))
+FEED_HTTP_RETRIES = 1
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 1
+
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+
+V91_CONTROL_NITTER_WORKERS = max(4, min(10, int(os.environ.get("NITTER_CONTROL_WORKERS", "8") or "8")))
+_V91_NITTER_DIAG_LOCK = RLock()
+_V91_NITTER_DIAG: dict[str, dict[str, Any]] = {}
+
+
+def active_feed_templates() -> list[str]:
+    """Final production RSS pool: Nitter only."""
+    return [V91_NITTER_TEMPLATE]
+
+
+def _v91_nitter_diag_set(username: str, **values: Any) -> None:
+    key = str(username or "").strip().lstrip("@").casefold()
+    if not key:
+        return
+    with _V91_NITTER_DIAG_LOCK:
+        current = dict(_V91_NITTER_DIAG.get(key, {}) or {})
+        current.update(values)
+        _V91_NITTER_DIAG[key] = current
+        if len(_V91_NITTER_DIAG) > 160:
+            for old_key in list(_V91_NITTER_DIAG)[:40]:
+                _V91_NITTER_DIAG.pop(old_key, None)
+
+
+def _v91_nitter_fetch_once(username: str, limit: int = 30) -> tuple[list[Post], Exception | None]:
+    """Exactly one Nitter network request. No mirror, Direct-X or same-cycle retry."""
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return [], ValueError("empty_username")
+
+    started = time.perf_counter()
+    url = V91_NITTER_TEMPLATE.format(username=urllib.parse.quote(canonical))
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "Cache-Control": "no-cache",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=float(FEED_REQUEST_TIMEOUT_SECONDS)) as response:
+            body = response.read()
+        rows = list(parse_posts(canonical, body, "nitter.net") or [])
+        rows = [post for post in rows if isinstance(post, Post)]
+        rows.sort(key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
+        elapsed = time.perf_counter() - started
+        _v91_nitter_diag_set(
+            canonical,
+            ok=True,
+            posts=len(rows),
+            elapsed=elapsed,
+            error="",
+            checked_at=time.time(),
+            source="nitter.net",
+        )
+        return rows[:max(1, int(limit))], None
+    except Exception as exc:
+        elapsed = time.perf_counter() - started
+        _v91_nitter_diag_set(
+            canonical,
+            ok=False,
+            posts=0,
+            elapsed=elapsed,
+            error=f"{type(exc).__name__}: {short_error(exc, 260)}",
+            checked_at=time.time(),
+            source="nitter.net",
+        )
+        return [], exc
+
+
+def http_get_feed(url: str, timeout: int | float = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    """Compatibility boundary: permit network RSS only to nitter.net, once."""
+    parsed = urllib.parse.urlparse(str(url or ""))
+    if parsed.netloc.casefold() != "nitter.net":
+        raise RuntimeError("V91 Nitter-only: non-Nitter RSS network request blocked")
+    request = urllib.request.Request(
+        str(url),
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            "Cache-Control": "no-cache",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=float(timeout)) as response:
+        return response.read()
+
+
+def fetch_feed(username: str, template: str) -> list[Post]:
+    if str(template or "") != V91_NITTER_TEMPLATE:
+        raise RuntimeError("V91 Nitter-only: fallback RSS source disabled")
+    rows, _error = _v91_nitter_fetch_once(username, limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
+    return rows
+
+
+def collect_posts_from_feed_templates(
+    username: str,
+    feed_templates: list[str],
+) -> tuple[list[Post], list[str], list[str]]:
+    """Compatibility collector: one Nitter call at most, never fan-out."""
+    if V91_NITTER_TEMPLATE not in list(feed_templates or []):
+        return [], [], []
+    rows, error = _v91_nitter_fetch_once(username, limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
+    return rows, ([f"nitter.net: {type(error).__name__}: {short_error(error, 260)}"] if error else []), []
+
+
+def _v91_memory_posts(username: str, limit: int = 60) -> list[Post]:
+    """Local-only fallback. These loaders do not make a discovery network request."""
+    canonical = str(username or "").strip().lstrip("@")
+    merged: dict[str, Post] = {}
+    loaders = [
+        lambda: _working_rss_cached(canonical, limit=max(60, int(limit))),
+        lambda: _stable_rss_cached_posts(canonical, limit=max(60, int(limit))),
+        lambda: _ten_history_load(canonical),
+        lambda: _ten_history_collect_existing_state_posts(canonical),
+        lambda: _control_cached_posts(canonical),
+    ]
+    for loader in loaders:
+        try:
+            rows = [post for post in (loader() or []) if isinstance(post, Post)]
+        except Exception:
+            rows = []
+        for post in rows:
+            try:
+                post.username = canonical
+            except Exception:
+                pass
+            identity = str(
+                getattr(post, "post_id", "")
+                or getattr(post, "link", "")
+                or post_content_signature(
+                    canonical,
+                    str(getattr(post, "text", "") or ""),
+                    str(getattr(post, "quoted_text", "") or ""),
+                )
+            ).strip()
+            if identity:
+                merged.setdefault(identity, post)
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return ordered[:max(1, int(limit))]
+
+
+def _v91_remember_nitter_rows(username: str, rows: list[Post]) -> None:
+    if not rows:
+        return
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        _stable_rss_remember(canonical, rows)
+    except Exception:
+        pass
+    try:
+        _remember_control_rss_posts(canonical, rows)
+    except Exception:
+        pass
+    try:
+        _ten_history_save(canonical, rows[:80])
+    except Exception:
+        pass
+
+
+def _v91_nitter_then_memory(username: str, limit: int = 30) -> tuple[list[Post], Exception | None, bool]:
+    canonical = str(username or "").strip().lstrip("@")
+    rows, error = _v91_nitter_fetch_once(canonical, limit=max(limit, 30))
+    if rows:
+        _v91_remember_nitter_rows(canonical, rows)
+        return rows[:max(1, int(limit))], None, True
+    cached = _v91_memory_posts(canonical, limit=max(limit, 60))
+    return cached[:max(1, int(limit))], error, False
+
+
+def fetch_posts(username: str) -> list[Post]:
+    rows, _error, _live = _v91_nitter_then_memory(
+        username,
+        limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+    )
+    return rows
+
+
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    rows, error, _live = _v91_nitter_then_memory(canonical, limit=30)
+    return canonical, rows, error
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    """Final automatic scanner for every active X source: Nitter only."""
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    rows, error, live = _v91_nitter_then_memory(
+        canonical,
+        limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
+    )
+    try:
+        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+    except Exception:
+        pass
+    if error and not live:
+        # Throttle warning noise; failure is retried naturally next 20s cycle.
+        failures = int(FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) or 0) + 1
+        FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
+        if failures == 1 or failures % 30 == 0:
+            logging.warning(
+                "⚠️ Nitter לא החזיר נתונים עבור @%s; משתמש בזיכרון מקומי (%s שורות) וינסה שוב בסבב הבא: %s",
+                canonical,
+                len(rows),
+                short_error(error, 260),
+            )
+    else:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+    rows = sorted(
+        [post for post in (rows or []) if isinstance(post, Post)],
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return canonical, rows[:int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)]
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    rows, _error, _live = _v91_nitter_then_memory(username, limit=max(1, int(limit)))
+    return rows[:max(1, int(limit))]
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    """One Nitter request + local history; never Direct-X and never raw-English fallback."""
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = max(1, int(limit))
+    live_rows, error = _v91_nitter_fetch_once(canonical, limit=max(20, wanted))
+    merged: dict[str, Post] = {}
+    for post in list(live_rows or []) + _v91_memory_posts(canonical, limit=max(60, wanted * 6)):
+        if not isinstance(post, Post):
+            continue
+        post.username = canonical
+        identity = str(
+            getattr(post, "post_id", "")
+            or getattr(post, "link", "")
+            or post_content_signature(canonical, str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or ""))
+        ).strip()
+        if identity:
+            merged.setdefault(identity, post)
+    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
+    if live_rows:
+        _v91_remember_nitter_rows(canonical, list(live_rows))
+    try:
+        LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = {
+            "route": "v91_nitter_only_plus_local_memory",
+            "nitter_live": len(live_rows or []),
+            "memory_after_merge": len(ordered),
+            "errors": [short_error(error, 300)] if error else [],
+            "returned": min(wanted, len(ordered)),
+        }
+    except Exception:
+        pass
+    return ordered[:wanted]
+
+
+def fetch_latest_post_fast(username: str) -> Post | None:
+    rows, _error, _live = _v91_nitter_then_memory(username, limit=1)
+    return rows[0] if rows else None
+
+
+def fetch_control_posts_for_accounts(accounts: list[str]) -> dict[str, tuple[list[Post], Exception | None]]:
+    """Manual/status checks: all requested sources in parallel, one Nitter request each."""
+    ordered_accounts = [str(item or "").strip().lstrip("@") for item in list(accounts or []) if str(item or "").strip()]
+    results: dict[str, tuple[list[Post], Exception | None]] = {username: ([], None) for username in ordered_accounts}
+    if not ordered_accounts:
+        return results
+    workers = min(V91_CONTROL_NITTER_WORKERS, len(ordered_accounts))
+    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="nitter-control-v91") as executor:
+        future_map = {executor.submit(fetch_control_posts, username): username for username in ordered_accounts}
+        for future in as_completed(future_map):
+            username = future_map[future]
+            try:
+                _canonical, posts, error = future.result()
+                results[username] = (list(posts or []), error)
+            except Exception as exc:
+                results[username] = ([], exc)
+    return results
+
+
+def _v91_active_rss_accounts() -> list[str]:
+    """Every currently enabled X/facts source, deduplicated in configured order."""
+    values = list(active_x_accounts() or [])
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        canonical = str(value or "").strip().lstrip("@")
+        key = canonical.casefold()
+        if canonical and key not in seen:
+            seen.add(key)
+            result.append(canonical)
+    return result
+
+
+def _v91_nitter_status_lines(accounts: list[str], title: str) -> str:
+    fetched = fetch_control_posts_for_accounts(accounts)
+    lines = [title, "", "מקור פעיל יחיד: nitter.net — בקשה אחת לכל מקור, ללא גיבויים וללא Direct-X.", ""]
+    live_ok = 0
+    cached_used = 0
+    recent_total = 0
+    for username in accounts:
+        label = _hebrew_account_label(username)
+        posts, error = fetched.get(username, ([], None))
+        recent = recent_24h_posts(posts)
+        recent_total += len(recent)
+        with _V91_NITTER_DIAG_LOCK:
+            diag = dict(_V91_NITTER_DIAG.get(str(username).casefold(), {}) or {})
+        elapsed = float(diag.get("elapsed", 0.0) or 0.0)
+        if bool(diag.get("ok")):
+            live_ok += 1
+            latest = posts[0] if posts else None
+            latest_text = ""
+            if latest and getattr(latest, "published_ts", 0.0):
+                latest_text = datetime.fromtimestamp(float(latest.published_ts), ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
+            lines.append(f"✅ {label}: Nitter חי | {len(recent)} ביממה | {elapsed:.2f}s" + (f" | אחרון: {latest_text}" if latest_text else ""))
+        elif posts:
+            cached_used += 1
+            lines.append(f"🟡 {label}: Nitter נכשל ({elapsed:.2f}s), מוצג זיכרון מקומי | {len(recent)} ביממה")
+        else:
+            detail = str(diag.get("error", "") or (short_error(error, 160) if error else "לא התקבל פוסט"))
+            lines.append(f"❌ {label}: Nitter לא החזיר נתונים | {detail[:170]}")
+    lines.extend([
+        "",
+        f"תוצאה: Nitter חי אצל {live_ok}/{len(accounts)} מקורות; זיכרון מקומי שימש אצל {cached_used}; פוסטים מהיממה: {recent_total}.",
+    ])
+    return "\n".join(lines)
+
+
+def rss_status_text() -> str:
+    accounts = _v91_active_rss_accounts()
+    return _v91_nitter_status_lines(accounts, f"📡 בדיקת Nitter לכל {len(accounts)} המקורות הפעילים")
+
+
+def facts_rss_status_text() -> str:
+    accounts = [source for source in list(FACTS_SOURCE_ORDER or []) if not control_state_account_disabled(source)]
+    return _v91_nitter_status_lines(accounts, f"📡 בדיקת Nitter ל־{len(accounts)} מקורות העובדות הפעילים")
+
+
+def check_all_accounts_now_text() -> str:
+    accounts = _v91_active_rss_accounts()
+    return _v91_nitter_status_lines(accounts, f"🔄 בדיקה מלאה עכשיו — {len(accounts)} מקורות פעילים")
+
+
+# 10-latest Google display: the older shared helper could replace a failed Google
+# result with the raw source text. That is exactly how a screen could end up mostly
+# English. Keep the process-wide bounded worker pool, but never expose raw English
+# as if it were a translation.
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    values = list(posts or [])
+    if not values:
+        return []
+    results = [""] * len(values)
+    futures: dict[Any, int] = {}
+    try:
+        for index, item in enumerate(values):
+            futures[_RELIABLE_HISTORY_EXECUTOR.submit(_translate_history_post, item)] = index
+    except RuntimeError:
+        futures.clear()
+        for index, item in enumerate(values):
+            try:
+                results[index] = str(_translate_history_post(item) or "").strip()
+            except Exception:
+                results[index] = ""
+    if futures:
+        done, pending = _reliable_wait(set(futures), timeout=max(4.0, float(CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS)))
+        for future in done:
+            index = futures[future]
+            try:
+                results[index] = str(future.result() or "").strip()
+            except Exception:
+                results[index] = ""
+        for future in pending:
+            future.cancel()
+    for index, value in enumerate(results):
+        if not value or value in {"אין טקסט זמין", "אין טקסט זמין לתרגום"}:
+            results[index] = "⚠️ תרגום Google לא זמין כרגע — הטקסט המקורי באנגלית לא מוצג במקום תרגום"
+    return results
+
+
+
+# Google fast path: V89 intentionally ran two Google strategies every time for
+# extra fidelity, but that doubled work in 10-latest/control screens even when
+# the first whole-text result was already excellent. V91 uses one request first,
+# validates it, caches it, and enters the heavier repair path only on a real failure.
+_V91_GOOGLE_CACHE_LOCK = RLock()
+_V91_GOOGLE_CACHE: dict[str, str] = {}
+_V91_GOOGLE_CACHE_MAX = max(300, int(os.environ.get("V91_GOOGLE_CACHE_MAX", "2500") or "2500"))
+_V91_GOOGLE_RESCUE = _V89_PRE_GOOGLE_STRICT
+
+
+def _v91_google_cache_key(source: str) -> str:
+    return hashlib.sha256(str(source or "").encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _v91_google_translate_strict(source: str, max_chars: int = 2500) -> str:
+    original = compact_debug_text(clean_before_translation(source or ""), max_chars).strip()
+    if not original:
+        return ""
+    if len(re.findall(r"[א-ת]", original)) >= 8 and latin_ratio(original) < 0.10:
+        return final_visual_cleanup(final_hebrew_polish(original))
+
+    cache_key = _v91_google_cache_key(original)
+    with _V91_GOOGLE_CACHE_LOCK:
+        cached = str(_V91_GOOGLE_CACHE.get(cache_key, "") or "")
+    if cached:
+        return cached
+
+    first_error: Exception | None = None
+    candidate = ""
+    try:
+        # One normal Google request is the hot path.
+        candidate = str(google_translate(original) or "").strip()
+        candidate = final_visual_cleanup(final_hebrew_polish(candidate))
+        try:
+            candidate = preserve_original_country_flags(original, preserve_original_emojis(original, candidate))
+        except Exception:
+            pass
+        try:
+            candidate = _v60_translation_cleanup(original, candidate)
+        except Exception:
+            pass
+        candidate = final_visual_cleanup(final_hebrew_polish(candidate))
+
+        ok, reason = _v88_translation_valid(original, candidate)
+        fidelity = _v89_translation_fidelity_issues(original, candidate) if ok else [reason]
+        if ok and not fidelity:
+            with _V91_GOOGLE_CACHE_LOCK:
+                if len(_V91_GOOGLE_CACHE) >= _V91_GOOGLE_CACHE_MAX:
+                    for old_key in list(_V91_GOOGLE_CACHE)[:max(1, _V91_GOOGLE_CACHE_MAX // 5)]:
+                        _V91_GOOGLE_CACHE.pop(old_key, None)
+                _V91_GOOGLE_CACHE[cache_key] = candidate
+            return candidate
+        first_error = TranslationUnavailable("; ".join(str(item) for item in fidelity if item) or reason)
+    except Exception as exc:
+        first_error = exc
+
+    # Only a genuinely failed/invalid first result pays for the older stronger
+    # layout/fragment repair path. This keeps reliability without doubling normal work.
+    try:
+        rescued = str(_V91_GOOGLE_RESCUE(original, max_chars) or "").strip()
+        ok, reason = _v88_translation_valid(original, rescued)
+        fidelity = _v89_translation_fidelity_issues(original, rescued) if ok else [reason]
+        if not ok or fidelity:
+            raise TranslationUnavailable("; ".join(str(item) for item in fidelity if item) or reason)
+        with _V91_GOOGLE_CACHE_LOCK:
+            if len(_V91_GOOGLE_CACHE) >= _V91_GOOGLE_CACHE_MAX:
+                for old_key in list(_V91_GOOGLE_CACHE)[:max(1, _V91_GOOGLE_CACHE_MAX // 5)]:
+                    _V91_GOOGLE_CACHE.pop(old_key, None)
+            _V91_GOOGLE_CACHE[cache_key] = rescued
+        return rescued
+    except Exception as rescue_exc:
+        raise TranslationUnavailable(
+            "Google translation unavailable/invalid. first="
+            + short_error(first_error, 220)
+            + " | rescue="
+            + short_error(rescue_exc, 220)
+        ) from rescue_exc
+
+
+# Every late caller (publishing Google fallback + 10-latest/history) resolves
+# this global at runtime, so one final assignment fixes all those paths together.
+_v88_google_translate_strict = _v91_google_translate_strict
+
+def _v91_final_audit() -> None:
+    if list(active_feed_templates()) != [V91_NITTER_TEMPLATE]:
+        raise RuntimeError("v91_not_nitter_only")
+    if list(FEED_TEMPLATES) != [V91_NITTER_TEMPLATE]:
+        raise RuntimeError("v91_feed_templates_not_single_nitter")
+    if bool(RSS_ENABLE_FALLBACK) or int(RSS_FALLBACK_SOURCE_COUNT) != 0:
+        raise RuntimeError("v91_rss_fallback_still_enabled")
+    if int(FEED_HTTP_RETRIES) != 1:
+        raise RuntimeError("v91_same_cycle_retry_enabled")
+    if int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 1:
+        raise RuntimeError("v91_per_account_fanout_enabled")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v91_outer_scan_settings_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v91_post_cap_changed")
+    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
+        raise RuntimeError("v91_duplicate_discovery_enabled")
+    scanner_names = set(fetch_posts_safely.__code__.co_names)
+    if "_v91_nitter_then_memory" not in scanner_names:
+        raise RuntimeError("v91_scanner_not_nitter_only")
+    if "_reliable_direct_profile_posts" in scanner_names or "_v56_final_rss_network_fetch" in scanner_names:
+        raise RuntimeError("v91_old_live_fallback_leaked_into_scanner")
+    # Existing fast button architecture remains active: 20 dedicated workers.
+    executor = globals().get("_V52_BUTTON_EXECUTOR")
+    if executor is None or int(getattr(executor, "_max_workers", 0) or 0) < 20:
+        raise RuntimeError("v91_fast_button_pool_not_preserved")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v91_final_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v91_final_audit")
+
+logging.info(
+    "V91 active: Nitter-only production discovery for every active X/facts source; "
+    "one request per source, no mirrors, no Direct-X, no same-cycle retry; "
+    "20s/4-account automatic scan and 20-worker fast control buttons preserved; "
+    "10-latest never falls back to raw English when Google translation fails."
+)
+
+# ====== END V91 NITTER-ONLY FAST ALL-SOURCE BOUNDARY ======
+
 if __name__ == "__main__":
     main()
