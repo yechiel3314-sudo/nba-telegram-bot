@@ -69593,5 +69593,696 @@ logging.info(
 
 # ====== END V93 FXTWITTER PRIMARY + DEEP PROVIDER DIAGNOSTICS ======
 
+# ====== V94 FINAL: FORCED TRANSLATION RELIABILITY (2026-08-27) ======
+# Scope: translation only. V93 discovery/provider chain remains untouched.
+# Goals:
+# - 10-latest is a forced Google-Translate operation (no Gemini, no raw English fallback).
+# - Publishing prefers Gemini, then always attempts a bounded robust Google fallback.
+# - Successful translations are cached; failures are NEVER cached as translations.
+# - A temporary translator outage never permanently marks a fresh post as handled.
+# - Translation diagnostics distinguish network/provider failures from local validation.
+
+BOT_BUILD_ID = "winner-v94-fxtwitter-primary-forced-translation-2026-08-27"
+
+# Current supported Flash family first. Keep configured models too, but known current
+# stable models are always available as fallbacks when a Railway override is stale.
+_FINAL_GEMINI_STABLE_MODELS = (
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+
+# Google: deliberately low parallelism. The old 10-latest screen could fan out five
+# workers and each worker could trigger extra rescue calls; that created avoidable bursts.
+V94_GOOGLE_MAX_PARALLEL = max(1, min(3, int(os.environ.get("V94_GOOGLE_MAX_PARALLEL", "2") or 2)))
+V94_GOOGLE_TIMEOUT_SECONDS = max(3.0, min(10.0, float(os.environ.get("V94_GOOGLE_TIMEOUT_SECONDS", "6.0") or 6.0)))
+V94_GOOGLE_RETRY_WAIT_SECONDS = max(0.10, min(2.0, float(os.environ.get("V94_GOOGLE_RETRY_WAIT_SECONDS", "0.45") or 0.45)))
+V94_HISTORY_TOTAL_TIMEOUT_SECONDS = max(20.0, min(90.0, float(os.environ.get("V94_HISTORY_TOTAL_TIMEOUT_SECONDS", "45") or 45)))
+V94_GEMINI_FAILURE_SKIP_SECONDS = max(30.0, min(15 * 60.0, float(os.environ.get("V94_GEMINI_FAILURE_SKIP_SECONDS", "180") or 180)))
+V94_TRANSLATION_RETRY_SECONDS = max(15, min(120, int(os.environ.get("V94_TRANSLATION_RETRY_SECONDS", "30") or 30)))
+
+_V94_GOOGLE_SEMAPHORE = BoundedSemaphore(V94_GOOGLE_MAX_PARALLEL)
+_V94_GOOGLE_LOCK = RLock()
+_V94_GOOGLE_SUCCESS_CACHE: dict[str, str] = {}
+_V94_GOOGLE_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
+_V94_GEMINI_POST_FAILURE_UNTIL: dict[str, float] = {}
+_V94_GEMINI_FAILURE_LOCK = RLock()
+_V94_HISTORY_EXECUTOR = ThreadPoolExecutor(max_workers=V94_GOOGLE_MAX_PARALLEL, thread_name_prefix="history-google-v94")
+_V94_GOOGLE_CACHE_PREFIX = "v94-google-forced:"
+
+# Keep fresh posts retryable for their entire two-hour window. 240 attempts at 30s is
+# exactly two hours; no extra Gemini is spent because recent Gemini failures are skipped.
+AUTO_GEMINI_RETRY_ATTEMPTS = max(int(globals().get("AUTO_GEMINI_RETRY_ATTEMPTS", 2) or 2), max(4, int(MAX_POST_AGE_SECONDS // V94_TRANSLATION_RETRY_SECONDS) + 2))
+TRANSLATION_TOTAL_ATTEMPTS = max(2, min(4, int(globals().get("TRANSLATION_TOTAL_ATTEMPTS", 2) or 2)))
+AUTO_GEMINI_RETRY_WAIT_SECONDS = V94_TRANSLATION_RETRY_SECONDS
+TRANSLATION_RETRY_INTERVAL_SECONDS = V94_TRANSLATION_RETRY_SECONDS
+
+
+def _v94_translation_source(post: Post, quoted: bool = False) -> str:
+    # History/Google must receive the real source text, not an AI-prepared prompt.
+    raw = str(getattr(post, "quoted_text" if quoted else "text", "") or "")
+    if not raw and not quoted:
+        raw = str(getattr(post, "title", "") or "")
+    raw = html.unescape(raw).replace("\r\n", "\n").replace("\r", "\n")
+    raw = remove_urls(raw)
+    raw = clean_before_translation(raw)
+    return str(raw or "").strip()
+
+
+def _v94_google_cache_key(source: str) -> str:
+    return hashlib.sha256(str(source or "").encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _v94_translation_diag_key(source: str) -> str:
+    return _v94_google_cache_key(source)[:20]
+
+
+def _v94_classify_translation_error(exc: Exception | None) -> str:
+    if exc is None:
+        return "unknown"
+    text = str(exc or "").casefold()
+    code = int(getattr(exc, "code", 0) or 0)
+    if code == 429 or "429" in text or "too many requests" in text:
+        return "http_429_rate_limit"
+    if code in {401, 403} or "forbidden" in text or "unauthorized" in text:
+        return f"http_{code or 'auth'}"
+    if code == 404:
+        return "http_404"
+    if code >= 500:
+        return f"http_{code}_upstream"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if "name resolution" in text or "getaddrinfo" in text or "dns" in text:
+        return "dns_failure"
+    if "ssl" in text or "certificate" in text or "tls" in text:
+        return "tls_failure"
+    if "json" in text:
+        return "invalid_json"
+    if "empty" in text:
+        return "empty_translation"
+    if "validation" in text or "not_hebrew" in text or "untranslated" in text:
+        return "local_validation"
+    return type(exc).__name__
+
+
+def _v94_set_google_diag(source: str, **values: Any) -> None:
+    key = _v94_translation_diag_key(source)
+    row = {"at": time.time(), **values}
+    with _V94_GOOGLE_LOCK:
+        _V94_GOOGLE_DIAGNOSTICS[key] = row
+        if len(_V94_GOOGLE_DIAGNOSTICS) > 600:
+            for old in list(_V94_GOOGLE_DIAGNOSTICS)[:120]:
+                _V94_GOOGLE_DIAGNOSTICS.pop(old, None)
+
+
+def _v94_parse_google_payload(body: bytes) -> str:
+    data = json.loads(body.decode("utf-8", errors="replace"))
+    if not isinstance(data, list) or not data or not isinstance(data[0], list):
+        raise RuntimeError("Google invalid_json/schema")
+    parts: list[str] = []
+    for row in data[0]:
+        if isinstance(row, list) and row and isinstance(row[0], str):
+            parts.append(row[0])
+    value = "".join(parts).strip()
+    if not value:
+        raise RuntimeError("Google empty translation")
+    return value
+
+
+def _v94_google_network_once(source: str) -> tuple[str, str]:
+    params = urllib.parse.urlencode({"client": "gtx", "sl": "auto", "tl": "he", "dt": "t", "q": source})
+    endpoints = (
+        "https://translate.googleapis.com/translate_a/single?",
+        "https://translate.google.com/translate_a/single?",
+    )
+    errors: list[str] = []
+    last_exc: Exception | None = None
+    # At most three network attempts total: primary, alternate host, short primary retry.
+    sequence = (endpoints[0], endpoints[1], endpoints[0])
+    with _V94_GOOGLE_SEMAPHORE:
+        for attempt, endpoint in enumerate(sequence, 1):
+            if attempt == 3:
+                time.sleep(V94_GOOGLE_RETRY_WAIT_SECONDS)
+            request = urllib.request.Request(
+                endpoint + params,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0 Safari/537.36",
+                    "Accept": "application/json,text/plain,*/*",
+                    "Accept-Language": "he,en-US;q=0.8,en;q=0.7",
+                },
+            )
+            started = time.perf_counter()
+            try:
+                with urllib.request.urlopen(request, timeout=V94_GOOGLE_TIMEOUT_SECONDS) as response:
+                    body = response.read(1_500_000)
+                    status = int(getattr(response, "status", 200) or 200)
+                translated = _v94_parse_google_payload(body)
+                host = urllib.parse.urlsplit(endpoint).netloc
+                _v94_set_google_diag(source, ok=True, provider=host, status=status, attempt=attempt, seconds=round(time.perf_counter() - started, 3), reason="ok")
+                return translated, host
+            except Exception as exc:
+                last_exc = exc
+                reason = _v94_classify_translation_error(exc)
+                errors.append(f"{urllib.parse.urlsplit(endpoint).netloc}:{reason}")
+                _v94_set_google_diag(source, ok=False, provider=urllib.parse.urlsplit(endpoint).netloc, status=int(getattr(exc, "code", 0) or 0), attempt=attempt, seconds=round(time.perf_counter() - started, 3), reason=reason, error=short_error(exc, 300))
+                # Auth/4xx other than 429 will not heal on the same host, but the alternate
+                # host is still worth one try. 429/timeout get the bounded third attempt.
+                continue
+    raise TranslationUnavailable("Google network failed: " + " | ".join(errors) + (" | " + short_error(last_exc, 180) if last_exc else ""))
+
+
+def _v94_relaxed_hebrew_valid(source: str, translated: str) -> tuple[bool, str]:
+    src = str(source or "").strip()
+    out = str(translated or "").strip()
+    if not out or not has_meaningful_text(out):
+        return False, "empty"
+    src_he = len(re.findall(r"[א-ת]", src))
+    src_lat = len(re.findall(r"[A-Za-z]", src))
+    out_he = len(re.findall(r"[א-ת]", out))
+    out_lat = len(re.findall(r"[A-Za-z]", out))
+    if src_he >= 6 and src_lat <= max(4, src_he // 4):
+        return (out_he >= 4), ("" if out_he >= 4 else "hebrew_source_damaged")
+    needed = 3 if len(src) < 45 else 6
+    if out_he < needed:
+        return False, "not_hebrew"
+    # Reject a clear unchanged English copy, but do not reject names, acronyms or numbers.
+    if src_lat >= 10:
+        src_norm = re.sub(r"\W+", "", src, flags=re.UNICODE).casefold()
+        out_norm = re.sub(r"\W+", "", out, flags=re.UNICODE).casefold()
+        if src_norm and src_norm == out_norm:
+            return False, "unchanged_source"
+    if out_lat >= 40 and out_lat > out_he * 2.2:
+        return False, "too_much_untranslated_latin"
+    if _final_translation_is_still_english(src, out):
+        return False, "still_english"
+    return True, ""
+
+
+def _v94_minimal_google_cleanup(source: str, translated: str) -> str:
+    value = html.unescape(str(translated or "")).strip()
+    # Keep the cleanup deterministic and light. The old heavy fidelity engine was
+    # the source of false rejections in 10-latest.
+    try:
+        value = preserve_original_country_flags(source, preserve_original_emojis(source, value))
+    except Exception:
+        pass
+    try:
+        value = apply_phrase_replacements(value, TEAM_REPLACEMENTS)
+        value = apply_phrase_replacements(value, PLAYER_REPLACEMENTS)
+        value = apply_phrase_replacements(value, HEBREW_FINAL_FIXES)
+    except Exception:
+        pass
+    try:
+        value = _v60_translation_cleanup(source, value)
+    except Exception:
+        pass
+    value = final_visual_cleanup(final_hebrew_polish(value))
+    return str(value or "").strip()
+
+
+def _v94_google_translate_forced(source: str, max_chars: int = 2500) -> str:
+    global TRANSLATION_CACHE_DIRTY
+    original = compact_debug_text(str(source or ""), max_chars).strip()
+    if not original:
+        return ""
+    if len(re.findall(r"[א-ת]", original)) >= 6 and latin_ratio(original) < 0.10:
+        return final_visual_cleanup(final_hebrew_polish(original))
+
+    cache_key = _v94_google_cache_key(original)
+    persistent_key = _V94_GOOGLE_CACHE_PREFIX + cache_key
+    with _V94_GOOGLE_LOCK:
+        cached = str(_V94_GOOGLE_SUCCESS_CACHE.get(cache_key, "") or "")
+    if not cached:
+        cached = str(TRANSLATION_CACHE.get(persistent_key, "") or "")
+    if cached:
+        ok, _reason = _v94_relaxed_hebrew_valid(original, cached)
+        if ok:
+            return cached
+
+    whole_error: Exception | None = None
+    try:
+        raw, provider = _v94_google_network_once(original)
+        candidate = _v94_minimal_google_cleanup(original, raw)
+        ok, reason = _v94_relaxed_hebrew_valid(original, candidate)
+        if ok:
+            with _V94_GOOGLE_LOCK:
+                _V94_GOOGLE_SUCCESS_CACHE[cache_key] = candidate
+            TRANSLATION_CACHE[persistent_key] = candidate
+            TRANSLATION_CACHE_DIRTY = True
+            _v94_set_google_diag(original, ok=True, provider=provider, reason="accepted_whole", validation="relaxed", chars=len(candidate))
+            return candidate
+        whole_error = TranslationUnavailable("Google whole-text rejected locally: " + reason)
+        _v94_set_google_diag(original, ok=False, provider=provider, reason="local_validation", validation_reason=reason)
+    except Exception as exc:
+        whole_error = exc
+
+    # Rescue only after a real whole-text failure. Translate lines/sentences, not one
+    # word at a time, to avoid both request explosions and mangled football names.
+    units = [u.strip() for u in re.split(r"(?<=\n)|(?<=[.!?])\s+", original) if u and u.strip()]
+    if not units or len(units) > 8:
+        units = [original]
+    if len(units) == 1:
+        raise TranslationUnavailable("Google forced translation failed: " + short_error(whole_error, 420)) from whole_error
+
+    output: list[str] = []
+    rescue_errors: list[str] = []
+    for unit in units:
+        if len(re.findall(r"[א-ת]", unit)) >= 5 and latin_ratio(unit) < 0.10:
+            output.append(unit)
+            continue
+        try:
+            raw, _provider = _v94_google_network_once(unit)
+            fixed = _v94_minimal_google_cleanup(unit, raw)
+            ok, reason = _v94_relaxed_hebrew_valid(unit, fixed)
+            if not ok:
+                raise TranslationUnavailable(reason)
+            output.append(fixed)
+        except Exception as exc:
+            rescue_errors.append(_v94_classify_translation_error(exc) + ":" + short_error(exc, 120))
+            output.append("")
+    candidate = " ".join(x for x in output if x).strip()
+    ok, reason = _v94_relaxed_hebrew_valid(original, candidate)
+    if ok and len([x for x in output if x]) == len(units):
+        with _V94_GOOGLE_LOCK:
+            _V94_GOOGLE_SUCCESS_CACHE[cache_key] = candidate
+        TRANSLATION_CACHE[persistent_key] = candidate
+        TRANSLATION_CACHE_DIRTY = True
+        _v94_set_google_diag(original, ok=True, provider="google_chunk_rescue", reason="accepted_chunked", chars=len(candidate))
+        return candidate
+    raise TranslationUnavailable(
+        "Google forced translation failed. whole=" + short_error(whole_error, 220)
+        + " | rescue=" + "; ".join(rescue_errors[:5])
+        + (" | validation=" + reason if reason else "")
+    )
+
+
+# All late Google callers get the new reliable path. No V89/V91 fidelity rejection layer.
+def google_translate(text: str) -> str:
+    source = str(text or "").strip()
+    if not source:
+        return ""
+    raw, _provider = _v94_google_network_once(source)
+    return raw
+
+
+def _v91_google_translate_strict(source: str, max_chars: int = 2500) -> str:
+    return _v94_google_translate_forced(source, max_chars)
+
+
+def _v88_google_translate_strict(source: str, max_chars: int = 2500) -> str:
+    return _v94_google_translate_forced(source, max_chars)
+
+
+def google_translate_hebrew_safe(text: str, max_chars: int = 900) -> str:
+    # Important: never return raw English on translator failure.
+    return _v94_google_translate_forced(str(text or ""), max_chars)
+
+
+def _translate_history_post(post: Post) -> str:
+    source = _v94_translation_source(post, quoted=False)
+    if not source:
+        return "אין טקסט זמין לתרגום"
+    try:
+        translated = _v94_google_translate_forced(source, 1800)
+        return translated
+    except Exception as exc:
+        reason = _v94_classify_translation_error(exc)
+        logging.warning("V94 forced Google history translation failed for @%s: %s", getattr(post, "username", ""), short_error(exc, 500))
+        return f"⚠️ תרגום Google נכשל ({reason}) — יבוצע ניסיון חדש בלחיצה הבאה"
+
+
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    values = list(posts or [])
+    if not values:
+        return []
+    results = [""] * len(values)
+    futures: dict[Any, int] = {}
+    for index, item in enumerate(values):
+        try:
+            futures[_V94_HISTORY_EXECUTOR.submit(_translate_history_post, item)] = index
+        except RuntimeError:
+            results[index] = _translate_history_post(item)
+    if futures:
+        done, pending = _reliable_wait(set(futures), timeout=V94_HISTORY_TOTAL_TIMEOUT_SECONDS)
+        for future in done:
+            index = futures[future]
+            try:
+                results[index] = str(future.result() or "").strip()
+            except Exception as exc:
+                results[index] = f"⚠️ תרגום Google נכשל ({_v94_classify_translation_error(exc)}) — יבוצע ניסיון חדש בלחיצה הבאה"
+        # Do not silently convert timeout to raw English. One final sequential forced
+        # attempt is made for each unfinished item because the user explicitly asked
+        # that pressing 10-latest forces translation.
+        for future in pending:
+            index = futures[future]
+            future.cancel()
+            try:
+                results[index] = _translate_history_post(values[index])
+            except Exception as exc:
+                results[index] = f"⚠️ תרגום Google נכשל ({_v94_classify_translation_error(exc)}) — יבוצע ניסיון חדש בלחיצה הבאה"
+    for index, value in enumerate(results):
+        if not value:
+            results[index] = "⚠️ תרגום Google לא התקבל — יבוצע ניסיון חדש בלחיצה הבאה"
+    return results
+
+
+def _v94_post_translation_identity(post: Post) -> str:
+    try:
+        return str(_acceptance_retry_identity(post) or "")
+    except Exception:
+        return str(getattr(post, "post_id", "") or getattr(post, "link", "") or "")
+
+
+def _v94_gemini_recently_failed(post: Post) -> bool:
+    key = _v94_post_translation_identity(post)
+    if not key:
+        return False
+    now = time.time()
+    with _V94_GEMINI_FAILURE_LOCK:
+        until = float(_V94_GEMINI_POST_FAILURE_UNTIL.get(key, 0.0) or 0.0)
+        if until <= now:
+            _V94_GEMINI_POST_FAILURE_UNTIL.pop(key, None)
+            return False
+        return True
+
+
+def _v94_mark_gemini_failed(post: Post) -> None:
+    key = _v94_post_translation_identity(post)
+    if not key:
+        return
+    with _V94_GEMINI_FAILURE_LOCK:
+        _V94_GEMINI_POST_FAILURE_UNTIL[key] = time.time() + V94_GEMINI_FAILURE_SKIP_SECONDS
+        if len(_V94_GEMINI_POST_FAILURE_UNTIL) > 2000:
+            now = time.time()
+            for old, until in list(_V94_GEMINI_POST_FAILURE_UNTIL.items()):
+                if float(until or 0.0) <= now:
+                    _V94_GEMINI_POST_FAILURE_UNTIL.pop(old, None)
+
+
+def _v94_validate_for_publish(source: str, translated: str) -> tuple[bool, str]:
+    ok, reason = _v94_relaxed_hebrew_valid(source, translated)
+    if not ok:
+        return False, reason
+    publish_ok, publish_reason = is_publishable_hebrew_for_main_channel(translated, "")
+    if not publish_ok:
+        return False, publish_reason
+    return True, ""
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    """Forced publish translation: Gemini preferred, robust Google always follows failure."""
+    main_source = _v94_translation_source(post, quoted=False)
+    quote_source = _v94_translation_source(post, quoted=True) if (TRANSLATE_QUOTED_POSTS and not is_self_quote(post)) else ""
+    if not main_source:
+        raise TranslationUnavailable("Source text is empty")
+
+    gemini_exc: Exception | None = None
+    if not _v94_gemini_recently_failed(post):
+        try:
+            main, quote, author = gemini_translate_post_once(post, bool(quote_source))
+            main = _v94_minimal_google_cleanup(main_source, main)
+            if quote_source and quote:
+                quote = _v94_minimal_google_cleanup(quote_source, quote)
+            ok, reason = _v94_validate_for_publish(main_source, main)
+            if not ok:
+                raise TranslationUnavailable("Gemini local validation: " + reason)
+            if quote_source and quote:
+                q_ok, q_reason = _v94_relaxed_hebrew_valid(quote_source, quote)
+                if not q_ok:
+                    raise TranslationUnavailable("Gemini quote validation: " + q_reason)
+            setattr(post, "translation_provider", "gemini")
+            return main, quote, author
+        except Exception as exc:
+            gemini_exc = exc
+            _v94_mark_gemini_failed(post)
+            logging.warning("V94 Gemini failed; switching immediately to forced Google for @%s: %s", getattr(post, "username", ""), short_error(exc, 500))
+    else:
+        gemini_exc = TranslationUnavailable("Gemini skipped temporarily after a recent failure for this post")
+
+    try:
+        main = _v94_google_translate_forced(main_source, 2200)
+        ok, reason = _v94_validate_for_publish(main_source, main)
+        if not ok:
+            raise TranslationUnavailable("Google local validation: " + reason)
+        quote = ""
+        author = ""
+        if quote_source:
+            quote = _v94_google_translate_forced(quote_source, 1200)
+            q_ok, q_reason = _v94_relaxed_hebrew_valid(quote_source, quote)
+            if not q_ok:
+                raise TranslationUnavailable("Google quote validation: " + q_reason)
+            raw_author = clean_before_translation(str(getattr(post, "quoted_author", "") or "")).strip()
+            if raw_author:
+                try:
+                    author = _v94_google_translate_forced(raw_author, 180)
+                except Exception:
+                    author = raw_author
+        setattr(post, "translation_provider", "google")
+        setattr(post, "gemini_translation_failure", short_error(gemini_exc, 500))
+        return main, quote, author
+    except Exception as google_exc:
+        setattr(post, "translation_provider", "none")
+        raise TranslationUnavailable(
+            "Forced translation unavailable. Gemini=" + short_error(gemini_exc, 260)
+            + " | Google=" + short_error(google_exc, 420)
+        ) from google_exc
+
+
+# Clear old exhausted retry entries lazily for still-fresh posts and let the existing
+# safe send transaction retry them. Translation failures remain unseen/retryable.
+_V94_PRE_SEND_POST = send_post
+
+
+def _v94_unexhaust_translation_retry(post: Post, state: dict[str, Any] | None) -> None:
+    identity = _v94_post_translation_identity(post)
+    if not identity:
+        return
+    published = float(getattr(post, "published_ts", 0.0) or 0.0)
+    if published > 0 and time.time() - published > float(MAX_POST_AGE_SECONDS):
+        return
+    try:
+        with _GEMINI_RETRY_SCHEDULE_LOCK:
+            schedule = _gemini_retry_schedule(state)
+            entry = dict(schedule.get(identity, {}) or {})
+            if not entry:
+                return
+            if entry.get("sent"):
+                return
+            if bool(entry.get("exhausted")) or int(entry.get("attempts_done", 0) or 0) >= int(AUTO_GEMINI_RETRY_ATTEMPTS):
+                entry["exhausted"] = False
+                entry["attempts_done"] = min(int(entry.get("attempts_done", 0) or 0), max(0, int(AUTO_GEMINI_RETRY_ATTEMPTS) - 1))
+                entry["next_retry_at"] = min(float(entry.get("next_retry_at", 0.0) or 0.0), time.time())
+                entry["attempt_in_progress"] = False
+                entry["updated_at"] = time.time()
+                schedule[identity] = entry
+                _store_gemini_retry_schedule(state, schedule)
+    except Exception as exc:
+        logging.debug("V94 could not refresh translation retry schedule: %s", short_error(exc, 220))
+
+
+def send_post(post: Post, reply_message_ids: Any = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    _v94_unexhaust_translation_retry(post, state)
+    result = _V94_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    if isinstance(result, dict):
+        mode = str(result.get("mode", "") or "")
+        if "translation_unavailable_retries_exhausted" in mode:
+            # Never turn a temporary translator outage into a permanent handled state.
+            result["mode"] = "translation_unavailable_retry_scheduled"
+            result["retry_after_seconds"] = V94_TRANSLATION_RETRY_SECONDS
+    return result
+
+
+def _v94_translation_audit() -> None:
+    if V94_GOOGLE_MAX_PARALLEL > 3:
+        raise RuntimeError("v94_google_parallelism_too_high")
+    if V94_HISTORY_TOTAL_TIMEOUT_SECONDS < 20:
+        raise RuntimeError("v94_history_timeout_too_short")
+    if AUTO_GEMINI_RETRY_ATTEMPTS < 4:
+        raise RuntimeError("v94_translation_retry_budget_too_low")
+    if "_v94_google_translate_forced" not in translate_post_for_send.__code__.co_names:
+        raise RuntimeError("v94_publish_google_fallback_not_active")
+    if "_v94_google_translate_forced" not in _translate_history_post.__code__.co_names:
+        raise RuntimeError("v94_history_google_not_active")
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v94_translation_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v94_translation_audit")
+
+logging.info(
+    "V94 translation active: forced Google for 10-latest, Gemini->Google for publish, "
+    "success-only cache, low-burst Google transport, exact failure diagnostics, and "
+    "fresh translation failures remain retryable for the full age window."
+)
+
+# ====== END V94 FORCED TRANSLATION RELIABILITY ======
+
+
+
+
+# ====== V94 GOOGLE MULTI-TRANSPORT: CLIENTS5 + LEGACY FALLBACKS ======
+def _v94_parse_google_any_payload(body: bytes) -> str:
+    data = json.loads(body.decode("utf-8", errors="replace"))
+    if isinstance(data, dict):
+        sentences = data.get("sentences")
+        if isinstance(sentences, list):
+            value = "".join(str(item.get("trans", "") or "") for item in sentences if isinstance(item, dict)).strip()
+            if value:
+                return value
+        for key in ("translation", "translatedText", "text"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if isinstance(data, list):
+        # Standard translate_a/single shape: data[0] contains [translated, source, ...] rows.
+        if data and isinstance(data[0], list):
+            parts: list[str] = []
+            for row in data[0]:
+                if isinstance(row, list) and row and isinstance(row[0], str):
+                    parts.append(row[0])
+            value = "".join(parts).strip()
+            if value:
+                return value
+        # clients5 has used more deeply nested list shapes over time. Prefer a
+        # meaningful Hebrew string because Hebrew is always the requested target.
+        strings: list[str] = []
+        def walk(value: Any) -> None:
+            if isinstance(value, str):
+                if value.strip():
+                    strings.append(value.strip())
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    walk(item)
+        walk(data)
+        hebrew = [x for x in strings if re.search(r"[א-ת]", x)]
+        if hebrew:
+            return max(hebrew, key=lambda x: (len(re.findall(r"[א-ת]", x)), len(x)))
+        if strings:
+            return strings[0]
+    raise RuntimeError("Google invalid_json/schema")
+
+
+def _v94_google_network_once(source: str) -> tuple[str, str]:
+    source = str(source or "").strip()
+    if not source:
+        return "", ""
+    transports = (
+        (
+            "clients5.google.com",
+            "https://clients5.google.com/translate_a/t?" + urllib.parse.urlencode({
+                "client": "dict-chrome-ex", "sl": "auto", "tl": "he", "q": source,
+            }),
+        ),
+        (
+            "translate.googleapis.com",
+            "https://translate.googleapis.com/translate_a/single?" + urllib.parse.urlencode({
+                "client": "gtx", "sl": "auto", "tl": "he", "dt": "t", "q": source,
+            }),
+        ),
+        (
+            "translate.google.com",
+            "https://translate.google.com/translate_a/single?" + urllib.parse.urlencode({
+                "client": "gtx", "sl": "auto", "tl": "he", "dt": "t", "q": source,
+            }),
+        ),
+        # One short retry on the transport that is independent from the legacy
+        # translate.googleapis.com endpoint. No unbounded retry loop.
+        (
+            "clients5.google.com",
+            "https://clients5.google.com/translate_a/t?" + urllib.parse.urlencode({
+                "client": "dict-chrome-ex", "sl": "auto", "tl": "he", "q": source,
+            }),
+        ),
+    )
+    errors: list[str] = []
+    last_exc: Exception | None = None
+    with _V94_GOOGLE_SEMAPHORE:
+        for attempt, (host, url) in enumerate(transports, 1):
+            if attempt == len(transports):
+                time.sleep(V94_GOOGLE_RETRY_WAIT_SECONDS)
+            started = time.perf_counter()
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0 Safari/537.36",
+                    "Accept": "application/json,text/plain,*/*",
+                    "Accept-Language": "he,en-US;q=0.8,en;q=0.7",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=V94_GOOGLE_TIMEOUT_SECONDS) as response:
+                    body = response.read(1_500_000)
+                    status = int(getattr(response, "status", 200) or 200)
+                translated = _v94_parse_google_any_payload(body)
+                if not translated:
+                    raise RuntimeError("Google empty translation")
+                _v94_set_google_diag(source, ok=True, provider=host, status=status, attempt=attempt, seconds=round(time.perf_counter() - started, 3), reason="ok")
+                return translated, host
+            except Exception as exc:
+                last_exc = exc
+                reason = _v94_classify_translation_error(exc)
+                errors.append(f"{host}:{reason}")
+                _v94_set_google_diag(source, ok=False, provider=host, status=int(getattr(exc, "code", 0) or 0), attempt=attempt, seconds=round(time.perf_counter() - started, 3), reason=reason, error=short_error(exc, 300))
+                continue
+    raise TranslationUnavailable("Google network failed: " + " | ".join(errors) + (" | " + short_error(last_exc, 180) if last_exc else ""))
+
+# ====== END V94 GOOGLE MULTI-TRANSPORT ======
+
+# ====== V94.1 TRANSLATION HEALTH DIAGNOSTICS ======
+_V94_PRE_SYSTEM_HEALTH_TEXT = system_health_text
+
+
+def current_gemini_translation_model() -> str:
+    models = list(gemini_models_for_operation() or [])
+    return str(models[0] if models else "gemini-3.6-flash")
+
+
+def _v94_last_google_diag_text() -> str:
+    with _V94_GOOGLE_LOCK:
+        rows = list(_V94_GOOGLE_DIAGNOSTICS.values())
+    if not rows:
+        return "Google: עדיין לא בוצעה בקשת תרגום מאז העלייה"
+    row = max(rows, key=lambda item: float(item.get("at", 0.0) or 0.0))
+    provider = str(row.get("provider", "google") or "google")
+    reason = str(row.get("reason", "unknown") or "unknown")
+    status = int(row.get("status", 0) or 0)
+    if bool(row.get("ok")):
+        return f"Google: תקין | {provider} | {reason}" + (f" | HTTP {status}" if status else "")
+    error = str(row.get("error", "") or "")
+    return f"Google: כשל אחרון | {provider} | {reason}" + (f" | HTTP {status}" if status else "") + (f" | {error[:150]}" if error else "")
+
+
+def system_health_text() -> str:
+    base = str(_V94_PRE_SYSTEM_HEALTH_TEXT() or "").rstrip()
+    lines = [base, "", "תרגום V94:", f"- {_v94_last_google_diag_text()}"]
+    try:
+        refresh_gemini_api_keys_from_env()
+        models = list(gemini_models_for_operation() or [])
+        paused = gemini_requests_paused_until_refill()
+        available_keys = len(gemini_translation_keys_for_operation()) if not paused else 0
+        lines.append(
+            f"- Gemini: {'עצור ידנית' if paused else ('זמין' if available_keys else 'אין מפתח זמין כרגע')}"
+            f" | keys={available_keys}/{len(GEMINI_API_KEYS)}"
+            f" | model={models[0] if models else 'none'}"
+        )
+        last = dict(GEMINI_LAST_TRANSLATION_FAILURE or {})
+        if last:
+            lines.append("- Gemini כשל אחרון: " + gemini_public_error_label(last.get("summary") or last.get("error")) + " | " + short_error(last.get("error") or last.get("summary"), 180))
+    except Exception as exc:
+        lines.append("- Gemini diagnostics failed: " + short_error(exc, 180))
+    lines.append(f"- 10 אחרונים: Google חובה | parallel={V94_GOOGLE_MAX_PARALLEL} | timeout כולל={int(V94_HISTORY_TOTAL_TIMEOUT_SECONDS)}s | כשל לא נשמר ב-cache")
+    return "\n".join(lines)[:4050]
+
+# ====== END V94.1 TRANSLATION HEALTH DIAGNOSTICS ======
+
+
 if __name__ == "__main__":
     main()
