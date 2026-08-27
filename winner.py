@@ -70284,5 +70284,943 @@ def system_health_text() -> str:
 # ====== END V94.1 TRANSLATION HEALTH DIAGNOSTICS ======
 
 
+
+
+# ====== V95 FINAL: V72 BEHAVIOR + CURRENT V93/V94 RSS/TRANSLATION (2026-08-27) ======
+# User-selected compatibility boundary:
+# - V72 is the authoritative behavior/presentation/filter/control baseline.
+# - V93 live discovery/provider chain is preserved exactly.
+# - V94 forced translation / Google fallback / no-English-send is preserved exactly.
+# - Persistent filenames, keys and history are untouched.
+
+BOT_BUILD_ID = "winner-v95-v72-behavior-current-rss-translation-2026-08-27"
+
+# Lock the working V93/V94 entrypoints before any presentation/control wrappers.
+_V95_RSS_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V95_RSS_FETCH_POSTS = fetch_posts
+_V95_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+_V95_MANUAL_FORCE_TRANSLATION = manual_force_translation
+_V95_GOOGLE_NETWORK_ONCE = globals().get("_v94_google_network_once")
+
+# Current V94 boundaries that V72 behavior is allowed to wrap, never replace underneath.
+_V95_PRE_TELEGRAM_API = telegram_api
+_V95_PRE_PROCESS_CONTROL_TEXT_UPDATE = process_control_text_update
+_V95_PRE_BUILD_MESSAGE = build_message
+_V95_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+_V95_PRE_TIDY_TRANSLATED_TEXT = tidy_translated_text
+_V95_PRE_IS_OTHER_SPORT_POST = is_other_sport_post
+_V95_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+_V95_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+# ---------------------------------------------------------------------------
+# V68 AS PRESENT INSIDE V72: pasted X link preparation, channel RTL and footer.
+# ---------------------------------------------------------------------------
+_V68_X_STATUS_URL_RE = re.compile(
+    r"(?iu)https?://(?:www\.)?(?:x\.com|twitter\.com)/"
+    r"(?P<username>[A-Za-z0-9_]{1,30})/status/(?P<tweet_id>\d{10,22})"
+    r"(?:[/?#][^\s<]*)?"
+)
+_V68_LINK_PREP_LOCK = RLock()
+_V68_LINK_PREP_INFLIGHT: set[str] = set()
+_V68_LINK_PREP_DONE: dict[str, float] = {}
+_V68_LINK_PREP_DONE_TTL = 15 * 60
+
+
+def _v68_extract_x_status(text: Any) -> tuple[str, str, str] | None:
+    value = html.unescape(str(text or "")).strip()
+    match = _V68_X_STATUS_URL_RE.search(value)
+    if not match:
+        return None
+    username = str(match.group("username") or "").strip().lstrip("@")
+    tweet_id = str(match.group("tweet_id") or "").strip()
+    if not username or not tweet_id:
+        return None
+    return username, tweet_id, f"https://x.com/{username}/status/{tweet_id}"
+
+
+def _v68_post_from_x_link(username: str, tweet_id: str, link: str) -> Post:
+    try:
+        published = float(_reliable_snowflake_timestamp(tweet_id) or 0.0)
+    except Exception:
+        published = 0.0
+    return Post(
+        post_id=tweet_id,
+        username=username,
+        text="",
+        link=link,
+        image_urls=[],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=published or time.time(),
+        dedupe_ids=[tweet_id, f"{username}:{tweet_id}", f"{username}:{link}"],
+        source_name="manual-x-link",
+    )
+
+
+def _v68_prepare_pasted_x_link(username: str, tweet_id: str, link: str, reply_message_id: int = 0) -> None:
+    key = f"{username.casefold()}:{tweet_id}"
+    try:
+        post = _v68_post_from_x_link(username, tweet_id, link)
+        _reliable_hydrate_exact_post(post, force=True)
+        source_text = str(getattr(post, "original_text", "") or getattr(post, "text", "") or "").strip()
+        if not source_text:
+            try:
+                exact_text, provider = _reliable_fetch_exact_post_text(post)
+            except Exception:
+                exact_text, provider = "", ""
+            if exact_text:
+                post.text = exact_text
+                post.original_text = exact_text
+                post.source_name = provider or post.source_name
+                source_text = exact_text
+        if not source_text:
+            send_control_text(
+                "⛔ לא הצלחתי לקרוא את הציוץ מהקישור. הקישור עצמו תקין, אבל מקורות X החיצוניים לא החזירו את תוכן הפוסט כרגע.",
+                reply_message_id or None,
+                control_delete_message_reply_markup(),
+            )
+            return
+        # IMPORTANT: this resolves dynamically to V94's current forced translation.
+        translated, quoted, author = manual_force_translation(post)
+        token = remember_control_prepared_send(post, translated, quoted, author)
+        rendered = build_message(post, translated, quoted, author, include_video_link=False)
+        _send_full_control_candidate(post, token, rendered)
+    except Exception as exc:
+        logging.exception("V95/V68 pasted-X preparation failed")
+        try:
+            send_control_text(
+                "⛔ הכנת הציוץ מהקישור נכשלה:\n" + short_error(exc, 900),
+                reply_message_id or None,
+                control_delete_message_reply_markup(),
+            )
+        except Exception:
+            pass
+    finally:
+        with _V68_LINK_PREP_LOCK:
+            _V68_LINK_PREP_INFLIGHT.discard(key)
+            _V68_LINK_PREP_DONE[key] = time.time()
+            cutoff = time.time() - _V68_LINK_PREP_DONE_TTL
+            for old_key, old_ts in list(_V68_LINK_PREP_DONE.items()):
+                if float(old_ts or 0.0) < cutoff:
+                    _V68_LINK_PREP_DONE.pop(old_key, None)
+
+
+def _v68_try_prepare_pasted_x_link(update: dict[str, Any]) -> bool:
+    message = (
+        update.get("message") or update.get("edited_message") or
+        update.get("channel_post") or update.get("edited_channel_post") or {}
+    )
+    if not isinstance(message, dict):
+        return False
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+    if not CONTROL_CHAT_ID or chat_id != str(CONTROL_CHAT_ID):
+        return False
+    if (
+        message.get("forward_origin") or message.get("forward_from_chat") or
+        message.get("forward_from_message_id") or isinstance(message.get("reply_to_message"), dict)
+    ):
+        return False
+    parsed = _v68_extract_x_status(str(message.get("text") or message.get("caption") or ""))
+    if not parsed:
+        return False
+    username, tweet_id, link = parsed
+    key = f"{username.casefold()}:{tweet_id}"
+    with _V68_LINK_PREP_LOCK:
+        if key in _V68_LINK_PREP_INFLIGHT:
+            return True
+        last_done = float(_V68_LINK_PREP_DONE.get(key, 0.0) or 0.0)
+        if last_done and time.time() - last_done < 3.0:
+            return True
+        _V68_LINK_PREP_INFLIGHT.add(key)
+    reply_id = int(message.get("message_id", 0) or 0)
+    try:
+        if callable(globals().get("_reliable_submit_control")):
+            _reliable_submit_control(_v68_prepare_pasted_x_link, (username, tweet_id, link, reply_id), f"pasted-x-{tweet_id}")
+        else:
+            Thread(target=_v68_prepare_pasted_x_link, args=(username, tweet_id, link, reply_id), daemon=True).start()
+    except Exception:
+        with _V68_LINK_PREP_LOCK:
+            _V68_LINK_PREP_INFLIGHT.discard(key)
+        raise
+    return True
+
+
+def process_control_text_update(update: dict[str, Any]) -> None:
+    if _v68_try_prepare_pasted_x_link(update):
+        return
+    return _V95_PRE_PROCESS_CONTROL_TEXT_UPDATE(update)
+
+
+# Exact V68/V72 RTL policy: bot-authored channel posts are NOT skipped.
+def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
+    if not V43_ALL_CHANNEL_RTL_EDIT_ENABLED:
+        return False
+    message = update.get("channel_post") or update.get("edited_channel_post") or {}
+    if not isinstance(message, dict):
+        return False
+    chat = message.get("chat") or {}
+    if str(chat.get("type") or "") != "channel":
+        return False
+    chat_id = str(chat.get("id") or "")
+    message_id = int(message.get("message_id", 0) or 0)
+    if not chat_id or not message_id:
+        return False
+    kind, original, entities = _v42_message_text_and_entities(message)
+    if not kind or not original or not _v42_message_needs_rtl_repair(original):
+        return False
+    transformed = _v42_transform_text_entities(original, entities)
+    if transformed is None:
+        logging.info("V95/V68 channel RTL skipped only because an entity crosses multiple lines: chat=%s message=%s", chat_id, message_id)
+        return False
+    fixed_text, fixed_entities = transformed
+    key = f"{chat_id}:{message_id}"
+    with _V43_CHANNEL_RTL_EDIT_LOCK:
+        if key in _V43_CHANNEL_RTL_EDIT_INFLIGHT:
+            return True
+        _V43_CHANNEL_RTL_EDIT_INFLIGHT.add(key)
+    try:
+        _v42_edit_message_rtl(chat_id, message_id, kind, fixed_text, fixed_entities)
+        logging.info("V95/V68 repaired channel post RTL in place: %s", key)
+        return True
+    except Exception as exc:
+        logging.warning("V95/V68 could not edit channel RTL in place (Edit Messages required): %s error=%s", key, short_error(exc, 420))
+        return False
+    finally:
+        with _V43_CHANNEL_RTL_EDIT_LOCK:
+            _V43_CHANNEL_RTL_EDIT_INFLIGHT.discard(key)
+
+
+_V68_NETO_FOOTER_HTML = '<a href="https://t.me/neto_sport">נטו ספורט.</a>📝'
+SIGNATURE_TEXT = "נטו ספורט."
+NETO_SPORT_FOOTER_HTML = _V68_NETO_FOOTER_HTML
+_V31_SIGNATURE_HTML = RTL_MARK + _V68_NETO_FOOTER_HTML
+_V68_NETO_FOOTER_PATTERNS = (
+    re.compile(r'(?iu)<a\s+href=["\']https?://t\.me/neto_sport["\'][^>]*>\s*נטו\s+ספורט\.?\s*</a>\s*\.?\s*📝'),
+    re.compile(r'(?iu)נטו\s+ספורט\.?\s*\(\s*https?://t\.me/neto_sport\s*\)\s*\.?\s*📝'),
+    re.compile(r'(?iu)\[\s*נטו\s+ספורט\.?\s*\]\(\s*https?://t\.me/neto_sport\s*\)\s*📝'),
+)
+
+
+def _v68_canonicalize_neto_footer(value: Any) -> Any:
+    if not isinstance(value, str) or ("neto_sport" not in value and "נטו ספורט" not in value):
+        return value
+    text = html.unescape(value)
+    for pattern in _V68_NETO_FOOTER_PATTERNS:
+        text = pattern.sub(_V68_NETO_FOOTER_HTML, text)
+    # Escaped/raw anchor forms from historical prepared messages.
+    text = re.sub(
+        r'(?iu)\\?<a\s+href=["\']https?\\?[:/]*/?t\.me/?neto_sport["\'][^>]*>\s*נטו\s+ספורט\.?\s*\\?</a>\s*\.?\s*📝',
+        _V68_NETO_FOOTER_HTML,
+        text,
+    )
+    return text
+
+
+def telegram_api(method: str, payload: dict[str, Any] | None = None, *, max_attempts: int = HTTP_RETRIES, timeout: int = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
+    data = dict(payload or {})
+    method_name = str(method or "")
+    if method_name in {"sendMessage", "editMessageText", "sendPhoto", "sendVideo", "sendAnimation", "editMessageCaption"}:
+        for field in ("text", "caption"):
+            if isinstance(data.get(field), str):
+                after = _v68_canonicalize_neto_footer(data[field])
+                data[field] = after
+                if _V68_NETO_FOOTER_HTML in str(after) and "<a " in str(after):
+                    data["parse_mode"] = "HTML"
+                    data.pop("entities", None)
+                    data.pop("caption_entities", None)
+    return _V95_PRE_TELEGRAM_API(method_name, data, max_attempts=max_attempts, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# V69 EDITORIAL POLICY AS PRESENT INSIDE V72.  Gemini budget/failover is NOT restored.
+# ---------------------------------------------------------------------------
+_V69_WOMEN_OR_OTHER_SPORT_RE = re.compile(
+    r"(?iu)(?:\bwomen(?:'s)?\b|\bwsl\b|\bwnba\b|\bnba\b|\bnfl\b|\bufc\b|"
+    r"\bbasketball\b|\btennis\b|\bgolf\b|\bformula\s*1\b|\bf1\b|"
+    r"כדורגל\s+נשים|נשים\b.*כדורגל|כדורסל|טניס|גולף|פורמולה)"
+)
+_V69_MENS_FOOTBALL_ACTION_RE = re.compile(
+    r"(?iu)(?:\btransfer\b|\bmove\b|\bsign(?:s|ed|ing)?\b|\bjoin(?:s|ed|ing)?\b|"
+    r"\bdeal\b|\bbid\b|\boffer\b|\bagreement\b|\bterms\b|\bmedical\b|"
+    r"\bnegotiat(?:e|es|ed|ing|ion|ions)\b|\bloan\b|\bcontract\b|"
+    r"\bfee\b|\bclub\b|\bplayer\b|\bmanager\b|\bcoach\b|"
+    r"העבר(?:ה|תו|ת)|מעבר|חתם|חתימה|יחתום|מצטרף|להצטרף|עסקה|"
+    r"הצעה|סיכום|הסכם|תנאים|בדיקות\s+רפואיות|משא\s+ומתן|השאלה|"
+    r"חוזה|דמי\s+העברה|מועדון|שחקן|מאמן)"
+)
+_V69_KNOWN_FOOTBALL_CONTEXT_RE = re.compile(
+    r"(?iu)(?:Newcastle|Marseille|Barcelona|Real\s+Madrid|Manchester\s+(?:United|City)|"
+    r"Liverpool|Arsenal|Chelsea|Tottenham|Aston\s+Villa|Crystal\s+Palace|"
+    r"PSG|Paris\s+Saint-Germain|Bayern|Dortmund|Juventus|Inter|Milan|Napoli|Roma|"
+    r"Porto|Benfica|Sporting|Galatasaray|Fenerbahce|Fenerbahçe|"
+    r"ניוקאסל|מארסיי|ברצלונה|ריאל\s+מדריד|מנצ'סטר\s+(?:יונייטד|סיטי)|"
+    r"ליברפול|ארסנל|צ'לסי|טוטנהאם|אסטון\s+וילה|קריסטל\s+פאלאס|"
+    r"פריז\s+סן[- ]ז'רמן|פ\.?ס\.?ז|באיירן|דורטמונד|יובנטוס|אינטר|מילאן|"
+    r"נאפולי|רומא|פורטו|בנפיקה|גלאטסראיי|פנרבחצ'ה)"
+)
+_V69_INTERVIEW_OR_REACTION_RE = re.compile(
+    r"(?iu)(?:\binterview\b|\basked\b|\bquestion\b|\bdiscuss(?:ed|es|ing)?\b|"
+    r"\breaction\b|\bthoughts?\b|\bopinion\b|\bspeaking\s+about\b|"
+    r"\bon\s+the\s+question\b|🎙️|🗣️|ראיון|בראיון|נשאל|שאלה|דן\s+ב|תגובה|דעה|מה\s+דעת|מדבר\s+על)"
+)
+_V69_CONCRETE_NEWS_RE = re.compile(
+    r"(?iu)(?:\btransfer\b|\bsign(?:s|ed|ing)?\b|\bjoin(?:s|ed|ing)?\b|\bdeal\b|"
+    r"\bbid\b|\boffer\b|\bagreement\b|\bpersonal\s+terms\b|\bmedical\b|"
+    r"\bcontract\b|\brenew(?:al|ed|s)?\b|\binjur(?:y|ed)\b|\boperation\b|"
+    r"\bnegotiat(?:e|es|ed|ing|ion|ions)\b|\bloan\b|\brelease\s+clause\b|"
+    r"\bofficial\b|\bappointed\b|\bsacked\b|\bdismissed\b|\bsquad\b|\bcall[- ]?up\b|"
+    r"העבר(?:ה|תו|ת)|מעבר|חתם|חתימה|יחתום|מצטרף|להצטרף|עסקה|"
+    r"הצעה|סיכום|הסכם|תנאים\s+אישיים|בדיקות\s+רפואיות|חוזה|הארכת\s+חוזה|"
+    r"פציעה|ניתוח|משא\s+ומתן|השאלה|סעיף\s+שחרור|רשמי|מונה|פוטר|סגל|זימון)"
+)
+
+
+def _v69_source_text(post: Post) -> str:
+    try:
+        return html.unescape(str(_final_source_text(post) or ""))
+    except Exception:
+        return html.unescape("\n".join([str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or "")]))
+
+
+def _v69_is_plain_mens_football_news(post: Post) -> bool:
+    text = _v69_source_text(post)
+    if not text or _V69_WOMEN_OR_OTHER_SPORT_RE.search(text):
+        return False
+    if not _V69_MENS_FOOTBALL_ACTION_RE.search(text):
+        return False
+    return bool(_V69_KNOWN_FOOTBALL_CONTEXT_RE.search(text))
+
+
+def is_other_sport_post(post: Post) -> bool:
+    if _v69_is_plain_mens_football_news(post):
+        return False
+    return bool(_V95_PRE_IS_OTHER_SPORT_POST(post))
+
+
+def _v69_is_low_value_interview(post: Post) -> bool:
+    text = _v69_source_text(post)
+    if not text or not _V69_INTERVIEW_OR_REACTION_RE.search(text):
+        return False
+    if _V69_CONCRETE_NEWS_RE.search(text):
+        return False
+    return True
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v69_is_low_value_interview(post):
+        return "low_value_interview_or_reaction"
+    reason = str(_V95_PRE_FINAL_LOCAL_BLOCK(post) or "")
+    if reason and _v69_is_plain_mens_football_news(post):
+        low = reason.casefold()
+        if ("other_sport" in low or "not_mens" in low or "not_male" in low or "mens_football" in low or "כדורגל גברים" in reason):
+            return ""
+    return reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "low_value_interview_or_reaction" in raw:
+        return "ראיון, תגובה או פרשנות ללא מידע חדשותי ממשי נחסמו"
+    return str(_V95_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+# ---------------------------------------------------------------------------
+# V71/V72 ROOT FORMAT ENGINE EXACT BEHAVIOR, applied above current V94 renderer.
+# ---------------------------------------------------------------------------
+def should_label_recycled_report(post: Post) -> bool:
+    return False
+
+_V72_RECYCLE_HEADING_RE = re.compile(
+    r"(?imu)^(?P<prefix>\s*(?:<b>)?[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]*)"
+    r"מיחזור\s+של\s+(?P<name>[^:\n]{2,80}:)"
+)
+
+
+def _v72_remove_recycle_display_label(value: Any) -> str:
+    return _V72_RECYCLE_HEADING_RE.sub(lambda m: (m.group("prefix") or "") + m.group("name"), str(value or ""))
+
+
+def _v72_known_club_display_names() -> list[str]:
+    names: set[str] = set()
+    try:
+        for info in (globals().get("TEAM_CATALOG", {}) or {}).values():
+            if not isinstance(info, dict):
+                continue
+            name = str(info.get("name") or "").strip()
+            if name:
+                names.add(name)
+            for alias in info.get("aliases", []) or []:
+                alias = str(alias or "").strip()
+                if alias and re.search(r"[א-ת]", alias):
+                    names.add(alias)
+    except Exception:
+        pass
+    try:
+        for value in (globals().get("TEAM_REPLACEMENTS", {}) or {}).values():
+            value = str(value or "").strip()
+            if value and re.search(r"[א-ת]", value):
+                names.add(value)
+    except Exception:
+        pass
+    return sorted(names, key=len, reverse=True)
+
+
+_V72_KNOWN_CLUB_NAMES = _v72_known_club_display_names()
+if _V72_KNOWN_CLUB_NAMES:
+    _V72_CLUB_ALTERNATION = "|".join(re.escape(name) for name in _V72_KNOWN_CLUB_NAMES)
+    _V72_CLUB_PREFIX_RE = re.compile(
+        rf"(?iu)(?<![A-Za-zא-ת])(?:פ\s*[.\-]?\s*צ\s*[.]?|אפ\s*[.\-]?\s*סי\s*[.]?|F\s*[.]?\s*C\s*[.]?)"
+        rf"[ \t]*(?:\n[ \t]*|[ \t]+)(?P<club>{_V72_CLUB_ALTERNATION})\b"
+    )
+else:
+    _V72_CLUB_PREFIX_RE = re.compile(r"(?!x)x")
+
+
+def _v72_normalize_known_club_prefixes(value: Any) -> str:
+    text = str(value or "")
+    return _V72_CLUB_PREFIX_RE.sub(lambda m: str(m.group("club") or ""), text)
+
+
+def _v71_normalize_fc_porto(value: Any) -> str:
+    return _v72_normalize_known_club_prefixes(value)
+
+
+_V72_EMOJI_BASE = (r"(?:" r"[\U0001F1E6-\U0001F1FF]{2}|" r"[\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf]" r")")
+_V72_EMOJI_TRAIL = (r"(?:" r"\ufe0f|" r"[\U0001F3FB-\U0001F3FF]|" r"[\U000E0020-\U000E007F]|" r"\u200d(?:[\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf])\ufe0f?" r")*")
+_V72_EMOJI_UNIT = rf"(?:{_V72_EMOJI_BASE}{_V72_EMOJI_TRAIL})"
+_V72_EMOJI_SEQUENCE = rf"(?:{_V72_EMOJI_UNIT}(?:[ \t]*))+"
+_V72_LINE_MARKER_RE = re.compile(
+    rf"^\s*(?P<marker>{_V72_EMOJI_SEQUENCE}|[-–—•▪▫◦‣]|\d{{1,3}}[.)])"
+    rf"(?:[ \t]+(?P<body>\S.*)|(?P<empty_body>\s*))$", re.UNICODE,
+)
+_V72_ANY_EMOJI_MARKER_RE = re.compile(rf"(?P<marker>{_V72_EMOJI_SEQUENCE})(?=[ \t]+\S)", re.UNICODE)
+_V72_BIDI_EDGE_RE = re.compile(
+    r"^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+|"
+    r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+$"
+)
+
+
+def _v72_visible_line(value: Any) -> str:
+    line = str(value or "")
+    previous = None
+    while line != previous:
+        previous = line
+        line = _V72_BIDI_EDGE_RE.sub("", line)
+    try:
+        line = html_message_to_plain_text(line)
+    except Exception:
+        line = re.sub(r"(?is)<[^>]+>", " ", line)
+    return html.unescape(line).strip()
+
+
+def _v72_marker_parts(value: Any) -> tuple[str, str]:
+    visible = _v72_visible_line(value)
+    if not visible:
+        return "", ""
+    match = _V72_LINE_MARKER_RE.match(visible)
+    if not match:
+        return "", visible
+    return str(match.group("marker") or "").strip(), str(match.group("body") or "").strip()
+
+
+def _v72_marker_key(marker: Any) -> str:
+    return re.sub(r"[\s\ufe0f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", str(marker or ""))
+
+
+def _v72_has_leading_marker(value: Any) -> bool:
+    marker, _body = _v72_marker_parts(value)
+    return bool(marker)
+
+
+def _v72_short_label(value: Any) -> bool:
+    _marker, body = _v72_marker_parts(value)
+    visible = body or _v72_visible_line(value)
+    words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", visible)
+    return bool(1 <= len(words) <= 12 and not re.search(r"[.!?…;]\s*$", visible))
+
+
+def _v52_marker_parts(line: Any) -> tuple[str, str]:
+    return _v72_marker_parts(line)
+
+
+def _v52_line_is_list_or_marker(value: Any) -> bool:
+    visible = _v72_visible_line(value)
+    marker, _body = _v72_marker_parts(visible)
+    return bool(marker or _V49_LIST_RE.match(visible) or re.match(r"^\s*(?:[•▪▫◦‣]|\d+[.)])", visible))
+
+
+def _v53_is_structured_row(line: Any) -> bool:
+    visible = _v72_visible_line(line)
+    marker, body = _v72_marker_parts(visible)
+    if _V53_BULLET_RE.match(visible) or _V53_ARROW_RE.match(visible):
+        return True
+    if not marker:
+        return False
+    words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", body)
+    return bool(1 <= len(words) <= 14 and not re.search(r"[.!?…]\s*$", body))
+
+
+def _v72_join_only_plain_accidental_wraps(value: Any) -> str:
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        current = lines[index]
+        if index + 1 >= len(lines):
+            out.append(current); break
+        nxt = lines[index + 1]
+        cur = _v72_visible_line(current)
+        next_visible = _v72_visible_line(nxt)
+        if not cur or not next_visible:
+            out.append(current); index += 1; continue
+        cur_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", cur)
+        next_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", next_visible)
+        can_join = bool(
+            2 <= len(cur_words) <= 10 and len(next_words) >= 2
+            and not re.search(r"[.!?…:;]\s*$", cur)
+            and not _v72_has_leading_marker(current) and not _v72_has_leading_marker(nxt)
+            and not _v52_is_writer_heading(current)
+            and not _V52_OPENING_RE.match(cur) and not _V52_OPENING_RE.match(next_visible)
+            and not _V49_FOOTER_RE.search(next_visible)
+            and not (_v49_is_emoji_only_line(nxt) if "_v49_is_emoji_only_line" in globals() else False)
+        )
+        if can_join:
+            out.append(current.rstrip() + " " + nxt.lstrip()); index += 2; continue
+        out.append(current); index += 1
+    return "\n".join(out)
+
+
+def _v52_join_accidental_sentence_lines(lines: list[str]) -> list[str]:
+    return _v72_join_only_plain_accidental_wraps("\n".join(lines)).split("\n")
+
+
+def _v53_join_wrapped_prose(value: Any) -> str:
+    return _v72_join_only_plain_accidental_wraps(value)
+
+
+def _v72_source_structured_rows(source: Any) -> list[tuple[int, str, str]]:
+    rows: list[tuple[int, str, str]] = []
+    for index, line in enumerate(str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")):
+        marker, body = _v72_marker_parts(line)
+        if marker and body:
+            rows.append((index, _v72_marker_key(marker), body))
+    return rows
+
+
+def _v72_find_marker_occurrences(value: str) -> list[tuple[int, int, str]]:
+    found: list[tuple[int, int, str]] = []
+    for match in _V72_ANY_EMOJI_MARKER_RE.finditer(value):
+        marker = str(match.group("marker") or "")
+        key = _v72_marker_key(marker)
+        if key:
+            found.append((match.start(), match.end(), key))
+    return found
+
+
+def _v72_restore_source_marker_boundaries(source: Any, translated: Any) -> str:
+    text = str(translated or "").replace("\r\n", "\n").replace("\r", "\n")
+    rows = _v72_source_structured_rows(source)
+    if len(rows) < 2:
+        return text
+    wanted = [key for _idx, key, _body in rows]
+    occurrences = _v72_find_marker_occurrences(text)
+    selected: list[int] = []
+    cursor = 0
+    for wanted_key in wanted:
+        chosen = None
+        for position in range(cursor, len(occurrences)):
+            start, _end, key = occurrences[position]
+            if key == wanted_key:
+                chosen = (position, start); break
+        if chosen is None:
+            continue
+        cursor = chosen[0] + 1
+        selected.append(chosen[1])
+    for start in sorted(set(selected), reverse=True):
+        if start <= 0:
+            continue
+        prefix = text[:start]
+        line_start = prefix.rfind("\n") + 1
+        if prefix[line_start:].strip() == "":
+            continue
+        text = prefix.rstrip(" \t") + "\n" + text[start:]
+    return text
+
+
+def _v72_known_structured_labels(source_body: str) -> list[str]:
+    labels: set[str] = set()
+    def add(value: Any) -> None:
+        value = str(value or "").strip()
+        if not value:
+            return
+        labels.add(value)
+        if re.match(r"^ה[א-ת]", value) and len(value) >= 5:
+            labels.add(value[1:])
+    try:
+        for info in (globals().get("TEAM_CATALOG", {}) or {}).values():
+            if isinstance(info, dict): add(info.get("name"))
+    except Exception: pass
+    try:
+        for spec in globals().get("_FINAL_TOURNAMENT_SPECS", ()) or ():
+            if isinstance(spec, dict):
+                pattern = spec.get("pattern")
+                if pattern is not None and pattern.search(source_body): add(spec.get("label"))
+    except Exception: pass
+    for mapping_name in ("FOOTBALL_TERMS", "TEAM_REPLACEMENTS", "PLAYER_REPLACEMENTS"):
+        try:
+            mapping = globals().get(mapping_name, {}) or {}
+            locally = str(source_body or "")
+            for src, target in sorted(mapping.items(), key=lambda item: len(str(item[0])), reverse=True):
+                if re.fullmatch(re.escape(str(src)), locally, flags=re.IGNORECASE): add(target)
+        except Exception: pass
+    if re.search(r"[א-ת]", source_body): add(source_body)
+    return sorted(labels, key=len, reverse=True)
+
+
+def _v72_split_last_list_label_from_source_prose(source: Any, translated: Any) -> str:
+    src_lines = str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    structured = _v72_source_structured_rows(source)
+    if len(structured) < 2: return str(translated or "")
+    last_src_index, last_key, last_source_body = structured[-1]
+    next_source_index = next((i for i in range(last_src_index + 1, len(src_lines)) if src_lines[i].strip()), None)
+    if next_source_index is None: return str(translated or "")
+    next_marker, _ = _v72_marker_parts(src_lines[next_source_index])
+    if next_marker: return str(translated or "")
+    text = str(translated or "")
+    lines = text.split("\n")
+    candidate_index = None
+    for i, line in enumerate(lines):
+        marker, body = _v72_marker_parts(line)
+        if marker and body and _v72_marker_key(marker) == last_key: candidate_index = i
+    if candidate_index is None: return text
+    marker, body = _v72_marker_parts(lines[candidate_index])
+    labels = _v72_known_structured_labels(last_source_body)
+    body_fold = body.casefold()
+    for label in labels:
+        label_fold = label.casefold()
+        if not body_fold.startswith(label_fold): continue
+        if len(body) == len(label): return text
+        after = body[len(label):]
+        if after and not after[0].isspace(): continue
+        tail = after.strip()
+        if len(re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", tail)) < 3: return text
+        lines[candidate_index] = f"{marker} {body[:len(label)].strip()}".strip()
+        lines.insert(candidate_index + 1, tail)
+        return "\n".join(lines)
+    return text
+
+
+def _v72_remove_redundant_double_markers(value: Any) -> str:
+    lines: list[str] = []
+    for line in str(value or "").split("\n"):
+        line = re.sub(rf"^\s*[-–—•▪▫◦‣]\s+(?={_V72_EMOJI_SEQUENCE}[ \t]+\S)", "", line)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+_V72_DANGLING_SOURCE_SHELL_RE = re.compile(
+    rf"(?iu)^\s*(?:{_V72_EMOJI_SEQUENCE}\s*)?"
+    rf"(?:מדווח(?:ת|ים|ות)?|דיווח|לפי|מקור|reported|reports?|according\s+to|via|source)"
+    rf"(?:\s+(?:ב|אצל|מאת|של|על\s+ידי|by|at|on|via|from|to))?"
+    rf"\s*[:\-–—.,;]*\s*$"
+)
+
+
+def _v72_cleanup_dangling_source_shells(value: Any) -> str:
+    output: list[str] = []
+    for line in str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        visible = _v72_visible_line(line)
+        if visible and _V72_DANGLING_SOURCE_SHELL_RE.match(visible):
+            continue
+        output.append(line.rstrip())
+    return "\n".join(output).strip()
+
+
+def _v72_general_body_layout(source: Any, translated: Any) -> str:
+    text = _v72_normalize_known_club_prefixes(translated)
+    text = _v72_restore_source_marker_boundaries(source, text)
+    text = _v72_split_last_list_label_from_source_prose(source, text)
+    text = _v72_remove_redundant_double_markers(text)
+    text = _v72_cleanup_dangling_source_shells(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _v71_split_inline_structured_markers(text: str) -> str: return str(text or "")
+def _v71_split_globe_label_from_following_prose(lines: list[str]) -> list[str]: return list(lines)
+def _v71_repair_requested_body_layout(value: Any) -> str:
+    text = _v72_normalize_known_club_prefixes(value)
+    text = _v72_remove_redundant_double_markers(text)
+    text = _v72_cleanup_dangling_source_shells(text)
+    return text.strip()
+
+
+def tidy_translated_text(text: str) -> str:
+    rendered = _V95_PRE_TIDY_TRANSLATED_TEXT(text)
+    rendered = _v72_cleanup_dangling_source_shells(rendered)
+    return _v72_normalize_known_club_prefixes(rendered).strip()
+
+
+_V72_LRI = "\u2066"
+_V72_PDI = "\u2069"
+_V72_KEYCAP_RUN_RE = re.compile(
+    r"(?:\u2066)?(?P<run>(?:[0-9#*]\ufe0f?\u20e3){2,}(?:[ \t]*[\U0001F300-\U0001FAFF\u2600-\u27bf]\ufe0f?)?)(?:\u2069)?",
+    re.UNICODE,
+)
+
+def _v72_protect_keycap_runs(value: Any) -> Any:
+    if not isinstance(value, str) or not value: return value
+    return _V72_KEYCAP_RUN_RE.sub(lambda m: _V72_LRI + m.group("run") + _V72_PDI, value)
+
+def _v71_protect_keycap_clusters(value: Any) -> Any: return _v72_protect_keycap_runs(value)
+
+
+def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+    translated = _v72_general_body_layout(main_source, translated)
+    if quoted_translated:
+        quoted_translated = _v72_general_body_layout(quote_source, quoted_translated)
+    rendered = _V95_PRE_BUILD_MESSAGE(post, translated, quoted_translated, quoted_author_translated, include_video_link)
+    # V94 contains later render layers that can flatten a structure after the pre-layout.
+    # Re-assert the SAME V72 source provenance at the final display boundary.
+    rendered = _v72_restore_source_marker_boundaries(main_source, rendered)
+    rendered = _v72_split_last_list_label_from_source_prose(main_source, rendered)
+    if quoted_translated and quote_source:
+        rendered = _v72_restore_source_marker_boundaries(quote_source, rendered)
+    rendered = _v72_remove_recycle_display_label(rendered)
+    rendered = _v72_normalize_known_club_prefixes(rendered)
+    rendered = _v72_remove_redundant_double_markers(rendered)
+    # V72 inherited this from V71; V94 does not contain V71, so preserve composite V72 behavior here.
+    rendered = _v72_cleanup_dangling_source_shells(rendered)
+    rendered = re.sub(r"[ \t]+\n", "\n", rendered)
+    rendered = re.sub(r"\n[ \t]+", "\n", rendered)
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered)
+    # V30 is part of the V72 lineage: exact writer gap, opening-label layout and punctuation.
+    rendered = _v30_format_report_body(rendered)
+    rendered = _v72_protect_keycap_runs(rendered)
+    return rendered.strip()
+
+
+_V95_CANONICAL_FOOTER_REMOVE_RE = re.compile(
+    r'(?is)[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*'
+    r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>'
+    r'\s*[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*נטו\s+ספורט\.?\s*'
+    r'</a>\s*\.?\s*📝'
+)
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    text = _v72_remove_recycle_display_label(message)
+    text = _v72_normalize_known_club_prefixes(text)
+    text = _v72_cleanup_dangling_source_shells(text)
+    text = _v72_protect_keycap_runs(text)
+    # Keep all established current sanitizing, then enforce the final V72 display boundary.
+    text = _V95_PRE_FINALIZE_OUTGOING(text)
+    text = _v30_format_report_body(text)
+    text = _V95_CANONICAL_FOOTER_REMOVE_RE.sub("", text)
+    text = _v30_remove_all_neto_footers(text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = _v72_protect_keycap_runs(text)
+    signature = RTL_MARK + _V68_NETO_FOOTER_HTML
+    return (text + "\n\n" + signature).strip() if text else signature
+
+
+# ---------------------------------------------------------------------------
+# V72 CONTROL/OPTIONAL MEDIA behavior: exact pre-V89 implementations are appended below.
+# ---------------------------------------------------------------------------
+
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    startup_panel_done = False
+    while True:
+        try:
+            if is_shabbat_now():
+                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
+                continue
+            if not startup_panel_done:
+                startup_panel_done = True
+                if CONTROL_SEND_PANEL_ON_STARTUP:
+                    try:
+                        send_quick_control_panel(force_new=True)
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
+                else:
+                    try:
+                        ensure_control_panel_once_if_requested()
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "20")),
+                    "allowed_updates": [
+                        "callback_query", "message", "edited_message",
+                        "channel_post", "edited_channel_post",
+                    ],
+                },
+            )
+            # Candle-lighting can begin while getUpdates is waiting.  Process
+            # absolutely nothing from that batch once Shabbat is active.
+            if is_shabbat_now():
+                continue
+            updates = list(response.get("result", []) or [])
+            if not updates:
+                continue
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+                    callbacks.append(update)
+                else:
+                    noncallbacks.append(update)
+            for update in callbacks:
+                process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try:
+                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+            if batch_offset != offset:
+                offset = batch_offset
+                try:
+                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
+                except RuntimeError:
+                    pass
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
+                    except Exception as cleanup_exc:
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+
+def _final_ytdlp_candidates(post: Post) -> list[dict[str, Any]]:
+    link = str(getattr(post, "link", "") or "")
+    if not link:
+        return []
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        import yt_dlp  # type: ignore
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": False,
+            "socket_timeout": FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS,
+            "extractor_args": {"twitter": {"api": ["syndication"]}},
+        }
+        with yt_dlp.YoutubeDL(options) as downloader:
+            info = downloader.extract_info(link, download=False)
+        _final_walk_video_variants(info, out)
+    except Exception as exc:
+        logging.debug("Optional yt-dlp module video lookup unavailable/failed safely: %s", short_error(exc, 180))
+    if out:
+        return list(out.values())
+    executable = shutil.which("yt-dlp")
+    if not executable:
+        return []
+    try:
+        import subprocess
+        completed = subprocess.run(
+            [executable, "-J", "--no-warnings", "--extractor-args", "twitter:api=syndication", link],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(15.0, FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS * 2),
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            _final_walk_video_variants(json.loads(completed.stdout), out)
+    except Exception as exc:
+        logging.debug("Optional yt-dlp command video lookup failed safely: %s", short_error(exc, 180))
+    return list(out.values())
+
+
+
+# ---------------------------------------------------------------------------
+# V95 audit: prove current RSS/translation remain unchanged while V72 behavior wins.
+# ---------------------------------------------------------------------------
+def _v95_v72_behavior_audit() -> None:
+    if fetch_posts_safely is not _V95_RSS_FETCH_POSTS_SAFELY or fetch_posts is not _V95_RSS_FETCH_POSTS:
+        raise RuntimeError("v95_current_rss_changed")
+    if translate_post_for_send is not _V95_TRANSLATE_POST_FOR_SEND:
+        raise RuntimeError("v95_current_send_translation_changed")
+    if manual_force_translation is not _V95_MANUAL_FORCE_TRANSLATION:
+        raise RuntimeError("v95_current_manual_translation_changed")
+    if globals().get("_v94_google_network_once") is not _V95_GOOGLE_NETWORK_ONCE:
+        raise RuntimeError("v95_google_transport_changed")
+    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v95_current_scan_settings_changed")
+    if _V68_NETO_FOOTER_HTML != '<a href="https://t.me/neto_sport">נטו ספורט.</a>📝':
+        raise RuntimeError("v95_v72_footer_wrong")
+    if _v68_extract_x_status("https://x.com/FabrizioRomano/status/1234567890123456789?s=20") != (
+        "FabrizioRomano", "1234567890123456789", "https://x.com/FabrizioRomano/status/1234567890123456789"
+    ):
+        raise RuntimeError("v95_v72_pasted_link_parser_failed")
+    control_names = set(control_loop.__code__.co_names)
+    if "_V57_CHANNEL_EXECUTOR" not in control_names or "_V57_CONTROL_TEXT_EXECUTOR" not in control_names:
+        raise RuntimeError("v95_v72_control_loop_not_restored")
+    if "_v89_control_warn_throttled" in control_names:
+        raise RuntimeError("v95_v89_control_loop_still_active")
+    rtl_names = set(_v43_try_edit_any_admin_channel_post.__code__.co_names)
+    if "_v42_is_bot_authored_update" in rtl_names or "_V89_RTL_UNEDITABLE_KEYS" in rtl_names:
+        raise RuntimeError("v95_v89_rtl_skip_still_active")
+    if should_label_recycled_report(None):
+        raise RuntimeError("v95_recycle_label_enabled")
+    if "מיחזור של" in _v72_remove_recycle_display_label("<b>מיחזור של פבריציו רומאנו:</b>\nטקסט"):
+        raise RuntimeError("v95_recycle_cleanup_failed")
+    for row in ("🌍 תחרות", "🛩️ מעבר", "🇩🇪 🗂️ הצעה", "🏆 תואר"):
+        marker, body = _v72_marker_parts(row)
+        if not marker or not body:
+            raise RuntimeError("v95_marker_grammar_failed:" + row)
+    if _v72_remove_redundant_double_markers("- 🛩️ שחקן יעזוב") != "🛩️ שחקן יעזוב":
+        raise RuntimeError("v95_double_marker_failed")
+    if _v72_cleanup_dangling_source_shells("🕶️ מדווח ב"):
+        raise RuntimeError("v95_dangling_source_failed")
+    protected = _v72_protect_keycap_runs("מספר 1️⃣9️⃣👕")
+    if _V72_LRI + "1️⃣9️⃣👕" + _V72_PDI not in protected:
+        raise RuntimeError("v95_keycap_failed")
+    if "\n\n\n" in _v72_general_body_layout("", "א\n\n\n\nב"):
+        raise RuntimeError("v95_excess_blank_lines")
+
+
+_v95_v72_behavior_audit()
+logging.info(
+    "V95 active: V72 behavior/presentation/control/filter boundary restored; "
+    "V93 live providers and V94 forced translation/no-English safeguards preserved exactly."
+)
+# ====== END V95 V72 BEHAVIOR + CURRENT RSS/TRANSLATION ======
+
+
 if __name__ == "__main__":
     main()
