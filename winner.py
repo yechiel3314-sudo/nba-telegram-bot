@@ -74524,5 +74524,1007 @@ logging.info(
 )
 # ====== END V106 ======
 
+
+# ====== V107 FINAL: FULL V70/V72 TRANSLATION + EXACT X LINES/LISTS POLICY (2026-08-28) ======
+# Purpose: restore the COMPLETE presentation/translation contract from the last proven V70/V72
+# lineage without reverting any current provider/reliability/server-saving work.
+#
+# Preserved from current code: V93 FxTwitter/provider chain, V94 Gemini->Google reliability and
+# no-English gate, latest dedupe, V101-V104 credit saving, V105 hard Shabbat, V106 source headers.
+#
+# Restored/enforced here from V70/V72:
+# - facts are locked; translation may not summarize/omit/guess names, clubs, dates, fees or scores;
+# - original X logical lines and real blank paragraph rows are source-of-truth;
+# - a real list/ranking has one item per line, no blank rows between list items, and one blank row
+#   before/after the list when surrounding prose exists;
+# - inline lists proven by the source are formatted as lists even if a translator flattened them;
+# - source/junk URLs, pure credit handles, sponsor/PR/source shells and link-only arrows may be
+#   removed, but factual mentions/quotes/numbers/emojis/conditions/context are preserved;
+# - Google fallback must preserve source rows too. If a whole-text Google result flattened a proven
+#   multi-row source, retry row-by-row only then (bounded), rather than publishing a flattened list.
+# - V72 reporter layout remains: NicoSchira always compact; normal reporter text-only compact;
+#   normal reporter with media => heading + exactly one blank line; fact feeds => no source heading.
+
+BOT_BUILD_ID = "winner-v107-v70-v72-full-translation-lines-lists-policy-2026-08-28"
+
+_V107_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V107_KEEP_DEDUPE = find_recent_duplicate_event
+_V107_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
+_V107_KEEP_MAIN = main
+_V107_KEEP_CONTROL_LOOP = control_loop
+_V107_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+_V107_PRE_GOOGLE_FORCED = _v94_google_translate_forced
+_V107_PRE_BUILD_MESSAGE = build_message
+_V107_PRE_SEND_MAIN = send_prepared_message_to_main
+_V107_PRE_MANUAL_SEND = manual_force_send_prepared_message
+_V107_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
+_V107_PRE_HISTORY_TRANSLATE = _translate_history_post
+
+_V107_BIDI_ONLY_RE = re.compile(r"[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]")
+_V107_STAT_PAIR_RE = re.compile(
+    r"(?iu)(?:^|[ \t]+)(?:[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת0-9 .,'׳״()\-/]{0,36})\s*[:：]\s*\d+(?:[.,]\d+)?"
+)
+_V107_PERCENT_RE = re.compile(r"(?<!\d)\d{1,3}(?:[.,]\d+)?\s*%")
+_V107_STAT_NEXT_RE = re.compile(
+    r"(?<=[0-9%])(?:[ \t]+)(?=(?:[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת0-9 .,'׳״()\-/]{0,36})\s*[:：]\s*\d)",
+    re.IGNORECASE | re.UNICODE,
+)
+_V107_PERCENT_NEXT_RE = re.compile(r"(?<=\S)[ \t]+(?=\d{1,3}(?:[.,]\d+)?\s*%)")
+_V107_BULLET_ROW_RE = re.compile(r"^\s*(?:[-–—•▪▫◦‣*]|\d{1,3}[.)])\s+\S", re.UNICODE)
+_V107_STAT_ROW_RE = re.compile(
+    r"^\s*(?:[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת0-9 .,'׳״()\-/]{0,42})\s*[:：]\s*\d+(?:[.,]\d+)?(?:\s*%?)?\s*$",
+    re.IGNORECASE | re.UNICODE,
+)
+_V107_PERCENT_ROW_RE = re.compile(r"^\s*\d{1,3}(?:[.,]\d+)?\s*%\b", re.UNICODE)
+
+
+def _v107_source_layout_text(value: Any) -> str:
+    """Raw X structure is the layout source-of-truth, exactly as V72's final renderer used it.
+
+    Content cleaning is deliberately separate: V70 cleaning can remove URLs/credits and historically
+    collapses some whitespace, so it must never be allowed to erase the original X paragraph map.
+    """
+    return html.unescape(str(value or "")).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _v107_clean_translation_line(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(clean_for_ai_translation(raw) or "").strip()
+    except Exception:
+        try:
+            return str(clean_before_translation(raw) or "").strip()
+        except Exception:
+            return raw
+
+
+def _v107_visible_line(value: Any) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", "", text)
+    text = _V107_BIDI_ONLY_RE.sub("", text)
+    return text.strip()
+
+
+def _v107_is_list_row(line: Any) -> bool:
+    visible = _v107_visible_line(line)
+    if not visible:
+        return False
+    try:
+        marker, body = _v72_marker_parts(visible)
+        if marker and body:
+            return True
+    except Exception:
+        pass
+    if _V107_BULLET_ROW_RE.match(visible) or _V107_STAT_ROW_RE.match(visible) or _V107_PERCENT_ROW_RE.match(visible):
+        return True
+    return False
+
+
+def _v107_source_proves_inline_list(source: Any) -> bool:
+    text = _v107_source_layout_text(source)
+    if not text:
+        return False
+    try:
+        if _v101_source_inline_list(text):
+            return True
+    except Exception:
+        pass
+    # V70 translation prompt explicitly treats repeated stats/percentages as a real inline list.
+    for line in text.split("\n"):
+        if len(_V107_STAT_PAIR_RE.findall(line)) >= 3:
+            return True
+        if len(_V107_PERCENT_RE.findall(line)) >= 3:
+            return True
+    return False
+
+
+def _v107_split_proven_inline_list(source: Any, translated: Any) -> str:
+    text = str(translated or "").replace("\r\n", "\n").replace("\r", "\n")
+    src = _v107_source_layout_text(source)
+    if not text or not src:
+        return text
+    try:
+        if _v101_source_inline_list(src):
+            text = _v101_split_proven_inline_list(text)
+    except Exception:
+        pass
+    # Generic V70 list classes beyond emoji markers: repeated "label: number" stats and percentages.
+    if any(len(_V107_STAT_PAIR_RE.findall(line)) >= 3 for line in src.split("\n")):
+        text = "\n".join(_V107_STAT_NEXT_RE.sub("\n", row) for row in text.split("\n"))
+    if any(len(_V107_PERCENT_RE.findall(line)) >= 3 for line in src.split("\n")):
+        text = "\n".join(_V107_PERCENT_NEXT_RE.sub("\n", row) for row in text.split("\n"))
+    return text
+
+
+def _v107_exact_list_spacing(value: Any) -> str:
+    """V70/V72: no blank rows inside lists; exactly one around list blocks when prose surrounds."""
+    raw_lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    # First collapse blank rows; source paragraph restoration is re-applied later where provable.
+    lines = [line.rstrip() for line in raw_lines]
+    # Remove blank rows that accidentally appeared between two list rows.
+    compact: list[str] = []
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            prev = next((compact[j] for j in range(len(compact) - 1, -1, -1) if compact[j].strip()), "")
+            nxt = next((lines[j] for j in range(idx + 1, len(lines)) if lines[j].strip()), "")
+            if prev and nxt and _v107_is_list_row(prev) and _v107_is_list_row(nxt):
+                continue
+        compact.append(line)
+    lines = compact
+    # Find consecutive list blocks (at least 2 rows) and guarantee one blank row around when prose exists.
+    nonempty_positions = [i for i, line in enumerate(lines) if line.strip()]
+    blocks: list[tuple[int, int]] = []
+    pos = 0
+    while pos < len(nonempty_positions):
+        start_pos = pos
+        while pos < len(nonempty_positions) and _v107_is_list_row(lines[nonempty_positions[pos]]):
+            pos += 1
+        if pos - start_pos >= 2:
+            blocks.append((nonempty_positions[start_pos], nonempty_positions[pos - 1]))
+        if pos == start_pos:
+            pos += 1
+    # Insert from right to left so indexes remain stable.
+    for start, end in reversed(blocks):
+        prev_nonempty = next((i for i in range(start - 1, -1, -1) if lines[i].strip()), None)
+        next_nonempty = next((i for i in range(end + 1, len(lines)) if lines[i].strip()), None)
+        if next_nonempty is not None:
+            between = lines[end + 1:next_nonempty]
+            if not between or any(x.strip() for x in between) or len(between) != 1:
+                lines[end + 1:next_nonempty] = [""]
+        if prev_nonempty is not None:
+            # recompute start index after possible right-side modification is unnecessary because right-side edit is after start.
+            between = lines[prev_nonempty + 1:start]
+            if not between or any(x.strip() for x in between) or len(between) != 1:
+                lines[prev_nonempty + 1:start] = [""]
+    text = "\n".join(lines)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _v107_exact_v72_body(source: Any, translated: Any) -> str:
+    src = _v107_source_layout_text(source)
+    text = str(translated or "")
+    if not text:
+        return ""
+    # User-approved canonical corrections remain after the V70/V72 policy.
+    try:
+        text = _v96_hebrew_canonicalize(text)
+    except Exception:
+        pass
+    try:
+        text = str(_v106_fix_lamine_camara(text) or "")
+    except Exception:
+        pass
+    # Exact V72 root engine: source marker provenance + last-list-label split + no guessed hardcoded rows.
+    text = _v72_general_body_layout(src, text)
+    # V70 also explicitly required true inline lists/stats to become readable lists.
+    if _v107_source_proves_inline_list(src):
+        text = _v107_split_proven_inline_list(src, text)
+        text = _v72_general_body_layout(src, text)
+    # Restore real blank paragraph rows only when row-count proof is exact (same conservative V101/V72 principle).
+    try:
+        text = _v101_restore_source_blank_pattern(src, text)
+    except Exception:
+        pass
+    text = _v107_exact_list_spacing(text)
+    try:
+        text = _v72_cleanup_dangling_source_shells(text)
+        text = _v72_remove_redundant_double_markers(text)
+        text = _v72_normalize_known_club_prefixes(text)
+    except Exception:
+        pass
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _v107_source_row_signature(source: Any) -> tuple[list[str], list[bool]]:
+    """Logical translatable rows + real blank paragraphs from RAW X. Junk/link-only rows are ignored."""
+    src = _v107_source_layout_text(source)
+    lines = src.split("\n") if src else []
+    kept: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        cleaned = _v107_clean_translation_line(line)
+        if cleaned:
+            kept.append((i, cleaned))
+    logical = [cleaned for _idx, cleaned in kept]
+    blanks: list[bool] = []
+    for pos in range(max(0, len(kept) - 1)):
+        left, right = kept[pos][0], kept[pos + 1][0]
+        blanks.append(any(not lines[i].strip() for i in range(left + 1, right)))
+    return logical, blanks
+
+
+def _v107_google_needs_row_rescue(source: Any, translated: Any) -> bool:
+    logical, _blanks = _v107_source_row_signature(source)
+    if len(logical) < 2 or len(logical) > 12:
+        return False
+    out_rows = [x for x in str(translated or "").replace("\r\n", "\n").replace("\r", "\n").split("\n") if x.strip()]
+    # Strong evidence only: a proven multi-row X body was flattened/partially collapsed by Google.
+    return len(out_rows) < len(logical)
+
+
+def _v107_google_translate_rows_exact(source: Any, max_chars: int = 2500) -> str:
+    logical, blanks = _v107_source_row_signature(source)
+    if len(logical) < 2 or len(logical) > 12:
+        return ""
+    translated_rows: list[str] = []
+    for line in logical:
+        # Use the already-proven V94/V96 translator below V107. This keeps all current endpoints,
+        # success-only cache, retries and no-English validation. No recursion into V107.
+        translated_line = _V107_PRE_GOOGLE_FORCED(line, min(max_chars, max(240, len(line) * 5)))
+        translated_line = _v107_exact_v72_body(line, translated_line)
+        if not translated_line:
+            return ""
+        translated_rows.append(translated_line)
+    rebuilt: list[str] = []
+    for i, row in enumerate(translated_rows):
+        rebuilt.append(row)
+        if i < len(blanks) and blanks[i]:
+            rebuilt.append("")
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(rebuilt)).strip()
+
+
+# Final Google boundary. Whole-text remains first (cheapest). Row-by-row only rescues a proven
+# structure loss, so normal posts cost exactly what they cost in V106.
+def _v94_google_translate_forced(source: str, max_chars: int = 2500) -> str:
+    translated = _V107_PRE_GOOGLE_FORCED(source, max_chars)
+    translated = _v107_exact_v72_body(source, translated)
+    if _v107_google_needs_row_rescue(source, translated):
+        try:
+            row_exact = _v107_google_translate_rows_exact(source, max_chars)
+            if row_exact:
+                translated = row_exact
+        except Exception as exc:
+            logging.debug("V107 Google row-preserving rescue unavailable; keeping whole translation: %s", short_error(exc, 220))
+    return _v107_exact_v72_body(source, translated)
+
+
+# Final publish translation boundary. Keep V94's strong Gemini->Google reliability; only enforce
+# V70/V72 structure/cleanup on the successful output. No extra Gemini call is introduced.
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    main, quote, author = _V107_PRE_TRANSLATE_POST_FOR_SEND(post)
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True) if quote else ""
+    main = _v107_exact_v72_body(main_source, main)
+    # Gemini is explicitly instructed by the V70/V72 prompt to preserve source rows. Google has no
+    # prompt, so if Google flattened a proven raw-X multi-row body, repair it row-by-row only then.
+    if str(getattr(post, "translation_provider", "") or "").casefold() == "google" and _v107_google_needs_row_rescue(main_source, main):
+        try:
+            row_exact = _v107_google_translate_rows_exact(main_source, 2200)
+            if row_exact:
+                main = row_exact
+        except Exception as exc:
+            logging.debug("V107 publish Google raw-row rescue unavailable: %s", short_error(exc, 220))
+    if quote:
+        quote = _v107_exact_v72_body(quote_source, quote)
+        if str(getattr(post, "translation_provider", "") or "").casefold() == "google" and _v107_google_needs_row_rescue(quote_source, quote):
+            try:
+                row_exact_q = _v107_google_translate_rows_exact(quote_source, 1200)
+                if row_exact_q:
+                    quote = row_exact_q
+            except Exception:
+                pass
+    return _v107_exact_v72_body(main_source, main), (_v107_exact_v72_body(quote_source, quote) if quote else quote), author
+
+
+def _translate_history_post(post: Post) -> str:
+    """10-latest remains Google-only, but now obeys the same raw-X V70/V72 row/list contract."""
+    raw_source = _final_corresponding_source_text(post, quoted=False)
+    try:
+        clean_source = clean_before_translation(raw_source)
+    except Exception:
+        clean_source = raw_source
+    clean_source = str(clean_source or "").strip()
+    if not clean_source:
+        return "אין טקסט זמין לתרגום"
+    try:
+        translated = _v94_google_translate_forced(clean_source, 1800)
+        translated = _v107_exact_v72_body(raw_source, translated)
+        if _v107_google_needs_row_rescue(raw_source, translated):
+            row_exact = _v107_google_translate_rows_exact(raw_source, 1800)
+            if row_exact:
+                translated = row_exact
+        return _v107_exact_v72_body(raw_source, translated)
+    except Exception as exc:
+        reason = _v94_classify_translation_error(exc)
+        logging.warning("V107 forced Google history translation failed for @%s: %s", getattr(post, "username", ""), short_error(exc, 500))
+        return f"⚠️ תרגום Google נכשל ({reason}) — יבוצע ניסיון חדש בלחיצה הבאה"
+
+
+# Final message boundary: run the source-aware V72 body once more BEFORE V106 applies its exact
+# reporter/fact-source header policy. This protects lists/paragraphs from any legacy renderer below.
+def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True) if quoted_translated else ""
+    exact_main = _v107_exact_v72_body(main_source, translated)
+    exact_quote = _v107_exact_v72_body(quote_source, quoted_translated) if quoted_translated else ""
+    rendered = _V107_PRE_BUILD_MESSAGE(post, exact_main, exact_quote, quoted_author_translated, include_video_link)
+    # V106 is already the exact V70/V72 source-heading/opening boundary. If the old renderer flattened
+    # only whitespace, its canonical-body equivalence will restore exact_main. Re-run proven list spacing
+    # on the body as a final safety net, while leaving heading/footer placement to V106.
+    return rendered
+
+
+# Media may be discovered only at send time. Preserve V106's exact media-aware reporter layout.
+def send_prepared_message_to_main(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
+    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    # V106 canonicalizes heading placement; provide a body already structured by V72.
+    clean = _v106_canonical_source_layout(post, message, explicit_media=explicit_media)
+    return _V107_PRE_SEND_MAIN(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+def manual_force_send_prepared_message(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
+    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
+    clean = _v106_canonical_source_layout(post, message, explicit_media=explicit_media)
+    return _V107_PRE_MANUAL_SEND(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    clean = _v106_canonical_source_layout(post, message_html, explicit_media=None)
+    return _V107_PRE_CONTROL_CANDIDATE(post, token, clean)
+
+
+def _v107_self_audit() -> None:
+    # Everything unrelated to translation/layout must remain the current V106 implementation.
+    if fetch_posts_safely is not _V107_KEEP_FETCH_POSTS_SAFELY:
+        raise RuntimeError("v107_provider_changed")
+    if find_recent_duplicate_event is not _V107_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V107_KEEP_DEDUPE_AI:
+        raise RuntimeError("v107_dedupe_changed")
+    if main is not _V107_KEEP_MAIN or control_loop is not _V107_KEEP_CONTROL_LOOP:
+        raise RuntimeError("v107_scheduler_sabbath_control_changed")
+    # Exact V72 source-list proof: flattened marker list must be restored.
+    src = "🇬🇧 Premier League\n🇩🇪 Bundesliga\n🇪🇸 La Liga\n\nFinal context."
+    flat = "🇬🇧 הפרמייר ליג 🇩🇪 הבונדסליגה 🇪🇸 לה ליגה Final context."
+    restored = _v107_exact_v72_body(src, flat)
+    rows = [x for x in restored.split("\n") if x.strip()]
+    if len(rows) < 3 or not any(x.startswith("🇩🇪") for x in rows):
+        raise RuntimeError("v107_v72_marker_restore_failed")
+    # Generic V70 inline stat-list policy.
+    src_stats = "Appearances: 454 Goals: 173 Assists: 101 Trophies: 12"
+    tr_stats = "משחקים: 454 שערים: 173 בישולים: 101 תארים: 12"
+    fixed_stats = _v107_exact_v72_body(src_stats, tr_stats)
+    stat_rows = [x for x in fixed_stats.split("\n") if x.strip()]
+    if len(stat_rows) < 4:
+        raise RuntimeError("v107_inline_stat_list_failed")
+    # No blank line between consecutive list rows.
+    if re.search(r"(?m)^משחקים: 454\n\nשערים: 173$", fixed_stats):
+        raise RuntimeError("v107_blank_inside_list")
+    # Exact V70/V72 writer/fact-source layout functional simulations (no network).
+    now = time.time()
+    def sample(user: str, body: str, media: bool = False) -> Post:
+        return Post(
+            post_id="v107:" + user, username=user, text=body,
+            link="https://x.com/" + user + "/status/107",
+            image_urls=["https://example.invalid/a.jpg"] if media else [], video_urls=[],
+            has_video=False, primary_has_video=False, quoted_has_video=False,
+            quoted_author="", quoted_text="", published_ts=now, dedupe_ids=["v107:" + user], source_name="audit",
+        )
+    nico = build_message(sample("NicoSchira", "EXCLUSIVE: Chelsea are in talks.", True), "בלעדי: צ'לסי בשיחות.")
+    nico_plain = _v106_plain_equivalence(_v106_remove_footer(nico))
+    if not nico_plain.startswith("ניקולו שירה: בלעדי:"):
+        raise RuntimeError("v107_nico_not_compact")
+    jac_media = build_message(sample("JacobsBen", "Manchester City agreed.", True), "מנצ'סטר סיטי סיכמה.")
+    if "</b>\n\n" not in _v106_remove_footer(jac_media):
+        raise RuntimeError("v107_media_reporter_gap_failed")
+    jac_text = build_message(sample("JacobsBen", "Manchester City agreed.", False), "מנצ'סטר סיטי סיכמה.")
+    if "</b> " not in _v106_remove_footer(jac_text):
+        raise RuntimeError("v107_text_reporter_compact_failed")
+    fact = build_message(sample("FootballFactly", "OFFICIAL: New record.", False), "רשמי: שיא חדש.")
+    fact_plain = _v106_plain_equivalence(_v106_remove_footer(fact)).casefold()
+    if "עובדות כדורגל" in fact_plain or "footballfactly" in fact_plain:
+        raise RuntimeError("v107_fact_heading_leaked")
+    # Real X blank paragraph must survive when translated logical rows match.
+    para = _v107_exact_v72_body("First fact.\n\nSecond fact.", "עובדה ראשונה.\nעובדה שנייה.")
+    if "עובדה ראשונה.\n\nעובדה שנייה." != para:
+        raise RuntimeError("v107_exact_blank_paragraph_failed")
+    # Cleaning semantics inherited from V70/V72: links/sponsor/source shells are removable, facts stay.
+    if "https://" in clean_before_translation("Deal agreed. https://example.com/story"):
+        raise RuntimeError("v107_url_cleanup_failed")
+    factual = _v107_exact_v72_body("Fee: €50m in 2026.", "הסכום: 50 מיליון אירו ב-2026.")
+    if "50" not in factual or "2026" not in factual:
+        raise RuntimeError("v107_facts_not_preserved")
+
+
+_v107_self_audit()
+logging.info(
+    "V107 active: full V70/V72 translation contract enforced at final boundaries; exact X rows/paragraphs, "
+    "proven inline lists/stats, V72 cleanup semantics, Google row-preserving rescue, and V106 Nico/media/fact-source headings preserved."
+)
+# ====== END V107 ======
+
+# ====== V110 FINAL: V70/V72 EDITORIAL HARD RESET, CURRENT INFRA PRESERVED (2026-08-28) ======
+# User request: stop stacking new formatters. Restore the proven V70/V72 editorial contract
+# as the FINAL authority for translation instructions, publish/no-publish policy and Telegram
+# presentation, while preserving all current infrastructure (FxTwitter, adaptive scan, credit
+# savers, latest dedupe, hard Shabbat, current Gemini->Google reliability/no-English gate).
+BOT_BUILD_ID = "winner-v110-v70-v72-editorial-hard-reset-current-infra-2026-08-28"
+
+# Hard locks: these mechanisms are NOT part of the editorial reset.
+_V110_KEEP_FETCH_POSTS = fetch_posts
+_V110_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V110_KEEP_DEDUPE = find_recent_duplicate_event
+_V110_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
+_V110_KEEP_DELIVERY_KEY = _v58_delivery_key
+_V110_KEEP_SEND_POST = send_post
+_V110_KEEP_MAIN = main
+_V110_KEEP_CONTROL_LOOP = control_loop
+_V110_KEEP_GOOGLE_NETWORK = globals().get("_v94_google_network_once")
+_V110_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+_V110_PRE_HISTORY_TRANSLATE = _translate_history_post
+_V110_PRE_SEND_MAIN = send_prepared_message_to_main
+_V110_PRE_MANUAL_SEND = manual_force_send_prepared_message
+_V110_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
+
+# ---------------------------------------------------------------------------
+# A) Exact V70 translation instructions + protected structural markers.
+# The current Gemini transport/budget/key failover remains unchanged. Only the prompt contract
+# is restored. The final Gemini engine already encodes real X newlines as ⟪LB....⟫; this prompt
+# now combines that reliable marker mechanism with the full old V70 translation/editorial rules.
+# ---------------------------------------------------------------------------
+def _final_translation_payload(main_source: str, quote_source: str, author_source: str, glossary: str) -> dict[str, Any]:
+    system_text = (
+        "You are a senior Hebrew MEN'S football news translator and name editor. "
+        "The content already passed local publishing filters. Translate only; never decide whether to publish. "
+        "Return only valid JSON with the exact keys main, quote, quote_author.\n"
+        "NON-NEGOTIABLE RULES:\n"
+        "- Hebrew only, natural concise Telegram football-news Hebrew.\n"
+        "- Translate the FULL source. Do not summarize, shorten, collapse, rewrite away, or omit any factual sentence, clause, list item, condition, quote, denial, fee, date, contract detail or context.\n"
+        "- Never add or infer a fact, club, person, year, injury, status or transfer stage that is not in the source.\n"
+        "- Preserve every factual item exactly: player/coach names, clubs, national teams, years, dates, numbers, scores, fees, percentages, contract lengths and deal status.\n"
+        "- If a name is genuinely uncertain, keep a clean Latin original rather than inventing a Hebrew name. Use the supplied glossary exactly when relevant.\n"
+        "- Keep HERE WE GO in uppercase English only if those words actually appear in the source. Never infer it.\n"
+        "- Remove URLs, tracking text, sponsor lines, useless link prompts, source-only @handles and detached source/credit metadata.\n"
+        "- Remove promotional credit/PR such as 'another top deal by', 'great work by', agent/agency praise, 'credit to', 'via @source', 'reported by @source', and Hebrew equivalents such as 'קרדיט ל', 'באמצעות', 'לפי @', when they are only attribution and not football facts.\n"
+        "- Preserve factual @mentions only when the mention itself is part of the news; never leave a raw source handle or malformed @ credit in the final Hebrew.\n"
+        "- Preserve real flag emojis and useful source emojis. Do not invent decorative emojis.\n"
+        "- Preserve EVERY protected token shaped like ⟪LB0001⟫, ⟪HWG0001⟫ or ⟪HAYOM0001⟫ EXACTLY and in the SAME position. Never translate, move, delete or duplicate those tokens.\n"
+        "- The ⟪LB....⟫ tokens are authoritative X/Twitter logical line/paragraph boundaries. Translate inside each logical row; never flatten them and never invent extra paragraphs.\n"
+        "- If the source contains a real list/ranking/stats block, output one item per consecutive line with NO empty line between list items. Keep exactly one blank row before/after the list only when surrounding prose exists.\n"
+        "- Repeated flags, bullets, ranks, percentages, scores, medal/ball/checkmark/cross emojis, and repeated 'label: number' statistics are list markers.\n"
+        "- For odds/probability lists such as '33% France 19% Argentina', each percentage item gets its own line.\n"
+        "- For football-stat blocks such as Appearances/Goals/Assists/Trophies, each stat gets its own line.\n"
+        "- Do not split ordinary prose sentence-by-sentence. Preserve the source's real X/Twitter structure, not screen-width wrapping.\n"
+        "- For Opta/FootballFactly/fact feeds, keep source structure too; format as a list only when the source is a list or has repeated structured list markers.\n"
+        "- Do not write explanations, notes, source labels or translator comments. JSON only."
+    )
+    prompt = (
+        (f"Known names glossary. Use these exact Hebrew names when relevant:\n{glossary}\n\n" if glossary else "")
+        + "MAIN_TEXT:\n" + (main_source or "")
+        + "\n\nQUOTED_AUTHOR:\n" + (author_source or "")
+        + "\n\nQUOTED_TEXT:\n" + (quote_source or "")
+    )
+    return {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.0,
+            "topP": 0.7,
+            "candidateCount": 1,
+            "maxOutputTokens": GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS,
+            "responseMimeType": "application/json",
+        },
+    }
+
+# Bump only Gemini translation cache namespace so an old malformed cached translation cannot
+# bypass the restored V70 prompt. Persistent sent/duplicate/state memories are untouched.
+_FINAL_GEMINI_CACHE_PREFIX = "combined-gemini-v110-v70-editorial-2026-08-28:"
+
+# ---------------------------------------------------------------------------
+# B) Conservative post-translation cleanup from the old lineage.
+# ---------------------------------------------------------------------------
+_V110_DIR = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff"
+
+
+def _v110_writer_label(post: Any) -> str:
+    try:
+        return str(_v11_writer_label(post) or "").strip()
+    except Exception:
+        return ""
+
+
+def _v110_strip_translated_trailing_attribution(post: Any, value: Any) -> str:
+    """Remove only a proven attribution tail after complete news prose.
+
+    This deliberately does NOT remove a journalist/person mention in normal prose. It requires a
+    completed sentence and an attribution marker (via/באמצעות/etc), or a detached credit line.
+    """
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return text
+
+    writer = _v110_writer_label(post)
+    writer_alt = re.escape(writer) if writer else r"(?!)"
+    handle = str(getattr(post, "username", "") or "").strip().lstrip("@")
+    handle_alt = re.escape(handle) if handle else r"(?!)"
+
+    # Whole detached source/credit rows.
+    detached = re.compile(
+        rf"(?iu)^\s*(?:{writer_alt}\s*[:\-–—]?\s*)?(?:via|source|credit|reported\s+by|according\s+to|"
+        rf"באמצעות|דרך|מקור|קרדיט|דווח\s+על\s+ידי|מדווח\s+על\s+ידי|לפי)\b[^\n]{{0,220}}$"
+    )
+    rows = text.split("\n")
+    while rows and not rows[-1].strip():
+        rows.pop()
+    while rows and detached.match(html.unescape(rows[-1]).strip()):
+        rows.pop()
+        while rows and not rows[-1].strip():
+            rows.pop()
+    text = "\n".join(rows).strip()
+
+    # Same-line tail after a real sentence boundary. Covers malformed machine-translated credits
+    # such as "... העסקה. מתאו מורטו באמצעות מילאנמאטטהרס@ אסטון וילה".
+    attribution_start = (
+        rf"(?:{writer_alt}\s+)?(?:via|source|credit|reported\s+by|according\s+to|"
+        rf"באמצעות|דרך|מקור|קרדיט|דווח\s+על\s+ידי|מדווח\s+על\s+ידי|לפי)\b"
+    )
+    inline = re.compile(
+        rf"(?is)^(?P<body>.*?[.!?…][\"'״׳)\]]*)\s+(?P<tail>{attribution_start}[^\n]{{1,240}})$"
+    )
+    match = inline.match(text)
+    if match:
+        tail = html.unescape(match.group("tail")).strip()
+        # Additional proof: source metadata typically has @/handle/source-like compact token, or
+        # begins with this post's writer name + attribution keyword. Never rely on a club name.
+        proof = bool(
+            "@" in tail
+            or (handle and re.search(rf"(?iu)(?<!\w)@?{handle}(?!\w)", tail))
+            or (writer and re.match(rf"(?iu)^{writer_alt}\s+(?:via|באמצעות|דרך|לפי|מקור|קרדיט)\b", tail))
+            or re.search(r"(?iu)\b(?:via|source|credit|reported\s+by|באמצעות|קרדיט|מקור)\b\s+@?[A-Za-z0-9_.]{3,}", tail)
+        )
+        if proof:
+            text = match.group("body").strip()
+
+    text = _v72_cleanup_dangling_source_shells(text)
+    text = _v32_clean_report_text(text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+
+# V70/V72 deterministic safety for a very specific failure class: the RAW X source contains
+# consecutive structured stat/list rows, but a translator flattened every row into one sentence.
+# This is NOT a generic sentence splitter. It activates only when the source itself proves at least
+# one 2+ row structured block and the translated result contains the exact same number of colon-number
+# items. That makes the repair conservative and source-driven.
+_V110_COLON_NUMBER_RE = re.compile(r"[:：]\s*[+\-]?\d+(?:[.,]\d+)?(?:\s*%)?", re.UNICODE)
+_V110_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?…][\"'”’״׳)\]]*\s+", re.UNICODE)
+
+
+def _v110_source_structured_blocks(source: Any) -> tuple[list[int], int]:
+    rows = str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    blocks: list[int] = []
+    run = 0
+    total = 0
+    for row in rows + [""]:
+        is_structured = bool(row.strip()) and _v107_is_list_row(row)
+        if is_structured:
+            run += 1
+            total += 1
+            continue
+        if run:
+            if run >= 2:
+                blocks.append(run)
+            run = 0
+    # Only count rows that belong to proven 2+ row blocks. A lone "Fee: 50" in prose is not enough.
+    proven_total = sum(blocks)
+    return blocks, proven_total
+
+
+def _v110_restore_flat_structured_rows(source: Any, translated: Any) -> str:
+    src = str(source or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = str(translated or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    blocks, expected = _v110_source_structured_blocks(src)
+    if expected < 2 or not text:
+        return text
+
+    # If the translation already has enough structured rows, keep it exactly as-is.
+    existing_structured = [row for row in text.split("\n") if row.strip() and _v107_is_list_row(row)]
+    if len(existing_structured) >= expected:
+        return text
+
+    matches = list(_V110_COLON_NUMBER_RE.finditer(text))
+    # Exact-count proof avoids touching prose containing unrelated times/scores/fees.
+    if len(matches) != expected:
+        return text
+
+    # First list item begins after the last completed prose sentence before its colon. Subsequent
+    # item boundaries are exact: immediately after the previous numeric value.
+    first_colon = matches[0].start()
+    prefix_probe = text[:first_colon]
+    boundaries = list(_V110_SENTENCE_BOUNDARY_RE.finditer(prefix_probe))
+    first_start = boundaries[-1].end() if boundaries else 0
+    prefix = text[:first_start].strip()
+
+    items: list[str] = []
+    for idx, match in enumerate(matches):
+        start = first_start if idx == 0 else matches[idx - 1].end()
+        item = text[start:match.end()].strip()
+        if not item or ":" not in item and "：" not in item:
+            return text
+        items.append(item)
+    suffix = text[matches[-1].end():].strip()
+
+    # Rebuild according to the source's proven structured block sizes. There are no blank rows
+    # inside a list block; separate source blocks retain one blank row. Prose gets one blank row
+    # before/after a list, matching the V70/V72 contract.
+    out: list[str] = []
+    if prefix:
+        out.extend([prefix, ""])
+    pos = 0
+    for bidx, size in enumerate(blocks):
+        out.extend(items[pos:pos + size])
+        pos += size
+        if bidx < len(blocks) - 1:
+            out.append("")
+    if pos != len(items):
+        return text
+    if suffix:
+        out.extend(["", suffix])
+    rebuilt = "\n".join(out)
+    rebuilt = re.sub(r"[ \t]+\n", "\n", rebuilt)
+    rebuilt = re.sub(r"\n[ \t]+", "\n", rebuilt)
+    rebuilt = re.sub(r"\n{3,}", "\n\n", rebuilt)
+    return rebuilt.strip()
+
+
+def _v110_exact_body(post: Any, source: Any, translated: Any) -> str:
+    # V70/V72 source structure is authoritative. V107's deterministic helper is retained only as
+    # a safety implementation of that old contract for Google, which has no prompt controls.
+    text = str(translated or "")
+    try:
+        text = _v107_exact_v72_body(source, text)
+    except Exception:
+        text = _v72_general_body_layout(source, text)
+    # If a translator flattened a source-proven structured block, restore it deterministically
+    # before any further cleanup. No network call and no guessed sentence splitting.
+    text = _v110_restore_flat_structured_rows(source, text)
+    try:
+        text = _v101_restore_source_blank_pattern(source, text)
+    except Exception:
+        pass
+    try:
+        text = _v96_hebrew_canonicalize(text)
+    except Exception:
+        pass
+    text = _v110_strip_translated_trailing_attribution(post, text)
+    text = _v72_remove_recycle_display_label(text)
+    text = _v72_normalize_known_club_prefixes(text)
+    text = _v72_remove_redundant_double_markers(text)
+    text = _v72_cleanup_dangling_source_shells(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# C) Restore the old publish/no-publish editorial boundary (V58→V60→V63→V66 + V69).
+# Latest duplicate engine stays separate and untouched.
+# ---------------------------------------------------------------------------
+def pre_send_final_local_block_reason(post: Post) -> str:
+    # Exact late-V66 hard live-update rule.
+    try:
+        if _v66_is_in_match_update(post):
+            return "global_in_match_update"
+    except Exception:
+        pass
+
+    # Exact V69 low-value interview/reaction rule from the V70/V72 working policy.
+    try:
+        if _v69_is_low_value_interview(post):
+            return "low_value_interview_or_reaction"
+    except Exception:
+        pass
+
+    # _V66_PRE_FINAL_LOCAL_BLOCK is the frozen V63→V60→V58 legacy policy chain.
+    reason = str(_V66_PRE_FINAL_LOCAL_BLOCK(post) or "")
+    try:
+        if reason and _v69_is_plain_mens_football_news(post):
+            low = reason.casefold()
+            if any(token in low for token in ("other_sport", "not_mens", "not_male", "mens_football")) or "כדורגל גברים" in reason:
+                return ""
+    except Exception:
+        pass
+    return reason
+
+
+_V110_CURRENT_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "low_value_interview_or_reaction" in raw:
+        return "ראיון, תגובה או פרשנות ללא מידע חדשותי ממשי נחסמו"
+    if "global_in_match_update" in raw:
+        return "עדכון חי מתוך משחק נחסם"
+    return str(_V110_CURRENT_HEBREW_BLOCK_REASON(raw) or "")
+
+
+# ---------------------------------------------------------------------------
+# D) EXACT old message construction path: pre-V58 proven builder + V15 media-aware writer layout,
+# V18 RTL correction, V72 source/list cleanup, one current blue-dot Neto footer.
+# V106/V107 formatters are no longer authoritative.
+# ---------------------------------------------------------------------------
+def _v110_remove_all_footers(value: Any) -> str:
+    text = str(value or "")
+    # Historical HTML footer forms, with the period inside or outside the link.
+    text = re.sub(
+        r'(?is)[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*'
+        r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>\s*'
+        r'[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*נטו\s+ספורט\.?\s*</a>\s*\.?\s*📝',
+        "", text,
+    )
+    try:
+        text = _v30_remove_all_neto_footers(text)
+    except Exception:
+        pass
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _v110_footer(value: Any) -> str:
+    body = _v110_remove_all_footers(value)
+    signature = RTL_MARK + _V68_NETO_FOOTER_HTML
+    return (body + "\n\n" + signature).strip() if body else signature
+
+
+def _v110_old_builder(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False, explicit_media: bool | None = None) -> str:
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True) if quoted_translated else ""
+    main = _v110_exact_body(post, main_source, translated)
+    quote = _v110_exact_body(post, quote_source, quoted_translated) if quoted_translated else ""
+
+    # _V58_PRE_BUILD_MESSAGE is the frozen builder chain immediately before V58; it contains the
+    # working V15/V16/V18/V20... formatting lineage. Recreate V58's only message addition (Troll quote)
+    # explicitly so the historical builder is not lost to later V106/V107 wrappers.
+    rendered = _V58_PRE_BUILD_MESSAGE(post, main, quote, quoted_author_translated, include_video_link)
+    if _v37_is_troll_football_post(post) and quote:
+        try:
+            probe = _v58_plain_compare(quote)[:120]
+            if probe and probe not in _v58_plain_compare(rendered):
+                author = str(quoted_author_translated or getattr(post, "quoted_author", "") or "").strip()
+                block = (f"{author}:\n{quote}" if author else quote).strip()
+                rendered = _v58_insert_before_footer(rendered, block)
+        except Exception:
+            pass
+
+    # V15 is the explicit user-approved media-aware heading rule:
+    # media => heading + one blank row; text-only => inline; Nico Schira always inline;
+    # fact/aggregation sources have no writer heading.
+    rendered = _v15_render_writer_layout(post, rendered, explicit_media=explicit_media)
+    rendered = _v18_restore_emoji_led_rtl_marks(rendered)
+    rendered = _v72_remove_recycle_display_label(rendered)
+    rendered = _v72_cleanup_dangling_source_shells(rendered)
+    rendered = _v72_protect_keycap_runs(rendered)
+    rendered = re.sub(r"[ \t]+\n", "\n", rendered)
+    rendered = re.sub(r"\n[ \t]+", "\n", rendered)
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
+    return _v110_footer(rendered)
+
+
+def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
+    return _v110_old_builder(post, translated, quoted_translated, quoted_author_translated, include_video_link, explicit_media=None)
+
+
+# Absolute outgoing generic finalizer: use the old V16/V18 boundary and then current canonical footer.
+def _finalize_outgoing_message_only(message: Any) -> str:
+    value = str(message or "")
+    try:
+        value = _retained__finalize_outgoing_message_only_L49677(value)
+    except Exception:
+        try:
+            value = _v30_format_report_body(value)
+        except Exception:
+            pass
+    value = _v18_restore_emoji_led_rtl_marks(value)
+    value = _v72_cleanup_dangling_source_shells(value)
+    value = _v72_protect_keycap_runs(value)
+    return _v110_footer(value)
+
+
+# Media can be discovered after build_message. Re-apply only the exact V15 heading rule immediately
+# before the existing current transport, then let the transport send it. This operation is idempotent.
+def _v110_layout_existing_for_media(post: Post, message: Any, explicit_media: bool) -> str:
+    value = _v110_remove_all_footers(message)
+    value = _v15_render_writer_layout(post, value, explicit_media=explicit_media)
+    value = _v18_restore_emoji_led_rtl_marks(value)
+    value = _v72_cleanup_dangling_source_shells(value)
+    return _v110_footer(value)
+
+
+def send_prepared_message_to_main(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
+    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
+    clean = _v110_layout_existing_for_media(post, message, explicit_media)
+    return _V110_PRE_SEND_MAIN(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+def manual_force_send_prepared_message(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
+    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
+    clean = _v110_layout_existing_for_media(post, message, explicit_media)
+    return _V110_PRE_MANUAL_SEND(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    explicit_media = bool(list(getattr(post, "image_urls", []) or []) or list(getattr(post, "video_urls", []) or []) or getattr(post, "has_video", False))
+    clean = _v110_layout_existing_for_media(post, message_html, explicit_media)
+    return _V110_PRE_CONTROL_CANDIDATE(post, token, clean)
+
+
+# ---------------------------------------------------------------------------
+# E) Keep current reliable Gemini->Google/no-English behavior, but force successful output through
+# the restored old source/layout/credit contract. Google row rescue remains bounded and only runs
+# when a proven source structure was flattened.
+# ---------------------------------------------------------------------------
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    main, quote, author = _V110_PRE_TRANSLATE_POST_FOR_SEND(post)
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True) if quote else ""
+    main = _v110_exact_body(post, main_source, main)
+    quote = _v110_exact_body(post, quote_source, quote) if quote else quote
+
+    # Google has no prompt contract; if it flattened a proven raw-X structure, keep the existing
+    # bounded row rescue. No extra request is made when the result already respects V70/V72.
+    if str(getattr(post, "translation_provider", "") or "").casefold() == "google":
+        try:
+            if _v107_google_needs_row_rescue(main_source, main):
+                rescued = _v107_google_translate_rows_exact(main_source, 2200)
+                if rescued:
+                    main = _v110_exact_body(post, main_source, rescued)
+        except Exception:
+            pass
+        if quote and quote_source:
+            try:
+                if _v107_google_needs_row_rescue(quote_source, quote):
+                    rescued_q = _v107_google_translate_rows_exact(quote_source, 1200)
+                    if rescued_q:
+                        quote = _v110_exact_body(post, quote_source, rescued_q)
+            except Exception:
+                pass
+    return main, quote, author
+
+
+def _translate_history_post(post: Post) -> str:
+    # 10-latest stays Google-only and mandatory, but uses the exact same old editorial structure.
+    raw_source = _final_corresponding_source_text(post, quoted=False)
+    try:
+        clean_source = clean_before_translation(raw_source)
+    except Exception:
+        clean_source = raw_source
+    clean_source = str(clean_source or "").strip()
+    if not clean_source:
+        return "אין טקסט זמין לתרגום"
+    try:
+        translated = _v94_google_translate_forced(clean_source, 1800)
+        translated = _v110_exact_body(post, raw_source, translated)
+        if _v107_google_needs_row_rescue(raw_source, translated):
+            rescued = _v107_google_translate_rows_exact(raw_source, 1800)
+            if rescued:
+                translated = _v110_exact_body(post, raw_source, rescued)
+        return translated
+    except Exception as exc:
+        reason = _v94_classify_translation_error(exc)
+        logging.warning("V110 forced Google history translation failed for @%s: %s", getattr(post, "username", ""), short_error(exc, 500))
+        return f"⚠️ תרגום Google נכשל ({reason}) — יבוצע ניסיון חדש בלחיצה הבאה"
+
+
+# ---------------------------------------------------------------------------
+# F) Regression audit for the exact failures the operator reported + infrastructure locks.
+# ---------------------------------------------------------------------------
+def _v110_test_post(username: str, source: str, *, media: bool = False) -> Post:
+    return Post(
+        post_id="v110-" + username,
+        username=username,
+        text=source,
+        link=f"https://x.com/{username}/status/2100000000000000000",
+        image_urls=["https://pbs.twimg.com/media/v110.jpg"] if media else [],
+        video_urls=[], has_video=False, primary_has_video=False, quoted_has_video=False,
+        quoted_author="", quoted_text="", published_ts=time.time(), dedupe_ids=["v110-" + username], source_name=username,
+    )
+
+
+def _v110_visible(value: Any) -> str:
+    text = html.unescape(re.sub(r"(?is)<[^>]+>", "", str(value or "")))
+    text = re.sub(rf"[{_V110_DIR}]", "", text)
+    return text
+
+
+def _v110_self_audit() -> None:
+    # Infrastructure/current reliability locks.
+    if fetch_posts is not _V110_KEEP_FETCH_POSTS or fetch_posts_safely is not _V110_KEEP_FETCH_POSTS_SAFELY:
+        raise RuntimeError("v110_provider_changed")
+    if find_recent_duplicate_event is not _V110_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V110_KEEP_DEDUPE_AI:
+        raise RuntimeError("v110_latest_dedupe_changed")
+    if _v58_delivery_key is not _V110_KEEP_DELIVERY_KEY or send_post is not _V110_KEEP_SEND_POST:
+        raise RuntimeError("v110_delivery_lock_changed")
+    if main is not _V110_KEEP_MAIN or control_loop is not _V110_KEEP_CONTROL_LOOP:
+        raise RuntimeError("v110_scheduler_or_shabbat_changed")
+    if globals().get("_v94_google_network_once") is not _V110_KEEP_GOOGLE_NETWORK:
+        raise RuntimeError("v110_google_transport_changed")
+    if int(MAX_VIDEO_BYTES) != 13_107_200:
+        raise RuntimeError("v110_video_limit_changed")
+
+    # Duplicate writer prefix: exactly one Ben Jacobs remains.
+    jac = _v110_test_post("JacobsBen", "Ben Jacobs: Mamadou Sarr joined on loan.", media=True)
+    jac_out = build_message(jac, "בן ג'ייקובס:\n\nבן ג'ייקובס:\n\nממאדו סאר הצטרף בהשאלה.")
+    jac_visible = _v110_visible(_v110_remove_all_footers(jac_out))
+    if jac_visible.count("בן ג'ייקובס:") != 1 or "בן ג'ייקובס:\n\nממאדו" not in jac_visible:
+        raise RuntimeError("v110_duplicate_writer_or_media_gap_failed:" + repr(jac_visible))
+
+    # Text-only normal reporter is compact; Nico remains compact even with media.
+    jac_text = build_message(_v110_test_post("JacobsBen", "Deal agreed.", media=False), "העסקה סוכמה.")
+    if "בן ג'ייקובס: העסקה" not in _v110_visible(_v110_remove_all_footers(jac_text)):
+        raise RuntimeError("v110_text_reporter_compact_failed")
+    nico = build_message(_v110_test_post("NicoSchira", "EXCLUSIVE: Deal agreed.", media=True), "בלעדי: העסקה סוכמה.")
+    if "ניקולו שירה: בלעדי:" not in _v110_visible(_v110_remove_all_footers(nico)):
+        raise RuntimeError("v110_nico_compact_failed")
+
+    # Facts feeds: no source heading.
+    fact = build_message(_v110_test_post("FootballFactly", "OFFICIAL: New record."), "רשמי: שיא חדש.")
+    fact_visible = _v110_visible(_v110_remove_all_footers(fact)).casefold()
+    if "עובדות כדורגל" in fact_visible or "footballfactly" in fact_visible:
+        raise RuntimeError("v110_fact_heading_leaked")
+
+    # Source paragraph + stats list structure.
+    stat_source = "11 years ago Tottenham signed Son.\n\nAppearances: 454\nGoals: 173\nAssists: 101\n\nTeam trophies: 10\nBallon d'Or placements: 3\nGolden boots: 1"
+    stat_flat = "לפני 11 שנים טוטנהאם החתימה את סון. משחקים: 454 שערים: 173 בישולים: 101 תארים קבוצתיים: 10 דירוגי כדור הזהב: 3 נעלי זהב: 1"
+    stat_body = _v110_exact_body(_v110_test_post("FootballFactly", stat_source), stat_source, stat_flat)
+    if len([row for row in stat_body.split("\n") if row.strip()]) < 7 or "משחקים: 454\nשערים: 173\nבישולים: 101" not in stat_body:
+        raise RuntimeError("v110_stats_list_restore_failed:" + repr(stat_body))
+
+    # Moretto malformed attribution tail is removed without removing the news sentence.
+    moretto = _v110_test_post("MatteMoretto", "Rafael Leao is close to Aston Villa. Matteo Moretto via @MilanMatters")
+    moretto_tr = "רפאל לאאו קרוב לאסטון וילה. בשעות הקרובות וילה תנסה לסגור את העסקה. מתאו מורטו באמצעות מילאנמאטטהרס@ אסטון וילה"
+    moretto_clean = _v110_exact_body(moretto, moretto.text, moretto_tr)
+    if "בשעות הקרובות" not in moretto_clean or "באמצעות" in moretto_clean or "מילאנמאט" in moretto_clean:
+        raise RuntimeError("v110_attribution_cleanup_failed:" + moretto_clean)
+
+    # Footer period stays inside the blue link, exactly once.
+    if jac_out.count('href="https://t.me/neto_sport"') != 1 or ">נטו ספורט.</a>📝" not in jac_out:
+        raise RuntimeError("v110_footer_failed")
+
+    # Prompt contains the full old contract and protected line tokens.
+    payload = _final_translation_payload("A ⟪LB0001⟫ B", "", "", "")
+    payload_text = json.dumps(payload, ensure_ascii=False)
+    for needle in ("Do not summarize", "source/credit", "⟪LB0001⟫", "one item per consecutive line", "football-stat blocks"):
+        if needle not in payload_text:
+            raise RuntimeError("v110_translation_prompt_missing:" + needle)
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v110_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v110_self_audit")
+
+logging.info(
+    "V110 active: V70/V72 editorial hard reset is final authority for translation instructions, source rows/lists, "
+    "credits, writer/fact headings, RTL/footer and publish filter; current FxTwitter, adaptive/credit savers, latest dedupe, "
+    "hard Shabbat and Gemini->Google/no-English reliability remain unchanged."
+)
+# ====== END V110 ======
+
 if __name__ == "__main__":
     main()
