@@ -75526,5 +75526,348 @@ logging.info(
 )
 # ====== END V110 ======
 
+
+# ====== V111 FINAL: CLUB PREFIX + HARD BETTING + ABSOLUTE SINGLE-WRITER GUARD (2026-08-28) ======
+# Scope: only the three operator-reported regressions. All V110 editorial/translation behavior and
+# all current infrastructure remain untouched underneath this final safety layer.
+BOT_BUILD_ID = "winner-v111-club-prefix-betting-single-writer-final-2026-08-28"
+
+_V111_KEEP_FETCH_POSTS = fetch_posts
+_V111_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V111_KEEP_DEDUPE = find_recent_duplicate_event
+_V111_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
+_V111_KEEP_MAIN = main
+_V111_KEEP_CONTROL_LOOP = control_loop
+_V111_KEEP_TRANSLATE = translate_post_for_send
+_V111_KEEP_HISTORY_TRANSLATE = _translate_history_post
+
+# ---------------------------------------------------------------------------
+# 1) Club display prefixes: strip Latin legal/club abbreviations when they are a display prefix
+#    immediately before a Hebrew club name. This restores the old generic prefix policy and also
+#    covers clubs not yet present in the Hebrew catalog, e.g. "CD לגאנס" -> "לגאנס".
+# ---------------------------------------------------------------------------
+_V111_CLUB_PREFIX_ALT = "|".join(sorted((re.escape(x) for x in _REQUESTED_CLUB_PREFIXES), key=len, reverse=True))
+_V111_CLUB_PREFIX_WITH_PREP_RE = re.compile(
+    rf"(?iu)(?<![א-תA-Za-z0-9])(?P<prep>[בלמכהו])-?(?:{_V111_CLUB_PREFIX_ALT})(?:\.)?[.\-־ ]+(?=[א-ת])"
+)
+_V111_CLUB_PREFIX_PLAIN_RE = re.compile(
+    rf"(?iu)(?<![א-תA-Za-z0-9])(?:{_V111_CLUB_PREFIX_ALT})(?:\.)?[.\-־ ]+(?=[א-ת])"
+)
+
+
+def _v111_strip_latin_club_prefixes(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return text
+    # Attached Hebrew prepositions remain attached to the club after the Latin prefix disappears:
+    # ל-FC ברצלונה -> לברצלונה.
+    text = _V111_CLUB_PREFIX_WITH_PREP_RE.sub(lambda m: str(m.group("prep") or ""), text)
+    text = _V111_CLUB_PREFIX_PLAIN_RE.sub("", text)
+    return re.sub(r"[ \t]{2,}", " ", text)
+
+
+# Add explicit Leganés aliases to the existing entity catalog without touching any other club.
+TEAM_REPLACEMENTS.update({
+    "Leganes": "לגאנס",
+    "Leganés": "לגאנס",
+    "CD Leganes": "לגאנס",
+    "CD Leganés": "לגאנס",
+})
+
+_V111_PRE_EXACT_BODY = _v110_exact_body
+
+def _v110_exact_body(post: Any, source: Any, translated: Any) -> str:
+    value = _V111_PRE_EXACT_BODY(post, source, translated)
+    return _v111_strip_latin_club_prefixes(value)
+
+
+# ---------------------------------------------------------------------------
+# 2) Hard betting/bookmaker ad gate. Runs on RAW source before translation/media.
+#    It is intentionally ad-focused: bookmaker + promo/betting mechanic, registration/promo code,
+#    or explicit 18+ call-to-action. Genuine football governance/news is not blocked merely for
+#    containing the word "betting" in a report.
+# ---------------------------------------------------------------------------
+_V111_BOOKMAKER_RE = re.compile(
+    r"(?iu)(?:1\s*[x×]\s*bet|1xbet|bet365|boylesports|william\s+hill|paddy\s+power|sky\s+bet|"
+    r"ladbrokes|coral|stake(?:\.com)?|rainbet|sportsbook)"
+)
+_V111_BET_PROMO_RE = re.compile(
+    r"(?iu)(?:registration\s+code|sign[- ]?up\s+code|promo\s+code|bonus\s+code|full\s+offer|"
+    r"claim\s+(?:here|now)|join\s+now|sign\s*up|deposit|bet\s+now|odds?|wager|to\s+score|will\s+score|"
+    r"(?:\+\s*18|18\s*\+)|קוד\s+(?:רישום|הרשמה|קופון|בונוס)|הצעה\s+מלאה|להצעה\s+המלאה|"
+    r"הירשמו|הרשמה|הפקדה|הימור|הימורים|יחס(?:ים)?|יבקיע)"
+)
+_V111_AGE_GATE_RE = re.compile(r"(?iu)(?:\+\s*18|18\s*\+)")
+_V111_RT_RE = re.compile(r"(?iu)^\s*RT\s*:")
+
+
+def _v111_raw_post_text(post: Any) -> str:
+    return "\n".join(
+        part for part in (
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+        ) if part
+    )
+
+
+def _v111_is_hard_betting_ad(post: Any) -> bool:
+    raw = html.unescape(_v111_raw_post_text(post))
+    if not raw:
+        return False
+    bookmaker = bool(_V111_BOOKMAKER_RE.search(raw))
+    promo = bool(_V111_BET_PROMO_RE.search(raw))
+    age_gate = bool(_V111_AGE_GATE_RE.search(raw))
+    # A bookmaker paired with any CTA/betting mechanic is unambiguously an ad.
+    if bookmaker and (promo or age_gate):
+        return True
+    # Registration/promo code + explicit adult gate is also unambiguously an ad even if the brand
+    # spelling changed. RT makes the same call-to-action pattern stricter, not looser.
+    if promo and age_gate and ("code" in raw.casefold() or "קוד" in raw or _V111_RT_RE.search(raw)):
+        return True
+    return False
+
+
+_V111_PRE_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v111_is_hard_betting_ad(post):
+        return "hard_bookmaker_betting_ad"
+    return str(_V111_PRE_LOCAL_BLOCK(post) or "")
+
+
+_V111_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "hard_bookmaker_betting_ad" in raw:
+        return "פרסומת הימורים, קוד הרשמה או קידום חברת הימורים נחסמו"
+    return str(_V111_PRE_HEBREW_BLOCK_REASON(raw) or "")
+
+
+# ---------------------------------------------------------------------------
+# 3) Absolute single-writer heading guard. V11/V15 already solved the normal case, but production
+#    showed a second heading variant can survive when apostrophe/geresh/HTML/Markdown forms differ.
+#    This final guard normalizes ALL leading aliases only, never a writer mention later in prose.
+# ---------------------------------------------------------------------------
+_V111_APOSTROPHE_PATTERN = r"(?:['’‘`׳]|&#x27;|&#39;|&apos;)"
+_V111_INVIS = r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*"
+
+
+def _v111_alias_pattern(alias: Any) -> str:
+    value = html.unescape(str(alias or "")).strip()
+    if not value:
+        return r"(?!)"
+    pieces: list[str] = []
+    for ch in value:
+        if ch in "'’‘`׳":
+            pieces.append(_V111_APOSTROPHE_PATTERN)
+        elif ch.isspace():
+            pieces.append(r"\s+")
+        else:
+            pieces.append(re.escape(ch))
+    return "".join(pieces)
+
+
+def _v111_strip_all_leading_writer_prefixes(post: Any, value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    label = str(_v11_writer_label(post) or "").strip()
+    if not label:
+        return text
+    aliases = list(_v11_writer_aliases(post, label) or [])
+    aliases.extend([label, html.escape(label, quote=True), html.escape(label, quote=False)])
+    patterns = sorted({_v111_alias_pattern(x) for x in aliases if str(x or "").strip()}, key=len, reverse=True)
+    if not patterns:
+        return text
+    alias_alt = "|".join(patterns)
+    # Accept plain, HTML-bold and Markdown-bold headings, plus bidi marks and either apostrophe form.
+    prefix = re.compile(
+        rf"(?is)^\s*{_V111_INVIS}(?:(?:<b[^>]*>|<strong[^>]*>|\*\*)\s*)?{_V111_INVIS}"
+        rf"(?:{alias_alt}){_V111_INVIS}\s*[:：]\s*"
+        rf"(?:(?:</b>|</strong>|\*\*)\s*)?{_V111_INVIS}[ \t]*(?:\n[ \t]*)*"
+    )
+    previous = None
+    while text != previous:
+        previous = text
+        text = prefix.sub("", text, count=1)
+        text = re.sub(r"(?is)^\s*(?:<(?:b|strong|i|em)[^>]*>\s*</(?:b|strong|i|em)>\s*)+", "", text)
+    return text.lstrip(" \t\n\r\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff")
+
+
+def _v111_force_single_writer_layout(post: Any, message: Any, explicit_media: bool | None = None) -> str:
+    value = _v110_remove_all_footers(_v111_strip_latin_club_prefixes(message))
+    label = str(_v11_writer_label(post) or "").strip()
+    if not label:
+        return _v110_footer(value)
+    body = _v111_strip_all_leading_writer_prefixes(post, value)
+    # Retry after removing empty wrappers, because historical layers can leave one between headings.
+    body = re.sub(r"(?is)^\s*(?:<(?:b|strong|i|em)[^>]*>\s*</(?:b|strong|i|em)>\s*)+", "", body)
+    body = _v111_strip_all_leading_writer_prefixes(post, body)
+    heading = f"<b>{html.escape(rtl(label + ':'))}</b>"
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    compact = username == "nicoschira" or not _v15_post_has_media(post, explicit_media)
+    rendered = (f"{heading} {body}" if compact and body else
+                f"{heading}\n\n{body}" if body else heading)
+    return _v110_footer(rendered)
+
+
+_V111_PRE_BUILD_MESSAGE = build_message
+
+def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
+    rendered = _V111_PRE_BUILD_MESSAGE(post, translated, quoted_translated, quoted_author_translated, include_video_link)
+    return _v111_force_single_writer_layout(post, rendered, explicit_media=None)
+
+
+# Re-assert the single-heading rule at every post-aware final send boundary.
+_V111_PRE_SEND_MAIN = send_prepared_message_to_main
+
+def send_prepared_message_to_main(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
+    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
+    clean = _v111_force_single_writer_layout(post, message, explicit_media=explicit_media)
+    return _V111_PRE_SEND_MAIN(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+_V111_PRE_MANUAL_SEND = manual_force_send_prepared_message
+
+def manual_force_send_prepared_message(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
+    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
+    clean = _v111_force_single_writer_layout(post, message, explicit_media=explicit_media)
+    return _V111_PRE_MANUAL_SEND(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+_V111_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
+
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    explicit_media = bool(list(getattr(post, "image_urls", []) or []) or list(getattr(post, "video_urls", []) or []) or getattr(post, "has_video", False))
+    clean = _v111_force_single_writer_layout(post, message_html, explicit_media=explicit_media)
+    return _V111_PRE_CONTROL_CANDIDATE(post, token, clean)
+
+
+# Generic last-mile guard: if historical wrappers somehow produce two identical writer-heading rows,
+# remove the extra row even in transports that no longer carry the Post object.
+def _v111_norm_visible_heading(row: Any) -> str:
+    value = str(row or "")
+    try:
+        value = html_message_to_plain_text(value)
+    except Exception:
+        value = re.sub(r"(?is)<[^>]+>", "", value)
+    value = html.unescape(value)
+    value = re.sub(r"[*_`]+", "", value)
+    value = re.sub(rf"{_V111_INVIS}", "", value)
+    value = value.replace("׳", "'").replace("’", "'").replace("‘", "'").replace("`", "'")
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _v111_dedupe_identical_leading_heading_rows(message: Any) -> str:
+    text = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
+    rows = text.split("\n")
+    nonempty = [i for i, row in enumerate(rows) if row.strip()]
+    if len(nonempty) < 2:
+        return text
+    first_i = nonempty[0]
+    first_norm = _v111_norm_visible_heading(rows[first_i])
+    if not first_norm.endswith(":") or len(first_norm) > 90:
+        return text
+    removed = False
+    # Remove repeated identical heading rows immediately after the first, allowing blank rows between.
+    i = first_i + 1
+    while i < len(rows):
+        while i < len(rows) and not rows[i].strip():
+            i += 1
+        if i >= len(rows) or _v111_norm_visible_heading(rows[i]) != first_norm:
+            break
+        del rows[i]
+        removed = True
+    if removed:
+        # A duplicated row is a media-style heading failure. Restore the exact old media gap:
+        # heading, one empty row, body — never 2/3 empty rows left by the removed heading.
+        body_i = first_i + 1
+        while body_i < len(rows) and not rows[body_i].strip():
+            body_i += 1
+        if body_i < len(rows):
+            rows = rows[: first_i + 1] + [""] + rows[body_i:]
+    return "\n".join(rows)
+
+
+_V111_PRE_FINALIZE = _finalize_outgoing_message_only
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    value = _V111_PRE_FINALIZE(message)
+    value = _v111_strip_latin_club_prefixes(value)
+    value = _v111_dedupe_identical_leading_heading_rows(value)
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Regression audit: reproduce all three operator examples.
+# ---------------------------------------------------------------------------
+def _v111_test_post(username: str, source: str, *, media: bool = False) -> Post:
+    return Post(
+        post_id="v111-" + username,
+        username=username,
+        text=source,
+        link=f"https://x.com/{username}/status/2111000000000000000",
+        image_urls=["https://pbs.twimg.com/media/v111.jpg"] if media else [],
+        video_urls=[], has_video=False, primary_has_video=False, quoted_has_video=False,
+        quoted_author="", quoted_text="", published_ts=time.time(), dedupe_ids=["v111-" + username], source_name=username,
+    )
+
+
+def _v111_plain(value: Any) -> str:
+    text = str(value or "")
+    try:
+        text = html_message_to_plain_text(text)
+    except Exception:
+        text = re.sub(r"(?is)<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", text)
+    return text
+
+
+def _v111_self_audit() -> None:
+    if fetch_posts is not _V111_KEEP_FETCH_POSTS or fetch_posts_safely is not _V111_KEEP_FETCH_POSTS_SAFELY:
+        raise RuntimeError("v111_fetch_changed")
+    if find_recent_duplicate_event is not _V111_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V111_KEEP_DEDUPE_AI:
+        raise RuntimeError("v111_dedupe_changed")
+    if main is not _V111_KEEP_MAIN or control_loop is not _V111_KEEP_CONTROL_LOOP:
+        raise RuntimeError("v111_scheduler_or_shabbat_changed")
+    if translate_post_for_send is not _V111_KEEP_TRANSLATE or _translate_history_post is not _V111_KEEP_HISTORY_TRANSLATE:
+        raise RuntimeError("v111_translation_engine_changed")
+
+    # CD/FC/etc prefixes vanish before a Hebrew club; ordinary Latin text is untouched.
+    club = _v111_strip_latin_club_prefixes("🚨 CD לגאנס סיכמה. FC ברצלונה ניצחה. ל-FC ברצלונה הוגשה הצעה.")
+    if "CD " in club or "FC " in club or "ל-FC" in club or "לגאנס" not in club or "לברצלונה" not in club:
+        raise RuntimeError("v111_club_prefix_failed:" + club)
+
+    # Exact 1xBet example is blocked before translation/media.
+    bet = _v111_test_post("TrollFootball2", "RT: Crystal Palace vs Manchester City Erling Haaland to score 1xBet registration code: KOH full offer here +18")
+    if pre_send_final_local_block_reason(bet) != "hard_bookmaker_betting_ad":
+        raise RuntimeError("v111_betting_ad_not_blocked")
+
+    # Ben Jacobs variations (ASCII apostrophe, Hebrew geresh, markdown/HTML, repeated) collapse to one.
+    jac = _v111_test_post("JacobsBen", "Ben Jacobs: Mamadou Sarr joined on loan.", media=True)
+    translated = "בן ג'ייקובס:\n\n**בן ג׳ייקובס:**\n\nבן גייקובס:\n\nממאדו סאר הצטרף בהשאלה."
+    out = build_message(jac, translated)
+    visible = _v111_plain(_v110_remove_all_footers(out))
+    normalized = visible.replace("׳", "'")
+    if normalized.count("בן ג'ייקובס:") != 1 or "ממאדו" not in normalized:
+        raise RuntimeError("v111_single_writer_failed:" + repr(visible))
+
+    # Last-mile row dedupe works without a Post object as well.
+    last = _v111_dedupe_identical_leading_heading_rows("<b>בן ג&#x27;ייקובס:</b>\n\n<b>בן ג&#x27;ייקובס:</b>\n\nהעסקה סוכמה")
+    if _v111_plain(last).count("בן ג'ייקובס:") != 1:
+        raise RuntimeError("v111_last_mile_heading_failed:" + repr(last))
+
+
+if RUN_STARTUP_SELF_AUDITS:
+    _v111_self_audit()
+else:
+    _STARTUP_AUDITS_SKIPPED.append("_v111_self_audit")
+
+logging.info(
+    "V111 active: generic Latin club-prefix cleanup (CD/FC/CF/AFC...), hard bookmaker-ad gate including 1xBet/+18/codes, "
+    "and absolute one-writer-heading guard at build, post-aware send and generic last-mile finalization; V110 translation/editorial and current infrastructure unchanged."
+)
+# ====== END V111 ======
+
 if __name__ == "__main__":
     main()
