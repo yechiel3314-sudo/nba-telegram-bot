@@ -73293,5 +73293,518 @@ logging.info(
 # ====== END V103 SAFE HIGH-IMPACT CREDIT SAVER ======
 
 
+
+# ====== V104 HIGH-IMPACT NO-WASTE PIPELINE (2026-08-28) ======
+# User-requested items from the V103 audit: 1,2,3,4,6,7 (explicitly NOT item 5).
+# V103 adaptive scan / smart sleep / failure backoff / compact 5-8-12 catch-up /
+# exact 10-latest / translation / dedupe / V72 layout remain untouched below.
+BOT_BUILD_ID = "winner-v104-no-wasted-media-batched-control-io-longpoll-2026-08-28"
+
+V104_CONTROL_FLUSH_SECONDS = max(5.0, float(os.environ.get("V104_CONTROL_FLUSH_SECONDS", "15") or 15))
+V104_CONTROL_FLUSH_MAX_ITEMS = max(10, int(os.environ.get("V104_CONTROL_FLUSH_MAX_ITEMS", "40") or 40))
+V104_CONTROL_LONG_POLL_SECONDS = max(20, int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "30") or 30))
+V104_CONTROL_HTTP_GRACE_SECONDS = max(10, int(os.environ.get("V104_CONTROL_HTTP_GRACE_SECONDS", "12") or 12))
+
+_V104_METRICS: dict[str, int] = {
+    "exact_no_media_fast_returns": 0,
+    "selected_images_cache_hits": 0,
+    "hydrate_fast_returns": 0,
+    "early_video_network_avoided": 0,
+    "direct_video_fast_path": 0,
+    "direct_video_fallbacks": 0,
+    "control_batched_events": 0,
+    "control_flushes": 0,
+}
+
+
+def _v104_is_exact_fxtwitter_post(post: Any) -> bool:
+    provider = str(getattr(post, "exact_source_provider", "") or getattr(post, "source_name", "") or "").casefold()
+    return bool(
+        isinstance(post, Post)
+        and bool(getattr(post, "exact_media_checked", False))
+        and "fxtwitter" in provider
+    )
+
+
+def _v104_direct_video_urls(post: Any) -> list[str]:
+    out: list[str] = []
+    for value in list(getattr(post, "video_urls", []) or []) + list(getattr(post, "exact_video_urls", []) or []):
+        url = str(value or "").strip()
+        if not url or url in out:
+            continue
+        try:
+            if _real_tweet_video_url(url) or is_video_url(url):
+                out.append(url)
+        except Exception:
+            if ".mp4" in url.casefold():
+                out.append(url)
+    try:
+        out.sort(key=lambda u: _final_video_quality(u, 0), reverse=True)
+    except Exception:
+        pass
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 1 + 7) FxTwitter already resolved exact media. Never launch article/X/media
+# recovery merely to prove that an exact text-only post has no image. Also cache
+# the selected image plan per Post until its media signature changes.
+# ---------------------------------------------------------------------------
+_V104_PRE_SELECTED_POST_IMAGES = selected_post_images
+
+
+def _v104_image_signature(post: Any) -> tuple[Any, ...]:
+    return (
+        tuple(str(x or "") for x in list(getattr(post, "image_urls", []) or [])),
+        tuple(str(x or "") for x in list(getattr(post, "exact_image_urls", []) or [])),
+        tuple(str(x or "") for x in list(getattr(post, "external_preview_image_urls", []) or [])),
+        bool(getattr(post, "exact_media_checked", False)),
+        str(getattr(post, "exact_source_provider", "") or getattr(post, "source_name", "") or ""),
+    )
+
+
+def selected_post_images(post: Post) -> list[str]:
+    signature = _v104_image_signature(post)
+    cached = getattr(post, "_v104_selected_images_cache", None)
+    if isinstance(cached, tuple) and len(cached) == 2 and cached[0] == signature:
+        _V104_METRICS["selected_images_cache_hits"] += 1
+        return list(cached[1] or [])
+
+    if _v104_is_exact_fxtwitter_post(post):
+        rows = _final_dedupe_exact_photos([
+            *(getattr(post, "image_urls", []) or []),
+            *(getattr(post, "exact_image_urls", []) or []),
+        ])[:MAX_IMAGES_PER_POST]
+        # Exact FxTwitter media inventory is authoritative. Empty means empty;
+        # do not query X/Syndication/article-card providers merely for decoration.
+        if not rows:
+            _V104_METRICS["exact_no_media_fast_returns"] += 1
+        setattr(post, "_v104_selected_images_cache", (_v104_image_signature(post), list(rows)))
+        return list(rows)
+
+    rows = list(_V104_PRE_SELECTED_POST_IMAGES(post) or [])[:MAX_IMAGES_PER_POST]
+    setattr(post, "_v104_selected_images_cache", (_v104_image_signature(post), list(rows)))
+    return rows
+
+
+# Avoid repeated exact hydration for a Post already fully resolved by FxTwitter.
+# A genuinely expected-but-missing video is allowed through so final video recovery
+# can still run after the duplicate gate.
+_V104_PRE_HYDRATE_EXACT_POST = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    if _v104_is_exact_fxtwitter_post(post):
+        expected_video = bool(
+            getattr(post, "video_expected", False)
+            or getattr(post, "has_video", False)
+            or getattr(post, "primary_has_video", False)
+            or getattr(post, "quoted_has_video", False)
+        )
+        direct_videos = _v104_direct_video_urls(post)
+        if direct_videos or not expected_video:
+            _V104_METRICS["hydrate_fast_returns"] += 1
+            return post
+    return _V104_PRE_HYDRATE_EXACT_POST(post, force=force)
+
+
+# ---------------------------------------------------------------------------
+# 2) The old send pipeline asks sendable_video_url BEFORE translated dedupe.
+# During automatic scans make this boundary network-free: return an already-known
+# direct FxTwitter MP4, otherwise empty. Final video recovery remains downstream.
+# ---------------------------------------------------------------------------
+_V104_PRE_SENDABLE_VIDEO_URL = sendable_video_url
+
+
+def sendable_video_url(post: Post) -> str:
+    if bool(globals().get("_V101_AUTO_SCAN_CONTEXT", False)):
+        direct = _v104_direct_video_urls(post)
+        if direct:
+            return direct[0]
+        _V104_METRICS["early_video_network_avoided"] += 1
+        return ""
+    return str(_V104_PRE_SENDABLE_VIDEO_URL(post) or "")
+
+
+# ---------------------------------------------------------------------------
+# 3) Direct-video-first. If FxTwitter already supplied MP4 variants, size-check
+# those first without querying any recovery provider. Only if no direct variant is
+# usable do we invoke the established full recovery chain.
+# ---------------------------------------------------------------------------
+_V104_PRE_ACCEPTANCE_VIDEO_STATUS = _acceptance_video_status
+
+
+def _acceptance_video_status(post: Post) -> tuple[str, str, int | None]:
+    identity = _final_tweet_numeric_id(post) or str(getattr(post, "post_id", "") or getattr(post, "link", "") or "")
+    try:
+        with _FINAL_VIDEO_CACHE_LOCK:
+            cached = _FINAL_VIDEO_RESULT_CACHE.get(identity)
+            if cached and time.time() - cached[0] < 30 * 60:
+                return cached[1]
+    except Exception:
+        pass
+
+    direct = _v104_direct_video_urls(post) if _v104_is_exact_fxtwitter_post(post) else []
+    if direct:
+        for url in direct:
+            size = _final_actual_video_size(url, None)
+            if size is not None and 0 < int(size) <= int(MAX_VIDEO_BYTES):
+                post.video_urls = list(dict.fromkeys([url, *(getattr(post, "video_urls", []) or [])]))
+                post.acceptance_video_url = url
+                post.acceptance_video_size = int(size)
+                result = (url, "ok", int(size))
+                try:
+                    with _FINAL_VIDEO_CACHE_LOCK:
+                        _FINAL_VIDEO_RESULT_CACHE[identity] = (time.time(), result)
+                except Exception:
+                    pass
+                _V104_METRICS["direct_video_fast_path"] += 1
+                return result
+        # Direct variants exist but none was proven sendable (oversized/unknown).
+        # Only now pay for the legacy independent recovery providers.
+        _V104_METRICS["direct_video_fallbacks"] += 1
+    return _V104_PRE_ACCEPTANCE_VIDEO_STATUS(post)
+
+
+# ---------------------------------------------------------------------------
+# 4) Batch user-facing blocked-history + blocked pipeline telemetry into ONE
+# read/modify/write transaction every few seconds. These are diagnostic histories,
+# never send/dedupe state. A report button flushes first, so displayed data stays exact.
+# ---------------------------------------------------------------------------
+_V104_CONTROL_BUFFER_LOCK = RLock()
+_V104_PENDING_BLOCK_ITEMS: list[dict[str, Any]] = []
+_V104_PENDING_PIPELINE_ITEMS: list[dict[str, Any]] = []
+from threading import Event as _V104Event
+_V104_CONTROL_FLUSH_EVENT = _V104Event()
+_V104_CONTROL_FLUSH_STOP = _V104Event()
+
+
+def _v104_build_block_item(reason: str, post: Post, rendered: str, duplicate: bool = False) -> dict[str, Any] | None:
+    base_reason = (reason or "").split(";", 1)[0].strip()
+    if (
+        base_reason == "old_post"
+        and SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS > 0
+        and time.time() - BOT_STARTED_AT < SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS
+    ):
+        return None
+    if ("_smart_is_two_hour_age_block" in globals() and _smart_is_two_hour_age_block(reason)) or _final_record_is_older_than_two_hours(post):
+        return None
+    duplicate_reasons = {"duplicate", "semantic_duplicate", "recent_duplicate", "same_cycle_duplicate", "post_translation_duplicate"}
+    is_dup = bool(duplicate or base_reason in duplicate_reasons or "duplicate" in base_reason or "כפיל" in str(rendered or ""))
+    now_ts = time.time()
+    score_match = re.search(r"(?:דמיון|similarity)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", str(rendered or ""), re.IGNORECASE)
+    verdict_match = re.search(r"(?:החלטה|verdict)\s*[:=]?\s*([A-Z_]+)", str(rendered or ""), re.IGNORECASE)
+    source_match = re.search(r"מול\s+([^|.\n]{2,90})", str(rendered or ""))
+    item = {
+        "id": control_block_item_id(post, reason, now_ts),
+        "ts": now_ts,
+        "source": getattr(post, "username", "unknown") or "unknown",
+        "reason": hebrew_block_reason(reason),
+        "raw_reason": reason,
+        "preview": filtered_post_text_preview(post),
+        "original_text": clean_for_ai_translation(html.unescape("\n".join([getattr(post, "text", "") or "", getattr(post, "quoted_text", "") or ""]))),
+        "link": getattr(post, "link", "") or "",
+        "post_id": getattr(post, "post_id", "") or "",
+        "dedupe_ids": list(getattr(post, "dedupe_ids", []) or []),
+        "post": post_to_control_payload(post),
+        "rendered": compact_debug_text(rendered, 900),
+        "is_duplicate": is_dup,
+    }
+    if score_match:
+        item["duplicate_score"] = float(score_match.group(1))
+    if verdict_match:
+        item["duplicate_verdict"] = verdict_match.group(1)
+    if source_match:
+        item["duplicate_source"] = source_match.group(1).strip()
+    return item
+
+
+def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
+    try:
+        item = _v104_build_block_item(reason, post, rendered, duplicate=duplicate)
+        if not item:
+            return
+        with _V104_CONTROL_BUFFER_LOCK:
+            _V104_PENDING_BLOCK_ITEMS.append(item)
+            pending_count = len(_V104_PENDING_BLOCK_ITEMS) + len(_V104_PENDING_PIPELINE_ITEMS)
+        _V104_METRICS["control_batched_events"] += 1
+        try:
+            maybe_notify_control_borderline_item(item)
+        except Exception:
+            pass
+        if pending_count >= V104_CONTROL_FLUSH_MAX_ITEMS:
+            _V104_CONTROL_FLUSH_EVENT.set()
+    except Exception as exc:
+        logging.debug("V104 buffering control block failed safely: %s", short_error(exc, 220))
+
+
+def _pipeline_record_blocked(post: Post, reason: str) -> None:
+    if _final_record_is_older_than_two_hours(post) or _final_hide_from_block_reports(reason):
+        return
+    key = _pipeline_post_key(post)
+    if not key:
+        return
+    identity = hashlib.sha1((key + "|" + str(reason or "")).encode("utf-8", errors="ignore")).hexdigest()
+    with _PIPELINE_TIMING_LOCK:
+        if identity in _PIPELINE_BLOCK_RECORDED:
+            return
+        _PIPELINE_BLOCK_RECORDED.add(identity)
+        if len(_PIPELINE_BLOCK_RECORDED) > 4000:
+            _PIPELINE_BLOCK_RECORDED.clear()
+        seen = dict(_PIPELINE_FIRST_SEEN.get(key, {}))
+        stages = dict(_PIPELINE_STAGE_ACCUM.get(key, {}))
+        process_started = float(_PIPELINE_PROCESS_STARTED.get(key, 0.0) or time.time())
+        _PIPELINE_FIRST_SEEN.pop(key, None)
+        _PIPELINE_STAGE_ACCUM.pop(key, None)
+        _PIPELINE_PROCESS_STARTED.pop(key, None)
+    published = float(getattr(post, "published_ts", 0.0) or 0.0)
+    first_seen = float(seen.get("first_seen_at", 0.0) or 0.0)
+    blocked_at = time.time()
+    sample = {
+        "ts": blocked_at,
+        "status": "blocked",
+        "username": str(getattr(post, "username", "") or ""),
+        "post_id": str(getattr(post, "post_id", "") or ""),
+        "link": str(getattr(post, "link", "") or ""),
+        "published_at": published,
+        "first_seen_at": first_seen,
+        "first_seen_lane": str(seen.get("first_seen_lane", "") or ""),
+        "processing_started_at": process_started,
+        "blocked_at": blocked_at,
+        "publish_to_first_seen_seconds": max(0.0, first_seen - published) if first_seen and published else 0.0,
+        "first_seen_to_processing_seconds": max(0.0, process_started - first_seen) if first_seen else 0.0,
+        "filter_seconds": float(stages.get("filter_seconds", 0.0) or 0.0),
+        "duplicate_seconds": float(stages.get("duplicate_seconds", 0.0) or 0.0),
+        "block_reason": str(reason or ""),
+        "block_reason_he": hebrew_block_reason(str(reason or "")),
+    }
+    with _V104_CONTROL_BUFFER_LOCK:
+        _V104_PENDING_PIPELINE_ITEMS.append(sample)
+        pending_count = len(_V104_PENDING_BLOCK_ITEMS) + len(_V104_PENDING_PIPELINE_ITEMS)
+    _V104_METRICS["control_batched_events"] += 1
+    if pending_count >= V104_CONTROL_FLUSH_MAX_ITEMS:
+        _V104_CONTROL_FLUSH_EVENT.set()
+
+
+def _v104_flush_control_telemetry() -> None:
+    with _V104_CONTROL_BUFFER_LOCK:
+        if not _V104_PENDING_BLOCK_ITEMS and not _V104_PENDING_PIPELINE_ITEMS:
+            return
+        blocks = list(_V104_PENDING_BLOCK_ITEMS)
+        pipelines = list(_V104_PENDING_PIPELINE_ITEMS)
+        _V104_PENDING_BLOCK_ITEMS.clear()
+        _V104_PENDING_PIPELINE_ITEMS.clear()
+    try:
+        state = load_control_state()
+        if not isinstance(state, dict):
+            state = {}
+        if blocks:
+            current = [x for x in list(state.get("last_blocked_posts", []) or []) if isinstance(x, dict)]
+            # Deduplicate by item id while preserving chronology.
+            merged: dict[str, dict[str, Any]] = {}
+            order: list[str] = []
+            for item in current + blocks:
+                item_id = str(item.get("id") or hashlib.sha1(repr(item).encode("utf-8", errors="ignore")).hexdigest())
+                if item_id not in merged:
+                    order.append(item_id)
+                merged[item_id] = item
+            all_rows = [merged[k] for k in order if k in merged]
+            state["last_blocked_posts"] = all_rows[-CONTROL_BLOCK_HISTORY_LIMIT:]
+            dup_current = [x for x in list(state.get("last_duplicate_posts", []) or []) if isinstance(x, dict)]
+            dup_new = [x for x in blocks if bool(x.get("is_duplicate"))]
+            if dup_new:
+                dup_merged: dict[str, dict[str, Any]] = {}
+                dup_order: list[str] = []
+                for item in dup_current + dup_new:
+                    item_id = str(item.get("id") or hashlib.sha1(repr(item).encode("utf-8", errors="ignore")).hexdigest())
+                    if item_id not in dup_merged:
+                        dup_order.append(item_id)
+                    dup_merged[item_id] = item
+                state["last_duplicate_posts"] = [dup_merged[k] for k in dup_order if k in dup_merged][-CONTROL_BLOCK_HISTORY_LIMIT:]
+        if pipelines:
+            rows = [x for x in list(state.get(PIPELINE_BLOCKED_TIMING_STATE_KEY, []) or []) if isinstance(x, dict)]
+            rows.extend(pipelines)
+            state[PIPELINE_BLOCKED_TIMING_STATE_KEY] = rows[-PIPELINE_BLOCKED_TIMING_LIMIT:]
+        write_control_state(state)
+        _V104_METRICS["control_flushes"] += 1
+    except Exception as exc:
+        # Never lose diagnostic events because of a transient disk error.
+        with _V104_CONTROL_BUFFER_LOCK:
+            _V104_PENDING_BLOCK_ITEMS[:0] = blocks
+            _V104_PENDING_PIPELINE_ITEMS[:0] = pipelines
+        logging.warning("V104 control telemetry flush failed; events kept in RAM: %s", short_error(exc, 240))
+
+
+def _v104_control_flush_worker() -> None:
+    while not _V104_CONTROL_FLUSH_STOP.is_set():
+        _V104_CONTROL_FLUSH_EVENT.wait(timeout=V104_CONTROL_FLUSH_SECONDS)
+        _V104_CONTROL_FLUSH_EVENT.clear()
+        _v104_flush_control_telemetry()
+
+
+_V104_CONTROL_FLUSH_THREAD = Thread(target=_v104_control_flush_worker, name="v104-control-flush", daemon=True)
+_V104_CONTROL_FLUSH_THREAD.start()
+
+
+# Report/list buttons flush diagnostic RAM first, preserving exact visible history.
+_V104_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+_V104_FLUSH_BEFORE_CONTROL_ACTIONS = {
+    "football_last_blocked", "football_blocked_summary", "football_last_duplicate",
+    "football_pipeline_timings", "football_system_health",
+}
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "")
+    if data in _V104_FLUSH_BEFORE_CONTROL_ACTIONS:
+        _v104_flush_control_telemetry()
+    return _V104_PRE_PROCESS_CONTROL_UPDATE(update)
+
+
+# ---------------------------------------------------------------------------
+# 6) Real Telegram long-poll: server wait and HTTP timeout must agree. One HTTP
+# attempt is enough; the request returns immediately when a button/message arrives,
+# so a 30-second long-poll does NOT add button latency.
+# ---------------------------------------------------------------------------
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    startup_panel_done = False
+    while True:
+        try:
+            if is_shabbat_now():
+                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
+                continue
+            if not startup_panel_done:
+                startup_panel_done = True
+                if CONTROL_SEND_PANEL_ON_STARTUP:
+                    try:
+                        send_quick_control_panel(force_new=True)
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
+                else:
+                    try:
+                        ensure_control_panel_once_if_requested()
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+
+            poll_seconds = int(V104_CONTROL_LONG_POLL_SECONDS)
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": poll_seconds,
+                    "allowed_updates": ["callback_query", "message", "edited_message", "channel_post", "edited_channel_post"],
+                },
+                max_attempts=1,
+                timeout=poll_seconds + int(V104_CONTROL_HTTP_GRACE_SECONDS),
+            )
+            if is_shabbat_now():
+                continue
+            updates = list(response.get("result", []) or [])
+            if not updates:
+                continue
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+                    callbacks.append(update)
+                else:
+                    noncallbacks.append(update)
+            for update in callbacks:
+                process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try:
+                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+            if batch_offset != offset:
+                offset = batch_offset
+                try:
+                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
+                except RuntimeError:
+                    pass
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1, timeout=10)
+                    except Exception as cleanup_exc:
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+
+# ---------------------------------------------------------------------------
+# V104 audit — item 5 intentionally absent. Prove earlier requested V103/V102
+# mechanisms remain active and these optimizations do not alter their constants.
+# ---------------------------------------------------------------------------
+def v104_no_waste_status() -> dict[str, Any]:
+    with _V104_CONTROL_BUFFER_LOCK:
+        pending = len(_V104_PENDING_BLOCK_ITEMS) + len(_V104_PENDING_PIPELINE_ITEMS)
+    return {
+        "control_long_poll_seconds": int(V104_CONTROL_LONG_POLL_SECONDS),
+        "control_http_timeout_seconds": int(V104_CONTROL_LONG_POLL_SECONDS + V104_CONTROL_HTTP_GRACE_SECONDS),
+        "control_flush_seconds": float(V104_CONTROL_FLUSH_SECONDS),
+        "control_pending_events": pending,
+        "metrics": dict(_V104_METRICS),
+    }
+
+
+def _v104_self_audit() -> None:
+    # Prior explicit settings remain exactly as V103/V102 established them.
+    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120):
+        raise RuntimeError("v104_normal_adaptive_changed")
+    if tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
+        raise RuntimeError("v104_slow_adaptive_changed")
+    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 300:
+        raise RuntimeError("v104_adaptive_hold_changed")
+    if int(V102_FAILURE_BACKOFF_AFTER) != 3 or int(V102_FAILURE_BACKOFF_ESCALATE_AFTER) != 6:
+        raise RuntimeError("v104_failure_backoff_changed")
+    if int(V103_HISTORY_REQUIRED_ROWS) != 10:
+        raise RuntimeError("v104_ten_latest_changed")
+    if tuple((V103_FAST_TIMELINE_LIMIT, V103_MEDIUM_TIMELINE_LIMIT, V103_SLOW_TIMELINE_LIMIT)) != (5, 8, 12):
+        raise RuntimeError("v104_compact_timeline_changed")
+    if int(MAX_VIDEO_BYTES) != 13_107_200:
+        raise RuntimeError("v104_video_limit_changed")
+    if int(V104_CONTROL_LONG_POLL_SECONDS) < 20:
+        raise RuntimeError("v104_long_poll_too_short")
+    if "max_attempts" not in control_loop.__code__.co_names and "telegram_api" not in control_loop.__code__.co_names:
+        raise RuntimeError("v104_control_longpoll_not_active")
+    if selected_post_images is _V104_PRE_SELECTED_POST_IMAGES:
+        raise RuntimeError("v104_media_plan_cache_not_active")
+    if sendable_video_url is _V104_PRE_SENDABLE_VIDEO_URL:
+        raise RuntimeError("v104_early_video_boundary_not_active")
+    if _acceptance_video_status is _V104_PRE_ACCEPTANCE_VIDEO_STATUS:
+        raise RuntimeError("v104_direct_video_first_not_active")
+
+
+_v104_self_audit()
+logging.info(
+    "V104 active: exact FxTwitter no-media fast path; per-post media-plan cache; automatic early video lookup is network-free; "
+    "direct FxTwitter MP4 is checked before recovery providers; blocked history/pipeline telemetry are batched into one control-state write; "
+    "Telegram control uses true long-poll with one HTTP attempt. V103/V102 savings and item #5 exclusion preserved."
+)
+# ====== END V104 HIGH-IMPACT NO-WASTE PIPELINE ======
+
 if __name__ == "__main__":
     main()
