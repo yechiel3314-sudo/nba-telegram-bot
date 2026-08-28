@@ -73806,5 +73806,409 @@ logging.info(
 )
 # ====== END V104 HIGH-IMPACT NO-WASTE PIPELINE ======
 
+
+# ====== V105 HARD SABBATH ZERO-ACTIVITY MODE (2026-08-28) ======
+# Goal: during Shabbat, consume as close to zero server actions as a running
+# process can: no source polling, no Telegram getUpdates, no translation, no
+# media, no telemetry flush timer, no Hebcal network refresh, no state writes.
+# The process sleeps once until the cached Havdalah time (plus a small guard).
+# All V104/V103/V102 logic outside Shabbat remains unchanged.
+
+BOT_BUILD_ID = "winner-v105-hard-sabbath-zero-activity-2026-08-28"
+V105_SABBATH_EXIT_GUARD_SECONDS = 8
+V105_JERUSALEM_LAT = 31.7683
+V105_JERUSALEM_LON = 35.2137
+V105_JERUSALEM_CANDLE_MINUTES_BEFORE_SUNSET = 40
+V105_HAVDALAH_MINUTES_AFTER_SUNSET = int(SHABBAT_HAVDALAH_MINUTES)
+V105_MIN_HARD_SLEEP_SECONDS = 60
+
+_V105_PRE_IS_SHABBAT_NOW = is_shabbat_now
+_V105_PRE_MAIN = main
+_V105_SABBATH_LOCK = RLock()
+_V105_HARD_IDLE_ACTIVE = False
+_V105_HARD_IDLE_UNTIL_TS = 0.0
+_V105_FLUSH_THREAD_PAUSED = False
+_V105_LAST_IDLE_LOG_WINDOW = ""
+
+
+def _v105_read_shabbat_windows_any_age() -> list[tuple[datetime, datetime]]:
+    """Read cached Hebcal windows even if fetched_at is old. No network."""
+    try:
+        path = shabbat_cache_path()
+        if not path.exists():
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        windows: list[tuple[datetime, datetime]] = []
+        for item in list(data.get("windows", []) or []):
+            if not isinstance(item, dict):
+                continue
+            start = parse_hebcal_datetime(str(item.get("start", "") or ""))
+            end = parse_hebcal_datetime(str(item.get("end", "") or ""))
+            if start and end and end > start:
+                windows.append((start, end))
+        return sorted(windows, key=lambda pair: pair[0])
+    except Exception:
+        return []
+
+
+def _v105_current_or_next_cached_window(now: datetime) -> tuple[datetime, datetime] | None:
+    windows = _v105_read_shabbat_windows_any_age()
+    current = next(((start, end) for start, end in windows if start <= now <= end), None)
+    if current:
+        return current
+    return next(((start, end) for start, end in windows if start > now), None)
+
+
+def _v105_local_sunset(day: Any) -> datetime | None:
+    """NOAA-style local sunset estimate for Jerusalem; zero network/dependencies."""
+    try:
+        import math
+        tz = ZoneInfo(SHABBAT_TIMEZONE)
+        n = int(day.timetuple().tm_yday)
+        lng_hour = float(V105_JERUSALEM_LON) / 15.0
+        t = n + ((18.0 - lng_hour) / 24.0)
+        mean_anomaly = (0.9856 * t) - 3.289
+        true_long = (
+            mean_anomaly
+            + (1.916 * math.sin(math.radians(mean_anomaly)))
+            + (0.020 * math.sin(math.radians(2.0 * mean_anomaly)))
+            + 282.634
+        ) % 360.0
+        right_ascension = math.degrees(math.atan(0.91764 * math.tan(math.radians(true_long)))) % 360.0
+        right_ascension += (math.floor(true_long / 90.0) * 90.0) - (math.floor(right_ascension / 90.0) * 90.0)
+        right_ascension /= 15.0
+        sin_dec = 0.39782 * math.sin(math.radians(true_long))
+        cos_dec = math.cos(math.asin(sin_dec))
+        cos_h = (
+            math.cos(math.radians(90.833))
+            - (sin_dec * math.sin(math.radians(float(V105_JERUSALEM_LAT))))
+        ) / (cos_dec * math.cos(math.radians(float(V105_JERUSALEM_LAT))))
+        if cos_h < -1.0 or cos_h > 1.0:
+            return None
+        local_hour_angle = math.degrees(math.acos(cos_h)) / 15.0
+        local_mean_time = local_hour_angle + right_ascension - (0.06571 * t) - 6.622
+        utc_hour = (local_mean_time - lng_hour) % 24.0
+        midnight_utc = datetime(day.year, day.month, day.day, tzinfo=ZoneInfo("UTC"))
+        return (midnight_utc + timedelta(hours=utc_hour)).astimezone(tz)
+    except Exception:
+        return None
+
+
+def _v105_fallback_window(now: datetime) -> tuple[datetime, datetime] | None:
+    """Offline Jerusalem Shabbat window from local sunset; absolutely no network."""
+    # Find the Friday belonging to this Friday/Saturday only. Outside that pair
+    # return None so weekday code may refresh the exact multi-day Hebcal cache.
+    if now.weekday() == 4:  # Friday
+        friday = now.date()
+    elif now.weekday() == 5:  # Saturday
+        friday = (now - timedelta(days=1)).date()
+    else:
+        return None
+    friday_sunset = _v105_local_sunset(friday)
+    saturday_sunset = _v105_local_sunset(friday + timedelta(days=1))
+    if not friday_sunset or not saturday_sunset:
+        return None
+    start = friday_sunset - timedelta(minutes=int(V105_JERUSALEM_CANDLE_MINUTES_BEFORE_SUNSET))
+    end = saturday_sunset + timedelta(minutes=int(V105_HAVDALAH_MINUTES_AFTER_SUNSET))
+    if start <= now <= end:
+        return start, end
+    return None
+
+
+def _v105_exact_current_window(now: datetime | None = None) -> tuple[datetime, datetime] | None:
+    now = now or datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    cached = _v105_current_or_next_cached_window(now)
+    if cached and cached[0] <= now <= cached[1]:
+        return cached
+    return _v105_fallback_window(now)
+
+
+def _v105_seconds_until_exit(now: datetime | None = None) -> int:
+    now = now or datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    window = _v105_exact_current_window(now)
+    if not window:
+        return 0
+    remaining = int((window[1] - now).total_seconds()) + int(V105_SABBATH_EXIT_GUARD_SECONDS)
+    return max(int(V105_MIN_HARD_SLEEP_SECONDS), remaining)
+
+
+def _v105_pause_v104_flush_worker(*, flush_before_pause: bool = False) -> None:
+    global _V105_FLUSH_THREAD_PAUSED
+    with _V105_SABBATH_LOCK:
+        if _V105_FLUSH_THREAD_PAUSED:
+            return
+        if flush_before_pause:
+            try:
+                _v104_flush_control_telemetry()
+            except Exception:
+                pass
+        try:
+            _V104_CONTROL_FLUSH_STOP.set()
+            _V104_CONTROL_FLUSH_EVENT.set()
+        except Exception:
+            pass
+        try:
+            thread = globals().get("_V104_CONTROL_FLUSH_THREAD")
+            if thread is not None and getattr(thread, "is_alive", lambda: False)():
+                thread.join(timeout=0.75)
+        except Exception:
+            pass
+        _V105_FLUSH_THREAD_PAUSED = True
+
+
+def _v105_resume_v104_flush_worker() -> None:
+    """Restart V104 batching timer only on weekdays/non-Shabbat."""
+    global _V104_CONTROL_FLUSH_EVENT, _V104_CONTROL_FLUSH_STOP, _V104_CONTROL_FLUSH_THREAD
+    global _V105_FLUSH_THREAD_PAUSED
+    with _V105_SABBATH_LOCK:
+        if not _V105_FLUSH_THREAD_PAUSED:
+            return
+        from threading import Event as _V105Event
+        _V104_CONTROL_FLUSH_EVENT = _V105Event()
+        _V104_CONTROL_FLUSH_STOP = _V105Event()
+        _V104_CONTROL_FLUSH_THREAD = Thread(
+            target=_v104_control_flush_worker,
+            name="v104-control-flush",
+            daemon=True,
+        )
+        _V104_CONTROL_FLUSH_THREAD.start()
+        _V105_FLUSH_THREAD_PAUSED = False
+
+
+def _v105_enter_hard_idle(window: tuple[datetime, datetime], now: datetime) -> None:
+    global _V105_HARD_IDLE_ACTIVE, _V105_HARD_IDLE_UNTIL_TS, SHABBAT_SLEEP_SECONDS, _V105_LAST_IDLE_LOG_WINDOW
+    until = float(window[1].timestamp()) + float(V105_SABBATH_EXIT_GUARD_SECONDS)
+    key = f"{window[0].isoformat()}->{window[1].isoformat()}"
+    with _V105_SABBATH_LOCK:
+        _V105_HARD_IDLE_ACTIVE = True
+        _V105_HARD_IDLE_UNTIL_TS = until
+        SHABBAT_SLEEP_SECONDS = max(
+            int(V105_MIN_HARD_SLEEP_SECONDS),
+            int(until - now.timestamp()),
+        )
+        if _V105_LAST_IDLE_LOG_WINDOW != key:
+            _V105_LAST_IDLE_LOG_WINDOW = key
+            logging.info(
+                "🕯️ V105 שבת HARD-IDLE: כל הרשת/Telegram/תרגום/מדיה/telemetry נעצרים עד %s",
+                window[1].strftime("%H:%M %d/%m/%Y"),
+            )
+    # One final diagnostic flush at entry, then stop the periodic timer entirely.
+    _v105_pause_v104_flush_worker(flush_before_pause=False)
+
+
+def _v105_leave_hard_idle() -> None:
+    global _V105_HARD_IDLE_ACTIVE, _V105_HARD_IDLE_UNTIL_TS, SHABBAT_SLEEP_SECONDS
+    with _V105_SABBATH_LOCK:
+        was_active = _V105_HARD_IDLE_ACTIVE
+        _V105_HARD_IDLE_ACTIVE = False
+        _V105_HARD_IDLE_UNTIL_TS = 0.0
+        SHABBAT_SLEEP_SECONDS = 300
+    if was_active:
+        _v105_resume_v104_flush_worker()
+        logging.info("✅ V105 שבת HARD-IDLE הסתיים; פעילות רגילה חוזרת")
+
+
+def is_shabbat_now() -> bool:
+    """Offline-first on Shabbat: NEVER contacts Hebcal while inside Shabbat."""
+    if not SHABBAT_MODE_ENABLED:
+        _v105_leave_hard_idle()
+        return False
+    now = datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+
+    # First trust any cached window regardless of cache age. fetch_shabbat_windows()
+    # fetches a multi-day range, so an older fetched_at timestamp does not make the
+    # actual candle/Havdalah timestamps invalid.
+    cached = _v105_current_or_next_cached_window(now)
+    if cached and cached[0] <= now <= cached[1]:
+        _v105_enter_hard_idle(cached, now)
+        return True
+
+    # During the conservative Friday/Saturday safety window we categorically do
+    # not call Hebcal. If exact cache is missing, use offline fallback instead.
+    fallback = _v105_fallback_window(now)
+    if fallback:
+        _v105_enter_hard_idle(fallback, now)
+        return True
+
+    _v105_leave_hard_idle()
+
+    # If a cached future window already exists, no refresh is needed at all.
+    if cached and cached[0] > now:
+        return False
+
+    # Only outside Shabbat may the legacy function refresh Hebcal if needed.
+    try:
+        return bool(_V105_PRE_IS_SHABBAT_NOW())
+    except Exception:
+        return False
+
+
+def _v105_hard_sleep_until_exit(source: str = "loop") -> None:
+    seconds = _v105_seconds_until_exit()
+    if seconds <= 0:
+        seconds = max(int(V105_MIN_HARD_SLEEP_SECONDS), int(SHABBAT_SLEEP_SECONDS or 300))
+    # Exactly one sleep call for the whole remaining Shabbat. No polling loop.
+    time.sleep(seconds)
+
+
+# Stop V104's 15-second periodic worker immediately at import. main() resumes it
+# only if startup is outside Shabbat. This also covers a Railway restart on Shabbat.
+_v105_pause_v104_flush_worker(flush_before_pause=False)
+
+
+# Final Telegram control boundary: no getUpdates at all during Shabbat; one long
+# sleep until Havdalah instead of waking every 5 minutes.
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    if is_shabbat_now():
+        _v105_hard_sleep_until_exit("control-startup")
+    _v105_resume_v104_flush_worker()
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    startup_panel_done = False
+    while True:
+        try:
+            if is_shabbat_now():
+                _v105_hard_sleep_until_exit("control")
+                continue
+            if not startup_panel_done:
+                startup_panel_done = True
+                if CONTROL_SEND_PANEL_ON_STARTUP:
+                    try:
+                        send_quick_control_panel(force_new=True)
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
+                else:
+                    try:
+                        ensure_control_panel_once_if_requested()
+                    except Exception as exc:
+                        logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
+
+            poll_seconds = int(V104_CONTROL_LONG_POLL_SECONDS)
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": poll_seconds,
+                    "allowed_updates": ["callback_query", "message", "edited_message", "channel_post", "edited_channel_post"],
+                },
+                max_attempts=1,
+                timeout=poll_seconds + int(V104_CONTROL_HTTP_GRACE_SECONDS),
+            )
+            # Sabbath may have started while Telegram long-poll was open. Discard
+            # the returned batch and go straight to hard idle without processing.
+            if is_shabbat_now():
+                _v105_hard_sleep_until_exit("control-edge")
+                continue
+            updates = list(response.get("result", []) or [])
+            if not updates:
+                continue
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+                    callbacks.append(update)
+                else:
+                    noncallbacks.append(update)
+            for update in callbacks:
+                process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try:
+                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+            if batch_offset != offset:
+                offset = batch_offset
+                try:
+                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
+                except RuntimeError:
+                    pass
+        except Exception as exc:
+            if is_shabbat_now():
+                _v105_hard_sleep_until_exit("control-error-edge")
+                continue
+            if is_getupdates_conflict(exc):
+                now_ts = time.time()
+                if now_ts - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now_ts
+                    try:
+                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1, timeout=10)
+                    except Exception as cleanup_exc:
+                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
+                time.sleep(CONTROL_POLL_SECONDS)
+                continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
+            time.sleep(CONTROL_POLL_SECONDS)
+
+
+# Final startup boundary. On a Railway restart during Shabbat, sleep BEFORE the
+# legacy main can start Telegram polling, startup broadcasts, source scans, or AI.
+def main() -> None:
+    if is_shabbat_now():
+        _v105_hard_sleep_until_exit("main-startup")
+    _v105_resume_v104_flush_worker()
+    return _V105_PRE_MAIN()
+
+
+def v105_hard_sabbath_status() -> dict[str, Any]:
+    now = datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    window = _v105_exact_current_window(now)
+    return {
+        "active": bool(window),
+        "now": now.isoformat(),
+        "window_start": window[0].isoformat() if window else "",
+        "window_end": window[1].isoformat() if window else "",
+        "seconds_until_exit": _v105_seconds_until_exit(now) if window else 0,
+        "control_poll_during_shabbat": False,
+        "hebcal_network_during_shabbat": False,
+        "telemetry_timer_during_shabbat": False,
+        "source_scan_during_shabbat": False,
+        "translation_during_shabbat": False,
+        "media_during_shabbat": False,
+        "state_write_during_shabbat": False,
+    }
+
+
+def _v105_self_audit() -> None:
+    # All previous performance behavior remains intact.
+    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120):
+        raise RuntimeError("v105_adaptive_normal_changed")
+    if tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
+        raise RuntimeError("v105_adaptive_slow_changed")
+    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 300:
+        raise RuntimeError("v105_adaptive_hold_changed")
+    if int(V103_HISTORY_REQUIRED_ROWS) != 10:
+        raise RuntimeError("v105_ten_latest_changed")
+    if int(MAX_VIDEO_BYTES) != 13_107_200:
+        raise RuntimeError("v105_video_limit_changed")
+    # Final control loop must include hard-sleep boundary, not the old 5-minute clamp.
+    names = set(control_loop.__code__.co_names)
+    if "_v105_hard_sleep_until_exit" not in names or "telegram_api" not in names:
+        raise RuntimeError("v105_hard_control_boundary_missing")
+    if _V105_PRE_MAIN is main:
+        raise RuntimeError("v105_main_not_wrapped")
+
+
+_v105_self_audit()
+logging.info(
+    "V105 active: Hard Sabbath zero-activity mode. During cached/fallback Shabbat there is no source scan, Telegram polling, "
+    "translation, media, Hebcal refresh, telemetry timer, or state write; main/control sleep once until Havdalah. "
+    "V104/V103/V102 behavior outside Shabbat is preserved."
+)
+# ====== END V105 HARD SABBATH ZERO-ACTIVITY MODE ======
+
 if __name__ == "__main__":
     main()
