@@ -74210,5 +74210,319 @@ logging.info(
 )
 # ====== END V105 HARD SABBATH ZERO-ACTIVITY MODE ======
 
+
+# ====== V106 FINAL: EXACT V70/V72 SOURCE HEADERS + OPENING LAYOUT + LAMINE CAMARA (2026-08-28) ======
+# Restores the exact established presentation policy from the last working V70/V72 lineage:
+# - Fact/aggregation feeds NEVER show their channel/source name as a report heading.
+# - Normal reporters: text-only => compact "writer: report" on one line.
+# - Normal reporters with photo/video => writer heading, exactly one blank line, then report.
+# - Nicolò Schira => always compact on one line, regardless of media.
+# - Reporter opening labels (דיווח/רשמי/בלעדי/עדכון/חשיפה/פרסום ראשון/פרסום בלעדי/חדש)
+#   stay unbolded and inline with the first sentence.
+# - No-writer/fact-source opening labels are bold and occupy their own line; the body begins
+#   immediately on the next line, with no blank line between them.
+# - Final zero-cost correction: "לאמינה קאמארא/קאמארה" => "לאמינה קמרה".
+# All V105 hard-Shabbat, V104 server savings, V103 catch-up/cache, V102 adaptive/backoff,
+# V94 translation/no-English and latest dedupe/provider behavior remain untouched.
+
+BOT_BUILD_ID = "winner-v106-v72-exact-source-headings-openers-camara-2026-08-28"
+
+_V106_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
+_V106_KEEP_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+_V106_KEEP_DEDUPE = find_recent_duplicate_event
+_V106_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
+_V106_KEEP_MAIN = main
+_V106_KEEP_CONTROL_LOOP = control_loop
+_V106_PRE_TIDY = tidy_translated_text
+_V106_PRE_BUILD = build_message
+_V106_PRE_SEND_MAIN = send_prepared_message_to_main
+_V106_PRE_MANUAL_SEND = manual_force_send_prepared_message
+_V106_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
+
+_V106_FACT_USERNAMES = {
+    str(item or "").strip().lstrip("@").casefold()
+    for item in tuple(globals().get("FACTS_SOURCE_ORDER", ()))
+    if str(item or "").strip()
+}
+# Hard safety mirror of the exact active non-reporter family used in the working era.
+_V106_FACT_USERNAMES.update({
+    "footballfactly", "footballtweet", "optajoe", "centregoals",
+    "polymarketsport", "trollfootball2", "sofascore",
+})
+
+_V106_FACT_LABELS = {
+    "עובדות כדורגל", "ציוצי כדורגל", "אופטה", "מטרות מרכזיות",
+    "פולימרקט ספורט", "טרול פוטבול", "סופסקור פוטבול", "סופסקור",
+    "FootballFactly", "Footballtweet", "Opta", "OptaJoe", "CentreGoals",
+    "Polymarket Sport", "PolymarketSport", "Troll Football", "TrollFootball2", "Sofascore",
+}
+for _v106_map_name in ("FACTS_SOURCE_LABELS", "ACCOUNT_DISPLAY_NAMES"):
+    _v106_map = globals().get(_v106_map_name, {})
+    if isinstance(_v106_map, dict):
+        for _v106_u, _v106_label in _v106_map.items():
+            if str(_v106_u or "").strip().lstrip("@").casefold() in _V106_FACT_USERNAMES:
+                if str(_v106_label or "").strip():
+                    _V106_FACT_LABELS.add(str(_v106_label).strip())
+
+_V106_OPENING_LABELS = tuple(
+    str(item or "").strip()
+    for item in globals().get("_V20_OPENING_LABELS", (
+        "דיווח", "רשמי", "בלעדי", "עדכון", "חשיפה", "פרסום ראשון", "פרסום בלעדי", "חדש"
+    ))
+    if str(item or "").strip()
+)
+_V106_OPENING_ALT = "|".join(sorted((re.escape(x) for x in _V106_OPENING_LABELS), key=len, reverse=True))
+_V106_DIR = r"[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]*"
+_V106_TAG_OPEN = r"(?:<(?:b|strong|i|em)[^>]*>\s*)*"
+_V106_TAG_CLOSE = r"(?:</(?:b|strong|i|em)>\s*)*"
+_V106_EMOJI_PREFIX = r"(?:(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2300-\u27BF]\ufe0f?)(?:\u200d[\U0001F300-\U0001FAFF])?[ \t]*)*"
+
+
+def _v106_username(post: Any) -> str:
+    return str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+
+
+def _v106_is_fact_source(post: Any) -> bool:
+    return _v106_username(post) in _V106_FACT_USERNAMES
+
+
+def _v106_fix_lamine_camara(value: Any) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    text = value
+    # Specific to Lamine Camara; do not globally rewrite Kamara/Camara surnames belonging to other players.
+    text = re.sub(r"(?<![א-ת])לאמינה\s+קאמאר[אה](?![א-ת])", "לאמינה קמרה", text)
+    text = re.sub(r"(?<![א-ת])לאמין\s+קאמאר[אה](?![א-ת])", "לאמין קמרה", text)
+    return text
+
+
+def _v106_remove_footer(value: Any) -> str:
+    text = str(value or "")
+    try:
+        text = _V95_CANONICAL_FOOTER_REMOVE_RE.sub("", text)
+    except Exception:
+        pass
+    try:
+        text = _v30_remove_all_neto_footers(text)
+    except Exception:
+        pass
+    # Catch the current canonical footer if a legacy helper left a slightly different dot placement.
+    text = re.sub(
+        r'(?is)\s*[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]*'
+        r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>\s*נטו\s+ספורט\.?\s*</a>\s*\.?\s*📝\s*$',
+        "",
+        text,
+    )
+    return text.strip()
+
+
+def _v106_strip_fact_heading(value: Any) -> str:
+    text = str(value or "").lstrip()
+    if not text:
+        return text
+    aliases = sorted({x for x in _V106_FACT_LABELS if x}, key=len, reverse=True)
+    for alias in aliases:
+        escaped_variants = {alias, html.escape(alias, quote=True), html.escape(alias, quote=False)}
+        for candidate in sorted(escaped_variants, key=len, reverse=True):
+            pattern = re.compile(
+                rf"(?is)^\s*{_V106_DIR}{_V106_TAG_OPEN}{_V106_DIR}{re.escape(candidate)}\s*[:：]?\s*{_V106_TAG_CLOSE}{_V106_DIR}(?:\s*<br\s*/?>|[ \t]*\r?\n|[ \t]+)*"
+            )
+            m = pattern.match(text)
+            if m:
+                text = text[m.end():].lstrip(" \t\r\n\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff")
+                # Remove a duplicated source prefix too, but never touch later source mentions.
+                return _v106_strip_fact_heading(text)
+    return text
+
+
+def _v106_reporter_body(post: Any, value: Any) -> tuple[str, str]:
+    text = _v106_remove_footer(value)
+    label = ""
+    try:
+        label = str(_v11_writer_label(post) or "").strip()
+    except Exception:
+        pass
+    if not label:
+        try:
+            label = str(ACCOUNT_DISPLAY_NAMES.get(getattr(post, "username", ""), "") or "").strip()
+        except Exception:
+            label = ""
+    if not label:
+        return "", text.strip()
+    aliases: set[str] = {label, html.escape(label, quote=True), html.escape(label, quote=False)}
+    try:
+        for alias in _v11_writer_aliases(post, label):
+            raw = str(alias or "").strip()
+            if raw:
+                aliases.update({raw, html.escape(raw, quote=True), html.escape(raw, quote=False)})
+    except Exception:
+        pass
+    try:
+        body = _v11_strip_leading_writer_prefixes(text, sorted(aliases, key=len, reverse=True))
+    except Exception:
+        body = text
+    body = body.lstrip(" \t\r\n\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff")
+    return label, body.strip()
+
+
+def _v106_writer_opening_inline(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or not _V106_OPENING_ALT:
+        return text
+    # V72/V40: reporter openings are plain/unbold and remain on the same line as the sentence.
+    pattern = re.compile(
+        rf"(?is)^(?P<prefix>{_V106_DIR}{_V106_EMOJI_PREFIX}){_V106_TAG_OPEN}{_V106_DIR}(?P<label>{_V106_OPENING_ALT})\s*[:：]\s*{_V106_TAG_CLOSE}{_V106_DIR}(?:[ \t]*\r?\n(?:[ \t]*\r?\n)*|[ \t]+)?(?P<body>.*)$"
+    )
+    m = pattern.match(text)
+    if not m:
+        return text
+    body = str(m.group("body") or "").lstrip(" \t\r\n\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff")
+    lead = (str(m.group("prefix") or "") + str(m.group("label") or "") + ":").rstrip()
+    return (lead + (" " + body if body else "")).strip()
+
+
+def _v106_fact_opening_layout(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or not _V106_OPENING_ALT:
+        return text
+    # V72/V30/V40: no writer => opening label bold, body immediately next line, no blank row.
+    pattern = re.compile(
+        rf"(?is)^(?P<prefix>{_V106_DIR}{_V106_EMOJI_PREFIX}){_V106_TAG_OPEN}{_V106_DIR}(?P<label>{_V106_OPENING_ALT})\s*[:：]\s*{_V106_TAG_CLOSE}{_V106_DIR}(?:[ \t]*\r?\n(?:[ \t]*\r?\n)*|[ \t]+)?(?P<body>.*)$"
+    )
+    m = pattern.match(text)
+    if not m:
+        # plain label and body glued directly, e.g. "רשמי: העסקה הושלמה"
+        pattern2 = re.compile(
+            rf"(?is)^(?P<prefix>{_V106_DIR}{_V106_EMOJI_PREFIX}){_V106_DIR}(?P<label>{_V106_OPENING_ALT})\s*[:：]\s*(?P<body>.+)$"
+        )
+        m = pattern2.match(text)
+    if not m:
+        return text
+    prefix = str(m.group("prefix") or "")
+    label = str(m.group("label") or "")
+    body = str(m.group("body") or "").lstrip(" \t\r\n\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff")
+    opening = prefix + f"<b>{html.escape(label + ':')}</b>"
+    return (opening + ("\n" + RTL_MARK + body if body else "")).strip()
+
+
+def _v106_plain_equivalence(value: Any) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _v106_use_canonical_body_if_same(current: Any, canonical: Any) -> str:
+    cur = str(current or "").strip()
+    can = str(canonical or "").strip()
+    if not can:
+        return cur
+    if _v106_plain_equivalence(cur) == _v106_plain_equivalence(can):
+        return can
+    return cur
+
+
+def _v106_canonical_source_layout(post: Any, message: Any, explicit_media: bool | None = None, canonical_body: Any = None) -> str:
+    body = _v106_fix_lamine_camara(_v106_remove_footer(message))
+    # Preserve V72 list/paragraph engine first; this operation changes only the source/header boundary.
+    body = re.sub(r"(?m)^[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]+[ \t]*$", "", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+
+    if _v106_is_fact_source(post):
+        body = _v106_strip_fact_heading(body)
+        body = _v106_use_canonical_body_if_same(body, canonical_body)
+        body = _v106_fact_opening_layout(body)
+        body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    else:
+        label, reporter_body = _v106_reporter_body(post, body)
+        if label:
+            reporter_body = _v106_use_canonical_body_if_same(reporter_body, canonical_body)
+            reporter_body = _v106_writer_opening_inline(reporter_body)
+            try:
+                has_media = bool(_v15_post_has_media(post, explicit_media))
+            except Exception:
+                has_media = bool(explicit_media) if explicit_media is not None else bool(
+                    list(getattr(post, "image_urls", []) or []) or list(getattr(post, "video_urls", []) or [])
+                )
+            compact = _v106_username(post) == "nicoschira" or not has_media
+            heading = f"<b>{html.escape(rtl(label + ':'))}</b>"
+            body = (heading + (" " if compact else "\n\n") + reporter_body).rstrip() if reporter_body else heading
+
+    body = _v106_fix_lamine_camara(body)
+    body = re.sub(r"[ \t]+\n", "\n", body)
+    body = re.sub(r"\n[ \t]+", "\n", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    signature = RTL_MARK + _V68_NETO_FOOTER_HTML
+    return (body + "\n\n" + signature).strip() if body else signature
+
+
+def tidy_translated_text(text: str) -> str:
+    return str(_v106_fix_lamine_camara(_V106_PRE_TIDY(text)) or "").strip()
+
+
+def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
+    translated = str(_v106_fix_lamine_camara(translated) or "")
+    quoted_translated = str(_v106_fix_lamine_camara(quoted_translated) or "")
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    try:
+        canonical_main = _v101_v72_prepare_body(main_source, translated)
+    except Exception:
+        canonical_main = translated
+    rendered = _V106_PRE_BUILD(post, canonical_main, quoted_translated, quoted_author_translated, include_video_link)
+    # For a simple main post, if the renderer changed only whitespace/HTML structure,
+    # restore V72/X line layout from canonical_main. Quoted composites keep the full renderer.
+    canonical_for_boundary = canonical_main if not quoted_translated else None
+    return _v106_canonical_source_layout(post, rendered, explicit_media=None, canonical_body=canonical_for_boundary)
+
+
+def send_prepared_message_to_main(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
+    explicit_media = bool(
+        images or video_url or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False)) or bool(getattr(post, "quoted_has_video", False))
+    )
+    clean = _v106_canonical_source_layout(post, message, explicit_media=explicit_media)
+    return _V106_PRE_SEND_MAIN(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+def manual_force_send_prepared_message(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
+    explicit_media = bool(
+        images or video_url or bool(getattr(post, "has_video", False))
+        or bool(getattr(post, "primary_has_video", False)) or bool(getattr(post, "quoted_has_video", False))
+    )
+    clean = _v106_canonical_source_layout(post, message, explicit_media=explicit_media)
+    return _V106_PRE_MANUAL_SEND(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+
+
+# Keep the quiet/full-control prepared preview on the exact same source policy.
+def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
+    clean = _v106_canonical_source_layout(post, message_html, explicit_media=None)
+    return _V106_PRE_CONTROL_CANDIDATE(post, token, clean)
+
+
+def _v106_self_audit() -> None:
+    # Must not alter live provider, translation, duplicate engine, Sabbath or scheduler.
+    if fetch_posts_safely is not _V106_KEEP_FETCH_POSTS_SAFELY:
+        raise RuntimeError("v106_provider_changed")
+    if translate_post_for_send is not _V106_KEEP_TRANSLATE_POST_FOR_SEND:
+        raise RuntimeError("v106_translation_engine_changed")
+    if find_recent_duplicate_event is not _V106_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V106_KEEP_DEDUPE_AI:
+        raise RuntimeError("v106_dedupe_changed")
+    if main is not _V106_KEEP_MAIN or control_loop is not _V106_KEEP_CONTROL_LOOP:
+        raise RuntimeError("v106_sabbath_or_control_changed")
+    required_facts = {"footballfactly", "footballtweet", "optajoe", "centregoals", "polymarketsport", "trollfootball2", "sofascore"}
+    if not required_facts.issubset(_V106_FACT_USERNAMES):
+        raise RuntimeError("v106_fact_family_incomplete")
+    if _v106_fix_lamine_camara("לאמינה קאמארא של מונאקו") != "לאמינה קמרה של מונאקו":
+        raise RuntimeError("v106_camara_fix_failed")
+
+
+_v106_self_audit()
+logging.info(
+    "V106 active: exact V70/V72 media-aware reporter layout and opening-label policy restored; "
+    "all fact/aggregation feeds have no source heading; Lamine Camara => לאמינה קמרה; V105/V104/V103/V102 behavior preserved."
+)
+# ====== END V106 ======
+
 if __name__ == "__main__":
     main()
