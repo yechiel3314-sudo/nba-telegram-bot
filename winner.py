@@ -66846,5 +66846,747 @@ logging.info(
 
 # ====== END V72 ROOT FORMAT ENGINE ======
 
+import contextlib
+
+
+# ====== V114: V72 BASE + CURRENT LIVE SOURCE + EXPLICIT USER FIXES ONLY (2026-09-03) ======
+# IMPORTANT MAINTENANCE CONTRACT:
+# - This file is V72 itself. All V72 editorial, Gemini prompt/validation, layout,
+#   list/paragraph, writer-heading, filtering and duplicate behavior stays authoritative.
+# - No V107/V110 editorial formatter is imported or recreated here.
+# - Only explicit later user requests are layered below: current live discovery,
+#   reliable Google fallback after the original V72 Gemini route fails, 12.5 MiB video,
+#   requested scan cadence/adaptive savings, hard Sabbath idle, and narrow bug fixes.
+
+BOT_BUILD_ID = "winner-v114-v72-base-current-live-explicit-user-fixes-2026-09-03"
+
+# ---------------------------------------------------------------------------
+# A. CURRENT LIVE DISCOVERY — one healthy FxTwitter request/account, bounded RSS
+#    fallback only when the primary did not return rows. No Nitter 410 probes and
+#    no X syndication 429 lane. V72 history/state filenames remain untouched.
+# ---------------------------------------------------------------------------
+V114_FX_API_TEMPLATE = os.environ.get(
+    "V114_FX_API_TEMPLATE",
+    "https://api.fxtwitter.com/2/profile/{username}/statuses?count={count}",
+).strip()
+V114_FX_FEED_TEMPLATE = os.environ.get(
+    "V114_FX_FEED_TEMPLATE",
+    "https://fxtwitter.com/{username}/feed.xml?count={count}&with_replies=1",
+).strip()
+V114_LIVE_TIMEOUT_SECONDS = max(2.0, min(8.0, float(os.environ.get("V114_LIVE_TIMEOUT_SECONDS", "4.0"))))
+V114_LIVE_CACHE_SECONDS = max(8.0, min(30.0, float(os.environ.get("V114_LIVE_CACHE_SECONDS", "16.0"))))
+V114_PROVIDER_COOLDOWN_SECONDS = max(30.0, min(600.0, float(os.environ.get("V114_PROVIDER_COOLDOWN_SECONDS", "60.0"))))
+V114_NETWORK_LIMIT = max(12, min(60, int(os.environ.get("V114_NETWORK_LIMIT", "30"))))
+V114_ENABLE_FX_FEED_FALLBACK = os.environ.get("V114_ENABLE_FX_FEED_FALLBACK", "1").strip().lower() not in {"0","false","no","off"}
+
+_V114_LIVE_LOCK = RLock()
+_V114_PROVIDER_LOCKS = {"fxtwitter-api": Lock(), "fxtwitter-feed": Lock()}
+_V114_PROVIDER_STATE = {
+    "fxtwitter-api": {"mode":"unknown","reason":"","until":0.0,"calls":0,"status":0},
+    "fxtwitter-feed": {"mode":"unknown","reason":"","until":0.0,"calls":0,"status":0},
+}
+_V114_ACCOUNT_DIAG: dict[str, dict[str, Any]] = {}
+_V114_LIVE_CACHE: dict[str, tuple[float, list[Post], str]] = {}
+
+
+def _v114_key(value: Any) -> str:
+    return str(value or "").strip().lstrip("@").casefold()
+
+
+def _v114_http_status(exc: BaseException | None) -> int:
+    try:
+        return int(getattr(exc, "code", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _v114_classify_error(exc: BaseException | None, status: int = 0) -> str:
+    status = int(status or _v114_http_status(exc) or 0)
+    if status == 429: return "http_429_rate_limit"
+    if status in {401,403}: return f"http_{status}_blocked"
+    if status == 404: return "http_404_empty_or_unknown_handle"
+    if status >= 500: return "http_5xx_provider_upstream"
+    text=(f"{type(exc).__name__}: {exc}" if exc else "").casefold()
+    if "timeout" in text or "timed out" in text: return "timeout"
+    if "getaddrinfo" in text or "name resolution" in text or "dns" in text: return "dns_failure"
+    if "ssl" in text or "certificate" in text or "tls" in text: return "tls_failure"
+    if "json" in text: return "invalid_json"
+    return "network_or_provider_error"
+
+
+def _v114_provider_available(provider: str) -> bool:
+    now=time.time()
+    with _V114_LIVE_LOCK:
+        row=_V114_PROVIDER_STATE[provider]
+        if float(row.get("until",0.0) or 0.0) <= now:
+            if row.get("mode") == "cooldown":
+                row.update({"mode":"unknown","reason":"","until":0.0})
+            return True
+        return row.get("mode") != "cooldown"
+
+
+def _v114_provider_result(provider: str, ok: bool, reason: str = "", status: int = 0) -> None:
+    now=time.time()
+    with _V114_LIVE_LOCK:
+        row=_V114_PROVIDER_STATE[provider]
+        row["status"]=int(status or 0)
+        if ok:
+            row.update({"mode":"live","reason":"","until":0.0})
+            return
+        row["reason"]=str(reason or "")[:300]
+        if reason in {"http_429_rate_limit","http_401_blocked","http_403_blocked","http_5xx_provider_upstream","timeout","dns_failure","tls_failure","invalid_json","network_or_provider_error"}:
+            row.update({"mode":"cooldown","until":now+V114_PROVIDER_COOLDOWN_SECONDS})
+        else:
+            row.update({"mode":"live","until":0.0})
+
+
+def _v114_fx_timestamp(node: dict[str, Any], tweet_id: str) -> float:
+    try:
+        value=float(node.get("created_timestamp") or 0)
+        if value > 1_000_000_000: return value
+    except Exception: pass
+    raw=str(node.get("created_at") or "").strip()
+    if raw:
+        try:
+            dt=datetime.fromisoformat(raw.replace("Z","+00:00"))
+            if dt.tzinfo is None: dt=dt.replace(tzinfo=ZoneInfo("UTC"))
+            return dt.timestamp()
+        except Exception: pass
+        try: return parsedate_to_datetime(raw).timestamp()
+        except Exception: pass
+    try: return float(_reliable_snowflake_timestamp(tweet_id) or 0.0)
+    except Exception: return 0.0
+
+
+def _v114_fx_media(node: dict[str, Any]) -> tuple[list[str], list[str]]:
+    images=[]; videos=[]
+    try:
+        a,b=_precise_tweet_media(node); images.extend(a or []); videos.extend(b or [])
+    except Exception: pass
+    media=node.get("media") if isinstance(node.get("media"),dict) else {}
+    for item in list(media.get("photos") or []) + list(media.get("all") or []):
+        if not isinstance(item,dict): continue
+        kind=str(item.get("type") or "").casefold()
+        url=str(item.get("url") or item.get("thumbnail_url") or "").strip()
+        if not url: continue
+        (videos if kind in {"video","gif","animated_gif"} or ".mp4" in url.casefold() else images).append(url)
+    for item in list(media.get("videos") or []):
+        if not isinstance(item,dict): continue
+        for candidate in (item.get("url"), item.get("transcode_url")):
+            if isinstance(candidate,str) and candidate.strip(): videos.append(candidate.strip())
+        thumb=item.get("thumbnail_url")
+        if isinstance(thumb,str) and thumb.strip(): images.append(thumb.strip())
+    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
+
+
+def _v114_fx_nodes(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload,dict) or not isinstance(payload.get("results"),list): return []
+    out=[]
+    for item in payload["results"]:
+        if not isinstance(item,dict): continue
+        if str(item.get("type") or "").casefold()=="thread":
+            child=next((item.get(k) for k in ("statuses","thread","posts") if isinstance(item.get(k),list)), [])
+            out.extend(x for x in child if isinstance(x,dict))
+        else: out.append(item)
+    return out
+
+
+def _v114_parse_fx_payload(username: str, payload: Any, limit: int) -> tuple[list[Post], str]:
+    canonical=str(username or "").strip().lstrip("@")
+    nodes=_v114_fx_nodes(payload)
+    if not nodes: return [], "empty_timeline"
+    merged={}
+    for node in nodes:
+        tweet_id=str(node.get("id") or "").strip()
+        if not re.fullmatch(r"\d{15,22}", tweet_id): continue
+        text=_reliable_normalize_x_text(str(node.get("text") or ""))
+        if not text: continue
+        author=node.get("author") if isinstance(node.get("author"),dict) else {}
+        ah=str(author.get("screen_name") or author.get("username") or "").strip().lstrip("@")
+        repost=node.get("reposted_by") if isinstance(node.get("reposted_by"),dict) else {}
+        rh=str(repost.get("screen_name") or repost.get("username") or "").strip().lstrip("@")
+        if ah and ah.casefold()!=canonical.casefold() and rh.casefold()==canonical.casefold():
+            text=f"RT @{ah}: {text}"
+        link=str(node.get("url") or "").strip()
+        if "/status/" not in link: link=f"https://x.com/{canonical}/status/{tweet_id}"
+        images,videos=_v114_fx_media(node)
+        quote=node.get("quote") if isinstance(node.get("quote"),dict) else {}
+        qtext=_reliable_normalize_x_text(str(quote.get("text") or "")) if quote else ""
+        qa=quote.get("author") if isinstance(quote.get("author"),dict) else {}
+        qauthor=str(qa.get("screen_name") or qa.get("username") or "").strip().lstrip("@") if quote else ""
+        qimages,qvideos=_v114_fx_media(quote) if quote else ([],[])
+        post=Post(tweet_id,canonical,text,link,images,videos,bool(videos or qvideos),bool(videos),bool(qvideos),qauthor,qtext,_v114_fx_timestamp(node,tweet_id),[tweet_id,f"{canonical}:{tweet_id}",f"{canonical}:{link}",post_content_signature(canonical,text,qtext)],"fxtwitter-v2")
+        post.original_text=text
+        post.source_structure_available=True
+        post.exact_source_structure=True
+        post.exact_source_provider="fxtwitter-v2"
+        post.exact_media_checked=True
+        if qimages and not images:
+            post.image_urls=list(dict.fromkeys(list(post.image_urls or [])+qimages))
+        merged.setdefault(tweet_id,post)
+    rows=sorted(merged.values(),key=lambda p:float(getattr(p,"published_ts",0.0) or 0.0),reverse=True)
+    return rows[:max(1,int(limit))], ("" if rows else "parser_zero")
+
+
+def _v114_fx_api_once(username: str, limit: int) -> tuple[list[Post], str]:
+    if not _v114_provider_available("fxtwitter-api"): return [], "cooldown"
+    canonical=str(username or "").strip().lstrip("@")
+    count=max(5,min(V114_NETWORK_LIMIT,max(int(limit),12)))
+    url=V114_FX_API_TEMPLATE.format(username=urllib.parse.quote(canonical),count=count)
+    req=urllib.request.Request(url,headers={"User-Agent":"NetoSportBot/1.0","Accept":"application/json","Accept-Language":"en-US,en;q=0.9","Cache-Control":"no-cache"})
+    with _V114_PROVIDER_LOCKS["fxtwitter-api"] if _V114_PROVIDER_STATE["fxtwitter-api"].get("mode")=="unknown" else contextlib.nullcontext():
+        if not _v114_provider_available("fxtwitter-api"): return [], "cooldown"
+        try:
+            with _V114_LIVE_LOCK: _V114_PROVIDER_STATE["fxtwitter-api"]["calls"]+=1
+            with urllib.request.urlopen(req,timeout=V114_LIVE_TIMEOUT_SECONDS) as response:
+                status=int(getattr(response,"status",200) or 200); body=response.read(4_000_000)
+            payload=json.loads(body.decode("utf-8",errors="strict")) if body else {}
+            rows,reason=_v114_parse_fx_payload(canonical,payload,max(1,int(limit)))
+            _v114_provider_result("fxtwitter-api",bool(rows),reason or "ok",status)
+            return rows, reason
+        except urllib.error.HTTPError as exc:
+            status=int(getattr(exc,"code",0) or 0); reason=_v114_classify_error(exc,status)
+            _v114_provider_result("fxtwitter-api",False,reason,status); return [],reason
+        except Exception as exc:
+            reason=_v114_classify_error(exc); _v114_provider_result("fxtwitter-api",False,reason,0); return [],reason
+
+
+def _v114_fx_feed_once(username: str, limit: int) -> tuple[list[Post], str]:
+    if not V114_ENABLE_FX_FEED_FALLBACK or not _v114_provider_available("fxtwitter-feed"): return [], "disabled_or_cooldown"
+    canonical=str(username or "").strip().lstrip("@")
+    count=max(5,min(V114_NETWORK_LIMIT,max(int(limit),12)))
+    url=V114_FX_FEED_TEMPLATE.format(username=urllib.parse.quote(canonical),count=count)
+    req=urllib.request.Request(url,headers={"User-Agent":"NetoSportBot/1.0","Accept":"application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.2","Cache-Control":"no-cache"})
+    try:
+        with _V114_LIVE_LOCK: _V114_PROVIDER_STATE["fxtwitter-feed"]["calls"]+=1
+        with urllib.request.urlopen(req,timeout=V114_LIVE_TIMEOUT_SECONDS) as response:
+            status=int(getattr(response,"status",200) or 200); body=response.read(4_000_000)
+        rows=[p for p in (parse_posts(canonical,body,"fxtwitter-feed") or []) if isinstance(p,Post)]
+        for post in rows:
+            post.username=canonical; post.source_name="fxtwitter-feed"; post.original_text=str(getattr(post,"text","") or "")
+            post.source_structure_available=True; post.exact_source_structure=True; post.exact_source_provider="fxtwitter-feed"
+        rows.sort(key=lambda p:float(getattr(p,"published_ts",0.0) or 0.0),reverse=True)
+        reason="" if rows else "empty_timeline"
+        _v114_provider_result("fxtwitter-feed",bool(rows),reason or "ok",status)
+        return rows[:max(1,int(limit))],reason
+    except urllib.error.HTTPError as exc:
+        status=int(getattr(exc,"code",0) or 0); reason=_v114_classify_error(exc,status); _v114_provider_result("fxtwitter-feed",False,reason,status); return [],reason
+    except Exception as exc:
+        reason=_v114_classify_error(exc); _v114_provider_result("fxtwitter-feed",False,reason,0); return [],reason
+
+
+def _v114_memory_posts(username: str, limit: int = 60) -> list[Post]:
+    canonical=str(username or "").strip().lstrip("@")
+    merged={}
+    for loader in (
+        lambda: _working_rss_cached(canonical,max(60,int(limit))),
+        lambda: _stable_rss_cached_posts(canonical,limit=max(60,int(limit))),
+        lambda: _ten_history_load(canonical),
+    ):
+        try: rows=list(loader() or [])
+        except Exception: rows=[]
+        for post in rows:
+            if not isinstance(post,Post): continue
+            identity=str(getattr(post,"post_id","") or getattr(post,"link","") or post_content_signature(canonical,str(getattr(post,"text","") or ""),str(getattr(post,"quoted_text","") or "")))
+            if identity: merged.setdefault(identity,post)
+    return sorted(merged.values(),key=lambda p:float(getattr(p,"published_ts",0.0) or 0.0),reverse=True)[:max(1,int(limit))]
+
+
+def _v114_remember(username: str, rows: list[Post]) -> None:
+    if not rows: return
+    canonical=str(username or "").strip().lstrip("@")
+    for fn,args in (
+        (_stable_rss_remember,(canonical,rows)),
+        (_remember_control_rss_posts,(canonical,rows)),
+        (_ten_history_save,(canonical,rows)),
+    ):
+        try: fn(*args)
+        except Exception: pass
+
+
+def _v114_live_then_memory(username: str, limit: int = 30) -> tuple[list[Post], str, str]:
+    canonical=str(username or "").strip().lstrip("@"); key=_v114_key(canonical); wanted=max(1,int(limit)); now=time.time()
+    with _V114_LIVE_LOCK: cached=_V114_LIVE_CACHE.get(key)
+    if cached and now-float(cached[0] or 0.0)<=V114_LIVE_CACHE_SECONDS:
+        rows=list(cached[1] or [])[:wanted]; route=str(cached[2] or "cache")
+        _V114_ACCOUNT_DIAG[key]={"route":route+"-cache","live":True,"posts":len(rows),"reason":"cache_hit","at":now}
+        return rows,route+"-cache",""
+    rows,reason=_v114_fx_api_once(canonical,wanted)
+    route="fxtwitter-api"
+    if not rows:
+        rows,reason2=_v114_fx_feed_once(canonical,wanted)
+        route="fxtwitter-feed" if rows else "none"
+        reason=(reason+" -> "+reason2).strip(" ->")
+    if rows:
+        _v114_remember(canonical,rows)
+        with _V114_LIVE_LOCK: _V114_LIVE_CACHE[key]=(now,list(rows[:80]),route)
+        _V114_ACCOUNT_DIAG[key]={"route":route,"live":True,"posts":len(rows),"reason":"","at":now}
+        return rows[:wanted],route,""
+    memory=_v114_memory_posts(canonical,max(60,wanted*3))
+    if memory:
+        _V114_ACCOUNT_DIAG[key]={"route":"memory","live":False,"posts":len(memory),"reason":reason,"at":now}
+        return memory[:wanted],"memory",reason
+    _V114_ACCOUNT_DIAG[key]={"route":"none","live":False,"posts":0,"reason":reason or "all_live_providers_empty","at":now}
+    return [],"none",reason or "all_live_providers_empty"
+
+
+def fetch_posts(username: str) -> list[Post]:
+    rows,_route,_reason=_v114_live_then_memory(username,max(30,int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
+    return rows
+
+
+def fetch_control_posts(username: str) -> tuple[str,list[Post],Exception|None]:
+    canonical=str(username or "").strip().lstrip("@")
+    rows,route,reason=_v114_live_then_memory(canonical,30)
+    error=RuntimeError(reason) if reason and route in {"none","memory"} else None
+    return canonical,rows,error
+
+
+def fetch_posts_safely(username: str) -> tuple[str,list[Post]]:
+    canonical=str(username or "").strip().lstrip("@")
+    rows,_route,_reason=_v114_live_then_memory(canonical,max(30,int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
+    ordered=sorted([p for p in rows if isinstance(p,Post)],key=lambda p:float(getattr(p,"published_ts",0.0) or 0.0),reverse=True)
+    return canonical,ordered[:int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)]
+
+
+def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
+    rows,_route,_reason=_v114_live_then_memory(username,max(1,int(limit)))
+    return rows[:max(1,int(limit))]
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    canonical=str(username or "").strip().lstrip("@"); wanted=max(1,int(limit))
+    live,_route,_reason=_v114_live_then_memory(canonical,max(20,wanted)); merged={}
+    for post in list(live or [])+_v114_memory_posts(canonical,max(60,wanted*6)):
+        if not isinstance(post,Post): continue
+        identity=str(getattr(post,"post_id","") or getattr(post,"link","") or post_content_signature(canonical,str(getattr(post,"text","") or ""),str(getattr(post,"quoted_text","") or "")))
+        if identity: merged.setdefault(identity,post)
+    return sorted(merged.values(),key=lambda p:float(getattr(p,"published_ts",0.0) or 0.0),reverse=True)[:wanted]
+
+
+def fetch_latest_post_fast(username: str) -> Post|None:
+    rows,_route,_reason=_v114_live_then_memory(username,1)
+    return rows[0] if rows else None
+
+# ---------------------------------------------------------------------------
+# B. TRANSLATION RELIABILITY — V72 Gemini remains first and unchanged. Only when
+#    that exact route fails do we use bounded Google transports. No English is sent.
+# ---------------------------------------------------------------------------
+_V114_V72_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+V114_GOOGLE_TIMEOUT_SECONDS=max(3.0,min(10.0,float(os.environ.get("V114_GOOGLE_TIMEOUT_SECONDS","6.0"))))
+V114_GOOGLE_MAX_PARALLEL=max(1,min(3,int(os.environ.get("V114_GOOGLE_MAX_PARALLEL","2"))))
+_V114_GOOGLE_SEMAPHORE=BoundedSemaphore(V114_GOOGLE_MAX_PARALLEL)
+_V114_GOOGLE_CACHE: dict[str,str]={}
+
+
+def _v114_parse_google(body: bytes) -> str:
+    data=json.loads(body.decode("utf-8",errors="replace"))
+    if isinstance(data,dict):
+        s=data.get("sentences")
+        if isinstance(s,list):
+            value="".join(str(x.get("trans","") or "") for x in s if isinstance(x,dict)).strip()
+            if value: return value
+        for key in ("translation","translatedText","text"):
+            value=data.get(key)
+            if isinstance(value,str) and value.strip(): return value.strip()
+    if isinstance(data,list) and data and isinstance(data[0],list):
+        value="".join(str(row[0]) for row in data[0] if isinstance(row,list) and row and isinstance(row[0],str)).strip()
+        if value: return value
+    raise TranslationUnavailable("Google invalid/empty translation")
+
+
+def _v114_google_network(source: str) -> str:
+    source=str(source or "").strip()
+    transports=(
+        "https://clients5.google.com/translate_a/t?"+urllib.parse.urlencode({"client":"dict-chrome-ex","sl":"auto","tl":"he","q":source}),
+        "https://translate.googleapis.com/translate_a/single?"+urllib.parse.urlencode({"client":"gtx","sl":"auto","tl":"he","dt":"t","q":source}),
+        "https://translate.google.com/translate_a/single?"+urllib.parse.urlencode({"client":"gtx","sl":"auto","tl":"he","dt":"t","q":source}),
+    )
+    errors=[]
+    with _V114_GOOGLE_SEMAPHORE:
+        for url in transports:
+            try:
+                req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/152.0 Safari/537.36","Accept":"application/json,text/plain,*/*","Accept-Language":"he,en-US;q=0.8,en;q=0.7"})
+                with urllib.request.urlopen(req,timeout=V114_GOOGLE_TIMEOUT_SECONDS) as response: body=response.read(1_500_000)
+                return _v114_parse_google(body)
+            except Exception as exc: errors.append(short_error(exc,140))
+    raise TranslationUnavailable("Google failed: "+" | ".join(errors[-3:]))
+
+
+def _v114_google_cleanup(source: str, translated: str) -> str:
+    value=html.unescape(str(translated or "")).strip()
+    try: value=preserve_original_country_flags(source,preserve_original_emojis(source,value))
+    except Exception: pass
+    try:
+        value=apply_phrase_replacements(value,TEAM_REPLACEMENTS)
+        value=apply_phrase_replacements(value,PLAYER_REPLACEMENTS)
+        value=apply_phrase_replacements(value,HEBREW_FINAL_FIXES)
+    except Exception: pass
+    try: value=_v60_translation_cleanup(source,value)
+    except Exception: pass
+    try: value=tidy_translated_text(value)
+    except Exception: pass
+    return final_visual_cleanup(final_hebrew_polish(value)).strip()
+
+
+def _v114_google_forced(source: str, max_chars: int = 2500) -> str:
+    original=compact_debug_text(str(source or ""),max_chars).strip()
+    if not original: return ""
+    key=hashlib.sha256(original.encode("utf-8",errors="ignore")).hexdigest()
+    cached=_V114_GOOGLE_CACHE.get(key)
+    if cached: return cached
+    encoded,markers=_reliable_encode_breaks(original)
+    raw=_v114_google_network(encoded)
+    value=_v114_google_cleanup(original,raw)
+    if markers:
+        decoded,complete=_reliable_decode_breaks(value,markers)
+        if complete: value=decoded
+    if len(re.findall(r"[א-ת]",value)) < (3 if len(original)<45 else 6):
+        raise TranslationUnavailable("Google result is not Hebrew enough")
+    if _final_translation_is_still_english(original,value):
+        raise TranslationUnavailable("Google result remained English")
+    _V114_GOOGLE_CACHE[key]=value
+    if len(_V114_GOOGLE_CACHE)>1200:
+        for old in list(_V114_GOOGLE_CACHE)[:250]: _V114_GOOGLE_CACHE.pop(old,None)
+    return value
+
+
+def google_translate(text: str) -> str:
+    return _v114_google_network(str(text or "").strip()) if str(text or "").strip() else ""
+
+
+def google_translate_hebrew_safe(text: str, max_chars: int = 900) -> str:
+    return _v114_google_forced(str(text or ""),max_chars)
+
+
+def translate_post_for_send(post: Post) -> tuple[str,str,str]:
+    try:
+        main,quote,author=_V114_V72_TRANSLATE_POST_FOR_SEND(post)
+        setattr(post,"translation_provider","gemini-v72")
+        return main,quote,author
+    except Exception as gemini_exc:
+        source=str(getattr(post,"text","") or "")
+        if not source.strip(): raise
+        main=_v114_google_forced(source,2200)
+        if bool(getattr(post,"exact_source_structure",False)):
+            try: main=_restore_source_layout(post,main,quoted=False)
+            except Exception: pass
+        quote=""; author=""
+        if TRANSLATE_QUOTED_POSTS and not is_self_quote(post) and str(getattr(post,"quoted_text","") or "").strip():
+            quote=_v114_google_forced(str(getattr(post,"quoted_text","") or ""),1200)
+            if bool(getattr(post,"exact_source_structure",False)):
+                try: quote=_restore_source_layout(post,quote,quoted=True)
+                except Exception: pass
+            raw_author=str(getattr(post,"quoted_author","") or "").strip()
+            if raw_author:
+                try: author=_v114_google_forced(raw_author,180)
+                except Exception: author=raw_author
+        setattr(post,"translation_provider","google-fallback")
+        setattr(post,"gemini_translation_failure",short_error(gemini_exc,400))
+        return main,quote,author
+
+# 10-latest remains forced Google exactly as explicitly requested.
+def _translate_history_post(post: Post) -> str:
+    source=str(getattr(post,"text","") or "").strip()
+    if not source: return "אין טקסט זמין לתרגום"
+    try: return _v114_google_forced(source,1800)
+    except Exception as exc: return "⚠️ תרגום Google נכשל — יבוצע ניסיון חדש בלחיצה הבאה"
+
+
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    values=list(posts or []); results=[""]*len(values)
+    if not values: return results
+    with ThreadPoolExecutor(max_workers=min(V114_GOOGLE_MAX_PARALLEL,len(values))) as ex:
+        futures={ex.submit(_translate_history_post,p):i for i,p in enumerate(values)}
+        for future in as_completed(futures):
+            i=futures[future]
+            try: results[i]=str(future.result() or "")
+            except Exception: results[i]="⚠️ תרגום Google נכשל — יבוצע ניסיון חדש בלחיצה הבאה"
+    return results
+
+# ---------------------------------------------------------------------------
+# C. EXPLICIT TEXT/FILTER BUG FIXES — no new layout engine.
+# ---------------------------------------------------------------------------
+PLAYER_REPLACEMENTS.update({"Lamine Camara":"לאמינה קמרה","Lamina Camara":"לאמינה קמרה"})
+_V114_ORPHAN_GLUE_RE=re.compile(r"(?iu)(?<![א-ת])(?:עם|של|על|אל|או|גם|כי|אם|אך|אבל|מול|אצל|עבור|לפי)\s*[.!?…;:,]+(?=\s*(?:$|[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]))")
+_V114_CLUB_PREFIX_RE=re.compile(r"(?iu)(?<![A-Za-z])(?P<prep>[בלמכהו])?[-־]?\s*(?:AFC|FC|CF|CD|AC|SC|RC|UD|SSC|AS|US|CA|CS|FK|SK|NK|SV|VfB|VfL)\.?\s+(?P<club>[א-ת][א-ת׳'״\- ]{1,45})")
+
+
+def _v114_text_repairs(value: Any) -> str:
+    text=str(value or "")
+    text=re.sub(r"(?u)לאמינה\s+קאמארא", "לאמינה קמרה", text)
+    text=re.sub(r"(?iu)(?<![A-Za-z])Lamine\s+Camara(?![A-Za-z])", "לאמינה קמרה", text)
+    def club_repl(m: re.Match[str]) -> str:
+        prep=str(m.group("prep") or ""); club=str(m.group("club") or "").strip()
+        return (prep+club) if prep else club
+    text=_V114_CLUB_PREFIX_RE.sub(club_repl,text)
+    text=_V114_ORPHAN_GLUE_RE.sub("",text)
+    text=re.sub(r"[ \t]{2,}"," ",text)
+    return text.strip()
+
+_V114_PRE_TIDY=tidy_translated_text
+def tidy_translated_text(text: str) -> str:
+    return _v114_text_repairs(_V114_PRE_TIDY(text))
+
+_V114_BETTING_HARD_RE=re.compile(r"(?iu)(?:\b1xbet\b|\bbet365\b|\bbetway\b|\bbetano\b|\bparimatch\b|\b22bet\b|\bmelbet\b|\bmostbet\b|\bbetwinner\b|\bregistration\s+code\b|\bpromo\s*code\b|קוד\s+(?:רישום|הרשמה|קופון|בונוס)|\+\s*18\b|\b18\+\b)")
+_V114_PROMO_SHOW_RE=re.compile(r"(?iu)(?:\bpodcast\b|\bnew\s+episode\b|\bfull\s+episode\b|\bcoming\s+up\b|\bguest\s*[:\-]|\btune\s+in\b|\bfull\s+interview\b|\binterview\s+with\b|פודקאסט|פודקסט|פרק\s+חדש|פרק\s+מלא|מגיע\s+הבא|אורח\s*[:\-]|ראיון\s+מלא|ראיון\s+בלעדי)")
+_V114_PRE_BLOCK=pre_send_final_local_block_reason
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    source=html.unescape("\n".join([str(getattr(post,"text","") or ""),str(getattr(post,"quoted_text","") or "")]))
+    if _V114_BETTING_HARD_RE.search(source): return "v114_hard_betting_promo"
+    if _V114_PROMO_SHOW_RE.search(source): return "v114_podcast_show_promo"
+    return str(_V114_PRE_BLOCK(post) or "")
+
+_V114_PRE_HEBREW_BLOCK=hebrew_block_reason
+def hebrew_block_reason(reason: str) -> str:
+    raw=str(reason or "")
+    if "v114_hard_betting_promo" in raw: return "פרסומת הימורים, קוד הרשמה או קידום חברת הימורים נחסמו"
+    if "v114_podcast_show_promo" in raw: return "פודקאסט, תוכנית או ראיון פרסומי נחסמו"
+    return str(_V114_PRE_HEBREW_BLOCK(reason) or "")
+
+# ---------------------------------------------------------------------------
+# D. EXPLICIT PERSONAL OPERATION SETTINGS.
+# ---------------------------------------------------------------------------
+MAX_VIDEO_BYTES = 13_107_200  # 12.5 MiB, explicitly requested.
+CHECK_EVERY_SECONDS = 30
+NIGHT_MODE_ENABLED = True
+NIGHT_START_HOUR = 2
+NIGHT_END_HOUR = 9
+NIGHT_CHECK_EVERY_SECONDS = 300
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(MAX_PARALLEL_ACCOUNT_CHECKS)
+NIGHT_MAX_PARALLEL_POST_SENDS = int(MAX_PARALLEL_POST_SENDS)
+CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
+
+V114_ADAPTIVE_TIER_HOLD_SECONDS=300
+V114_NORMAL_STEPS=(30,60,90,120)
+V114_SLOW_STEPS=(60,120,180,240,300)
+V114_SLOW_ACCOUNTS={"trollfootball2","nicoschira","dimarzio","sofascore","gerardromero","fabricehawkins","optajoe"}
+_V114_SCHED_LOCK=RLock(); _V114_SCHED: dict[str,dict[str,Any]]={}; _V114_AUTO_SCAN=False; _V114_STARTUP_SCAN=False
+_V114_BASE_ORDERED_ACCOUNTS=ordered_accounts
+_V114_BASE_FETCH_SAFE=fetch_posts_safely
+_V114_BASE_RUN_ONCE=run_once
+
+
+def is_night_mode_now() -> bool:
+    hour=datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).hour
+    return 2 <= hour < 9
+
+
+def _v114_steps(username: str) -> tuple[int,...]:
+    return V114_SLOW_STEPS if _v114_key(username) in V114_SLOW_ACCOUNTS else V114_NORMAL_STEPS
+
+
+def _v114_due_interval(username: str, now_wall: float|None=None) -> int:
+    now_wall=float(now_wall if now_wall is not None else time.time()); key=_v114_key(username); steps=_v114_steps(key)
+    with _V114_SCHED_LOCK: row=dict(_V114_SCHED.get(key) or {})
+    last=float(row.get("last_activity",now_wall) or now_wall); tier=min(len(steps)-1,int(max(0.0,now_wall-last)//V114_ADAPTIVE_TIER_HOLD_SECONDS)); interval=int(steps[tier])
+    if is_night_mode_now(): interval=max(interval,300)
+    return interval
+
+
+def ordered_accounts() -> list[str]:
+    base=list(_V114_BASE_ORDERED_ACCOUNTS() or [])
+    if not _V114_AUTO_SCAN or _V114_STARTUP_SCAN: return base
+    now=time.monotonic(); due=[]
+    with _V114_SCHED_LOCK:
+        for username in base:
+            row=_V114_SCHED.get(_v114_key(username)) or {}
+            if float(row.get("next_due",0.0) or 0.0) <= now: due.append(username)
+    return due
+
+
+def _v114_note_scan(username: str, rows: list[Post]) -> None:
+    key=_v114_key(username); now_wall=time.time(); now_mono=time.monotonic(); top=""
+    if rows:
+        top=str(getattr(rows[0],"post_id","") or getattr(rows[0],"link","") or "")
+    diag=dict(_V114_ACCOUNT_DIAG.get(key) or {}); failed=(not diag.get("live") and diag.get("route") in {"none","memory"} and any(x in str(diag.get("reason","")).casefold() for x in ("429","timeout","dns","tls","5xx","blocked","network","invalid_json")))
+    with _V114_SCHED_LOCK:
+        row=_V114_SCHED.setdefault(key,{})
+        previous=str(row.get("top","") or "")
+        if "last_activity" not in row or (top and top!=previous): row["last_activity"]=now_wall
+        if top: row["top"]=top
+        failures=int(row.get("failures",0) or 0)+1 if failed else 0; row["failures"]=failures
+        interval=_v114_due_interval(username,now_wall)
+        if failures>=6: interval=max(interval,600)
+        elif failures>=3: interval=max(interval,300)
+        row["interval"]=interval; row["next_due"]=now_mono+interval
+
+
+def fetch_posts_safely(username: str) -> tuple[str,list[Post]]:
+    canonical,rows=_V114_BASE_FETCH_SAFE(username)
+    if _V114_AUTO_SCAN: _v114_note_scan(str(canonical or username),list(rows or []))
+    return canonical,list(rows or [])
+
+
+def run_once(state: dict[str,list[str]], startup_cycle: bool=False, min_published_ts: float=0.0) -> int:
+    global _V114_AUTO_SCAN,_V114_STARTUP_SCAN
+    _V114_AUTO_SCAN=True; _V114_STARTUP_SCAN=bool(startup_cycle)
+    try: return _V114_BASE_RUN_ONCE(state,startup_cycle=startup_cycle,min_published_ts=min_published_ts)
+    finally: _V114_AUTO_SCAN=False; _V114_STARTUP_SCAN=False
+
+
+def current_check_every_seconds() -> int:
+    if is_night_mode_now(): return 300
+    if not _V114_SCHED: return 30
+    now=time.monotonic(); due=[]
+    with _V114_SCHED_LOCK:
+        for row in _V114_SCHED.values():
+            value=float(row.get("next_due",0.0) or 0.0)
+            if value>0: due.append(value)
+    if not due: return 30
+    return max(1,min(120,int(math.ceil(max(0.0,min(due)-now)))))
+
+# ---------------------------------------------------------------------------
+# E. HARD SABBATH IDLE — cached Hebcal first, offline Jerusalem sunset fallback.
+#    No network is required once Shabbat is active.
+# ---------------------------------------------------------------------------
+_V114_V72_IS_SHABBAT=is_shabbat_now
+_V114_V72_MAIN=main
+V114_JERUSALEM_LAT=31.7683; V114_JERUSALEM_LON=35.2137; V114_CANDLE_MINUTES=40; V114_EXIT_GUARD=8
+
+
+def _v114_cached_shabbat_windows() -> list[tuple[datetime,datetime]]:
+    try:
+        path=shabbat_cache_path()
+        if not path.exists(): return []
+        data=json.loads(path.read_text(encoding="utf-8")); out=[]
+        for item in list(data.get("windows",[]) or []):
+            if not isinstance(item,dict): continue
+            a=parse_hebcal_datetime(str(item.get("start","") or "")); b=parse_hebcal_datetime(str(item.get("end","") or ""))
+            if a and b and b>a: out.append((a,b))
+        return sorted(out,key=lambda x:x[0])
+    except Exception: return []
+
+
+def _v114_sunset(day: Any) -> datetime|None:
+    try:
+        n=int(day.timetuple().tm_yday); lng=V114_JERUSALEM_LON/15.0; t=n+((18.0-lng)/24.0); m=(0.9856*t)-3.289
+        l=(m+1.916*math.sin(math.radians(m))+0.020*math.sin(math.radians(2*m))+282.634)%360.0
+        ra=math.degrees(math.atan(0.91764*math.tan(math.radians(l))))%360.0; ra+=(math.floor(l/90)*90)-(math.floor(ra/90)*90); ra/=15.0
+        sd=0.39782*math.sin(math.radians(l)); cd=math.cos(math.asin(sd)); ch=(math.cos(math.radians(90.833))-(sd*math.sin(math.radians(V114_JERUSALEM_LAT))))/(cd*math.cos(math.radians(V114_JERUSALEM_LAT)))
+        if ch<-1 or ch>1: return None
+        h=math.degrees(math.acos(ch))/15.0; mt=h+ra-(0.06571*t)-6.622; utc=(mt-lng)%24.0
+        return (datetime(day.year,day.month,day.day,tzinfo=ZoneInfo("UTC"))+timedelta(hours=utc)).astimezone(ZoneInfo(SHABBAT_TIMEZONE))
+    except Exception: return None
+
+
+def _v114_current_shabbat_window(now: datetime|None=None) -> tuple[datetime,datetime]|None:
+    now=now or datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    for a,b in _v114_cached_shabbat_windows():
+        if a<=now<=b: return a,b
+    if now.weekday()==4: friday=now.date()
+    elif now.weekday()==5: friday=(now-timedelta(days=1)).date()
+    else: return None
+    fs=_v114_sunset(friday); ss=_v114_sunset(friday+timedelta(days=1))
+    if not fs or not ss: return None
+    a=fs-timedelta(minutes=V114_CANDLE_MINUTES); b=ss+timedelta(minutes=int(SHABBAT_HAVDALAH_MINUTES))
+    return (a,b) if a<=now<=b else None
+
+
+def is_shabbat_now() -> bool:
+    global SHABBAT_SLEEP_SECONDS
+    if not SHABBAT_MODE_ENABLED: return False
+    now=datetime.now(ZoneInfo(SHABBAT_TIMEZONE)); window=_v114_current_shabbat_window(now)
+    if window:
+        SHABBAT_SLEEP_SECONDS=max(60,int((window[1]-now).total_seconds())+V114_EXIT_GUARD); return True
+    SHABBAT_SLEEP_SECONDS=300
+    try: return bool(_V114_V72_IS_SHABBAT())
+    except Exception: return False
+
+
+def _v114_sleep_shabbat() -> None:
+    time.sleep(max(60,int(SHABBAT_SLEEP_SECONDS or 300)))
+
+# Rebuild only V72's control loop with one difference: long Sabbath sleep instead
+# of waking every <=300s. Button/thread behavior outside Shabbat is unchanged.
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID: return
+    delete_control_webhook_if_needed(); offset=control_saved_offset(); last_conflict_cleanup=0.0; startup_panel_done=False
+    while True:
+        try:
+            if is_shabbat_now(): _v114_sleep_shabbat(); continue
+            if not startup_panel_done:
+                startup_panel_done=True
+                if CONTROL_SEND_PANEL_ON_STARTUP:
+                    try: send_quick_control_panel(force_new=True)
+                    except Exception as exc: logging.debug("לוח שליטה: אתחול נכשל: %s",exc)
+                else:
+                    try: ensure_control_panel_once_if_requested()
+                    except Exception as exc: logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s",exc)
+            response=telegram_api("getUpdates",{"offset":offset,"timeout":int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT","20")),"allowed_updates":["callback_query","message","edited_message","channel_post","edited_channel_post"]})
+            if is_shabbat_now(): continue
+            updates=list(response.get("result",[]) or [])
+            if not updates: continue
+            batch_offset=offset; callbacks=[]; noncallbacks=[]
+            for update in updates:
+                try: batch_offset=max(batch_offset,int(update.get("update_id",0))+1)
+                except Exception: pass
+                (callbacks if isinstance(update.get("callback_query"),dict) and update.get("callback_query") else noncallbacks).append(update)
+            for update in callbacks: process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try: _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post,update)
+                    except RuntimeError: Thread(target=_v57_process_channel_post,args=(update,),daemon=True).start()
+                else:
+                    try: _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text,update)
+                    except RuntimeError: Thread(target=_v57_process_control_text,args=(update,),daemon=True).start()
+            if batch_offset!=offset:
+                offset=batch_offset
+                try: _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset,offset)
+                except RuntimeError: pass
+        except Exception as exc:
+            if is_getupdates_conflict(exc):
+                now=time.time()
+                if now-last_conflict_cleanup>30:
+                    last_conflict_cleanup=now
+                    try: telegram_api("deleteWebhook",{"drop_pending_updates":True},max_attempts=1)
+                    except Exception: pass
+                time.sleep(CONTROL_POLL_SECONDS); continue
+            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s",exc); time.sleep(CONTROL_POLL_SECONDS)
+
+
+def main() -> None:
+    # Railway restart during Shabbat: no startup Telegram/control/source request.
+    if is_shabbat_now(): _v114_sleep_shabbat()
+    return _V114_V72_MAIN()
+
+# ---------------------------------------------------------------------------
+# F. OFFLINE REGRESSION AUDIT — verifies V72 layout remains the renderer.
+# ---------------------------------------------------------------------------
+def _v114_test_post(username: str,text: str,pid: str="v114",media: bool=False) -> Post:
+    return Post(pid,username,text,f"https://x.com/{username}/status/{pid}",["https://example.invalid/a.jpg"] if media else [],[],False,False,False,"","",time.time(),[pid],username)
+
+
+def _v114_self_audit() -> None:
+    if int(MAX_VIDEO_BYTES)!=13_107_200: raise RuntimeError("v114_video_limit")
+    if int(CHECK_EVERY_SECONDS)!=30 or int(NIGHT_CHECK_EVERY_SECONDS)!=300: raise RuntimeError("v114_scan_cadence")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS)!=4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)!=12: raise RuntimeError("v114_scan_coverage")
+    if tuple(V114_NORMAL_STEPS)!=(30,60,90,120) or tuple(V114_SLOW_STEPS)!=(60,120,180,240,300) or int(V114_ADAPTIVE_TIER_HOLD_SECONDS)!=300: raise RuntimeError("v114_adaptive")
+    if fetch_posts.__code__.co_names and "_v114_live_then_memory" not in fetch_posts.__code__.co_names: raise RuntimeError("v114_live_route")
+    # Explicit text fixes.
+    if "לאמינה קמרה" not in _v114_text_repairs("לאמינה קאמארא של מונאקו"): raise RuntimeError("v114_camara")
+    if not _v114_text_repairs("CD לגאנס הגיעה להסכמה").startswith("לגאנס"): raise RuntimeError("v114_cd_leganes")
+    if "עם." in _v114_text_repairs("צ'לסי. 🇦🇷 עם. ✍"): raise RuntimeError("v114_orphan_glue")
+    bet=_v114_test_post("Footballtweet","RT: Crystal Palace vs Manchester City Erling Haaland will score 1xBet registration code ABC +18",pid="bet")
+    if pre_send_final_local_block_reason(bet)!="v114_hard_betting_promo": raise RuntimeError("v114_betting")
+    # V72 itself must still own writer layout; no V114 build_message override exists.
+    jac=_v114_test_post("JacobsBen","Test report about Chelsea transfer agreement today.",pid="jac",media=True)
+    rendered=build_message(jac,"בן ג'ייקובס: העסקה סוכמה.")
+    plain=html_message_to_plain_text(rendered)
+    if plain.count("בן ג'ייקובס:")!=1: raise RuntimeError("v114_v72_single_writer_layout")
+    sch=_v114_test_post("NicoSchira","Test report about transfer agreement today.",pid="sch",media=True)
+    sch_plain=html_message_to_plain_text(build_message(sch,"בלעדי: העסקה סוכמה."))
+    if "ניקולו שירה:" not in sch_plain: raise RuntimeError("v114_v72_schira_missing")
+
+try:
+    _v114_self_audit()
+    logging.info("V114 active: V72 editorial/translation/layout baseline preserved; only current live discovery and explicit later user fixes layered.")
+except Exception as _v114_exc:
+    logging.error("V114 self-audit failed: %s",short_error(_v114_exc,1600))
+    raise
+
+# ====== END V114 ======
+
 if __name__ == "__main__":
     main()
