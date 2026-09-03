@@ -66082,7 +66082,7 @@ def _v41_strong_rtl_all_lines(value: Any) -> Any:
 # 5) Deterministic local audit for exactly the five reported cases.
 # No network calls.
 # ---------------------------------------------------------------------------
-def _RUN_STARTUP_SELF_AUDITS = (
+_RUN_STARTUP_SELF_AUDITS = (
     os.getenv("RUN_STARTUP_SELF_AUDITS", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
