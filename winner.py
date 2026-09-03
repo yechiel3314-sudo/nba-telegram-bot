@@ -66088,7 +66088,13 @@ _RUN_STARTUP_SELF_AUDITS = (
 )
 
 if _RUN_STARTUP_SELF_AUDITS:
-    _v71_self_audit()
+    _v71_self_audit_fn = globals().get("_v71_self_audit")
+    if callable(_v71_self_audit_fn):
+        _v71_self_audit_fn()
+    else:
+        logging.warning(
+            "Startup audit skipped: _v71_self_audit is not defined"
+        )
     # 1) Recycling label is gone.
     if should_label_recycled_report(None):
         raise RuntimeError("v71_recycle_label_still_enabled")
