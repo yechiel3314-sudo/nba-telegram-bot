@@ -47656,19 +47656,8 @@ def _v21_startup_self_audit() -> None:
         )
 
 
-# ====== PRODUCTION STARTUP AUDIT SWITCH ======
-# Historical self-audits are development regression tests. Some contain CPU timing
-# thresholds and synthetic network failures, so they must not gate production startup.
-# Set RUN_STARTUP_SELF_AUDITS=1 manually when you explicitly want to run them.
-RUN_STARTUP_SELF_AUDITS = str(os.environ.get('RUN_STARTUP_SELF_AUDITS', '0') or '0').strip() == '1'
-_STARTUP_AUDITS_SKIPPED = []
-# ====== END PRODUCTION STARTUP AUDIT SWITCH ======
-
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v21_startup_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v21_startup_self_audit")
+    _v21_startup_self_audit()
 except Exception as _v21_audit_exc:
     logging.error("V21 startup self-audit crashed safely: %s", short_error(_v21_audit_exc, 400))
 
@@ -47822,10 +47811,7 @@ def _v22_startup_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v22_startup_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v22_startup_self_audit")
+    _v22_startup_self_audit()
 except Exception as _v22_audit_exc:
     logging.error("V22 startup self-audit crashed safely: %s", short_error(_v22_audit_exc, 400))
 
@@ -49738,10 +49724,7 @@ def _v31_footer_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v31_footer_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v31_footer_self_audit")
+    _v31_footer_self_audit()
     logging.info(
         "V31 active: every report text/photo/album/video route ends with exactly one Neto Sport footer"
     )
@@ -50434,10 +50417,7 @@ def _v32_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v32_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v32_self_audit")
+    _v32_self_audit()
     logging.info(
         "V33 active: dangling @ removed, Salah aliases canonicalized, post-HWG duplicates hardened, "
         "CentreGoals/Polymarket official label restored, tag-flag lists preserved"
@@ -51232,14 +51212,8 @@ def _v34_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v34_runtime_configuration_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v34_runtime_configuration_audit")
-    if RUN_STARTUP_SELF_AUDITS:
-        _v34_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v34_self_audit")
+    _v34_runtime_configuration_audit()
+    _v34_self_audit()
     logging.info(
         "V34 active: generalized cause-aware formatting/duplicate rules passed; "
         "official after HERE WE GO is a real stage advance, repeated official is deduped, "
@@ -51341,10 +51315,7 @@ def _v36_manual_rss_restore_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v36_manual_rss_restore_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v36_manual_rss_restore_audit")
+    _v36_manual_rss_restore_audit()
     logging.info(
         "V36 active: manual 14-writer RSS test restored to the direct proven "
         "RSS collector; automatic RSS and all non-RSS behavior are unchanged."
@@ -52042,10 +52013,7 @@ def _v37_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v37_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v37_self_audit")
+    _v37_self_audit()
     logging.info(
         "V37 active: RSS control alerts silenced, TrollFootball2 facts source registered with source-specific filters, "
         "NBA entities broadened, CentreGoals Messi/Ronaldo concrete facts rescued, lists/Today-before/RTL repaired"
@@ -52191,10 +52159,7 @@ def _v38_rtl_boundary_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v38_rtl_boundary_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v38_rtl_boundary_self_audit")
+    _v38_rtl_boundary_self_audit()
     logging.info("V38 active: RTL is enforced at every Telegram text/caption boundary, including the quiet channel")
 except Exception as _v38_audit_exc:
     logging.error("V38 RTL boundary self-audit failed: %s", short_error(_v38_audit_exc, 900))
@@ -52321,10 +52286,7 @@ def _v39_source_edge_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v39_source_edge_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v39_source_edge_self_audit")
+    _v39_source_edge_self_audit()
     logging.info("V39 active: extra betting/hatewatch noise blocked; emoji-only source posts retain their original media")
 except Exception as _v39_audit_exc:
     logging.error("V39 source-edge self-audit failed: %s", short_error(_v39_audit_exc, 900))
@@ -53112,10 +53074,7 @@ def _v40_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v40_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v40_self_audit")
+    _v40_self_audit()
     logging.info(
         "V40 active: Today-before inline, writer openings inline, camera emoji removed, "
         "translation actor integrity active, positive source gates active, duplicate cache active, "
@@ -53308,10 +53267,7 @@ def _v41_rtl_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v41_rtl_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v41_rtl_self_audit")
+    _v41_rtl_self_audit()
     logging.info(
         "V41 active: every new message/caption authored by this bot uses RLM+RTL isolate in every Telegram chat route"
     )
@@ -54201,10 +54157,7 @@ def _v42_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v42_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v42_self_audit")
+    _v42_self_audit()
     logging.info(
         "V42 active: inline Today-before, positive-only learned TrollFootball policy, "
         "Footballtweet rescue, local millisecond duplicate gate, bounded fast lane, "
@@ -54646,10 +54599,7 @@ def _v43_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v43_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v43_self_audit")
+    _v43_self_audit()
     logging.info(
         "V43 active: admin channel posts are repaired in place when direction is broken; "
         "Bruno/GBP/medical duplicate identity generalized; Facts restored to root; "
@@ -55082,10 +55032,7 @@ def _v44_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v44_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v44_self_audit")
+    _v44_self_audit()
     logging.info(
         "V44 active: Troll Football is integrated into Facts controls; birthday openings normalized; "
         "quiet forwarded details take priority over RTL edits; quote HTML boundaries are preserved; "
@@ -55420,8 +55367,6 @@ def _v45_rss_source_key(url: str) -> str:
 
 
 def _v45_rss_log_transition(key: str, message: str, level: str = "warning") -> None:
-    if ".invalid" in str(key or "").casefold():
-        return
     now = time.time()
     stamp_key = f"{key}|{message}"
     with _V45_RSS_CB_LOCK:
@@ -55711,10 +55656,7 @@ def _v45_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v45_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v45_self_audit")
+    _v45_self_audit()
     logging.info(
         "V45 active: smart cross-source event dedupe; one shared discovery lane; "
         "RSS host circuit breakers with automatic recovery; 12 automatic rows; "
@@ -56752,10 +56694,7 @@ def _v46_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v46_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v46_self_audit")
+    _v46_self_audit()
     logging.info(
         "V46 active: one principle-based sent-only event engine; stage/material-delta rules; "
         "paragraph-aware subset dedupe; concept translation integrity; global output invariants; "
@@ -56801,8 +56740,6 @@ def _v48_rss_endpoint_key(url: str) -> str:
 
 
 def _v48_rss_log_once(key: str, message: str, level: str = "warning") -> None:
-    if ".invalid" in str(key or "").casefold():
-        return
     now = time.time()
     stamp = hashlib.sha1(f"{key}|{message}".encode("utf-8", errors="ignore")).hexdigest()
     with _V48_RSS_LOCK:
@@ -57147,10 +57084,7 @@ def _v48_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v48_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v48_self_audit")
+    _v48_self_audit()
     logging.info(
         "V48 active: real RSS restored with per-writer/per-endpoint cooldown; "
         "403/404 no-retry; automatic recovery; accurate live RSS diagnostics; "
@@ -57923,10 +57857,7 @@ def _v49_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v49_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v49_self_audit")
+    _v49_self_audit()
     logging.info(
         "V49 active: translated duplicates stay history-only; platform promotions blocked; "
         "emoji/list layout repaired; concrete TrollFootball events + Google translation; "
@@ -58068,10 +57999,7 @@ def _v50_rss_rollback_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v50_rss_rollback_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v50_rss_rollback_self_audit")
+    _v50_rss_rollback_self_audit()
     logging.info(
         "V50 active: exact V43 working RSS route restored; V45/V48 circuits and "
         "V49 RSS completion wrappers bypassed; full RSS retrieval retained; "
@@ -58413,10 +58341,7 @@ def _v51_spacing_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v51_spacing_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v51_spacing_self_audit")
+    _v51_spacing_self_audit()
     logging.info(
         "V51 active: canonical post spacing at every Telegram text/caption boundary; "
         "one paragraph gap, compact lists, no detached emoji rows, exactly one gap before footer; "
@@ -59419,10 +59344,7 @@ def _v52_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v52_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v52_self_audit")
+    _v52_self_audit()
     logging.info(
         "V52 active: robust exact-media recovery with quiet/manual text fallback; "
         "translation candidate scoring and source-marker preservation; betting-ad hard block; "
@@ -60067,10 +59989,7 @@ def _v53_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v53_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v53_self_audit")
+    _v53_self_audit()
     logging.info(
         "V53 active: principle same-event duplicate control; same-stage Fabrizio confirmations suppressed; "
         "damaged translations retried/blocked; Puskas/Salah canonical names; structured trophy/salary lists; "
@@ -60395,10 +60314,7 @@ def _v54_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v54_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v54_self_audit")
+    _v54_self_audit()
     logging.info(
         "V54 active: Opta tier-A + allowed senior national teams; canonical player spellings; "
         "source-aware goal wording; catalog-driven 'כש'+team typo repair; only standalone leading 'חדש:' removed; "
@@ -60921,10 +60837,7 @@ def _v56_rss_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v56_rss_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v56_rss_self_audit")
+    _v56_rss_self_audit()
     logging.info(
         "V56 active: actual V23/V19 RSS route restored at final boundary; primary RSS -> "
         "existing direct-X fallback -> existing RSS fallbacks; manual 14-writer check waits "
@@ -61085,10 +60998,7 @@ def _v35_rss_restore_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v35_rss_restore_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v35_rss_restore_audit")
+    _v35_rss_restore_audit()
     logging.info(
         'V35 RSS restored: exact old-good synchronous RSS route is active; '
         'control tests wait for real RSS results instead of returning early.'
@@ -61286,10 +61196,7 @@ def _v57_final_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v57_final_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v57_final_self_audit")
+    _v57_final_self_audit()
     logging.info(
         "V57 active: exact V35 old-good synchronous RSS boundary restored at the final boundary; "
         "callbacks prioritized before all non-button control work; 20 dedicated button workers; "
@@ -61986,10 +61893,7 @@ def _v58_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v58_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v58_self_audit")
+    _v58_self_audit()
     logging.info(
         "V58 active: Polo/Monfort fully removed from scans; betting false positives fixed; "
         "explicit-football rescue, kit/young-player policy, substantial-news quote policy, "
@@ -62055,10 +61959,7 @@ def _v59_rss_restore_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v59_rss_restore_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v59_rss_restore_self_audit")
+    _v59_rss_restore_self_audit()
     logging.info(
         "V59 RSS restore active: exact uploaded old-good V35/V57 RSS route is the final runtime boundary; "
         "policy/RTL/dedupe fixes remain active and RSS is not wrapped by them."
@@ -62772,10 +62673,7 @@ def _v60_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v60_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v60_self_audit")
+    _v60_self_audit()
     logging.info(
         "V60 active: 12-word source threshold, truthful word count, governance rescue, "
         "future-score Troll block, under-20 low-tier block, Hansi/Enzo/VfB/VfL/CJK/parenthesis cleanup, "
@@ -62944,10 +62842,7 @@ def _v61_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v61_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v61_self_audit")
+    _v61_self_audit()
     logging.info("V61 active: Footballtweet has one 12-word lane; genuine transfer milestone advances bypass stale duplicate stages; V59 RSS unchanged.")
 except Exception as _v61_exc:
     logging.error("V61 self-audit failed: %s", short_error(_v61_exc, 2400))
@@ -63094,10 +62989,7 @@ def _v62_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v62_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v62_self_audit")
+    _v62_self_audit()
     logging.info("V62 active: ordinary word counts use main+quote truth; Shabbat post-long-poll batch is discarded; V59 RSS unchanged.")
 except Exception as _v62_exc:
     logging.error("V62 self-audit failed: %s", short_error(_v62_exc, 2400))
@@ -63464,10 +63356,7 @@ def _v63_self_audit() -> None:
 
 
 try:
-    if RUN_STARTUP_SELF_AUDITS:
-        _v63_self_audit()
-    else:
-        _STARTUP_AUDITS_SKIPPED.append("_v63_self_audit")
+    _v63_self_audit()
     logging.info(
         "V63 active: add-only Matteo activation, material transfer-delta duplicate rescue, "
         "safety-suspension news rescue, retry-only Telegram server copy and button executor recovery; "
@@ -63907,10 +63796,7 @@ def _v65_self_audit() -> None:
     if int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS) != 1:
         raise RuntimeError("v65_gemini_single_request_contract_changed")
 
-if RUN_STARTUP_SELF_AUDITS:
-    _v65_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v65_self_audit")
+_v65_self_audit()
 logging.info(
     "V65 active: exact V35/V20 RSS is first; empty-RSS uses only the existing direct-X fallback; "
     "duplicate continuous scanner disabled; RSS executor reused; unchanged ten-history writes debounced; "
@@ -64225,10 +64111,7 @@ def _v66_self_audit() -> None:
         raise RuntimeError("v66_transfer_wrongly_blocked")
 
 
-if RUN_STARTUP_SELF_AUDITS:
-    _v66_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v66_self_audit")
+_v66_self_audit()
 logging.info(
     "V66 active: exact original V35/V20 RSS restored at final boundary; "
     "V65 RSS substitutions inactive; global in-match score/play-by-play block active."
@@ -64236,6084 +64119,666 @@ logging.info(
 
 # ====== END V66 ADD-ONLY EXACT ORIGINAL RSS / LIVE FILTER ======
 
+# ====== V67 FINAL SINGLE RSS ENGINE (2026-08-10) ======
+# One active RSS engine. No active RSS call is routed through V20/V23/V35/V56/V65/V66.
+# Older RSS code above remains untouched only for backward compatibility/history.
+# The active runtime below owns ALL RSS settings and entrypoints in one place.
 
-# ====== V66 STARTUP FIX ONLY (2026-08-26) ======
-# Minimal patch:
-# - suppress synthetic *.invalid RSS self-test warnings from startup logs
-# - align the final footer function pointers so runtime_consistency_audit passes
-# - do not change the active RSS route, filters, buttons, Gemini, or send flow
+BOT_BUILD_ID = "winner-v67-single-rss-engine-2026-08-10"
 
-try:
-    _v31_exact_single_neto_footer = _v34_exact_single_neto_footer
-except Exception:
-    pass
+# ---------------------------------------------------------------------------
+# A. COMPLETE ACTIVE RSS SETTINGS — one source of truth
+# ---------------------------------------------------------------------------
+V67_RSS_BASE_FEED_TEMPLATES = [
+    "https://nitter.net/{username}/rss",
+    "https://twiiit.com/{username}/rss",
+    "https://lightbrd.com/{username}/rss",
+    "https://rsshub.rssforever.com/twitter/user/{username}",
+    "https://rsshub.app/twitter/user/{username}",
+]
 
-try:
-    _finalize_outgoing_message_only = _v34_exact_single_neto_footer
-except Exception:
-    pass
+# Keep any explicitly configured extra feeds after the proven five.
+FEED_TEMPLATES = list(dict.fromkeys(
+    V67_RSS_BASE_FEED_TEMPLATES + list(globals().get("EXTRA_FEED_TEMPLATES", []) or [])
+))
+MAX_FEED_TEMPLATES_PER_ACCOUNT = 5
 
-logging.info(
-    "V66 startup fix active: synthetic *.invalid RSS self-test warnings suppressed; "
-    "final footer pointers aligned for consistency audit."
-)
+FEED_REQUEST_TIMEOUT_SECONDS = 6.0
+FEED_COLLECTION_TIMEOUT_SECONDS = 8.0
+FEED_HTTP_RETRIES = 2
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 3
+FEED_SOURCE_MAX_PARALLEL = 2
 
-# ====== END V66 STARTUP FIX ONLY ======
+RSS_PRIMARY_SOURCE_COUNT = 3
+RSS_ENABLE_FALLBACK = True
+RSS_FALLBACK_SOURCE_COUNT = 2
+RSS_ENABLE_STALE_FALLBACK = False
+RSS_STALE_FALLBACK_SECONDS = 6 * 60 * 60
 
-# ====== V66 DEEP RSS DIAGNOSTICS ONLY (2026-08-26) ======
-# IMPORTANT:
-# This layer DOES NOT alter the automatic RSS route.
-# It only replaces the manual "RSS check" text with a deep diagnostic probe.
-#
-# Automatic runtime remains exactly V66:
-#   http_get_feed = _v20_active_http_get_feed
-#   fetch_posts = _v35_fetch_posts
-#   fetch_control_posts = _v35_fetch_control_posts
-#
-# The diagnostic distinguishes:
-# - configuration / wrong active function boundary
-# - DNS resolution
-# - TCP connectivity
-# - TLS/SNI/certificate
-# - HTTP 3xx/4xx/5xx
-# - 403 access block / 404 wrong route / 410 removed / 421 misdirected
-# - 429 rate limit / 5xx upstream outage
-# - timeout / connection reset / DNS failure
-# - HTML/challenge returned instead of RSS
-# - empty body
-# - malformed XML
-# - valid XML but no RSS/Atom items
-# - RSS items exist but parse_posts() returns zero (parser regression)
-# - stale/latest post age
-# - per-account failure versus global-source failure
-# - Direct-X fallback health (one representative account)
-# - Railway /data persistence configuration
-# - runtime consistency problems
-#
-# To avoid wasting the server, source-level health is tested once per source.
-# If every source is globally broken, the check does not repeat the same five
-# failures across all ten writers.
-
-BOT_BUILD_ID_DIAGNOSTIC = "winner-v66-deep-rss-diagnostics-2026-08-26"
+CHECK_EVERY_SECONDS = 20
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
 
 
-def _v66diag_classify_exception(exc: Exception | str) -> str:
-    value = str(exc or "")
-    low = value.casefold()
-    for code, label in (
-        ("410", "HTTP 410 — המקור הוסר/נסגר"),
-        ("421", "HTTP 421 — ניתוב/SNI שגוי בשרת המקור"),
-        ("403", "HTTP 403 — המקור חוסם את הבקשה/IP"),
-        ("404", "HTTP 404 — נתיב ה-RSS לא קיים"),
-        ("429", "HTTP 429 — Rate Limit"),
-        ("503", "HTTP 503 — שירות המקור לא זמין"),
-        ("502", "HTTP 502 — Gateway של המקור נכשל"),
-        ("500", "HTTP 500 — שגיאת שרת המקור"),
-    ):
-        if f"http error {code}" in low or f"http {code}" in low or f" {code} " in low:
-            return label
-    if "timed out" in low or "timeout" in low:
-        return "TIMEOUT — המקור/הרשת לא ענו בזמן"
-    if "name or service not known" in low or "name resolution" in low or "getaddrinfo" in low:
-        return "DNS — לא ניתן לפתור את שם השרת"
-    if "certificate" in low or "ssl" in low or "tls" in low:
-        return "TLS/SSL — handshake או תעודה נכשלו"
-    if "connection refused" in low:
-        return "TCP — החיבור נדחה"
-    if "connection reset" in low or "reset by peer" in low:
-        return "TCP — השרת איפס את החיבור"
-    if "network is unreachable" in low:
-        return "NETWORK — אין נתיב רשת"
-    return "שגיאה אחרת"
-
-
-def _v66diag_dns(host: str) -> dict[str, Any]:
-    import socket
-    started = time.perf_counter()
-    try:
-        rows = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-        ips: list[str] = []
-        for row in rows:
-            try:
-                ip = str(row[4][0])
-            except Exception:
-                continue
-            if ip not in ips:
-                ips.append(ip)
-        return {
-            "ok": bool(ips),
-            "ips": ips[:4],
-            "ms": round((time.perf_counter() - started) * 1000, 1),
-            "error": "",
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "ips": [],
-            "ms": round((time.perf_counter() - started) * 1000, 1),
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-
-
-def _v66diag_tls(host: str) -> dict[str, Any]:
-    import socket
-    import ssl
-    started = time.perf_counter()
-    sock = None
-    wrapped = None
-    try:
-        sock = socket.create_connection((host, 443), timeout=3.5)
-        context = ssl.create_default_context()
-        wrapped = context.wrap_socket(sock, server_hostname=host)
-        cert = wrapped.getpeercert() or {}
-        return {
-            "ok": True,
-            "ms": round((time.perf_counter() - started) * 1000, 1),
-            "version": str(wrapped.version() or ""),
-            "expires": str(cert.get("notAfter") or ""),
-            "error": "",
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "ms": round((time.perf_counter() - started) * 1000, 1),
-            "version": "",
-            "expires": "",
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-    finally:
-        try:
-            if wrapped is not None:
-                wrapped.close()
-            elif sock is not None:
-                sock.close()
-        except Exception:
-            pass
-
-
-def _v66diag_xml_inspect(body: bytes) -> dict[str, Any]:
-    import xml.etree.ElementTree as ET
-    payload = bytes(body or b"")
-    if not payload:
-        return {
-            "xml_ok": False,
-            "root": "",
-            "items": 0,
-            "html": False,
-            "error": "empty body",
-        }
-
-    prefix = payload[:800].decode("utf-8", errors="ignore").casefold()
-    html_like = any(
-        token in prefix
-        for token in (
-            "<!doctype html",
-            "<html",
-            "cloudflare",
-            "captcha",
-            "attention required",
-            "just a moment",
-        )
-    )
-    if html_like:
-        return {
-            "xml_ok": False,
-            "root": "HTML",
-            "items": 0,
-            "html": True,
-            "error": "HTML/challenge returned instead of RSS XML",
-        }
-
-    try:
-        root = ET.fromstring(payload)
-        root_tag = str(root.tag or "").split("}")[-1]
-        items = 0
-        for node in root.iter():
-            tag = str(node.tag or "").split("}")[-1].casefold()
-            if tag in {"item", "entry"}:
-                items += 1
-        return {
-            "xml_ok": True,
-            "root": root_tag,
-            "items": items,
-            "html": False,
-            "error": "",
-        }
-    except Exception as exc:
-        return {
-            "xml_ok": False,
-            "root": "",
-            "items": 0,
-            "html": False,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-
-
-def _v66diag_http_probe(
-    username: str,
-    template: str,
-) -> dict[str, Any]:
-    canonical = str(username or "").strip().lstrip("@")
-    url = template.format(username=urllib.parse.quote(canonical))
-    parsed = urllib.parse.urlsplit(url)
-    host = str(parsed.hostname or "")
-    result: dict[str, Any] = {
-        "source": feed_source_name(template),
-        "template": template,
-        "host": host,
-        "url": url,
-        "dns": _v66diag_dns(host),
-        "tls": {},
-        "http_ok": False,
-        "status": 0,
-        "final_url": "",
-        "content_type": "",
-        "server": "",
-        "bytes": 0,
-        "xml_ok": False,
-        "xml_root": "",
-        "xml_items": 0,
-        "parser_posts": 0,
-        "latest_age_hours": None,
-        "classification": "",
-        "error": "",
-    }
-
-    if not result["dns"]["ok"]:
-        result["classification"] = _v66diag_classify_exception(result["dns"]["error"])
-        result["error"] = result["dns"]["error"]
-        return result
-
-    result["tls"] = _v66diag_tls(host)
-    if not result["tls"].get("ok"):
-        result["classification"] = _v66diag_classify_exception(
-            result["tls"].get("error", "")
-        )
-        result["error"] = result["tls"].get("error", "")
-        return result
-
+# ---------------------------------------------------------------------------
+# B. LOW-LEVEL RSS HTTP — exact proven behavior
+# ---------------------------------------------------------------------------
+def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
     request = urllib.request.Request(
         url,
         headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
             "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            "Cache-Control": "no-cache",
         },
-    )
-    started = time.perf_counter()
-    body = b""
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=float(FEED_REQUEST_TIMEOUT_SECONDS),
-        ) as response:
-            body = response.read(2_000_000)
-            result["status"] = int(getattr(response, "status", 200) or 200)
-            result["final_url"] = str(getattr(response, "geturl", lambda: url)() or url)
-            headers = getattr(response, "headers", None)
-            if headers is not None:
-                result["content_type"] = str(headers.get("Content-Type", "") or "")
-                result["server"] = str(headers.get("Server", "") or "")
-        result["http_ok"] = 200 <= int(result["status"]) < 300
-    except urllib.error.HTTPError as exc:
-        result["status"] = int(getattr(exc, "code", 0) or 0)
-        result["final_url"] = str(getattr(exc, "geturl", lambda: url)() or url)
-        try:
-            result["content_type"] = str(exc.headers.get("Content-Type", "") or "")
-            result["server"] = str(exc.headers.get("Server", "") or "")
-            body = exc.read(300_000) or b""
-        except Exception:
-            body = b""
-        result["error"] = f"HTTPError: {exc}"
-        result["classification"] = _v66diag_classify_exception(exc)
-    except Exception as exc:
-        result["error"] = f"{type(exc).__name__}: {exc}"
-        result["classification"] = _v66diag_classify_exception(exc)
-
-    result["http_ms"] = round((time.perf_counter() - started) * 1000, 1)
-    result["bytes"] = len(body)
-
-    if not result["http_ok"]:
-        if not result["classification"]:
-            result["classification"] = _v66diag_classify_exception(result["error"])
-        return result
-
-    xml = _v66diag_xml_inspect(body)
-    result["xml_ok"] = bool(xml.get("xml_ok"))
-    result["xml_root"] = str(xml.get("root") or "")
-    result["xml_items"] = int(xml.get("items", 0) or 0)
-
-    if xml.get("html"):
-        result["classification"] = "HTML/WAF — התקבל דף אינטרנט/Challenge במקום RSS"
-        result["error"] = str(xml.get("error") or "")
-        return result
-    if not xml.get("xml_ok"):
-        result["classification"] = "XML — התגובה אינה XML תקין"
-        result["error"] = str(xml.get("error") or "")
-        return result
-    if int(xml.get("items", 0) or 0) <= 0:
-        result["classification"] = "RSS ריק — XML תקין אבל אין item/entry"
-        return result
-
-    try:
-        parsed_posts = [
-            post
-            for post in (
-                parse_posts(
-                    canonical,
-                    body,
-                    feed_source_name(template),
-                )
-                or []
-            )
-            if isinstance(post, Post)
-        ]
-        result["parser_posts"] = len(parsed_posts)
-        if not parsed_posts:
-            result["classification"] = (
-                "PARSER — ה-RSS מכיל items אבל parse_posts החזיר 0"
-            )
-            return result
-        parsed_posts.sort(
-            key=lambda post: float(
-                getattr(post, "published_ts", 0.0) or 0.0
-            ),
-            reverse=True,
-        )
-        latest_ts = float(
-            getattr(parsed_posts[0], "published_ts", 0.0) or 0.0
-        )
-        if latest_ts:
-            age = max(0.0, (time.time() - latest_ts) / 3600.0)
-            result["latest_age_hours"] = round(age, 2)
-            if age > 24:
-                result["classification"] = (
-                    f"STALE — RSS עובד אבל הפוסט האחרון בן {age:.1f} שעות"
-                )
-            else:
-                result["classification"] = "OK — HTTP/XML/parser תקינים"
-        else:
-            result["classification"] = "OK — RSS/parser תקינים, ללא timestamp"
-        return result
-    except Exception as exc:
-        result["classification"] = "PARSER — חריגה בזמן parse_posts"
-        result["error"] = f"{type(exc).__name__}: {exc}"
-        return result
-
-
-def _v66diag_direct_x_probe(username: str) -> dict[str, Any]:
-    canonical = str(username or "").strip().lstrip("@")
-    started = time.perf_counter()
-    try:
-        rows = list(
-            _reliable_direct_profile_posts(
-                canonical,
-                limit=8,
-                force=True,
-            )
-            or []
-        )
-        elapsed = round(time.perf_counter() - started, 3)
-        if rows:
-            rows.sort(
-                key=lambda post: float(
-                    getattr(post, "published_ts", 0.0) or 0.0
-                ),
-                reverse=True,
-            )
-            latest_ts = float(
-                getattr(rows[0], "published_ts", 0.0) or 0.0
-            )
-            age = (
-                round(max(0.0, (time.time() - latest_ts) / 3600.0), 2)
-                if latest_ts
-                else None
-            )
-            return {
-                "ok": True,
-                "count": len(rows),
-                "seconds": elapsed,
-                "age_hours": age,
-                "error": "",
-            }
-        return {
-            "ok": False,
-            "count": 0,
-            "seconds": elapsed,
-            "age_hours": None,
-            "error": "Direct-X returned zero posts",
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "count": 0,
-            "seconds": round(time.perf_counter() - started, 3),
-            "age_hours": None,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-
-
-def _v66diag_storage() -> dict[str, Any]:
-    import tempfile
-    configured = str(
-        os.environ.get("FOOTBALL_BOT_DATA_DIR", "")
-        or os.environ.get("BOT_DATA_DIR", "")
-        or ""
-    ).strip()
-    path = configured or str(globals().get("DATA_DIR", "") or "")
-    result = {
-        "configured": configured,
-        "path": path,
-        "exists": False,
-        "writable": False,
-        "railway_volume": False,
-        "error": "",
-    }
-    if not path:
-        result["error"] = "FOOTBALL_BOT_DATA_DIR לא מוגדר"
-        return result
-    p = Path(path)
-    result["exists"] = p.exists() and p.is_dir()
-    result["railway_volume"] = str(p) == "/data" or str(p).startswith("/data/")
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-        test = p / f".rss_diag_{os.getpid()}_{int(time.time())}"
-        test.write_text("ok", encoding="utf-8")
-        test.unlink(missing_ok=True)
-        result["writable"] = True
-    except Exception as exc:
-        result["error"] = f"{type(exc).__name__}: {exc}"
-    return result
-
-
-def _v66diag_runtime() -> dict[str, Any]:
-    issues: list[str] = []
-    try:
-        issues = list(runtime_consistency_audit() or [])
-    except Exception as exc:
-        issues = [f"runtime_consistency_audit failed: {type(exc).__name__}: {exc}"]
-
-    return {
-        "http_get_feed": getattr(http_get_feed, "__name__", str(http_get_feed)),
-        "fetch_posts": getattr(fetch_posts, "__name__", str(fetch_posts)),
-        "fetch_control_posts": getattr(
-            fetch_control_posts, "__name__", str(fetch_control_posts)
-        ),
-        "feeds": list(active_feed_templates()),
-        "primary_count": int(RSS_PRIMARY_SOURCE_COUNT),
-        "fallback_count": int(RSS_FALLBACK_SOURCE_COUNT),
-        "request_timeout": float(FEED_REQUEST_TIMEOUT_SECONDS),
-        "collection_timeout": float(FEED_COLLECTION_TIMEOUT_SECONDS),
-        "retries": int(FEED_HTTP_RETRIES),
-        "account_workers": int(MAX_PARALLEL_ACCOUNT_CHECKS),
-        "scan_seconds": int(CHECK_EVERY_SECONDS),
-        "consistency_issues": issues,
-        "proxy_env": {
-            name: bool(str(os.environ.get(name, "") or "").strip())
-            for name in (
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "ALL_PROXY",
-                "NO_PROXY",
-            )
-        },
-    }
-
-
-def _v66diag_source_line(item: dict[str, Any]) -> str:
-    source = str(item.get("source") or item.get("host") or "RSS")
-    status = int(item.get("status", 0) or 0)
-    classification = str(item.get("classification") or "לא ידוע")
-    dns = item.get("dns") or {}
-    tls = item.get("tls") or {}
-
-    if item.get("http_ok") and item.get("xml_ok") and int(item.get("parser_posts", 0) or 0) > 0:
-        return (
-            f"✅ {source}: HTTP {status} | XML {item.get('xml_root')} "
-            f"| items={item.get('xml_items')} | parser={item.get('parser_posts')} "
-            f"| {classification}"
-        )
-
-    stage = ""
-    if not dns.get("ok"):
-        stage = "DNS"
-    elif not tls.get("ok"):
-        stage = "TLS/TCP"
-    elif status:
-        stage = f"HTTP {status}"
-    elif item.get("http_ok") and not item.get("xml_ok"):
-        stage = "XML"
-    else:
-        stage = "NETWORK"
-
-    return f"❌ {source}: {stage} | {classification}"
-
-
-def _v66diag_root_cause(
-    source_results: list[dict[str, Any]],
-    direct_x: dict[str, Any],
-) -> list[str]:
-    causes: list[str] = []
-    if not source_results:
-        return ["לא בוצעו בדיקות מקור"]
-
-    statuses = [int(x.get("status", 0) or 0) for x in source_results]
-    dns_fail = sum(1 for x in source_results if not (x.get("dns") or {}).get("ok"))
-    tls_fail = sum(
-        1
-        for x in source_results
-        if (x.get("dns") or {}).get("ok")
-        and not (x.get("tls") or {}).get("ok")
-    )
-    healthy = [
-        x
-        for x in source_results
-        if x.get("http_ok")
-        and x.get("xml_ok")
-        and int(x.get("parser_posts", 0) or 0) > 0
-    ]
-
-    if dns_fail == len(source_results):
-        causes.append(
-            "🔴 כל ה-hosts נכשלו ב-DNS — חשד ל-DNS/רשת של הקונטיינר או outage רחב."
-        )
-    elif tls_fail == len(source_results):
-        causes.append(
-            "🔴 DNS עובד אבל כל חיבורי TLS נכשלים — חשד לרשת/Proxy/CA/SNI בסביבה."
-        )
-    elif not healthy and all(status in {403, 404, 410, 421, 429, 500, 502, 503} for status in statuses if status):
-        causes.append(
-            "🔴 הרשת מגיעה לשרתים, אבל השרתים עצמם מחזירים 4xx/5xx — זו לא תקלה ב-parser."
-        )
-
-    if any(status == 410 for status in statuses):
-        causes.append(
-            "• HTTP 410 אומר שה-endpoint הוסר במכוון; שינוי Python לא יכול להחזיר אותו."
-        )
-    if any(status == 421 for status in statuses):
-        causes.append(
-            "• HTTP 421 מצביע על ניתוב/SNI/virtual-host לא תקין אצל שרת המקור."
-        )
-    if any(status == 403 for status in statuses):
-        causes.append(
-            "• HTTP 403: המקור דוחה את הבקשה/כתובת ה-IP/User-Agent."
-        )
-    if any(status == 404 for status in statuses):
-        causes.append(
-            "• HTTP 404: נתיב ה-RSS שהקוד מכיר כבר לא קיים בשרת הזה."
-        )
-    if any(status in {500, 502, 503} for status in statuses):
-        causes.append(
-            "• 5xx: שרת המקור/ה-upstream שלו לא זמין כרגע."
-        )
-    if healthy:
-        causes.append(
-            "🟢 לפחות מקור RSS אחד תקין. אם כתבים מסוימים עדיין נכשלים — הבעיה כנראה account-specific/username/parser."
-        )
-    elif direct_x.get("ok"):
-        causes.append(
-            "🟠 כל RSS נכשל, אבל Direct-X עובד — מנגנון האיסוף החלופי חי והבעיה ממוקדת במקורות RSS."
-        )
-    else:
-        causes.append(
-            "🔴 גם RSS וגם Direct-X לא החזירו נתונים במדגם — צריך לבדוק חסימת X/רשת/שינוי upstream רחב."
-        )
-    return causes
-
-
-def rss_status_text() -> str:
-    """Deep manual diagnostic only. It does not change the automatic RSS route."""
-    accounts = _general_reporter_control_accounts()
-    sample = ""
-    # Prefer Fabrizio because it is a high-volume account and easiest to validate.
-    for candidate in accounts:
-        if str(candidate or "").casefold() in {
-            "fabrizioromano",
-            "fabrizio",
-        }:
-            sample = candidate
-            break
-    if not sample and accounts:
-        sample = accounts[0]
-
-    runtime = _v66diag_runtime()
-    storage = _v66diag_storage()
-
-    source_results: list[dict[str, Any]] = []
-    for template in list(runtime.get("feeds") or [])[:5]:
-        source_results.append(
-            _v66diag_http_probe(sample, template)
-        )
-
-    direct_x = _v66diag_direct_x_probe(sample) if sample else {
-        "ok": False,
-        "count": 0,
-        "seconds": 0,
-        "error": "no sample account",
-    }
-
-    lines = [
-        "🧪 בדיקת RSS עמוקה",
-        "",
-        f"חשבון מדגם: @{sample}" if sample else "אין חשבון מדגם",
-        "הבדיקה הזו אינה משנה את מסלול הסריקה האוטומטי.",
-        "",
-        "⚙️ Runtime:",
-        f"• http_get_feed: {runtime['http_get_feed']}",
-        f"• fetch_posts: {runtime['fetch_posts']}",
-        f"• RSS: {runtime['primary_count']} ראשיים + {runtime['fallback_count']} גיבוי",
-        f"• timeout={runtime['request_timeout']}s | collection={runtime['collection_timeout']}s | retries={runtime['retries']}",
-        f"• scan={runtime['scan_seconds']}s | account workers={runtime['account_workers']}",
-    ]
-
-    proxy_names = [
-        name
-        for name, enabled in (runtime.get("proxy_env") or {}).items()
-        if enabled
-    ]
-    if proxy_names:
-        lines.append(
-            "⚠️ Proxy env פעיל: " + ", ".join(proxy_names)
-        )
-    else:
-        lines.append("✅ אין Proxy env פעיל")
-
-    issues = list(runtime.get("consistency_issues") or [])
-    if issues:
-        lines.append(
-            f"⚠️ consistency: {len(issues)} בעיות — "
-            + " | ".join(str(x)[:100] for x in issues[:2])
-        )
-    else:
-        lines.append("✅ consistency: אין בעיות פעילות")
-
-    lines.extend(["", "🌐 בדיקת כל מקור — DNS → TLS → HTTP → XML → parser:"])
-    for item in source_results:
-        lines.append(_v66diag_source_line(item))
-
-    lines.extend(["", "🧭 Direct-X fallback:"])
-    if direct_x.get("ok"):
-        age = direct_x.get("age_hours")
-        age_text = f" | אחרון לפני {age} שעות" if age is not None else ""
-        lines.append(
-            f"✅ Direct-X עובד: {direct_x.get('count')} פוסטים "
-            f"ב-{direct_x.get('seconds')}s{age_text}"
-        )
-    else:
-        lines.append(
-            f"❌ Direct-X לא החזיר נתונים: "
-            f"{short_error(direct_x.get('error', ''), 180)}"
-        )
-
-    lines.extend(["", "💾 זיכרון / Railway Volume:"])
-    if storage.get("configured") and storage.get("writable") and storage.get("railway_volume"):
-        lines.append(
-            f"✅ data dir תקין וקבוע לכאורה: {storage.get('path')}"
-        )
-    elif storage.get("writable"):
-        lines.append(
-            f"⚠️ data dir ניתן לכתיבה אבל אינו /data: {storage.get('path') or 'לא ידוע'}"
-        )
-    else:
-        lines.append(
-            f"❌ data dir: {storage.get('error') or storage.get('path') or 'לא מוגדר'}"
-        )
-
-    lines.extend(["", "🩺 אבחנה:"])
-    lines.extend(_v66diag_root_cause(source_results, direct_x))
-
-    # If at least one RSS source is actually healthy on the sample account,
-    # test ONLY that one source across all writers to distinguish account-specific
-    # problems without burning 5x10 requests.
-    healthy_sources = [
-        item
-        for item in source_results
-        if item.get("http_ok")
-        and item.get("xml_ok")
-        and int(item.get("parser_posts", 0) or 0) > 0
-    ]
-    if healthy_sources and accounts:
-        healthy = healthy_sources[0]
-        template = str(healthy.get("template") or "")
-        per_writer_ok = 0
-        per_writer_fail: list[str] = []
-        for username in accounts:
-            probe = _v66diag_http_probe(username, template)
-            if (
-                probe.get("http_ok")
-                and probe.get("xml_ok")
-                and int(probe.get("parser_posts", 0) or 0) > 0
-            ):
-                per_writer_ok += 1
-            else:
-                per_writer_fail.append(
-                    f"{_hebrew_account_label(username)}={probe.get('classification') or 'FAIL'}"
-                )
-        lines.extend(
-            [
-                "",
-                f"👤 בדיקת כתבים על המקור התקין {healthy.get('source')}: "
-                f"{per_writer_ok}/{len(accounts)} תקינים.",
-            ]
-        )
-        if per_writer_fail:
-            lines.append(
-                "כשלים: " + " | ".join(per_writer_fail[:4])
-            )
-    else:
-        lines.extend(
-            [
-                "",
-                "🛡️ לא חזרתי על אותן 5 בדיקות לכל 10 הכתבים, כי אף מקור לא עבר אפילו על חשבון המדגם.",
-                "כך נמנעות עד 50 בקשות מיותרות בזמן outage גלובלי.",
-            ]
-        )
-
-    return "\n".join(lines)[:4050]
-
-
-def _v66diag_self_audit() -> None:
-    # Diagnostic must not replace the production RSS entrypoints.
-    if http_get_feed is not _v20_active_http_get_feed:
-        raise RuntimeError("diagnostic_changed_http_get_feed")
-    if fetch_posts is not _v35_fetch_posts:
-        raise RuntimeError("diagnostic_changed_fetch_posts")
-    if fetch_control_posts is not _v35_fetch_control_posts:
-        raise RuntimeError("diagnostic_changed_fetch_control_posts")
-    if not callable(rss_status_text):
-        raise RuntimeError("diagnostic_status_missing")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v66diag_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v66diag_self_audit")
-logging.info(
-    "V66 deep RSS diagnostics active: manual RSS button now checks DNS/TLS/HTTP/XML/parser/"
-    "Direct-X/storage/consistency; automatic V66 RSS route remains unchanged."
-)
-
-# ====== END V66 DEEP RSS DIAGNOSTICS ONLY ======
-
-
-# ====== V66 PRODUCTION STABILITY FINALIZER ======
-logging.info(
-    "Production startup: %s historical self-audits skipped; set RUN_STARTUP_SELF_AUDITS=1 to run manually.",
-    len(_STARTUP_AUDITS_SKIPPED),
-)
-# ====== END V66 PRODUCTION STABILITY FINALIZER ======
-
-# ====== V87 NITTER ALL-WRITERS DIAGNOSTIC + DIRECT-X SYNDICATION FIX ======
-# Scope:
-# - DO NOT change the proven V66 automatic RSS boundary.
-# - Nitter remains the key historical RSS diagnostic and is checked for EVERY writer.
-# - Fix/strengthen the existing no-key Direct-X fallback based on X's current
-#   syndication __NEXT_DATA__ -> props.pageProps.timeline.entries structure.
-# - Pace Direct-X requests globally to prevent 10 writers from bursting the
-#   unofficial embed endpoint at once.
-# - The RSS control button reports Nitter + Direct-X health for every writer.
-#
-# Automatic RSS remains:
-#   http_get_feed = _v20_active_http_get_feed
-#   fetch_posts = _v35_fetch_posts
-#   fetch_control_posts = _v35_fetch_control_posts
-#
-# Existing V66 filters/Gemini/Telegram/RTL/media/Shabbat/state remain untouched.
-
-BOT_BUILD_ID_DIAGNOSTIC = "winner-v87-nitter-all-writers-directx-fix-2026-08-26"
-
-# ---------------------------------------------------------------------------
-# Direct-X pacing/cache diagnostics
-# ---------------------------------------------------------------------------
-_V87_DIRECT_LOCK = RLock()
-_V87_DIRECT_SEMAPHORE = BoundedSemaphore(
-    max(1, int(os.environ.get("DIRECT_X_MAX_PARALLEL", "1") or "1"))
-)
-_V87_DIRECT_MIN_GAP_SECONDS = max(
-    0.20,
-    float(os.environ.get("DIRECT_X_MIN_GAP_SECONDS", "0.75") or "0.75"),
-)
-_V87_DIRECT_LAST_REQUEST_AT = 0.0
-_V87_DIRECT_GLOBAL_COOLDOWN_UNTIL = 0.0
-_V87_DIRECT_DIAG: dict[str, dict[str, Any]] = {}
-_V87_DIRECT_COOKIE = str(
-    os.environ.get("X_SYNDICATION_COOKIE", "")
-    or os.environ.get("TWITTER_SYNDICATION_COOKIE", "")
-    or ""
-).strip()
-
-
-def _v87_direct_key(username: str) -> str:
-    return str(username or "").strip().lstrip("@").casefold()
-
-
-def _v87_set_direct_diag(username: str, **values: Any) -> None:
-    key = _v87_direct_key(username)
-    with _V87_DIRECT_LOCK:
-        _V87_DIRECT_DIAG[key] = dict(values)
-        if len(_V87_DIRECT_DIAG) > 100:
-            for old in list(_V87_DIRECT_DIAG)[:25]:
-                _V87_DIRECT_DIAG.pop(old, None)
-
-
-def _v87_get_direct_diag(username: str) -> dict[str, Any]:
-    with _V87_DIRECT_LOCK:
-        return dict(_V87_DIRECT_DIAG.get(_v87_direct_key(username), {}) or {})
-
-
-def _v87_wait_direct_slot() -> None:
-    global _V87_DIRECT_LAST_REQUEST_AT
-    while True:
-        with _V87_DIRECT_LOCK:
-            now = time.time()
-            cooldown = float(_V87_DIRECT_GLOBAL_COOLDOWN_UNTIL or 0.0)
-            last = float(_V87_DIRECT_LAST_REQUEST_AT or 0.0)
-            wait_for = max(
-                0.0,
-                cooldown - now,
-                _V87_DIRECT_MIN_GAP_SECONDS - (now - last),
-            )
-            if wait_for <= 0:
-                _V87_DIRECT_LAST_REQUEST_AT = now
-                return
-        time.sleep(min(wait_for, 1.0))
-
-
-def _v87_retry_after(headers: Any) -> float:
-    try:
-        raw = str(headers.get("Retry-After", "") or "").strip()
-        if raw.isdigit():
-            return max(15.0, min(15 * 60.0, float(raw)))
-    except Exception:
-        pass
-    return 60.0
-
-
-def _v87_tweet_media(tweet: dict[str, Any]) -> tuple[list[str], list[str]]:
-    images: list[str] = []
-    videos: list[str] = []
-
-    candidates: list[Any] = []
-    entities = tweet.get("entities")
-    if isinstance(entities, dict):
-        candidates.extend(entities.get("media") or [])
-    candidates.extend(tweet.get("mediaDetails") or [])
-    extended = tweet.get("extended_entities")
-    if isinstance(extended, dict):
-        candidates.extend(extended.get("media") or [])
-
-    for media in candidates:
-        if not isinstance(media, dict):
-            continue
-        kind = str(media.get("type") or "").casefold()
-        for key in ("media_url_https", "media_url", "url", "preview_image_url"):
-            value = media.get(key)
-            if isinstance(value, str) and value.startswith("http"):
-                if kind in {"video", "animated_gif"} or "video.twimg.com" in value:
-                    videos.append(value)
-                elif "pbs.twimg.com" in value or kind == "photo":
-                    images.append(value)
-
-        video_info = media.get("video_info")
-        if isinstance(video_info, dict):
-            for variant in video_info.get("variants") or []:
-                if not isinstance(variant, dict):
-                    continue
-                value = variant.get("url")
-                content_type = str(variant.get("content_type") or "").casefold()
-                if isinstance(value, str) and value.startswith("http"):
-                    if "video" in content_type or "video.twimg.com" in value:
-                        videos.append(value)
-
-    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
-
-
-def _v87_posts_from_syndication_next_data(
-    username: str,
-    next_data: dict[str, Any],
-    limit: int,
-) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    wanted = canonical.casefold()
-
-    page_props = (
-        ((next_data or {}).get("props") or {}).get("pageProps")
-        if isinstance(next_data, dict)
-        else None
-    )
-    if not isinstance(page_props, dict):
-        return []
-
-    timeline = page_props.get("timeline")
-    entries = timeline.get("entries") if isinstance(timeline, dict) else None
-    if not isinstance(entries, list):
-        return []
-
-    result: list[Post] = []
-    seen: set[str] = set()
-
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        content = entry.get("content")
-        if not isinstance(content, dict):
-            continue
-        tweet = content.get("tweet")
-        if not isinstance(tweet, dict):
-            continue
-
-        tweet_id = str(
-            tweet.get("id_str")
-            or tweet.get("id")
-            or ""
-        ).strip()
-        if not re.fullmatch(r"\d{15,22}", tweet_id):
-            continue
-
-        user = tweet.get("user")
-        author = ""
-        if isinstance(user, dict):
-            author = str(user.get("screen_name") or "").strip().lstrip("@")
-        if author and author.casefold() != wanted:
-            continue
-
-        text_value = _reliable_normalize_x_text(
-            str(tweet.get("full_text") or tweet.get("text") or "")
-        )
-        if not text_value:
-            continue
-
-        if tweet_id in seen:
-            continue
-        seen.add(tweet_id)
-
-        images, videos = _v87_tweet_media(tweet)
-        link = str(tweet.get("permalink") or "").strip()
-        if not link.startswith("http"):
-            link = f"https://x.com/{canonical}/status/{tweet_id}"
-
-        post = Post(
-            post_id=tweet_id,
-            username=canonical,
-            text=text_value,
-            link=link,
-            image_urls=images,
-            video_urls=videos,
-            has_video=bool(videos),
-            primary_has_video=bool(videos),
-            quoted_has_video=False,
-            quoted_author="",
-            quoted_text="",
-            published_ts=_reliable_snowflake_timestamp(tweet_id),
-            dedupe_ids=[
-                tweet_id,
-                f"{canonical}:{tweet_id}",
-                f"{canonical}:{link}",
-                post_content_signature(canonical, text_value, ""),
-            ],
-            source_name="x-syndication-v87",
-        )
-        post.original_text = text_value
-        post.source_structure_available = True
-        post.exact_source_structure = True
-        post.exact_source_provider = "x-syndication-v87"
-        result.append(post)
-
-        if len(result) >= max(1, int(limit)):
-            break
-
-    result.sort(
-        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
-        reverse=True,
-    )
-    return result[:max(1, int(limit))]
-
-
-def _v87_syndication_profile_posts(
-    username: str,
-    limit: int,
-    *,
-    diagnostic: bool = False,
-) -> list[Post]:
-    """Current X embed timeline parser, with bounded global pacing."""
-    global _V87_DIRECT_GLOBAL_COOLDOWN_UNTIL
-
-    canonical = str(username or "").strip().lstrip("@")
-    encoded = urllib.parse.quote(canonical)
-    url = (
-        "https://syndication.twitter.com/srv/timeline-profile/"
-        f"screen-name/{encoded}"
-    )
-
-    started = time.perf_counter()
-    diag: dict[str, Any] = {
-        "provider": "syndication.twitter.com",
-        "url": url,
-        "status": 0,
-        "bytes": 0,
-        "content_type": "",
-        "next_data": False,
-        "entries": 0,
-        "posts": 0,
-        "seconds": 0.0,
-        "error": "",
-        "classification": "",
-    }
-
-    with _V87_DIRECT_SEMAPHORE:
-        _v87_wait_direct_slot()
-
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/137.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://publish.x.com/",
-            "Cache-Control": "no-cache",
-        }
-        if _V87_DIRECT_COOKIE:
-            headers["Cookie"] = _V87_DIRECT_COOKIE
-
-        request = urllib.request.Request(url, headers=headers)
-        raw = ""
-        try:
-            with urllib.request.urlopen(
-                request,
-                timeout=max(4.0, float(RELIABLE_DIRECT_PROFILE_TIMEOUT_SECONDS)),
-            ) as response:
-                diag["status"] = int(getattr(response, "status", 200) or 200)
-                try:
-                    diag["content_type"] = str(
-                        response.headers.get("Content-Type", "") or ""
-                    )
-                except Exception:
-                    pass
-                body = response.read(4_000_000)
-            diag["bytes"] = len(body)
-            raw = body.decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            status = int(getattr(exc, "code", 0) or 0)
-            diag["status"] = status
-            diag["error"] = f"HTTPError: {exc}"
-            diag["classification"] = f"HTTP {status}"
-            if status == 429:
-                with _V87_DIRECT_LOCK:
-                    _V87_DIRECT_GLOBAL_COOLDOWN_UNTIL = max(
-                        float(_V87_DIRECT_GLOBAL_COOLDOWN_UNTIL or 0.0),
-                        time.time() + _v87_retry_after(getattr(exc, "headers", None)),
-                    )
-            diag["seconds"] = round(time.perf_counter() - started, 3)
-            _v87_set_direct_diag(canonical, **diag)
-            return []
-        except Exception as exc:
-            diag["error"] = f"{type(exc).__name__}: {exc}"
-            diag["classification"] = _v66diag_classify_exception(exc)
-            diag["seconds"] = round(time.perf_counter() - started, 3)
-            _v87_set_direct_diag(canonical, **diag)
-            return []
-
-    # Explicit current Next.js payload path.
-    match = re.search(
-        r'<script\b[^>]*\bid=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
-        raw,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    next_data: dict[str, Any] | None = None
-    if match:
-        try:
-            next_data = json.loads(html.unescape(match.group(1)).strip())
-            diag["next_data"] = isinstance(next_data, dict)
-        except Exception as exc:
-            diag["error"] = f"NEXT_DATA JSON: {type(exc).__name__}: {exc}"
-
-    if isinstance(next_data, dict):
-        try:
-            page_props = ((next_data.get("props") or {}).get("pageProps") or {})
-            timeline = page_props.get("timeline") if isinstance(page_props, dict) else {}
-            entries = timeline.get("entries") if isinstance(timeline, dict) else []
-            diag["entries"] = len(entries) if isinstance(entries, list) else 0
-        except Exception:
-            diag["entries"] = 0
-
-        rows = _v87_posts_from_syndication_next_data(
-            canonical,
-            next_data,
-            limit=max(1, int(limit)),
-        )
-        if not rows:
-            # Preserve the older generic deep parser as a compatibility fallback.
-            try:
-                rows = list(
-                    _reliable_posts_from_profile_payload(canonical, next_data)
-                    or []
-                )[:max(1, int(limit))]
-            except Exception:
-                rows = []
-    else:
-        rows = []
-
-    diag["posts"] = len(rows)
-    diag["seconds"] = round(time.perf_counter() - started, 3)
-    if rows:
-        diag["classification"] = "OK"
-    elif diag["status"] == 200 and not diag["next_data"]:
-        low = raw[:20_000].casefold()
-        if "captcha" in low or "cloudflare" in low or "just a moment" in low:
-            diag["classification"] = "HTML/WAF"
-        else:
-            diag["classification"] = "HTTP 200 אבל __NEXT_DATA__ חסר"
-    elif diag["status"] == 200 and diag["entries"] == 0:
-        diag["classification"] = "__NEXT_DATA__ קיים אבל timeline.entries ריק"
-    elif diag["status"] == 200:
-        diag["classification"] = "entries קיימים אבל parser החזיר 0"
-
-    _v87_set_direct_diag(canonical, **diag)
-    return rows
-
-
-# Replace ONLY the existing no-key Direct-X reader.
-# The rest of V66's live/background machinery dynamically calls this symbol.
-_V87_PRE_RELIABLE_DIRECT_PROFILE_POSTS = _reliable_direct_profile_posts
-
-
-def _reliable_direct_profile_posts(
-    username: str,
-    limit: int = 30,
-    force: bool = False,
-) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    key = canonical.casefold()
-
-    with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
-        cached = _RELIABLE_DIRECT_PROFILE_CACHE.get(key)
-        if (
-            not force
-            and cached
-            and time.time() - cached[0] <= RELIABLE_DIRECT_PROFILE_CACHE_SECONDS
-        ):
-            return list(cached[1][:max(1, int(limit))])
-
-    # Official X API stays first if the operator already configured a bearer token.
-    official_rows: list[Post] = []
-    token_present = bool(
-        str(os.environ.get("X_BEARER_TOKEN", "") or "").strip()
-        or str(os.environ.get("TWITTER_BEARER_TOKEN", "") or "").strip()
-        or str(os.environ.get("X_API_BEARER_TOKEN", "") or "").strip()
-    )
-    if token_present:
-        try:
-            official_rows = list(
-                _reliable_official_x_profile_posts(
-                    canonical,
-                    limit=max(20, int(limit)),
-                )
-                or []
-            )
-        except Exception as exc:
-            _v87_set_direct_diag(
-                canonical,
-                provider="api.x.com",
-                status=0,
-                posts=0,
-                error=f"{type(exc).__name__}: {exc}",
-                classification="official X API failed",
-                token_present=True,
-            )
-
-    result = official_rows
-    if not result:
-        result = _v87_syndication_profile_posts(
-            canonical,
-            limit=max(20, int(limit)),
-        )
-
-    for post in result:
-        post.image_urls = [
-            u for u in (post.image_urls or []) if _real_tweet_photo_url(u)
-        ]
-        post.video_urls = [
-            u for u in (post.video_urls or []) if _real_tweet_video_url(u)
-        ]
-        post.has_video = bool(post.video_urls)
-        post.primary_has_video = bool(post.video_urls)
-        post.exact_media_checked = True
-
-    if result:
-        with _RELIABLE_DIRECT_PROFILE_CACHE_LOCK:
-            _RELIABLE_DIRECT_PROFILE_CACHE[key] = (
-                time.time(),
-                list(result),
-            )
-        try:
-            _stable_rss_remember(canonical, result)
-        except Exception:
-            pass
-
-    return list(result)[:max(1, int(limit))]
-
-
-# Avoid the old continuous duplicate direct-X lane; V35 already starts the
-# background direct reader once per normal account cycle.
-CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
-
-
-# ---------------------------------------------------------------------------
-# Nitter diagnostic for every writer
-# ---------------------------------------------------------------------------
-def _v87_nitter_probe_writer(username: str) -> dict[str, Any]:
-    """Exactly one diagnostic request; no production retry/circuit side effects."""
-    canonical = str(username or "").strip().lstrip("@")
-    url = (
-        "https://nitter.net/"
-        + urllib.parse.quote(canonical)
-        + "/rss"
-    )
-    result = {
-        "status": 0,
-        "ok": False,
-        "classification": "",
-        "bytes": 0,
-        "items": 0,
-        "parser_posts": 0,
-        "error": "",
-        "seconds": 0.0,
-    }
-    started = time.perf_counter()
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 Chrome/137.0 Safari/537.36"
-            ),
-            "Accept": "application/rss+xml,application/xml,text/xml,*/*",
-        },
-    )
-    body = b""
-    try:
-        with urllib.request.urlopen(request, timeout=5.0) as response:
-            result["status"] = int(getattr(response, "status", 200) or 200)
-            body = response.read(2_000_000)
-        result["bytes"] = len(body)
-    except urllib.error.HTTPError as exc:
-        result["status"] = int(getattr(exc, "code", 0) or 0)
-        result["classification"] = _v66diag_classify_exception(exc)
-        result["error"] = f"HTTPError: {exc}"
-        result["seconds"] = round(time.perf_counter() - started, 3)
-        return result
-    except Exception as exc:
-        result["classification"] = _v66diag_classify_exception(exc)
-        result["error"] = f"{type(exc).__name__}: {exc}"
-        result["seconds"] = round(time.perf_counter() - started, 3)
-        return result
-
-    xml = _v66diag_xml_inspect(body)
-    result["items"] = int(xml.get("items", 0) or 0)
-    if not xml.get("xml_ok"):
-        result["classification"] = (
-            "HTML/WAF במקום RSS"
-            if xml.get("html")
-            else "XML לא תקין"
-        )
-        result["error"] = str(xml.get("error") or "")
-        result["seconds"] = round(time.perf_counter() - started, 3)
-        return result
-
-    try:
-        posts = list(parse_posts(canonical, body, "nitter.net") or [])
-        result["parser_posts"] = len(posts)
-    except Exception as exc:
-        result["classification"] = "PARSER"
-        result["error"] = f"{type(exc).__name__}: {exc}"
-        result["seconds"] = round(time.perf_counter() - started, 3)
-        return result
-
-    result["ok"] = result["parser_posts"] > 0
-    result["classification"] = (
-        "OK"
-        if result["ok"]
-        else "RSS תקין אבל parser/פיד החזיר 0"
-    )
-    result["seconds"] = round(time.perf_counter() - started, 3)
-    return result
-
-
-def _v87_direct_probe_writer(username: str) -> dict[str, Any]:
-    canonical = str(username or "").strip().lstrip("@")
-    token_present = bool(
-        str(os.environ.get("X_BEARER_TOKEN", "") or "").strip()
-        or str(os.environ.get("TWITTER_BEARER_TOKEN", "") or "").strip()
-        or str(os.environ.get("X_API_BEARER_TOKEN", "") or "").strip()
-    )
-    started = time.perf_counter()
-    try:
-        rows = list(
-            _reliable_direct_profile_posts(
-                canonical,
-                limit=8,
-                force=True,
-            )
-            or []
-        )
-    except Exception as exc:
-        rows = []
-        _v87_set_direct_diag(
-            canonical,
-            provider="direct-x",
-            posts=0,
-            error=f"{type(exc).__name__}: {exc}",
-            classification="Direct-X exception",
-        )
-
-    diag = _v87_get_direct_diag(canonical)
-    diag["token_present"] = token_present
-    diag["total_seconds"] = round(time.perf_counter() - started, 3)
-    diag["result_posts"] = len(rows)
-    return diag
-
-
-def rss_status_text() -> str:
-    """Check Nitter AND Direct-X for every configured writer, as requested."""
-    accounts = _general_reporter_control_accounts()
-    if not accounts:
-        return "🧪 בדיקת RSS/Nitter: אין כתבים פעילים."
-
-    runtime = _v66diag_runtime()
-    storage = _v66diag_storage()
-
-    lines = [
-        f"🧪 בדיקת Nitter + Direct-X לכל {len(accounts)} הכתבים",
-        "",
-        "Nitter נבדק בנפרד לכל כתב.",
-        "Direct-X נבדק לכל כתב דרך X Syndication במבנה __NEXT_DATA__ העדכני.",
-        "הבדיקה ידנית; מסלול RSS האוטומטי של V66 לא שונה.",
-        "",
-    ]
-
-    nitter_ok = 0
-    direct_ok = 0
-    both_fail = 0
-    nitter_status_counts: dict[str, int] = {}
-    direct_class_counts: dict[str, int] = {}
-
-    # Intentionally sequential here: this is a diagnostic button, and pacing
-    # prevents the diagnostic itself from manufacturing a 429 burst.
-    for username in accounts:
-        label = _hebrew_account_label(username)
-
-        nitter = _v87_nitter_probe_writer(username)
-        nitter_class = str(
-            nitter.get("classification")
-            or f"HTTP {nitter.get('status', 0)}"
-        )
-        nitter_status_counts[nitter_class] = (
-            nitter_status_counts.get(nitter_class, 0) + 1
-        )
-
-        direct = _v87_direct_probe_writer(username)
-        direct_posts = int(direct.get("result_posts", 0) or 0)
-        direct_class = str(
-            direct.get("classification")
-            or ("OK" if direct_posts else "לא ידוע")
-        )
-        direct_class_counts[direct_class] = (
-            direct_class_counts.get(direct_class, 0) + 1
-        )
-
-        if nitter.get("ok"):
-            nitter_ok += 1
-        if direct_posts > 0:
-            direct_ok += 1
-        if not nitter.get("ok") and direct_posts <= 0:
-            both_fail += 1
-
-        nitter_status = int(nitter.get("status", 0) or 0)
-        nitter_part = (
-            f"Nitter ✅ {nitter.get('parser_posts')} פוסטים"
-            if nitter.get("ok")
-            else f"Nitter ❌ {nitter_class}"
-        )
-
-        if direct_posts > 0:
-            direct_part = (
-                f"Direct-X ✅ {direct_posts} | "
-                f"entries={int(direct.get('entries', 0) or 0)}"
-            )
-        else:
-            status = int(direct.get("status", 0) or 0)
-            extra = (
-                f"HTTP {status}"
-                if status
-                else direct_class
-            )
-            if direct.get("next_data"):
-                extra += (
-                    f" | NEXT_DATA=yes | entries={int(direct.get('entries', 0) or 0)}"
-                )
-            direct_part = f"Direct-X ❌ {extra}"
-
-        lines.append(
-            f"{'✅' if (nitter.get('ok') or direct_posts > 0) else '❌'} "
-            f"{label}: {nitter_part} | {direct_part}"
-        )
-
-    lines.extend(
-        [
-            "",
-            "📊 סיכום:",
-            f"• Nitter עובד: {nitter_ok}/{len(accounts)}",
-            f"• Direct-X עובד: {direct_ok}/{len(accounts)}",
-            f"• שני המסלולים נכשלו: {both_fail}/{len(accounts)}",
-        ]
-    )
-
-    lines.extend(["", "🚨 Nitter:"])
-    for issue, count in sorted(
-        nitter_status_counts.items(),
-        key=lambda item: (-item[1], item[0]),
-    )[:5]:
-        lines.append(f"• {issue}: {count}")
-
-    lines.extend(["", "🚨 Direct-X:"])
-    for issue, count in sorted(
-        direct_class_counts.items(),
-        key=lambda item: (-item[1], item[0]),
-    )[:5]:
-        lines.append(f"• {issue}: {count}")
-
-    # Runtime/storage facts which can independently break a deployment.
-    lines.extend(["", "⚙️ מערכת:"])
-    issues = list(runtime.get("consistency_issues") or [])
-    lines.append(
-        "• consistency: "
-        + ("✅ תקין" if not issues else f"❌ {len(issues)} בעיות")
-    )
-
-    token_present = any(
-        bool(str(os.environ.get(name, "") or "").strip())
-        for name in (
-            "X_BEARER_TOKEN",
-            "TWITTER_BEARER_TOKEN",
-            "X_API_BEARER_TOKEN",
-        )
-    )
-    lines.append(
-        "• X Bearer Token: "
-        + ("✅ מוגדר" if token_present else "ℹ️ לא מוגדר — משתמשים ב-Syndication")
-    )
-    lines.append(
-        "• X Syndication Cookie: "
-        + ("✅ מוגדר" if _V87_DIRECT_COOKIE else "ℹ️ לא מוגדר")
-    )
-
-    if storage.get("configured") and storage.get("writable") and storage.get("railway_volume"):
-        lines.append(f"• /data: ✅ {storage.get('path')}")
-    elif storage.get("writable"):
-        lines.append(
-            f"• /data: ⚠️ ניתן לכתיבה אבל לא Volume קבוע: {storage.get('path')}"
-        )
-    else:
-        lines.append(
-            "• /data: ❌ FOOTBALL_BOT_DATA_DIR=/data לא מוגדר/לא ניתן לכתיבה"
-        )
-
-    # Direct root-cause conclusion.
-    if nitter_ok == 0 and direct_ok > 0:
-        lines.extend(
-            [
-                "",
-                "🩺 מסקנה: Nitter חיצוני למטה, אבל Direct-X עובד. "
-                "הבוט יכול להמשיך דרך מסלול X החלופי.",
-            ]
-        )
-    elif nitter_ok == 0 and direct_ok == 0:
-        lines.extend(
-            [
-                "",
-                "🩺 מסקנה: Nitter וגם Direct-X נכשלים. "
-                "הפירוט לכל כתב למעלה יראה אם Direct-X חסום ב-HTTP/429, "
-                "אם __NEXT_DATA__ חסר, או אם parser מחזיר 0.",
-            ]
-        )
-    else:
-        lines.extend(
-            [
-                "",
-                "🩺 מסקנה: לפחות Nitter/Direct-X אחד פעיל. "
-                "אפשר להתמקד רק בכתבים המסומנים ❌.",
-            ]
-        )
-
-    return "\n".join(lines)[:4050]
-
-
-def _v87_self_audit() -> None:
-    # Proven RSS route must stay V66.
-    if http_get_feed is not _v20_active_http_get_feed:
-        raise RuntimeError("v87_changed_v66_http")
-    if fetch_posts is not _v35_fetch_posts:
-        raise RuntimeError("v87_changed_v66_fetch_posts")
-    if fetch_control_posts is not _v35_fetch_control_posts:
-        raise RuntimeError("v87_changed_v66_control_fetch")
-
-    # Direct-X final symbol must be the strengthened reader.
-    if _reliable_direct_profile_posts.__name__ != "_reliable_direct_profile_posts":
-        raise RuntimeError("v87_direct_symbol_missing")
-
-    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
-        raise RuntimeError("v87_duplicate_continuous_direct_lane_enabled")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v87_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v87_self_audit")
-
-logging.info(
-    "V87 active: V66 RSS unchanged; Nitter diagnostic checks every writer; "
-    "Direct-X syndication parser updated for __NEXT_DATA__/timeline.entries with global pacing."
-)
-
-# ====== END V87 NITTER ALL-WRITERS DIAGNOSTIC + DIRECT-X FIX ======
-
-# ====== V88 LIVE-FIRST / TRANSLATION RELIABILITY ROOT FIX (2026-08-27) ======
-# Root causes fixed here, after the confirmed-working V87 boundary:
-#
-# 1) The real automatic loop calls fetch_posts_safely(), not fetch_posts().
-#    The final V87 fetch_posts_safely was still bound to an older captured V40/V50
-#    route. General reporters now use the strengthened V87 Direct-X reader first,
-#    so dead RSS mirrors cannot delay fresh discovery or age posts past two hours.
-#    Special sources keep their existing dedicated V66/V60 routes unchanged.
-#
-# 2) Historical RSS endpoints are currently failing externally. Automatic general-
-#    reporter discovery therefore never waits synchronously for them. Manual RSS
-#    diagnostics still check Nitter for EVERY writer. The historical RSS route and
-#    functions remain available and untouched for special/manual compatibility.
-#
-# 3) Translation had mutually conflicting historical policies: one Gemini request
-#    per attempt, a four-attempt/150-second retry scheduler, and a Google fallback
-#    that was blocked from the main channel. V88 keeps one paid Gemini attempt,
-#    then uses a validated FREE Google translation immediately. If neither produces
-#    real Hebrew, the post is NOT sent and remains pending for a short retry.
-#
-# 4) 10-latest always executed slow network RSS loaders even after enough rows were
-#    already in memory, and Google failure silently returned the original English.
-#    V88 uses direct-X + local history only for that screen, and never displays raw
-#    untranslated English as if it were a translation.
-#
-# The two-hour news-age rule and editorial filters are NOT relaxed.
-
-BOT_BUILD_ID_FINAL = 'winner-v88-live-first-translation-reliable-2026-08-27'
-
-# ---------------------------------------------------------------------------
-# A. General reporters: live Direct-X discovery is the non-blocking primary path.
-# ---------------------------------------------------------------------------
-_V88_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V88_GENERAL_REPORTERS = {
-    str(item or '').strip().lstrip('@').casefold()
-    for item in (_general_reporter_control_accounts() or [])
-}
-
-# A 20-second scanner should not reuse a 180-second direct-X cache.
-V88_DIRECT_CACHE_SECONDS = max(
-    8,
-    min(25, int(os.environ.get('V88_DIRECT_CACHE_SECONDS', '16') or '16')),
-)
-RELIABLE_DIRECT_PROFILE_CACHE_SECONDS = V88_DIRECT_CACHE_SECONDS
-FULL_SPEED_LIVE_REFRESH_SECONDS = max(
-    15,
-    min(30, int(os.environ.get('FULL_SPEED_LIVE_REFRESH_SECONDS', '20') or '20')),
-)
-
-# Controlled concurrency: fast enough for 10 writers, but still protects the
-# unofficial syndication endpoint. HTTP 429 continues to activate V87's global
-# cooldown automatically.
-V88_DIRECT_MAX_PARALLEL = max(
-    1,
-    min(4, int(os.environ.get('V88_DIRECT_MAX_PARALLEL', '3') or '3')),
-)
-V88_DIRECT_MIN_GAP_SECONDS = max(
-    0.08,
-    min(0.75, float(os.environ.get('V88_DIRECT_MIN_GAP_SECONDS', '0.18') or '0.18')),
-)
-_V87_DIRECT_SEMAPHORE = BoundedSemaphore(V88_DIRECT_MAX_PARALLEL)
-_V87_DIRECT_MIN_GAP_SECONDS = V88_DIRECT_MIN_GAP_SECONDS
-CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
-
-_V88_DISCOVERY_LOCK = RLock()
-_V88_DISCOVERY_DIAG: dict[str, dict[str, Any]] = {}
-
-
-def _v88_store_discovery_diag(username: str, **values: Any) -> None:
-    key = str(username or '').strip().lstrip('@').casefold()
-    with _V88_DISCOVERY_LOCK:
-        _V88_DISCOVERY_DIAG[key] = dict(values)
-        if len(_V88_DISCOVERY_DIAG) > 120:
-            for old in list(_V88_DISCOVERY_DIAG)[:30]:
-                _V88_DISCOVERY_DIAG.pop(old, None)
-
-
-def _v88_discovery_diag(username: str) -> dict[str, Any]:
-    key = str(username or '').strip().lstrip('@').casefold()
-    with _V88_DISCOVERY_LOCK:
-        return dict(_V88_DISCOVERY_DIAG.get(key, {}) or {})
-
-
-def _v88_merge_live_and_memory(username: str, live_rows: list[Post]) -> list[Post]:
-    canonical = str(username or '').strip().lstrip('@')
-    merged: dict[str, Post] = {}
-    try:
-        _reliable_merge_posts(merged, live_rows, canonical)
-    except Exception:
-        pass
-
-    # Memory is network-free and only a safety net. Fresh direct-X rows sort first.
-    for loader in (
-        lambda: _full_speed_cache_get(canonical),
-        lambda: _working_rss_cached(canonical, limit=30),
-        lambda: _ten_history_load(canonical),
-    ):
-        try:
-            rows = list(loader() or [])
-        except Exception:
-            rows = []
-        try:
-            _reliable_merge_posts(merged, rows, canonical)
-        except Exception:
-            for post in rows:
-                if not isinstance(post, Post):
-                    continue
-                identity = str(getattr(post, 'post_id', '') or getattr(post, 'link', '') or '').strip()
-                if identity:
-                    merged.setdefault(identity, post)
-
-    ordered = sorted(
-        merged.values(),
-        key=lambda post: float(getattr(post, 'published_ts', 0.0) or 0.0),
-        reverse=True,
-    )
-    return ordered[:max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))]
-
-
-def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    """Actual scanner entrypoint: live-first for the 10 general reporters.
-
-    No dead RSS wait is allowed on this path. Special sources retain the exact
-    previously working dedicated route by delegating to the captured function.
-    """
-    canonical = str(username or '').strip().lstrip('@')
-    if canonical.casefold() not in _V88_GENERAL_REPORTERS:
-        return _V88_PRE_FETCH_POSTS_SAFELY(canonical)
-
-    started = time.perf_counter()
-    direct_rows: list[Post] = []
-    direct_error = ''
-    try:
-        direct_rows = list(
-            _reliable_direct_profile_posts(
-                canonical,
-                limit=max(20, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
-                force=False,
-            )
-            or []
-        )
-    except Exception as exc:
-        direct_error = f'{type(exc).__name__}: {short_error(exc, 300)}'
-        direct_rows = []
-
-    ordered = _v88_merge_live_and_memory(canonical, direct_rows)
-    fresh_direct = bool(direct_rows)
-    newest_ts = max(
-        (float(getattr(post, 'published_ts', 0.0) or 0.0) for post in direct_rows),
-        default=0.0,
-    )
-    newest_age = max(0.0, time.time() - newest_ts) if newest_ts else None
-
-    _v88_store_discovery_diag(
-        canonical,
-        live_rows=len(direct_rows),
-        returned=len(ordered),
-        fresh_direct=fresh_direct,
-        newest_age_seconds=newest_age,
-        error=direct_error,
-        seconds=round(time.perf_counter() - started, 3),
-        provider=str((_v87_get_direct_diag(canonical) or {}).get('provider') or 'direct-x'),
-    )
-
-    try:
-        daily_stat_add_timing('scan_seconds', time.perf_counter() - started)
-    except Exception:
-        pass
-
-    return canonical, ordered[:12]
-
-
-# ---------------------------------------------------------------------------
-# B. Robust free Google Translate transport + diagnostics.
-# ---------------------------------------------------------------------------
-_V88_GOOGLE_LOCK = RLock()
-_V88_GOOGLE_CACHE: dict[str, tuple[float, str]] = {}
-_V88_GOOGLE_LAST_DIAG: dict[str, Any] = {}
-_V88_GOOGLE_SEMAPHORE = BoundedSemaphore(
-    max(2, min(6, int(os.environ.get('V88_GOOGLE_MAX_PARALLEL', '5') or '5')))
-)
-_V88_GOOGLE_CACHE_SECONDS = 6 * 60 * 60
-_V88_GOOGLE_TIMEOUT_SECONDS = max(
-    2.5,
-    min(7.0, float(os.environ.get('V88_GOOGLE_TIMEOUT_SECONDS', '4.5') or '4.5')),
-)
-
-
-def _v88_google_set_diag(**values: Any) -> None:
-    with _V88_GOOGLE_LOCK:
-        _V88_GOOGLE_LAST_DIAG.clear()
-        _V88_GOOGLE_LAST_DIAG.update(values)
-
-
-def _v88_google_diag() -> dict[str, Any]:
-    with _V88_GOOGLE_LOCK:
-        return dict(_V88_GOOGLE_LAST_DIAG)
-
-
-def _v88_google_parse_payload(body: bytes) -> str:
-    data = json.loads(body.decode('utf-8', errors='replace'))
-    rows = data[0] if isinstance(data, list) and data else []
-    parts: list[str] = []
-    if isinstance(rows, list):
-        for row in rows:
-            if isinstance(row, list) and row and isinstance(row[0], str):
-                parts.append(row[0])
-    return ''.join(parts).strip()
-
-
-def _v88_google_one(text: str) -> str:
-    source = str(text or '').strip()
-    if not source:
-        return ''
-    key = hashlib.sha1(source.encode('utf-8', errors='ignore')).hexdigest()
-    now = time.time()
-    with _V88_GOOGLE_LOCK:
-        cached = _V88_GOOGLE_CACHE.get(key)
-        if cached and now - float(cached[0] or 0.0) <= _V88_GOOGLE_CACHE_SECONDS:
-            return str(cached[1] or '')
-
-    params = urllib.parse.urlencode({
-        'client': 'gtx',
-        'sl': 'auto',
-        'tl': TARGET_LANGUAGE,
-        'dt': 't',
-        'q': source,
-    })
-    endpoints = (
-        'https://translate.googleapis.com/translate_a/single?',
-        'https://translate.google.com/translate_a/single?',
     )
     last_error: Exception | None = None
+    for attempt in range(1, max(1, int(FEED_HTTP_RETRIES)) + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except Exception as exc:
+            last_error = exc
+            if attempt < max(1, int(FEED_HTTP_RETRIES)):
+                time.sleep(0.4)
+    raise RuntimeError(f"RSS GET failed: {url}. Last error: {last_error}")
 
-    with _V88_GOOGLE_SEMAPHORE:
-        for endpoint in endpoints:
-            url = endpoint + params
-            started = time.perf_counter()
-            request = urllib.request.Request(
-                url,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0',
-                    'Accept': 'application/json,text/plain,*/*',
-                    'Accept-Language': 'he,en-US;q=0.8,en;q=0.7',
-                    'Referer': 'https://translate.google.com/',
-                },
+
+def active_feed_templates() -> list[str]:
+    if int(MAX_FEED_TEMPLATES_PER_ACCOUNT) <= 0:
+        return list(FEED_TEMPLATES)
+    return list(FEED_TEMPLATES)[
+        : max(1, min(len(FEED_TEMPLATES), int(MAX_FEED_TEMPLATES_PER_ACCOUNT)))
+    ]
+
+
+def feed_source_name(template: str) -> str:
+    try:
+        host = urllib.parse.urlparse(template).netloc.lower()
+    except Exception:
+        return "unknown"
+    return host.removeprefix("www.")
+
+
+def feed_source_semaphore(source_name: str) -> BoundedSemaphore:
+    with FEED_SOURCE_SEMAPHORES_LOCK:
+        semaphore = FEED_SOURCE_SEMAPHORES.get(source_name)
+        if semaphore is None:
+            semaphore = BoundedSemaphore(max(1, int(FEED_SOURCE_MAX_PARALLEL)))
+            FEED_SOURCE_SEMAPHORES[source_name] = semaphore
+        return semaphore
+
+
+def fetch_feed(username: str, template: str) -> list[Post]:
+    url = template.format(username=urllib.parse.quote(username))
+    source_name = feed_source_name(template)
+    with feed_source_semaphore(source_name):
+        return parse_posts(username, http_get_feed(url), source_name)
+
+
+# ---------------------------------------------------------------------------
+# C. MIRROR COLLECTION — exact old-good isolated account race
+# ---------------------------------------------------------------------------
+def collect_posts_from_feed_templates(
+    username: str,
+    feed_templates: list[str],
+) -> tuple[list[Post], list[str], list[str]]:
+    all_posts: dict[str, Post] = {}
+    feed_errors: list[str] = []
+    timed_out_sources: list[str] = []
+    if not feed_templates:
+        return [], [], []
+
+    executor = ThreadPoolExecutor(
+        max_workers=min(
+            max(1, int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT)),
+            len(feed_templates),
+        )
+    )
+    futures = {
+        executor.submit(fetch_feed, username, template): template
+        for template in feed_templates
+    }
+    try:
+        for future in as_completed(
+            futures,
+            timeout=FEED_COLLECTION_TIMEOUT_SECONDS,
+        ):
+            template = futures[future]
+            source_name = feed_source_name(template)
+            try:
+                for post in future.result() or []:
+                    if not isinstance(post, Post):
+                        continue
+                    identity = str(post.post_id or post.link or "").strip()
+                    if identity:
+                        all_posts.setdefault(identity, post)
+            except Exception as exc:
+                feed_errors.append(
+                    f"{source_name}: {type(exc).__name__}: {short_error(exc)}"
+                )
+    except FuturesTimeoutError:
+        timed_out_sources = [
+            feed_source_name(template)
+            for future, template in futures.items()
+            if not future.done()
+        ]
+    finally:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    posts = list(all_posts.values())
+    posts.sort(
+        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    return posts, feed_errors, timed_out_sources
+
+
+# ---------------------------------------------------------------------------
+# D. PRIMARY -> FALLBACK ORCHESTRATION — exact working policy
+# ---------------------------------------------------------------------------
+def _rss_engine_network_fetch(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    feed_templates = list(active_feed_templates())
+
+    primary_count = max(
+        1,
+        min(len(feed_templates), int(RSS_PRIMARY_SOURCE_COUNT)),
+    )
+    primary_templates = feed_templates[:primary_count]
+    fallback_templates = (
+        feed_templates[primary_count:]
+        if RSS_ENABLE_FALLBACK
+        else []
+    )
+    if int(RSS_FALLBACK_SOURCE_COUNT) > 0:
+        fallback_templates = fallback_templates[
+            : int(RSS_FALLBACK_SOURCE_COUNT)
+        ]
+
+    posts, feed_errors, timed_out_sources = collect_posts_from_feed_templates(
+        canonical,
+        primary_templates,
+    )
+
+    if posts:
+        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+        latest_age = (
+            max(0.0, time.time() - float(posts[0].published_ts or 0.0))
+            if posts[0].published_ts
+            else 0.0
+        )
+
+        if (
+            RSS_ENABLE_STALE_FALLBACK
+            and fallback_templates
+            and latest_age >= RSS_STALE_FALLBACK_SECONDS
+        ):
+            fallback_posts, fallback_errors, fallback_timeouts = (
+                collect_posts_from_feed_templates(
+                    canonical,
+                    fallback_templates,
+                )
+            )
+            if (
+                fallback_posts
+                and float(fallback_posts[0].published_ts or 0.0)
+                > float(posts[0].published_ts or 0.0)
+            ):
+                logging.info(
+                    "🔁 RSS: המקור הראשי עבור @%s ישן/תקוע, נלקח מקור גיבוי %s עם פוסט חדש יותר.",
+                    canonical,
+                    fallback_posts[0].source_name,
+                )
+                send_rss_stale_latest_alert_if_needed(
+                    canonical,
+                    fallback_posts,
+                )
+                posts = fallback_posts
+            elif fallback_errors or fallback_timeouts:
+                logging.debug(
+                    "RSS: ניסיון גיבוי בגלל מקור ישן עבור @%s לא החזיר מקור חדש יותר. errors=%s timeouts=%s",
+                    canonical,
+                    "; ".join(fallback_errors[:4]),
+                    ", ".join(fallback_timeouts[:4]),
+                )
+
+        send_rss_stale_latest_alert_if_needed(canonical, posts)
+        try:
+            _stable_rss_remember(canonical, posts)
+            _remember_control_rss_posts(canonical, posts)
+            _ten_history_save(canonical, posts)
+        except Exception:
+            pass
+        return posts
+
+    fallback_errors: list[str] = []
+    fallback_timeouts: list[str] = []
+
+    if fallback_templates:
+        fallback_posts, fallback_errors, fallback_timeouts = (
+            collect_posts_from_feed_templates(
+                canonical,
+                fallback_templates,
+            )
+        )
+        if fallback_posts:
+            FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
+            send_rss_stale_latest_alert_if_needed(
+                canonical,
+                fallback_posts,
             )
             try:
-                with urllib.request.urlopen(request, timeout=_V88_GOOGLE_TIMEOUT_SECONDS) as response:
-                    status = int(getattr(response, 'status', 200) or 200)
-                    body = response.read(1_500_000)
-                translated = _v88_google_parse_payload(body)
-                if not translated:
-                    raise RuntimeError('Google returned an empty translation')
-                with _V88_GOOGLE_LOCK:
-                    _V88_GOOGLE_CACHE[key] = (time.time(), translated)
-                    if len(_V88_GOOGLE_CACHE) > 2500:
-                        for old in list(_V88_GOOGLE_CACHE)[:600]:
-                            _V88_GOOGLE_CACHE.pop(old, None)
-                _v88_google_set_diag(
-                    ok=True,
-                    endpoint=urllib.parse.urlsplit(endpoint).netloc,
-                    status=status,
-                    seconds=round(time.perf_counter() - started, 3),
-                    error='',
+                _stable_rss_remember(canonical, fallback_posts)
+                _remember_control_rss_posts(
+                    canonical,
+                    fallback_posts,
                 )
-                return translated
-            except Exception as exc:
-                last_error = exc
-                _v88_google_set_diag(
-                    ok=False,
-                    endpoint=urllib.parse.urlsplit(endpoint).netloc,
-                    status=int(getattr(exc, 'code', 0) or 0),
-                    seconds=round(time.perf_counter() - started, 3),
-                    error=f'{type(exc).__name__}: {short_error(exc, 400)}',
-                )
-                continue
-
-    raise RuntimeError(f'Google Translate unavailable: {last_error}')
-
-
-def google_translate(text: str) -> str:
-    """Robust Google transport. Long bodies are split to avoid URL/edge limits."""
-    source = str(text or '').strip()
-    if not source:
-        return ''
-    # Most X posts fit in one call. Split only genuinely long bodies.
-    if len(source) <= 1150:
-        return _v88_google_one(source)
-    units = split_translation_units(source)
-    if not units:
-        units = [source[i:i + 900] for i in range(0, len(source), 900)]
-    translated: list[str] = []
-    for unit in units:
-        unit = str(unit or '').strip()
-        if not unit:
-            continue
-        translated.append(_v88_google_one(unit))
-    return ' '.join(part for part in translated if part).strip()
-
-
-def _v88_translation_valid(source: str, translated: str) -> tuple[bool, str]:
-    src = clean_before_translation(str(source or '')).strip()
-    out = clean_before_translation(str(translated or '')).strip()
-    if not out:
-        return False, 'empty'
-    if not has_meaningful_text(out):
-        return False, 'not_meaningful'
-
-    src_hebrew = len(re.findall(r'[א-ת]', src))
-    out_hebrew = len(re.findall(r'[א-ת]', out))
-    src_latin = len(re.findall(r'[A-Za-z]', src))
-    out_latin = len(re.findall(r'[A-Za-z]', out))
-
-    # Already-Hebrew source is valid without artificial retranslation.
-    if src_hebrew >= 8 and src_latin <= max(5, src_hebrew // 5):
-        return out_hebrew >= 8, '' if out_hebrew >= 8 else 'hebrew_source_damaged'
-
-    if out_hebrew < 8:
-        return False, 'too_little_hebrew'
-    if re.search(r'[\u0400-\u052F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u3400-\u4DBF\u4E00-\u9FFF]{2,}', out):
-        return False, 'foreign_script_leftover'
-    if out_latin > 0 and latin_ratio(out) > 0.24:
-        return False, 'too_much_latin'
-    try:
-        leftovers = non_hebrew_leftovers(out)
-    except Exception:
-        leftovers = []
-    # A few names/acronyms are acceptable, but a surviving English clause is not.
-    if len(leftovers) > 3:
-        return False, 'untranslated_latin_fragments'
-
-    # If a primarily Latin source comes back nearly identical, Google did not translate it.
-    if src_latin >= 12:
-        src_norm = re.sub(r'\W+', '', src, flags=re.UNICODE).casefold()
-        out_norm = re.sub(r'\W+', '', out, flags=re.UNICODE).casefold()
-        if src_norm and out_norm == src_norm:
-            return False, 'unchanged_source'
-    return True, ''
-
-
-def _v88_google_translate_strict(source: str, max_chars: int = 2500) -> str:
-    original = compact_debug_text(clean_before_translation(source or ''), max_chars).strip()
-    if not original:
-        return ''
-    if len(re.findall(r'[א-ת]', original)) >= 8 and latin_ratio(original) < 0.10:
-        return final_visual_cleanup(final_hebrew_polish(original))
-
-    # Preserve genuine source paragraph/list structure while using the new transport.
-    try:
-        translated = _google_translate_preserve_full_layout(original)
-    except Exception:
-        translated = google_translate(original)
-    translated = final_visual_cleanup(final_hebrew_polish(str(translated or '')))
-    # Translate any meaningful Latin clause that survived the whole-text pass.
-    # Common football acronyms in LATIN_KEEP remain untouched by this helper.
-    try:
-        translated = google_translate_latin_fragments_to_hebrew(translated)
-    except Exception:
-        pass
-    try:
-        translated = _v60_translation_cleanup(original, translated)
-    except Exception:
-        pass
-    translated = final_visual_cleanup(final_hebrew_polish(str(translated or '')))
-    ok, reason = _v88_translation_valid(original, translated)
-    if not ok:
-        raise TranslationUnavailable(f'Google translation invalid: {reason}')
-    return translated.strip()
-
-
-# ---------------------------------------------------------------------------
-# C. Publishing translation: Gemini once -> validated Google immediately.
-# ---------------------------------------------------------------------------
-_V88_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
-
-# Remove the old multi-minute retry delay. A post that truly cannot be translated
-# stays pending and is retried quickly; it is never published raw.
-TRANSLATION_TOTAL_ATTEMPTS = 2
-TRANSLATION_RETRY_INTERVAL_SECONDS = 30
-AUTO_GEMINI_RETRY_ATTEMPTS = TRANSLATION_TOTAL_ATTEMPTS
-AUTO_GEMINI_RETRY_WAIT_SECONDS = TRANSLATION_RETRY_INTERVAL_SECONDS
-
-
-def _v88_source_for_translation(post: Post, quoted: bool = False) -> str:
-    try:
-        value = _final_corresponding_source_text(post, quoted=quoted)
-    except Exception:
-        value = ''
-    if value:
-        return str(value)
-    if quoted:
-        return str(getattr(post, 'quoted_text', '') or '')
-    return str(getattr(post, 'text', '') or '')
-
-
-def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    """Never publish untranslated text. Gemini is preferred; Google is free fallback."""
-    try:
-        main, quote, author = _V88_PRE_TRANSLATE_POST_FOR_SEND(post)
-        main_source = _v88_source_for_translation(post, quoted=False)
-        quote_source = _v88_source_for_translation(post, quoted=True)
-        ok_main, _ = _v88_translation_valid(main_source, main)
-        ok_quote = True
-        if quote_source and quote:
-            ok_quote, _ = _v88_translation_valid(quote_source, quote)
-        if ok_main and ok_quote:
-            try:
-                setattr(post, 'translation_provider', 'gemini')
-            except Exception:
-                pass
-            return main, quote, author
-        raise TranslationUnavailable('Gemini output failed final Hebrew validation')
-    except Exception as gemini_exc:
-        main_source = _v88_source_for_translation(post, quoted=False)
-        quote_source = _v88_source_for_translation(post, quoted=True)
-        try:
-            main = _v88_google_translate_strict(main_source, 1800)
-            quote = ''
-            if quote_source and TRANSLATE_QUOTED_POSTS and not is_self_quote(post):
-                quote = _v88_google_translate_strict(quote_source, 1000)
-            author = ''
-            if quote:
-                try:
-                    author = translate_short_label(str(getattr(post, 'quoted_author', '') or ''))
-                except Exception:
-                    author = ''
-            try:
-                setattr(post, 'translation_provider', 'google')
-                setattr(post, 'gemini_translation_failure', short_error(gemini_exc, 400))
+                _ten_history_save(canonical, fallback_posts)
             except Exception:
                 pass
             logging.info(
-                '🌐 Google Translate fallback used safely for @%s after Gemini failure: %s',
-                getattr(post, 'username', ''),
-                gemini_error_summary(gemini_exc),
-            )
-            return main, quote, author
-        except Exception as google_exc:
-            raise TranslationUnavailable(
-                'No valid Hebrew translation. Gemini: '
-                + short_error(gemini_exc, 220)
-                + ' | Google: '
-                + short_error(google_exc, 220)
-            ) from google_exc
-
-
-def is_publishable_hebrew_for_main_channel(main_text: str, quoted_text: str = '') -> tuple[bool, str]:
-    """Provider-neutral final gate: only real Hebrew is publishable."""
-    combined = '\n'.join([str(main_text or ''), str(quoted_text or '')]).strip()
-    if not combined:
-        return False, 'אין תרגום'
-    cleaned = remove_urls(clean_before_translation(strip_google_translate_markers(combined)))
-    if not has_meaningful_text(cleaned):
-        return False, 'אין טקסט משמעותי לאחר תרגום'
-    if len(re.findall(r'[א-ת]', cleaned)) < 8:
-        return False, 'הטקסט אינו מתורגם לעברית'
-    if re.search(r'[\u0400-\u052F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u3400-\u4DBF\u4E00-\u9FFF]{2,}', cleaned):
-        return False, 'נשארה שפה זרה לא תקינה בתרגום'
-    if latin_ratio(cleaned) > 0.36:
-        return False, 'נשאר יותר מדי טקסט לא מתורגם'
-    return True, ''
-
-
-# Translation quality failures are retryable technical failures, not permanent
-# editorial blocks. Do not mark a good news post as seen just because a translator
-# produced one damaged candidate.
-_V88_PRE_SEND_POST = send_post
-
-
-def send_post(post: Post, reply_message_ids: Any = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
-    result = _V88_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
-    if isinstance(result, dict):
-        mode = str(result.get('mode', '') or '')
-        if mode in {'translation_quality_blocked', 'main_blocked_untranslated'}:
-            result['mode'] = 'translation_unavailable_retry'
-    return result
-
-
-# Manual "prepare report" must not sleep 150 seconds between Gemini failures.
-def manual_force_translation(post: Post) -> tuple[str, str, str]:
-    return translate_post_for_send(post)
-
-
-# ---------------------------------------------------------------------------
-# D. Fast 10-latest: direct-X + local history, no dead RSS sweep.
-# ---------------------------------------------------------------------------
-try:
-    _RELIABLE_HISTORY_EXECUTOR.shutdown(wait=False, cancel_futures=True)
-except Exception:
-    pass
-RELIABLE_HISTORY_TRANSLATION_WORKERS = max(
-    3,
-    min(6, int(os.environ.get('RELIABLE_HISTORY_TRANSLATION_WORKERS', '5') or '5')),
-)
-_RELIABLE_HISTORY_EXECUTOR = _ReliableExecutor(
-    max_workers=RELIABLE_HISTORY_TRANSLATION_WORKERS,
-    thread_name_prefix='history-v88',
-)
-CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS = max(
-    8.0,
-    min(18.0, float(os.environ.get('CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS', '12') or '12')),
-)
-
-
-def _translate_history_post(post: Post) -> str:
-    source = clean_for_ai_translation(html.unescape(str(getattr(post, 'text', '') or ''))).strip()
-    if not source:
-        source = remove_external_links(html.unescape(str(getattr(post, 'title', '') or ''))).strip()
-    if not source:
-        return 'אין טקסט זמין לתרגום'
-    try:
-        return _v88_google_translate_strict(source, 1600)
-    except Exception as exc:
-        logging.warning(
-            'Google translation for 10-latest failed for @%s: %s',
-            getattr(post, 'username', ''),
-            short_error(exc, 350),
-        )
-        # Never disguise raw English as a translation.
-        return '⚠️ תרגום לא זמין כרגע — הפוסט לא יוצג באנגלית במקום תרגום'
-
-
-def _v88_history_merge(target: dict[str, Post], username: str, rows: Any) -> None:
-    canonical = str(username or '').strip().lstrip('@')
-    for post in rows or []:
-        if not isinstance(post, Post):
-            continue
-        try:
-            _ensure_post_original_structure(post)
-        except Exception:
-            pass
-        post.username = canonical
-        identity = str(
-            getattr(post, 'post_id', '')
-            or getattr(post, 'link', '')
-            or post_content_signature(
+                "🔁 RSS: מקור גיבוי הופעל עבור @%s. נמצאו %s פוסטים דרך %s",
                 canonical,
-                str(getattr(post, 'text', '') or ''),
-                str(getattr(post, 'quoted_text', '') or ''),
+                len(fallback_posts),
+                fallback_posts[0].source_name,
             )
-        ).strip()
-        if identity:
-            target.setdefault(identity, post)
+            return fallback_posts
 
+    no_posts_failures = FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) + 1
+    FEED_NO_POSTS_FAILURE_COUNTS[canonical] = no_posts_failures
 
-def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
-    """Fast current history. Never waits for the known-dead RSS mirror sweep."""
-    canonical = str(username or '').strip().lstrip('@')
-    wanted = max(1, int(limit))
-    merged: dict[str, Post] = {}
-    diagnostics: dict[str, Any] = {
-        'sources': {},
-        'errors': [],
-        'requested': wanted,
-        'route': 'v88_direct_x_plus_memory_no_dead_rss_wait',
-    }
+    checked_templates = primary_templates + fallback_templates
+    all_errors = feed_errors + fallback_errors
+    all_timeouts = timed_out_sources + fallback_timeouts
 
-    # First take everything already available without network.
-    for name, loader in (
-        ('direct_cache', lambda: _full_speed_cache_get(canonical)),
-        ('rss_memory', lambda: _working_rss_cached(canonical, max(60, wanted * 6))),
-        ('saved_history', lambda: _ten_history_load(canonical)),
-        ('control_state', lambda: _ten_history_collect_existing_state_posts(canonical)),
-        ('stable_cache', lambda: _stable_rss_cached_posts(canonical, limit=max(60, wanted * 6))),
+    issue_parts: list[str] = []
+    if all_errors:
+        issue_parts.append("errors: " + "; ".join(all_errors[:8]))
+    if all_timeouts:
+        issue_parts.append("timeouts: " + ", ".join(all_timeouts[:8]))
+    issue_text = " | ".join(issue_parts) or "no items returned"
+
+    logging.debug(
+        "RSS details for @%s: checked sources=%s | %s",
+        canonical,
+        ", ".join(
+            feed_source_name(template)
+            for template in checked_templates
+        ),
+        issue_text,
+    )
+
+    if (
+        FEED_NO_POSTS_WARNING_AFTER_FAILURES > 0
+        and no_posts_failures >= FEED_NO_POSTS_WARNING_AFTER_FAILURES
     ):
-        before = len(merged)
-        try:
-            _v88_history_merge(merged, canonical, loader() or [])
-        except Exception as exc:
-            diagnostics['errors'].append(f'{name}: {short_error(exc, 220)}')
-        diagnostics['sources'][name] = len(merged) - before
-
-    # One fresh Direct-X lookup gives the current posts. No fetch_posts()/RSS call.
-    before = len(merged)
-    try:
-        direct_rows = list(
-            _reliable_direct_profile_posts(
-                canonical,
-                limit=max(20, wanted),
-                force=True,
-            )
-            or []
-        )
-        _v88_history_merge(merged, canonical, direct_rows)
-    except Exception as exc:
-        diagnostics['errors'].append('direct_x: ' + short_error(exc, 260))
-    diagnostics['sources']['direct_x_live'] = len(merged) - before
-
-    ordered = sorted(
-        merged.values(),
-        key=lambda post: float(getattr(post, 'published_ts', 0.0) or 0.0),
-        reverse=True,
-    )
-    diagnostics['after_dedupe'] = len(ordered)
-    diagnostics['returned'] = min(wanted, len(ordered))
-    try:
-        LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = diagnostics
-    except Exception:
-        pass
-    if ordered:
-        try:
-            _ten_history_save(canonical, ordered[:max(60, wanted * 6)])
-        except Exception:
-            pass
-    return ordered[:wanted]
-
-
-def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
-    return fetch_last_ten_control_isolated(username, limit=limit)
-
-
-# ---------------------------------------------------------------------------
-# E. Faster all-writer Nitter/Direct-X + translation diagnostic.
-# ---------------------------------------------------------------------------
-def _v88_direct_probe_writer(username: str) -> dict[str, Any]:
-    canonical = str(username or '').strip().lstrip('@')
-    started = time.perf_counter()
-    rows: list[Post] = []
-    try:
-        rows = list(
-            _reliable_direct_profile_posts(canonical, limit=8, force=False)
-            or []
-        )
-    except Exception as exc:
-        _v87_set_direct_diag(
+        log_feed_issue(
             canonical,
-            provider='direct-x',
-            status=int(getattr(exc, 'code', 0) or 0),
-            posts=0,
-            error=f'{type(exc).__name__}: {short_error(exc, 300)}',
-            classification=_v66diag_classify_exception(exc),
+            "RSS: לא נמצאו פוסטים עבור @%s אחרי %s בדיקות רצופות. נבדקו %s מקורות. ינסה שוב בשקט.",
+            canonical,
+            no_posts_failures,
+            len(checked_templates),
         )
-    diag = _v87_get_direct_diag(canonical)
-    newest = max(
-        (float(getattr(post, 'published_ts', 0.0) or 0.0) for post in rows),
-        default=0.0,
+
+    send_rss_control_alert_if_needed(
+        canonical,
+        no_posts_failures,
+        len(checked_templates),
+        issue_text,
     )
-    diag.update({
-        'result_posts': len(rows),
-        'latest_age_minutes': round(max(0.0, time.time() - newest) / 60.0, 1) if newest else None,
-        'total_seconds': round(time.perf_counter() - started, 3),
-    })
-    return diag
+    return []
 
 
-def _v88_google_health_probe() -> dict[str, Any]:
-    sample = 'Fabrizio Romano reports a new transfer agreement with a major European club.'
-    started = time.perf_counter()
+def _rss_engine_cached(username: str, limit: int = 60) -> list[Post]:
     try:
-        translated = _v88_google_translate_strict(sample, 400)
-        ok, reason = _v88_translation_valid(sample, translated)
-        diag = _v88_google_diag()
-        return {
-            'ok': bool(ok),
-            'reason': reason,
-            'translated': translated[:120],
-            'seconds': round(time.perf_counter() - started, 3),
-            'endpoint': diag.get('endpoint', ''),
-            'status': diag.get('status', 0),
-            'error': diag.get('error', ''),
-        }
-    except Exception as exc:
-        diag = _v88_google_diag()
-        return {
-            'ok': False,
-            'reason': 'request_failed',
-            'translated': '',
-            'seconds': round(time.perf_counter() - started, 3),
-            'endpoint': diag.get('endpoint', ''),
-            'status': diag.get('status', 0),
-            'error': f'{type(exc).__name__}: {short_error(exc, 300)}',
-        }
-
-
-def rss_status_text() -> str:
-    """Fast diagnostic: all writers, live age, and translation health."""
-    accounts = list(_general_reporter_control_accounts() or [])
-    if not accounts:
-        return '🧪 בדיקה: אין כתבים רגילים פעילים.'
-
-    started = time.perf_counter()
-    nitter_results: dict[str, dict[str, Any]] = {}
-    direct_results: dict[str, dict[str, Any]] = {}
-
-    # Nitter is independent per writer; run the 10 probes in parallel.
-    with ThreadPoolExecutor(max_workers=min(6, len(accounts))) as executor:
-        futures = {executor.submit(_v87_nitter_probe_writer, username): username for username in accounts}
-        for future in as_completed(futures):
-            username = futures[future]
-            try:
-                nitter_results[username] = dict(future.result() or {})
-            except Exception as exc:
-                nitter_results[username] = {
-                    'ok': False,
-                    'status': int(getattr(exc, 'code', 0) or 0),
-                    'classification': _v66diag_classify_exception(exc),
-                    'error': short_error(exc, 220),
-                }
-
-    # Direct-X is intentionally bounded to avoid making the diagnostic create 429.
-    with ThreadPoolExecutor(max_workers=min(V88_DIRECT_MAX_PARALLEL, len(accounts))) as executor:
-        futures = {executor.submit(_v88_direct_probe_writer, username): username for username in accounts}
-        for future in as_completed(futures):
-            username = futures[future]
-            try:
-                direct_results[username] = dict(future.result() or {})
-            except Exception as exc:
-                direct_results[username] = {
-                    'result_posts': 0,
-                    'classification': _v66diag_classify_exception(exc),
-                    'error': short_error(exc, 220),
-                }
-
-    google_health = _v88_google_health_probe()
-    storage = _v66diag_storage()
-    runtime_issues = []
-    try:
-        runtime_issues = list(runtime_consistency_audit() or [])
-    except Exception as exc:
-        runtime_issues = [short_error(exc, 200)]
-
-    nitter_ok = 0
-    direct_ok = 0
-    direct_fresh = 0
-    both_fail = 0
-    lines = [
-        f'🧪 בדיקת קליטה + תרגום לכל {len(accounts)} הכתבים',
-        '',
-        'הסורק האוטומטי: Direct-X חי קודם; RSS מת לא מעכב את הכתבים.',
-        'Nitter עדיין נבדק כאן לכל כתב כדי לזהות מיד אם הוא חוזר.',
-        '',
-    ]
-
-    for username in accounts:
-        label = _hebrew_account_label(username)
-        nit = nitter_results.get(username, {})
-        direct = direct_results.get(username, {})
-        nit_ok = bool(nit.get('ok'))
-        dcount = int(direct.get('result_posts', 0) or 0)
-        age = direct.get('latest_age_minutes')
-        if nit_ok:
-            nitter_ok += 1
-        if dcount > 0:
-            direct_ok += 1
-            if age is not None and float(age) <= 15.0:
-                direct_fresh += 1
-        if not nit_ok and dcount <= 0:
-            both_fail += 1
-
-        nitter_text = (
-            f'Nitter ✅ {int(nit.get("parser_posts", 0) or 0)}'
-            if nit_ok
-            else f'Nitter ❌ {nit.get("classification") or ("HTTP " + str(nit.get("status", 0)))}'
-        )
-        if dcount > 0:
-            age_text = f' | אחרון לפני {age} דק׳' if age is not None else ''
-            direct_text = f'Direct-X ✅ {dcount}{age_text}'
-        else:
-            direct_text = (
-                'Direct-X ❌ '
-                + str(direct.get('classification') or direct.get('error') or '0 posts')[:90]
+        return list(
+            _stable_rss_cached_posts(
+                username,
+                limit=max(1, int(limit)),
             )
-        icon = '✅' if dcount > 0 else '❌'
-        lines.append(f'{icon} {label}: {nitter_text} | {direct_text}')
-
-    lines.extend([
-        '',
-        '📊 קליטה:',
-        f'• Nitter עובד: {nitter_ok}/{len(accounts)}',
-        f'• Direct-X עובד: {direct_ok}/{len(accounts)}',
-        f'• Direct-X עם פוסט עד 15 דקות: {direct_fresh}/{len(accounts)}',
-        f'• שני המסלולים נכשלו: {both_fail}/{len(accounts)}',
-        '',
-        '🌐 תרגום:',
-    ])
-
-    if google_health.get('ok'):
-        lines.append(
-            f'✅ Google Translate עובד | {google_health.get("endpoint") or "Google"} '
-            f'| {google_health.get("seconds")}s | {google_health.get("translated")}'
+            or []
         )
-    else:
-        lines.append(
-            f'❌ Google Translate נכשל | HTTP {google_health.get("status", 0)} '
-            f'| {google_health.get("error") or google_health.get("reason")}'
-        )
-
-    configured_keys = len(list(GEMINI_API_KEYS or []))
-    try:
-        available = len(list(gemini_translation_keys_for_operation() or []))
     except Exception:
-        available = 0
-    lines.append(
-        f'• Gemini: {configured_keys} מפתחות מוגדרים | {available} זמינים מקומית '
-        '| בקשת Gemini אחת ואז Google בחינם'
-    )
-    lines.append('• כלל שליחה: אין עברית תקינה = אין שליחה. הפוסט נשאר לניסיון חוזר.')
-
-    lines.extend(['', '⚙️ מערכת:'])
-    lines.append(
-        '✅ fetch_posts_safely = V88 live-first'
-        if fetch_posts_safely.__name__ == 'fetch_posts_safely'
-        else f'⚠️ fetch_posts_safely={fetch_posts_safely.__name__}'
-    )
-    lines.append(
-        f'• Direct-X: עד {V88_DIRECT_MAX_PARALLEL} במקביל | cache={V88_DIRECT_CACHE_SECONDS}s '
-        f'| gap={V88_DIRECT_MIN_GAP_SECONDS:.2f}s'
-    )
-    lines.append(
-        '✅ consistency ללא בעיות'
-        if not runtime_issues
-        else f'⚠️ consistency: {len(runtime_issues)} — {" | ".join(str(x)[:80] for x in runtime_issues[:2])}'
-    )
-    if storage.get('configured') and storage.get('writable') and storage.get('railway_volume'):
-        lines.append(f'✅ /data: {storage.get("path")}')
-    elif storage.get('writable'):
-        lines.append(f'⚠️ /data לא קבוע: {storage.get("path") or "לא הוגדר"}')
-    else:
-        lines.append('⚠️ FOOTBALL_BOT_DATA_DIR=/data עדיין לא מוגדר/לא זמין')
-
-    elapsed = round(time.perf_counter() - started, 2)
-    lines.extend([
-        '',
-        f'⏱️ זמן בדיקה כולל: {elapsed}s',
-        '',
-        '🩺 מסקנה:',
-    ])
-    if direct_ok == len(accounts) and direct_fresh >= max(1, len(accounts) - 2):
-        lines.append('✅ קליטת הכתבים חיה ורעננה. חסימות גיל אמורות לרדת משמעותית.')
-    elif direct_ok > 0:
-        lines.append('🟠 Direct-X עובד רק בחלק מהכתבים/מחזיר חומר ישן בחלקם; רואים למעלה בדיוק מי.')
-    else:
-        lines.append('🔴 Direct-X לא מספק אף כתב; הבעיה כרגע בשכבת X/סינדיקציה ולא במסנן החדשות.')
-    if not google_health.get('ok'):
-        lines.append('🔴 גם Google Translate לא זמין כרגע; במקרה כזה הקוד לא ישלח אנגלית.')
-
-    return '\n'.join(lines)[:4050]
-
-
-# ---------------------------------------------------------------------------
-# F. Final audit: verify the scanner, not only fetch_posts().
-# ---------------------------------------------------------------------------
-def _v88_self_audit() -> None:
-    if fetch_posts is not _v35_fetch_posts:
-        raise RuntimeError('v88_historical_fetch_posts_changed')
-    if fetch_control_posts is not _v35_fetch_control_posts:
-        raise RuntimeError('v88_control_rss_changed')
-    # The actual automatic loop must use V88, not the captured V40/V50 safe route.
-    names = set(fetch_posts_safely.__code__.co_names)
-    if '_reliable_direct_profile_posts' not in names:
-        raise RuntimeError('v88_scanner_not_live_first')
-    if '_V50_WORKING_FETCH_POSTS_SAFELY' in names:
-        raise RuntimeError('v88_scanner_still_bound_to_old_v50_route')
-    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
-        raise RuntimeError('v88_scan_settings_changed')
-    if int(MAX_POST_AGE_SECONDS) != 2 * 60 * 60:
-        raise RuntimeError('v88_two_hour_age_rule_changed')
-    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
-        raise RuntimeError('v88_duplicate_continuous_discovery_enabled')
-    if TRANSLATION_RETRY_INTERVAL_SECONDS > 30:
-        raise RuntimeError('v88_translation_retry_still_too_slow')
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v88_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append('_v88_self_audit')
-
-logging.info(
-    'V88 active: actual scanner is Direct-X live-first for general reporters; '
-    'dead RSS no longer blocks discovery; one Gemini attempt -> validated Google fallback; '
-    'never publish untranslated; fast 10-latest and faster all-writer diagnostics.'
-)
-
-# ====== END V88 LIVE-FIRST / TRANSLATION RELIABILITY ROOT FIX ======
-
-# ====== V89 PRODUCTION SMOOTH / ALL OBSERVED LOG FIXES (2026-08-27) ======
-# Base: V88 (the latest build before this patch).
-# Scope is deliberately narrow:
-#   1) Gemini: ONE real network request per translation operation, then Google.
-#   2) Google: stronger second-pass + exact factual fidelity gate.
-#   3) Telegram control: resilient long-poll, no 2x retries on 502/timeouts,
-#      exponential backoff and throttled warnings.
-#   4) RTL admin edit: "message is not modified" is success; permanently
-#      uneditable messages are skipped in-process instead of warning repeatedly.
-#   5) yt-dlp optional "no video" probe is silent.
-#
-# Do NOT change:
-# - V88 live-first scanner
-# - 20 second scan cadence / 4 account workers
-# - two-hour original-publication age limit
-# - duplicate/editorial/source filters
-# - memory filenames/keys
-# - Shabbat policy
-# - main-channel Hebrew-only publishing invariant
-
-BOT_BUILD_ID = "winner-v89-production-smooth-all-log-fixes-2026-08-27"
-
-# ---------------------------------------------------------------------------
-# A. Translation: one Gemini HTTP call only, then Google immediately.
-# ---------------------------------------------------------------------------
-# The historical translation transaction itself loops while this global budget
-# remains >1. V88 already installed Google as the provider-neutral fallback, so
-# spending 3 Gemini calls before reaching Google only adds latency and overload.
-FINAL_GEMINI_NETWORK_BUDGET = 1
-GEMINI_MAX_REAL_TRANSLATION_REQUESTS = 1
-GEMINI_MAX_KEYS_PER_OPERATION = 1
-GEMINI_TRANSLATION_TIMEOUT_SECONDS = max(
-    6,
-    min(10, int(os.environ.get("V89_GEMINI_TIMEOUT_SECONDS", "9") or "9")),
-)
-
-# Initial try + one quick retry if BOTH providers are unavailable/invalid.
-TRANSLATION_TOTAL_ATTEMPTS = 2
-TRANSLATION_RETRY_INTERVAL_SECONDS = 25
-AUTO_GEMINI_RETRY_ATTEMPTS = 2
-AUTO_GEMINI_RETRY_WAIT_SECONDS = 25
-
-# Broaden only valid Hebrew equivalents in the existing concept completeness
-# gate. This removes false failures such as a perfectly valid "בכירי המועדון"
-# for "club officials" while preserving the requirement that the fact exists.
-_V46_TRANSLATION_CONCEPTS = (
-    (
-        "officials_or_staff",
-        re.compile(r"(?iu)officials?|staff|club\s+personnel"),
-        re.compile(
-            r"(?u)אנשי\s+צוות|גורמי(?:ם)?|אנשי\s+המועדון|צוות|"
-            r"בכירי\s+המועדון|ראשי\s+המועדון|הנהלת\s+המועדון|"
-            r"אנשי\s+הנהלה|בכירי(?:ם)?"
-        ),
-    ),
-    (
-        "fans_or_supporters",
-        re.compile(r"(?iu)fans?|supporters?"),
-        re.compile(r"(?u)אוהדים?|קהל|תומכים?"),
-    ),
-    (
-        "agreement",
-        re.compile(r"(?iu)agreement|deal\s+agreed"),
-        re.compile(
-            r"(?u)הסכם|סיכום|הסכמה|הסכמות|סוכם|סוכמה|סיכמו|"
-            r"עסקה\s+(?:סגורה|מסוכמת)|הושגה\s+הסכמה"
-        ),
-    ),
-    (
-        "loan",
-        re.compile(r"(?iu)\bloan\b"),
-        re.compile(r"(?u)השאלה|מושאל|בהשאלה"),
-    ),
-    (
-        "option",
-        re.compile(r"(?iu)option\s+to\s+buy"),
-        re.compile(r"(?u)אופצי(?:ה|ית)\s+רכישה|אפשרות\s+רכישה|זכות\s+רכישה"),
-    ),
-    (
-        "medical",
-        re.compile(r"(?iu)medical(?:s)?"),
-        re.compile(r"(?u)בדיקות?\s+רפואי|בדיקה\s+רפואית"),
-    ),
-    (
-        "rejected",
-        re.compile(r"(?iu)rejected|turned\s+down"),
-        re.compile(r"(?u)נדח|דחה|דחתה|סירב|סירבה|סורב"),
-    ),
-)
-
-
-def _v89_translation_fidelity_issues(source: str, translated: str) -> list[str]:
-    """Provider-neutral factual gate: Google must preserve critical facts too."""
-    issues: list[str] = []
-    try:
-        issues.extend(_final_translation_completeness_issues(source, translated) or [])
-    except Exception as exc:
-        logging.debug("V89 translation fidelity helper unavailable: %s", short_error(exc, 180))
-
-    # Preserve percentage symbols explicitly. Number matching is already handled
-    # by _final_translation_completeness_issues.
-    src = str(source or "")
-    out = str(translated or "")
-    if "%" in src and "%" not in out:
-        issues.append("חסר סימן אחוז מהמקור")
-
-    # Never allow a provider to invent HERE WE GO.
-    src_hwg = bool(re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO", src))
-    out_hwg = bool(
-        re.search(
-            r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO|היר\s+וי\s+גו|הנה\s+זה\s+קורה",
-            out,
-        )
-    )
-    if out_hwg and not src_hwg:
-        issues.append("התרגום המציא HERE WE GO")
-
-    return list(dict.fromkeys(str(item) for item in issues if str(item).strip()))
-
-
-_V89_PRE_GOOGLE_STRICT = _v88_google_translate_strict
-
-
-def _v89_google_translate_strict(source: str, max_chars: int = 2500) -> str:
-    """Two bounded Google forms before giving up; never returns raw source."""
-    original = compact_debug_text(clean_before_translation(source or ""), max_chars).strip()
-    if not original:
-        return ""
-
-    first_error: Exception | None = None
-    candidates: list[str] = []
-
-    # Attempt 1: V88 layout-preserving path.
-    try:
-        first = _V89_PRE_GOOGLE_STRICT(original, max_chars)
-        if first:
-            candidates.append(str(first))
-    except Exception as exc:
-        first_error = exc
-
-    # Attempt 2: whole-text Google call. This is useful when a single line in
-    # the layout-preserving path had a transient failure and was left untranslated.
-    try:
-        second = google_translate(original)
-        second = final_visual_cleanup(final_hebrew_polish(str(second or "")))
-        try:
-            second = google_translate_latin_fragments_to_hebrew(second)
-        except Exception:
-            pass
-        try:
-            second = _v60_translation_cleanup(original, second)
-        except Exception:
-            pass
-        second = final_visual_cleanup(final_hebrew_polish(str(second or "")))
-        if second and second not in candidates:
-            candidates.append(second)
-    except Exception as exc:
-        if first_error is None:
-            first_error = exc
-
-    rejection_reasons: list[str] = []
-    for candidate in candidates:
-        ok, reason = _v88_translation_valid(original, candidate)
-        if not ok:
-            rejection_reasons.append(reason)
-            continue
-        fidelity = _v89_translation_fidelity_issues(original, candidate)
-        if fidelity:
-            rejection_reasons.extend(fidelity)
-            continue
-        return candidate.strip()
-
-    raise TranslationUnavailable(
-        "Google translation unavailable/invalid: "
-        + ("; ".join(dict.fromkeys(rejection_reasons)) if rejection_reasons else short_error(first_error, 300))
-    )
-
-
-# Make every V88 publishing/history/manual caller use the stronger final Google gate.
-_v88_google_translate_strict = _v89_google_translate_strict
-
-
-# ---------------------------------------------------------------------------
-# B. Telegram getUpdates: temporary 502/timeouts must never stall or spam.
-# ---------------------------------------------------------------------------
-_V89_CONTROL_LOG_LOCK = RLock()
-_V89_CONTROL_LAST_WARNING_AT: dict[str, float] = {}
-_V89_CONTROL_WARN_EVERY_SECONDS = max(
-    60,
-    int(os.environ.get("V89_CONTROL_WARN_EVERY_SECONDS", "300") or "300"),
-)
-
-
-def _v89_control_error_kind(exc: Exception) -> str:
-    value = str(exc or "").casefold()
-    if "http 502" in value or "bad gateway" in value:
-        return "telegram_502"
-    if "timed out" in value or "timeout" in value:
-        return "telegram_timeout"
-    if "http 429" in value:
-        return "telegram_429"
-    if "http 409" in value or "conflict" in value:
-        return "telegram_conflict"
-    return "telegram_other"
-
-
-def _v89_control_warn_throttled(exc: Exception) -> None:
-    kind = _v89_control_error_kind(exc)
-    now = time.time()
-    with _V89_CONTROL_LOG_LOCK:
-        last = float(_V89_CONTROL_LAST_WARNING_AT.get(kind, 0.0) or 0.0)
-        if now - last < _V89_CONTROL_WARN_EVERY_SECONDS:
-            return
-        _V89_CONTROL_LAST_WARNING_AT[kind] = now
-    logging.warning(
-        "⚠️ לוח שליטה: תקלה זמנית (%s), הבוט ממשיך לעבוד וינסה שוב אוטומטית: %s",
-        kind,
-        short_error(exc, 500),
-    )
-
-
-def control_loop() -> None:
-    if not CONTROL_CHAT_ID:
-        return
-
-    try:
-        delete_control_webhook_if_needed()
-    except Exception as exc:
-        _v89_control_warn_throttled(exc)
-
-    offset = control_saved_offset()
-    last_conflict_cleanup = 0.0
-    startup_panel_done = False
-    transient_failures = 0
-
-    while True:
-        try:
-            if is_shabbat_now():
-                transient_failures = 0
-                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
-                continue
-
-            if not startup_panel_done:
-                startup_panel_done = True
-                try:
-                    if CONTROL_SEND_PANEL_ON_STARTUP:
-                        send_quick_control_panel(force_new=True)
-                    else:
-                        ensure_control_panel_once_if_requested()
-                except Exception as exc:
-                    logging.debug("לוח שליטה: יצירת לוח בתחילת ריצה נכשלה זמנית: %s", exc)
-
-            poll_seconds = int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "20") or "20")
-            response = telegram_api(
-                "getUpdates",
-                {
-                    "offset": offset,
-                    "timeout": poll_seconds,
-                    "allowed_updates": [
-                        "callback_query",
-                        "message",
-                        "edited_message",
-                        "channel_post",
-                        "edited_channel_post",
-                    ],
-                },
-                # One long HTTP request is enough. Retrying the same getUpdates
-                # inside http_post_json doubles latency and request pressure.
-                timeout=max(8, poll_seconds + 12),
-                max_attempts=1,
-            )
-
-            transient_failures = 0
-
-            # Shabbat may begin while Telegram is holding the long poll.
-            if is_shabbat_now():
-                continue
-
-            updates = list(response.get("result", []) or [])
-            if not updates:
-                continue
-
-            batch_offset = offset
-            callbacks: list[dict[str, Any]] = []
-            noncallbacks: list[dict[str, Any]] = []
-
-            for update in updates:
-                try:
-                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
-                except Exception:
-                    pass
-                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
-                    callbacks.append(update)
-                else:
-                    noncallbacks.append(update)
-
-            for update in callbacks:
-                process_control_update(update)
-
-            for update in noncallbacks:
-                if update.get("channel_post") or update.get("edited_channel_post"):
-                    try:
-                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
-                    except RuntimeError:
-                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
-                else:
-                    try:
-                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
-                    except RuntimeError:
-                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
-
-            if batch_offset != offset:
-                offset = batch_offset
-                try:
-                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
-                except RuntimeError:
-                    pass
-
-        except Exception as exc:
-            if is_getupdates_conflict(exc):
-                now = time.time()
-                if now - last_conflict_cleanup > 30:
-                    last_conflict_cleanup = now
-                    try:
-                        telegram_api(
-                            "deleteWebhook",
-                            {"drop_pending_updates": True},
-                            timeout=12,
-                            max_attempts=1,
-                        )
-                    except Exception as cleanup_exc:
-                        _v89_control_warn_throttled(cleanup_exc)
-                time.sleep(max(0.5, CONTROL_POLL_SECONDS))
-                continue
-
-            transient_failures = min(8, transient_failures + 1)
-            _v89_control_warn_throttled(exc)
-            # 1, 2, 4, 5, 5... seconds. This is only the control thread.
-            time.sleep(min(5.0, float(2 ** max(0, transient_failures - 1))))
-
-
-# ---------------------------------------------------------------------------
-# C. RTL edit noise: benign Telegram 400s are not production failures.
-# ---------------------------------------------------------------------------
-_V89_RTL_SKIP_LOCK = RLock()
-_V89_RTL_UNEDITABLE_KEYS: set[str] = set()
-
-
-def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
-    if not V43_ALL_CHANNEL_RTL_EDIT_ENABLED:
-        return False
-
-    message = update.get("channel_post") or update.get("edited_channel_post")
-    if not isinstance(message, dict):
-        return False
-
-    chat = message.get("chat") or {}
-    if not isinstance(chat, dict):
-        return False
-
-    chat_id = str(chat.get("id") or "").strip()
-    message_id = int(message.get("message_id") or 0)
-    if not chat_id or not message_id:
-        return False
-
-    key = f"{chat_id}:{message_id}"
-    with _V89_RTL_SKIP_LOCK:
-        if key in _V89_RTL_UNEDITABLE_KEYS:
-            return False
-
-    kind, original, entities = _v42_message_text_and_entities(message)
-    if not kind or not original or not _v42_message_needs_rtl_repair(original):
-        return False
-    if _v42_is_bot_authored_update(message, original):
-        return False
-
-    transformed = _v42_transform_text_entities(original, entities)
-    if transformed is None:
-        logging.debug(
-            "V89 RTL skipped safely to preserve formatting entity: chat=%s message=%s",
-            chat_id,
-            message_id,
-        )
-        return False
-
-    fixed_text, fixed_entities = transformed
-
-    with _V43_CHANNEL_RTL_EDIT_LOCK:
-        if key in _V43_CHANNEL_RTL_EDIT_INFLIGHT:
-            return True
-        _V43_CHANNEL_RTL_EDIT_INFLIGHT.add(key)
-
-    try:
-        _v42_edit_message_rtl(chat_id, message_id, kind, fixed_text, fixed_entities)
-        logging.info("V89 repaired human/admin channel post RTL in place: %s", key)
-        return True
-    except Exception as exc:
-        lowered = str(exc or "").casefold()
-
-        if "message is not modified" in lowered:
-            # Telegram says the target is already exactly what we asked for.
-            logging.debug("V89 RTL already correct/no-op: %s", key)
-            return True
-
-        if (
-            "message can't be edited" in lowered
-            or "message can not be edited" in lowered
-            or "message to edit not found" in lowered
-            or "not enough rights" in lowered
-        ):
-            with _V89_RTL_SKIP_LOCK:
-                _V89_RTL_UNEDITABLE_KEYS.add(key)
-                if len(_V89_RTL_UNEDITABLE_KEYS) > 2000:
-                    # Process-local cache only; safe to trim.
-                    for old in list(_V89_RTL_UNEDITABLE_KEYS)[:500]:
-                        _V89_RTL_UNEDITABLE_KEYS.discard(old)
-            logging.debug("V89 RTL edit unavailable for this message; skipped: %s", key)
-            return False
-
-        logging.warning(
-            "V89 RTL edit failed unexpectedly: %s error=%s",
-            key,
-            short_error(exc, 420),
-        )
-        return False
-    finally:
-        with _V43_CHANNEL_RTL_EDIT_LOCK:
-            _V43_CHANNEL_RTL_EDIT_INFLIGHT.discard(key)
-
-
-# ---------------------------------------------------------------------------
-# D. Optional yt-dlp probe: no-video is normal, not an ERROR log.
-# ---------------------------------------------------------------------------
-class _V89SilentYTDLPLogger:
-    def debug(self, msg: Any) -> None:
-        return None
-
-    def warning(self, msg: Any) -> None:
-        return None
-
-    def error(self, msg: Any) -> None:
-        return None
-
-
-def _final_ytdlp_candidates(post: Post) -> list[dict[str, Any]]:
-    link = str(getattr(post, "link", "") or "")
-    if not link:
         return []
 
-    out: dict[str, dict[str, Any]] = {}
-
-    try:
-        import yt_dlp  # type: ignore
-
-        options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": False,
-            "socket_timeout": FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS,
-            "extractor_args": {"twitter": {"api": ["syndication"]}},
-            "logger": _V89SilentYTDLPLogger(),
-        }
-        with yt_dlp.YoutubeDL(options) as downloader:
-            info = downloader.extract_info(link, download=False)
-        _final_walk_video_variants(info, out)
-    except Exception as exc:
-        logging.debug(
-            "Optional yt-dlp video probe returned no usable video: %s",
-            short_error(exc, 180),
-        )
-
-    if out:
-        return list(out.values())
-
-    executable = shutil.which("yt-dlp")
-    if not executable:
-        return []
-
-    try:
-        import subprocess
-
-        completed = subprocess.run(
-            [
-                executable,
-                "-J",
-                "--quiet",
-                "--no-warnings",
-                "--extractor-args",
-                "twitter:api=syndication",
-                link,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=max(15.0, FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS * 2),
-            check=False,
-        )
-        if completed.returncode == 0 and completed.stdout.strip():
-            _final_walk_video_variants(json.loads(completed.stdout), out)
-    except Exception as exc:
-        logging.debug(
-            "Optional yt-dlp command probe failed safely: %s",
-            short_error(exc, 180),
-        )
-
-    return list(out.values())
-
-
-
-# V40 had an older paired-actor validator underneath V46. Broaden its Hebrew
-# output vocabulary too, otherwise valid translations such as "בכירי המועדון"
-# are still rejected before the newer concept gate can accept them.
-_V40_STAFF_OUTPUT_RE = re.compile(
-    r"(?iu)"
-    r"אנשי\s+צוות|גורמי(?:\s+המועדון)?|צוות(?:\s+המועדון)?|"
-    r"הנהלת\s+המועדון|בכירי\s+המועדון|ראשי\s+המועדון|"
-    r"אנשי\s+הנהלה|בכירי(?:ם)?|"
-    r"\bofficials?\b|\bstaff\b"
-)
-_V40_FANS_OUTPUT_RE = re.compile(
-    r"(?iu)אוהדים|קהל|תומכים|\bfans?\b|\bsupporters?\b"
-)
-
 
 # ---------------------------------------------------------------------------
-# E. Final regression contract.
+# E. ONE LOCK PER ACCOUNT — same behavior, one final implementation
 # ---------------------------------------------------------------------------
-def _v89_self_audit() -> None:
-    if int(FINAL_GEMINI_NETWORK_BUDGET) != 1:
-        raise RuntimeError("v89_gemini_budget_not_one")
-    if int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS) != 1:
-        raise RuntimeError("v89_gemini_requests_not_one")
-    if int(AUTO_GEMINI_RETRY_ATTEMPTS) != 2:
-        raise RuntimeError("v89_translation_retry_count_changed")
-    if int(AUTO_GEMINI_RETRY_WAIT_SECONDS) > 25:
-        raise RuntimeError("v89_translation_retry_wait_too_long")
-    if int(MAX_POST_AGE_SECONDS) != 2 * 60 * 60:
-        raise RuntimeError("v89_two_hour_rule_changed")
-    if int(CHECK_EVERY_SECONDS) != 20:
-        raise RuntimeError("v89_scan_cadence_changed")
-    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
-        raise RuntimeError("v89_account_workers_changed")
-    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
-        raise RuntimeError("v89_duplicate_discovery_enabled")
-
-    scanner_names = set(fetch_posts_safely.__code__.co_names)
-    if "_reliable_direct_profile_posts" not in scanner_names:
-        raise RuntimeError("v89_live_first_scanner_missing")
-    if "_V50_WORKING_FETCH_POSTS_SAFELY" in scanner_names:
-        raise RuntimeError("v89_old_v50_scanner_reappeared")
-
-    control_names = set(control_loop.__code__.co_names)
-    if "telegram_api" not in control_names:
-        raise RuntimeError("v89_control_longpoll_missing")
+_RSS_ENGINE_ROUTE_LOCKS: dict[str, Lock] = {}
+_RSS_ENGINE_ROUTE_LOCKS_GUARD = Lock()
 
 
-if RUN_STARTUP_SELF_AUDITS:
-    _v89_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v89_self_audit")
-
-logging.info(
-    "V89 active: V88 live-first preserved; one Gemini request then factual Google fallback; "
-    "Telegram control 502/timeouts hardened; benign RTL/yt-dlp log noise removed."
-)
-
-# ====== END V89 PRODUCTION SMOOTH / ALL OBSERVED LOG FIXES ======
-
-
-# ====== V90 FINAL: RESTORE MID-JULY WORKING RSS ROUTE (2026-08-27) ======
-# Operator request: restore the RSS mechanism from the proven mid-history build
-# without reverting V89 translation, Telegram, filtering, media, memory or RTL fixes.
-#
-# Actual automatic route restored here:
-#   1) Nitter RSS primary first.
-#   2) If Nitter returned a usable row, stop immediately (normal automatic scan).
-#   3) If Nitter is empty/failing, use the existing public Direct-X safety lane.
-#   4) Only if primary + Direct-X are still insufficient, try the existing fallback RSS mirrors.
-#   5) Only after the live network route is empty, use already-known local cache/history.
-#
-# This deliberately replaces V88's final Direct-X-first fetch_posts_safely boundary.
-# It reuses the already-present _v56_final_rss_network_fetch implementation, which
-# is the exact primary-RSS -> Direct-X -> fallback-RSS mechanism restored from the
-# older working branch. No persistent filename/key is changed.
-
-BOT_BUILD_ID = "winner-v90-mid-july-old-working-rss-restored-2026-08-27"
-
-_V90_PRE_FETCH_POSTS = fetch_posts
-_V90_PRE_FETCH_CONTROL_POSTS = fetch_control_posts
-_V90_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V90_GENERAL_REPORTERS = {
-    str(item or "").strip().lstrip("@").casefold()
-    for item in (_general_reporter_control_accounts() or [])
-}
-_V90_RSS_DIAGNOSTICS_LOCK = RLock()
-_V90_RSS_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
-
-
-def _v90_remember_diag(username: str, diagnostics: dict[str, Any]) -> None:
+def _rss_engine_account_lock(username: str) -> Lock:
     key = str(username or "").strip().lstrip("@").casefold()
-    with _V90_RSS_DIAGNOSTICS_LOCK:
-        _V90_RSS_DIAGNOSTICS[key] = dict(diagnostics or {})
-        if len(_V90_RSS_DIAGNOSTICS) > 120:
-            for old_key in list(_V90_RSS_DIAGNOSTICS)[:30]:
-                _V90_RSS_DIAGNOSTICS.pop(old_key, None)
+    with _RSS_ENGINE_ROUTE_LOCKS_GUARD:
+        lock = _RSS_ENGINE_ROUTE_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _RSS_ENGINE_ROUTE_LOCKS[key] = lock
+        return lock
 
 
-def _v90_network_then_memory(
-    username: str,
-    *,
-    limit: int = 30,
-    exhaustive: bool = False,
-) -> list[Post]:
-    """Run the proven old RSS route, then use local memory only if the network is empty."""
+def _rss_engine_rows(username: str) -> list[Post]:
     canonical = str(username or "").strip().lstrip("@")
     if not canonical:
         return []
 
-    rows: list[Post] = []
-    diagnostics: dict[str, Any] = {}
+    with _rss_engine_account_lock(canonical):
+        try:
+            rows = list(_rss_engine_network_fetch(canonical) or [])
+        except Exception as exc:
+            logging.warning(
+                "⚠️ RSS route failed for @%s: %s",
+                canonical,
+                short_error(exc, 500),
+            )
+            rows = []
+
+        if not rows:
+            rows = _rss_engine_cached(canonical, limit=60)
+
+        return rows
+
+
+# ---------------------------------------------------------------------------
+# F. AUTOMATIC FETCH — final single entrypoint
+# Old-good behavior: RSS is synchronous; existing direct-X cache is merged only
+# if already available and its refresh is started without delaying RSS.
+# ---------------------------------------------------------------------------
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+
+    rss_rows = _rss_engine_rows(canonical)
+
+    live_rows: list[Post] = []
     try:
-        rows, diagnostics = _v56_final_rss_network_fetch(
-            canonical,
-            limit=max(1, int(limit)),
-            exhaustive=bool(exhaustive),
-        )
-        rows = [post for post in (rows or []) if isinstance(post, Post)]
-    except Exception as exc:
-        diagnostics = {
-            "errors": [f"final_old_rss_route: {type(exc).__name__}: {short_error(exc, 350)}"],
-            "timeouts": [],
-            "sources": {},
-            "variants": [canonical],
-            "path": [],
-            "returned_network": 0,
-        }
-        rows = []
+        live_rows = list(_full_speed_cache_get(canonical) or [])
+        _full_speed_start_live(canonical)
+    except Exception:
+        live_rows = []
 
-    _v90_remember_diag(canonical, diagnostics)
+    merged: dict[str, Post] = {}
+    try:
+        _reliable_merge_posts(merged, rss_rows, canonical)
+        _reliable_merge_posts(merged, live_rows, canonical)
+    except Exception:
+        for post in list(rss_rows) + list(live_rows):
+            if not isinstance(post, Post):
+                continue
+            identity = str(post.post_id or post.link or "").strip()
+            if identity:
+                merged.setdefault(identity, post)
 
-    if rows:
-        ordered = sorted(
-            rows,
-            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
-            reverse=True,
-        )
+    ordered = sorted(
+        merged.values(),
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
+        reverse=True,
+    )
+
+    if ordered:
         try:
             _stable_rss_remember(canonical, ordered)
             _remember_control_rss_posts(canonical, ordered)
             _ten_history_save(canonical, ordered)
         except Exception:
             pass
-        return ordered[:max(1, int(limit))]
 
-    # The old working route used known history only after every live source failed.
-    merged: dict[str, Post] = {}
-    for loader in (
-        lambda: _working_rss_cached(canonical, limit=max(60, int(limit))),
-        lambda: _stable_rss_cached_posts(canonical, limit=max(60, int(limit))),
-        lambda: _ten_history_load(canonical),
-    ):
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
         try:
-            cached = [post for post in (loader() or []) if isinstance(post, Post)]
+            _pipeline_mark_seen(
+                post,
+                "automatic:single_rss_engine",
+                observed,
+                elapsed,
+            )
         except Exception:
-            cached = []
-        try:
-            _reliable_merge_posts(merged, cached, canonical)
-        except Exception:
-            for post in cached:
-                identity = str(
-                    getattr(post, "post_id", "")
-                    or getattr(post, "link", "")
-                    or ""
-                ).strip()
-                if identity:
-                    merged.setdefault(identity, post)
+            pass
 
-    ordered = sorted(
-        merged.values(),
-        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
-        reverse=True,
-    )
-    if ordered:
-        with _V90_RSS_DIAGNOSTICS_LOCK:
-            diag = dict(_V90_RSS_DIAGNOSTICS.get(canonical.casefold(), {}) or {})
-            path = list(diag.get("path") or [])
-            if "local_memory" not in path:
-                path.append("local_memory")
-            diag["path"] = path
-            diag["returned_memory"] = len(ordered)
-            _V90_RSS_DIAGNOSTICS[canonical.casefold()] = diag
-    return ordered[:max(1, int(limit))]
+    return ordered[
+        : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    ]
 
 
-def _v90_fetch_posts(username: str) -> list[Post]:
+# ---------------------------------------------------------------------------
+# G. CONTROL FETCH — same engine, no separate historical RSS path
+# ---------------------------------------------------------------------------
+def fetch_control_posts(
+    username: str,
+) -> tuple[str, list[Post], Exception | None]:
     canonical = str(username or "").strip().lstrip("@")
-    if canonical.casefold() not in _V90_GENERAL_REPORTERS:
-        return list(_V90_PRE_FETCH_POSTS(canonical) or [])
-    return _v90_network_then_memory(
-        canonical,
-        limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
-        exhaustive=False,
-    )
-
-
-def _v90_fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
-    canonical = str(username or "").strip().lstrip("@")
-    if canonical.casefold() not in _V90_GENERAL_REPORTERS:
-        return _V90_PRE_FETCH_CONTROL_POSTS(canonical)
     try:
-        # Status/control checks need a real current source result, but they do not
-        # need to crawl every fallback merely to fill ten rows. This keeps the
-        # button fast while exercising exactly the same primary-first route.
-        rows = _v90_network_then_memory(canonical, limit=30, exhaustive=False)
-        return canonical, rows, None
+        return canonical, _rss_engine_rows(canonical), None
     except Exception as exc:
-        return canonical, [], exc
+        cached = _rss_engine_cached(canonical, limit=60)
+        return canonical, cached, None if cached else exc
 
 
 def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    """Final automatic scanner: old working RSS first for general reporters."""
     canonical = str(username or "").strip().lstrip("@")
-    if canonical.casefold() not in _V90_GENERAL_REPORTERS:
-        return _V90_PRE_FETCH_POSTS_SAFELY(canonical)
-
     started = time.perf_counter()
     try:
-        rows = _v90_network_then_memory(
-            canonical,
-            limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
-            exhaustive=False,
-        )
+        rows = list(fetch_posts(canonical) or [])
         rows = sorted(
-            [post for post in (rows or []) if isinstance(post, Post)],
-            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+            [post for post in rows if isinstance(post, Post)],
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
             reverse=True,
-        )
+        )[:12]
         try:
-            daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+            daily_stat_add_timing(
+                "scan_seconds",
+                time.perf_counter() - started,
+            )
         except Exception:
             pass
-        return canonical, rows[:12]
+        return canonical, rows
     except Exception as exc:
         try:
-            daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+            daily_stat_add_timing(
+                "scan_seconds",
+                time.perf_counter() - started,
+            )
         except Exception:
             pass
         logging.warning(
-            "⚠️ שליפת RSS הישנה נכשלה עבור @%s: %s",
+            "⚠️ RSS fetch failed for @%s: %s",
             canonical,
-            short_error(exc, 400),
+            short_error(exc, 500),
         )
         return canonical, []
 
 
-# Public/manual entrypoints now agree with the automatic scanner.
-fetch_posts = _v90_fetch_posts
-fetch_control_posts = _v90_fetch_control_posts
+def fetch_control_posts_for_accounts(
+    accounts: list[str],
+) -> dict[str, tuple[list[Post], Exception | None]]:
+    results: dict[str, tuple[list[Post], Exception | None]] = {
+        username: ([], None)
+        for username in accounts
+    }
+    if not accounts:
+        return results
+
+    workers = min(
+        max(1, int(MAX_PARALLEL_ACCOUNT_CHECKS)),
+        max(1, len(accounts)),
+    )
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(fetch_control_posts, username): username
+            for username in accounts
+        }
+        for future in as_completed(future_map):
+            original_username = future_map[future]
+            try:
+                username, posts, error = future.result()
+            except Exception as exc:
+                username, posts, error = (
+                    original_username,
+                    [],
+                    exc,
+                )
+            results[original_username] = (posts, error)
+
+    return results
 
 
-def _v90_route_text(username: str) -> str:
-    key = str(username or "").strip().lstrip("@").casefold()
-    with _V90_RSS_DIAGNOSTICS_LOCK:
-        diag = dict(_V90_RSS_DIAGNOSTICS.get(key, {}) or {})
-    path = list(dict.fromkeys(diag.get("path") or []))
-    if "primary_rss" in path:
-        return "Nitter RSS ראשי"
-    if "direct_x_no_key" in path:
-        return "X ישיר אחרי RSS ראשי"
-    if "fallback_rss" in path:
-        return "RSS גיבוי אחרי Nitter/X"
-    if "local_memory" in path:
-        return "זיכרון מקומי אחרי כשל כל המקורות"
-    return "לא התקבל מקור חי"
-
-
+# ---------------------------------------------------------------------------
+# H. RSS STATUS BUTTON — same single engine
+# ---------------------------------------------------------------------------
 def rss_status_text() -> str:
-    """Fast status using the same restored automatic RSS-first route."""
-    accounts = list(_general_reporter_control_accounts() or [])
+    accounts = _general_reporter_control_accounts()
     lines = [
         f"📡 בדיקת RSS לכל {len(accounts)} הכתבים",
         "",
-        "המסלול הפעיל עכשיו: Nitter RSS ראשון → X ישיר רק אם צריך → RSS גיבוי רק אם עדיין חסר.",
-        "הזיכרון המקומי משמש רק אחרי שכל המקורות החיים לא החזירו פוסט.",
+        "מנוע RSS פעיל אחד:",
+        "3 מקורות ראשיים → אם אין פוסטים, 2 מקורות גיבוי.",
+        "אותו מנוע משמש גם את הסריקה האוטומטית וגם את הכפתור הזה.",
         "",
     ]
+
     ok_count = 0
     recent_total = 0
-    fetched_by_account = fetch_control_posts_for_accounts(accounts)
+    fetched = fetch_control_posts_for_accounts(accounts)
+
     for username in accounts:
         label = _hebrew_account_label(username)
-        posts, error = fetched_by_account.get(username, ([], None))
+        posts, error = fetched.get(username, ([], None))
+
+        if error and not posts:
+            lines.append(
+                f"❌ {label}: תקלה ב-RSS — {short_error(error, 150)}"
+            )
+            continue
+
         posts = sorted(
             [post for post in (posts or []) if isinstance(post, Post)],
-            key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
             reverse=True,
         )
-        if error and not posts:
-            lines.append(f"❌ {label}: תקלה בקריאה — {short_error(error, 150)}")
-            continue
         recent = recent_24h_posts(posts)
         recent_total += len(recent)
-        route = _v90_route_text(username)
+
         if posts:
             ok_count += 1
             latest = posts[0]
             latest_dt = (
                 datetime.fromtimestamp(
-                    float(getattr(latest, "published_ts", 0.0) or 0.0),
+                    float(latest.published_ts),
                     ZoneInfo(SHABBAT_TIMEZONE),
                 ).strftime("%H:%M %d/%m/%Y")
                 if getattr(latest, "published_ts", 0.0)
                 else "ללא זמן"
             )
+            source = str(
+                getattr(latest, "source_name", "") or "RSS"
+            )
             lines.append(
-                f"✅ {label}: {len(recent)} פוסטים ביממה | מסלול: {route} | אחרון: {latest_dt}"
+                f"✅ {label}: {len(recent)} פוסטים ביממה | "
+                f"מקור אחרון: {source} | אחרון: {latest_dt}"
             )
         else:
-            with _V90_RSS_DIAGNOSTICS_LOCK:
-                diag = dict(_V90_RSS_DIAGNOSTICS.get(str(username).casefold(), {}) or {})
-            errors = list(diag.get("errors") or [])
-            timeouts = list(diag.get("timeouts") or [])
-            detail = "; ".join((errors + [f"timeout:{x}" for x in timeouts])[:2])
-            if detail:
-                lines.append(f"❌ {label}: לא התקבל פוסט | {detail[:180]}")
-            else:
-                lines.append(f"⚠️ {label}: לא התקבל פוסט מהמסלול החי")
+            lines.append(
+                f"⚠️ {label}: כל 5 מקורות ה-RSS נבדקו ולא החזירו פוסטים"
+            )
+
     lines.extend([
         "",
-        f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו נתונים. פוסטים מהיממה האחרונה: {recent_total}.",
+        f"תוצאה: {ok_count}/{len(accounts)} כתבים החזירו פוסטים. "
+        f"פוסטים מהיממה האחרונה: {recent_total}.",
     ])
     return "\n".join(lines)
 
-
-def _v90_rss_restore_audit() -> None:
-    expected = [
-        "https://nitter.net/{username}/rss",
-        "https://twiiit.com/{username}/rss",
-        "https://lightbrd.com/{username}/rss",
-        "https://rsshub.rssforever.com/twitter/user/{username}",
-        "https://rsshub.app/twitter/user/{username}",
-    ]
-    if list(active_feed_templates())[:5] != expected:
-        raise RuntimeError("v90_rss_source_order_changed")
-    if fetch_posts is not _v90_fetch_posts:
-        raise RuntimeError("v90_fetch_posts_not_active")
-    if fetch_control_posts is not _v90_fetch_control_posts:
-        raise RuntimeError("v90_control_fetch_not_active")
-    if fetch_posts_safely.__name__ != "fetch_posts_safely":
-        raise RuntimeError("v90_scanner_name_changed")
-    scanner_names = set(fetch_posts_safely.__code__.co_names)
-    if "_v90_network_then_memory" not in scanner_names:
-        raise RuntimeError("v90_scanner_not_using_old_rss_route")
-    if int(CHECK_EVERY_SECONDS) != 20:
-        raise RuntimeError("v90_scan_cadence_changed")
-    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
-        raise RuntimeError("v90_account_workers_changed")
-    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v90_post_cap_changed")
-    if int(MAX_POST_AGE_SECONDS) != 2 * 60 * 60:
-        raise RuntimeError("v90_two_hour_rule_changed")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v90_rss_restore_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v90_rss_restore_audit")
-
-logging.info(
-    "V90 active: mid-July working RSS route restored at the real automatic scanner boundary: "
-    "Nitter primary -> existing Direct-X -> fallback RSS -> local memory; "
-    "V89 translation/Telegram/filter/media/state fixes preserved."
-)
-
-# ====== END V90 FINAL OLD-WORKING RSS RESTORE ======
-
-
-# ====== V91 FINAL: NITTER-ONLY / ONE REQUEST PER SOURCE / FAST CONTROL (2026-08-27) ======
-# Operator decision after live observation:
-# - nitter.net is the only RSS source that is useful in production.
-# - Do not contact Twiiit, Lightbrd, RSSHub or Direct-X from the active discovery path.
-# - One Nitter HTTP attempt per active source per scan/check; if it fails, use only
-#   already-existing local memory and try Nitter again on the next normal cycle.
-# - Automatic scan stays 20s / 4 accounts in parallel / 12-post processing cap.
-# - Manual all-source checks use a separate bounded pool so control buttons remain responsive.
-# - 10-latest/history stays Google-only for display and must never fall back to raw English.
-# Persistent files/keys, filtering, Telegram delivery, RTL, media and Shabbat are unchanged.
-
-BOT_BUILD_ID = "winner-v91-nitter-only-fast-all-smooth-2026-08-27"
-
-V91_NITTER_TEMPLATE = "https://nitter.net/{username}/rss"
-FEED_TEMPLATES = [V91_NITTER_TEMPLATE]
-MAX_FEED_TEMPLATES_PER_ACCOUNT = 1
-RSS_PRIMARY_SOURCE_COUNT = 1
-RSS_ENABLE_FALLBACK = False
-RSS_FALLBACK_SOURCE_COUNT = 0
-RSS_ENABLE_STALE_FALLBACK = False
-
-# The old one-primary experiment used a 4s request boundary. With Nitter as the
-# only source, waiting longer only delays the next account/button; the next 20s
-# automatic cycle is the retry mechanism, so there is no same-cycle retry burst.
-FEED_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("NITTER_ONLY_REQUEST_TIMEOUT_SECONDS", "4.0"))
-FEED_COLLECTION_TIMEOUT_SECONDS = float(os.environ.get("NITTER_ONLY_COLLECTION_TIMEOUT_SECONDS", "4.5"))
-FEED_HTTP_RETRIES = 1
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 1
-
-CHECK_EVERY_SECONDS = 20
-MAX_PARALLEL_ACCOUNT_CHECKS = 4
-MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
-CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
-
-V91_CONTROL_NITTER_WORKERS = max(4, min(10, int(os.environ.get("NITTER_CONTROL_WORKERS", "8") or "8")))
-_V91_NITTER_DIAG_LOCK = RLock()
-_V91_NITTER_DIAG: dict[str, dict[str, Any]] = {}
-
-
-def active_feed_templates() -> list[str]:
-    """Final production RSS pool: Nitter only."""
-    return [V91_NITTER_TEMPLATE]
-
-
-def _v91_nitter_diag_set(username: str, **values: Any) -> None:
-    key = str(username or "").strip().lstrip("@").casefold()
-    if not key:
-        return
-    with _V91_NITTER_DIAG_LOCK:
-        current = dict(_V91_NITTER_DIAG.get(key, {}) or {})
-        current.update(values)
-        _V91_NITTER_DIAG[key] = current
-        if len(_V91_NITTER_DIAG) > 160:
-            for old_key in list(_V91_NITTER_DIAG)[:40]:
-                _V91_NITTER_DIAG.pop(old_key, None)
-
-
-def _v91_nitter_fetch_once(username: str, limit: int = 30) -> tuple[list[Post], Exception | None]:
-    """Exactly one Nitter network request. No mirror, Direct-X or same-cycle retry."""
-    canonical = str(username or "").strip().lstrip("@")
-    if not canonical:
-        return [], ValueError("empty_username")
-
-    started = time.perf_counter()
-    url = V91_NITTER_TEMPLATE.format(username=urllib.parse.quote(canonical))
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            "Cache-Control": "no-cache",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=float(FEED_REQUEST_TIMEOUT_SECONDS)) as response:
-            body = response.read()
-        rows = list(parse_posts(canonical, body, "nitter.net") or [])
-        rows = [post for post in rows if isinstance(post, Post)]
-        rows.sort(key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0), reverse=True)
-        elapsed = time.perf_counter() - started
-        _v91_nitter_diag_set(
-            canonical,
-            ok=True,
-            posts=len(rows),
-            elapsed=elapsed,
-            error="",
-            checked_at=time.time(),
-            source="nitter.net",
-        )
-        return rows[:max(1, int(limit))], None
-    except Exception as exc:
-        elapsed = time.perf_counter() - started
-        _v91_nitter_diag_set(
-            canonical,
-            ok=False,
-            posts=0,
-            elapsed=elapsed,
-            error=f"{type(exc).__name__}: {short_error(exc, 260)}",
-            checked_at=time.time(),
-            source="nitter.net",
-        )
-        return [], exc
-
-
-def http_get_feed(url: str, timeout: int | float = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
-    """Compatibility boundary: permit network RSS only to nitter.net, once."""
-    parsed = urllib.parse.urlparse(str(url or ""))
-    if parsed.netloc.casefold() != "nitter.net":
-        raise RuntimeError("V91 Nitter-only: non-Nitter RSS network request blocked")
-    request = urllib.request.Request(
-        str(url),
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=float(timeout)) as response:
-        return response.read()
-
-
-def fetch_feed(username: str, template: str) -> list[Post]:
-    if str(template or "") != V91_NITTER_TEMPLATE:
-        raise RuntimeError("V91 Nitter-only: fallback RSS source disabled")
-    rows, _error = _v91_nitter_fetch_once(username, limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
-    return rows
-
-
-def collect_posts_from_feed_templates(
-    username: str,
-    feed_templates: list[str],
-) -> tuple[list[Post], list[str], list[str]]:
-    """Compatibility collector: one Nitter call at most, never fan-out."""
-    if V91_NITTER_TEMPLATE not in list(feed_templates or []):
-        return [], [], []
-    rows, error = _v91_nitter_fetch_once(username, limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
-    return rows, ([f"nitter.net: {type(error).__name__}: {short_error(error, 260)}"] if error else []), []
-
-
-def _v91_memory_posts(username: str, limit: int = 60) -> list[Post]:
-    """Local-only fallback. These loaders do not make a discovery network request."""
-    canonical = str(username or "").strip().lstrip("@")
-    merged: dict[str, Post] = {}
-    loaders = [
-        lambda: _working_rss_cached(canonical, limit=max(60, int(limit))),
-        lambda: _stable_rss_cached_posts(canonical, limit=max(60, int(limit))),
-        lambda: _ten_history_load(canonical),
-        lambda: _ten_history_collect_existing_state_posts(canonical),
-        lambda: _control_cached_posts(canonical),
-    ]
-    for loader in loaders:
-        try:
-            rows = [post for post in (loader() or []) if isinstance(post, Post)]
-        except Exception:
-            rows = []
-        for post in rows:
-            try:
-                post.username = canonical
-            except Exception:
-                pass
-            identity = str(
-                getattr(post, "post_id", "")
-                or getattr(post, "link", "")
-                or post_content_signature(
-                    canonical,
-                    str(getattr(post, "text", "") or ""),
-                    str(getattr(post, "quoted_text", "") or ""),
-                )
-            ).strip()
-            if identity:
-                merged.setdefault(identity, post)
-    ordered = sorted(
-        merged.values(),
-        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
-        reverse=True,
-    )
-    return ordered[:max(1, int(limit))]
-
-
-def _v91_remember_nitter_rows(username: str, rows: list[Post]) -> None:
-    if not rows:
-        return
-    canonical = str(username or "").strip().lstrip("@")
-    try:
-        _stable_rss_remember(canonical, rows)
-    except Exception:
-        pass
-    try:
-        _remember_control_rss_posts(canonical, rows)
-    except Exception:
-        pass
-    try:
-        _ten_history_save(canonical, rows[:80])
-    except Exception:
-        pass
-
-
-def _v91_nitter_then_memory(username: str, limit: int = 30) -> tuple[list[Post], Exception | None, bool]:
-    canonical = str(username or "").strip().lstrip("@")
-    rows, error = _v91_nitter_fetch_once(canonical, limit=max(limit, 30))
-    if rows:
-        _v91_remember_nitter_rows(canonical, rows)
-        return rows[:max(1, int(limit))], None, True
-    cached = _v91_memory_posts(canonical, limit=max(limit, 60))
-    return cached[:max(1, int(limit))], error, False
-
-
-def fetch_posts(username: str) -> list[Post]:
-    rows, _error, _live = _v91_nitter_then_memory(
-        username,
-        limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
-    )
-    return rows
-
-
-def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
-    canonical = str(username or "").strip().lstrip("@")
-    rows, error, _live = _v91_nitter_then_memory(canonical, limit=30)
-    return canonical, rows, error
-
-
-def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    """Final automatic scanner for every active X source: Nitter only."""
-    canonical = str(username or "").strip().lstrip("@")
-    started = time.perf_counter()
-    rows, error, live = _v91_nitter_then_memory(
-        canonical,
-        limit=max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)),
-    )
-    try:
-        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
-    except Exception:
-        pass
-    if error and not live:
-        # Throttle warning noise; failure is retried naturally next 20s cycle.
-        failures = int(FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) or 0) + 1
-        FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
-        if failures == 1 or failures % 30 == 0:
-            logging.warning(
-                "⚠️ Nitter לא החזיר נתונים עבור @%s; משתמש בזיכרון מקומי (%s שורות) וינסה שוב בסבב הבא: %s",
-                canonical,
-                len(rows),
-                short_error(error, 260),
-            )
-    else:
-        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
-    rows = sorted(
-        [post for post in (rows or []) if isinstance(post, Post)],
-        key=lambda post: float(getattr(post, "published_ts", 0.0) or 0.0),
-        reverse=True,
-    )
-    return canonical, rows[:int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)]
-
-
-def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
-    rows, _error, _live = _v91_nitter_then_memory(username, limit=max(1, int(limit)))
-    return rows[:max(1, int(limit))]
-
-
-def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
-    """One Nitter request + local history; never Direct-X and never raw-English fallback."""
-    canonical = str(username or "").strip().lstrip("@")
-    wanted = max(1, int(limit))
-    live_rows, error = _v91_nitter_fetch_once(canonical, limit=max(20, wanted))
-    merged: dict[str, Post] = {}
-    for post in list(live_rows or []) + _v91_memory_posts(canonical, limit=max(60, wanted * 6)):
-        if not isinstance(post, Post):
-            continue
-        post.username = canonical
-        identity = str(
-            getattr(post, "post_id", "")
-            or getattr(post, "link", "")
-            or post_content_signature(canonical, str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or ""))
-        ).strip()
-        if identity:
-            merged.setdefault(identity, post)
-    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-    if live_rows:
-        _v91_remember_nitter_rows(canonical, list(live_rows))
-    try:
-        LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = {
-            "route": "v91_nitter_only_plus_local_memory",
-            "nitter_live": len(live_rows or []),
-            "memory_after_merge": len(ordered),
-            "errors": [short_error(error, 300)] if error else [],
-            "returned": min(wanted, len(ordered)),
-        }
-    except Exception:
-        pass
-    return ordered[:wanted]
-
-
-def fetch_latest_post_fast(username: str) -> Post | None:
-    rows, _error, _live = _v91_nitter_then_memory(username, limit=1)
-    return rows[0] if rows else None
-
-
-def fetch_control_posts_for_accounts(accounts: list[str]) -> dict[str, tuple[list[Post], Exception | None]]:
-    """Manual/status checks: all requested sources in parallel, one Nitter request each."""
-    ordered_accounts = [str(item or "").strip().lstrip("@") for item in list(accounts or []) if str(item or "").strip()]
-    results: dict[str, tuple[list[Post], Exception | None]] = {username: ([], None) for username in ordered_accounts}
-    if not ordered_accounts:
-        return results
-    workers = min(V91_CONTROL_NITTER_WORKERS, len(ordered_accounts))
-    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="nitter-control-v91") as executor:
-        future_map = {executor.submit(fetch_control_posts, username): username for username in ordered_accounts}
-        for future in as_completed(future_map):
-            username = future_map[future]
-            try:
-                _canonical, posts, error = future.result()
-                results[username] = (list(posts or []), error)
-            except Exception as exc:
-                results[username] = ([], exc)
-    return results
-
-
-def _v91_active_rss_accounts() -> list[str]:
-    """Every currently enabled X/facts source, deduplicated in configured order."""
-    values = list(active_x_accounts() or [])
-    result: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        canonical = str(value or "").strip().lstrip("@")
-        key = canonical.casefold()
-        if canonical and key not in seen:
-            seen.add(key)
-            result.append(canonical)
-    return result
-
-
-def _v91_nitter_status_lines(accounts: list[str], title: str) -> str:
-    fetched = fetch_control_posts_for_accounts(accounts)
-    lines = [title, "", "מקור פעיל יחיד: nitter.net — בקשה אחת לכל מקור, ללא גיבויים וללא Direct-X.", ""]
-    live_ok = 0
-    cached_used = 0
-    recent_total = 0
-    for username in accounts:
-        label = _hebrew_account_label(username)
-        posts, error = fetched.get(username, ([], None))
-        recent = recent_24h_posts(posts)
-        recent_total += len(recent)
-        with _V91_NITTER_DIAG_LOCK:
-            diag = dict(_V91_NITTER_DIAG.get(str(username).casefold(), {}) or {})
-        elapsed = float(diag.get("elapsed", 0.0) or 0.0)
-        if bool(diag.get("ok")):
-            live_ok += 1
-            latest = posts[0] if posts else None
-            latest_text = ""
-            if latest and getattr(latest, "published_ts", 0.0):
-                latest_text = datetime.fromtimestamp(float(latest.published_ts), ZoneInfo(SHABBAT_TIMEZONE)).strftime("%H:%M %d/%m/%Y")
-            lines.append(f"✅ {label}: Nitter חי | {len(recent)} ביממה | {elapsed:.2f}s" + (f" | אחרון: {latest_text}" if latest_text else ""))
-        elif posts:
-            cached_used += 1
-            lines.append(f"🟡 {label}: Nitter נכשל ({elapsed:.2f}s), מוצג זיכרון מקומי | {len(recent)} ביממה")
-        else:
-            detail = str(diag.get("error", "") or (short_error(error, 160) if error else "לא התקבל פוסט"))
-            lines.append(f"❌ {label}: Nitter לא החזיר נתונים | {detail[:170]}")
-    lines.extend([
-        "",
-        f"תוצאה: Nitter חי אצל {live_ok}/{len(accounts)} מקורות; זיכרון מקומי שימש אצל {cached_used}; פוסטים מהיממה: {recent_total}.",
-    ])
-    return "\n".join(lines)
-
-
-def rss_status_text() -> str:
-    accounts = _v91_active_rss_accounts()
-    return _v91_nitter_status_lines(accounts, f"📡 בדיקת Nitter לכל {len(accounts)} המקורות הפעילים")
-
-
-def facts_rss_status_text() -> str:
-    accounts = [source for source in list(FACTS_SOURCE_ORDER or []) if not control_state_account_disabled(source)]
-    return _v91_nitter_status_lines(accounts, f"📡 בדיקת Nitter ל־{len(accounts)} מקורות העובדות הפעילים")
-
-
-def check_all_accounts_now_text() -> str:
-    accounts = _v91_active_rss_accounts()
-    return _v91_nitter_status_lines(accounts, f"🔄 בדיקה מלאה עכשיו — {len(accounts)} מקורות פעילים")
-
-
-# 10-latest Google display: the older shared helper could replace a failed Google
-# result with the raw source text. That is exactly how a screen could end up mostly
-# English. Keep the process-wide bounded worker pool, but never expose raw English
-# as if it were a translation.
-def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
-    values = list(posts or [])
-    if not values:
-        return []
-    results = [""] * len(values)
-    futures: dict[Any, int] = {}
-    try:
-        for index, item in enumerate(values):
-            futures[_RELIABLE_HISTORY_EXECUTOR.submit(_translate_history_post, item)] = index
-    except RuntimeError:
-        futures.clear()
-        for index, item in enumerate(values):
-            try:
-                results[index] = str(_translate_history_post(item) or "").strip()
-            except Exception:
-                results[index] = ""
-    if futures:
-        done, pending = _reliable_wait(set(futures), timeout=max(4.0, float(CONTROL_TEN_TRANSLATE_TIMEOUT_SECONDS)))
-        for future in done:
-            index = futures[future]
-            try:
-                results[index] = str(future.result() or "").strip()
-            except Exception:
-                results[index] = ""
-        for future in pending:
-            future.cancel()
-    for index, value in enumerate(results):
-        if not value or value in {"אין טקסט זמין", "אין טקסט זמין לתרגום"}:
-            results[index] = "⚠️ תרגום Google לא זמין כרגע — הטקסט המקורי באנגלית לא מוצג במקום תרגום"
-    return results
-
-
-
-# Google fast path: V89 intentionally ran two Google strategies every time for
-# extra fidelity, but that doubled work in 10-latest/control screens even when
-# the first whole-text result was already excellent. V91 uses one request first,
-# validates it, caches it, and enters the heavier repair path only on a real failure.
-_V91_GOOGLE_CACHE_LOCK = RLock()
-_V91_GOOGLE_CACHE: dict[str, str] = {}
-_V91_GOOGLE_CACHE_MAX = max(300, int(os.environ.get("V91_GOOGLE_CACHE_MAX", "2500") or "2500"))
-_V91_GOOGLE_RESCUE = _V89_PRE_GOOGLE_STRICT
-
-
-def _v91_google_cache_key(source: str) -> str:
-    return hashlib.sha256(str(source or "").encode("utf-8", errors="ignore")).hexdigest()
-
-
-def _v91_google_translate_strict(source: str, max_chars: int = 2500) -> str:
-    original = compact_debug_text(clean_before_translation(source or ""), max_chars).strip()
-    if not original:
-        return ""
-    if len(re.findall(r"[א-ת]", original)) >= 8 and latin_ratio(original) < 0.10:
-        return final_visual_cleanup(final_hebrew_polish(original))
-
-    cache_key = _v91_google_cache_key(original)
-    with _V91_GOOGLE_CACHE_LOCK:
-        cached = str(_V91_GOOGLE_CACHE.get(cache_key, "") or "")
-    if cached:
-        return cached
-
-    first_error: Exception | None = None
-    candidate = ""
-    try:
-        # One normal Google request is the hot path.
-        candidate = str(google_translate(original) or "").strip()
-        candidate = final_visual_cleanup(final_hebrew_polish(candidate))
-        try:
-            candidate = preserve_original_country_flags(original, preserve_original_emojis(original, candidate))
-        except Exception:
-            pass
-        try:
-            candidate = _v60_translation_cleanup(original, candidate)
-        except Exception:
-            pass
-        candidate = final_visual_cleanup(final_hebrew_polish(candidate))
-
-        ok, reason = _v88_translation_valid(original, candidate)
-        fidelity = _v89_translation_fidelity_issues(original, candidate) if ok else [reason]
-        if ok and not fidelity:
-            with _V91_GOOGLE_CACHE_LOCK:
-                if len(_V91_GOOGLE_CACHE) >= _V91_GOOGLE_CACHE_MAX:
-                    for old_key in list(_V91_GOOGLE_CACHE)[:max(1, _V91_GOOGLE_CACHE_MAX // 5)]:
-                        _V91_GOOGLE_CACHE.pop(old_key, None)
-                _V91_GOOGLE_CACHE[cache_key] = candidate
-            return candidate
-        first_error = TranslationUnavailable("; ".join(str(item) for item in fidelity if item) or reason)
-    except Exception as exc:
-        first_error = exc
-
-    # Only a genuinely failed/invalid first result pays for the older stronger
-    # layout/fragment repair path. This keeps reliability without doubling normal work.
-    try:
-        rescued = str(_V91_GOOGLE_RESCUE(original, max_chars) or "").strip()
-        ok, reason = _v88_translation_valid(original, rescued)
-        fidelity = _v89_translation_fidelity_issues(original, rescued) if ok else [reason]
-        if not ok or fidelity:
-            raise TranslationUnavailable("; ".join(str(item) for item in fidelity if item) or reason)
-        with _V91_GOOGLE_CACHE_LOCK:
-            if len(_V91_GOOGLE_CACHE) >= _V91_GOOGLE_CACHE_MAX:
-                for old_key in list(_V91_GOOGLE_CACHE)[:max(1, _V91_GOOGLE_CACHE_MAX // 5)]:
-                    _V91_GOOGLE_CACHE.pop(old_key, None)
-            _V91_GOOGLE_CACHE[cache_key] = rescued
-        return rescued
-    except Exception as rescue_exc:
-        raise TranslationUnavailable(
-            "Google translation unavailable/invalid. first="
-            + short_error(first_error, 220)
-            + " | rescue="
-            + short_error(rescue_exc, 220)
-        ) from rescue_exc
-
-
-# Every late caller (publishing Google fallback + 10-latest/history) resolves
-# this global at runtime, so one final assignment fixes all those paths together.
-_v88_google_translate_strict = _v91_google_translate_strict
-
-def _v91_final_audit() -> None:
-    if list(active_feed_templates()) != [V91_NITTER_TEMPLATE]:
-        raise RuntimeError("v91_not_nitter_only")
-    if list(FEED_TEMPLATES) != [V91_NITTER_TEMPLATE]:
-        raise RuntimeError("v91_feed_templates_not_single_nitter")
-    if bool(RSS_ENABLE_FALLBACK) or int(RSS_FALLBACK_SOURCE_COUNT) != 0:
-        raise RuntimeError("v91_rss_fallback_still_enabled")
-    if int(FEED_HTTP_RETRIES) != 1:
-        raise RuntimeError("v91_same_cycle_retry_enabled")
-    if int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 1:
-        raise RuntimeError("v91_per_account_fanout_enabled")
-    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
-        raise RuntimeError("v91_outer_scan_settings_changed")
-    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v91_post_cap_changed")
-    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
-        raise RuntimeError("v91_duplicate_discovery_enabled")
-    scanner_names = set(fetch_posts_safely.__code__.co_names)
-    if "_v91_nitter_then_memory" not in scanner_names:
-        raise RuntimeError("v91_scanner_not_nitter_only")
-    if "_reliable_direct_profile_posts" in scanner_names or "_v56_final_rss_network_fetch" in scanner_names:
-        raise RuntimeError("v91_old_live_fallback_leaked_into_scanner")
-    # Existing fast button architecture remains active: 20 dedicated workers.
-    executor = globals().get("_V52_BUTTON_EXECUTOR")
-    if executor is None or int(getattr(executor, "_max_workers", 0) or 0) < 20:
-        raise RuntimeError("v91_fast_button_pool_not_preserved")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v91_final_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v91_final_audit")
-
-logging.info(
-    "V91 active: Nitter-only production discovery for every active X/facts source; "
-    "one request per source, no mirrors, no Direct-X, no same-cycle retry; "
-    "20s/4-account automatic scan and 20-worker fast control buttons preserved; "
-    "10-latest never falls back to raw English when Google translation fails."
-)
-
-# ====== END V91 NITTER-ONLY FAST ALL-SOURCE BOUNDARY ======
-
-# ====== V92 FINAL: NITTER OUTAGE-AWARE LIVE RESTORE (2026-08-27) ======
-# Live production finding (2026-08-27): nitter.net /{user}/rss returns HTTP 410
-# for every configured account because the public Nitter service is offline.
-#
-# Final discovery policy:
-#   1) Probe Nitter RSS only once per process while health is unknown.
-#   2) HTTP 410/451/404 on that global service disables Nitter immediately for
-#      the process, so the remaining writers never repeat the same dead request.
-#   3) Use the already-existing public X syndication timeline as the live rescue
-#      route. It requires no API key and performs at most one network request per
-#      writer when its short live cache is cold.
-#   4) Local durable memory/history is last; it is never cleared or renamed.
-#   5) No Twiiit, Lightbrd, RSSHub, XCancel, mirror fan-out, or same-cycle retry.
-#
-# Everything outside discovery is inherited unchanged from V91: Google/Gemini
-# translation gates, filters, Telegram delivery, fast buttons, RTL, media,
-# Shabbat behavior, duplicate memory and all persistent JSON files/keys.
-
-BOT_BUILD_ID = "winner-v92-nitter-outage-aware-live-restore-2026-08-27"
-
-V92_NITTER_RSS_TEMPLATE = "https://nitter.net/{username}/rss"
-V92_SYNDICATION_TEMPLATE = "https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}"
-V92_LIVE_TIMEOUT_SECONDS = max(2.5, float(os.environ.get("V92_LIVE_TIMEOUT_SECONDS", "4.0") or "4.0"))
-V92_LIVE_CACHE_SECONDS = max(3.0, float(os.environ.get("V92_LIVE_CACHE_SECONDS", "12.0") or "12.0"))
-V92_DIRECT_MAX_PARALLEL = 1  # serialize public syndication; prevents 17-account 429 bursts
-V92_DIRECT_MIN_GAP_SECONDS = max(0.20, float(os.environ.get("V92_DIRECT_MIN_GAP_SECONDS", "0.75") or "0.75"))
-V92_PROVIDER_COOLDOWN_SECONDS = max(20.0, float(os.environ.get("V92_PROVIDER_COOLDOWN_SECONDS", "60.0") or "60.0"))
-
-# Keep the operator-approved outer runtime exactly as before.
-CHECK_EVERY_SECONDS = 20
-MAX_PARALLEL_ACCOUNT_CHECKS = 4
-MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK = 12
-CONTINUOUS_FORCE_DISCOVERY_ENABLED = False
-FEED_HTTP_RETRIES = 1
-MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 1
-
-_V92_STATE_LOCK = RLock()
-_V92_NITTER_PROBE_LOCK = Lock()
-_V92_DIRECT_PROBE_LOCK = Lock()
-_V92_DIRECT_REQUEST_LOCK = Lock()
-_V92_DIRECT_LAST_REQUEST_AT = 0.0
-_V92_DIRECT_SEMAPHORE = BoundedSemaphore(V92_DIRECT_MAX_PARALLEL)
-_V92_NITTER_STATE: dict[str, Any] = {
-    "mode": "unknown",          # unknown | live | gone | cooldown
-    "reason": "",
-    "checked_at": 0.0,
-    "disabled_until": 0.0,
-    "network_calls": 0,
-}
-_V92_DIRECT_STATE: dict[str, Any] = {
-    "mode": "unknown",          # unknown | live | cooldown
-    "reason": "",
-    "checked_at": 0.0,
-    "disabled_until": 0.0,
-    "network_calls": 0,
-}
-_V92_DIAG: dict[str, dict[str, Any]] = {}
-_V92_LIVE_CACHE: dict[str, tuple[float, list[Post]]] = {}
-
-
-def _v92_key(username: str) -> str:
-    return str(username or "").strip().lstrip("@").casefold()
-
-
-def _v92_diag_set(username: str, **values: Any) -> None:
-    key = _v92_key(username)
-    if not key:
-        return
-    with _V92_STATE_LOCK:
-        current = dict(_V92_DIAG.get(key, {}) or {})
-        current.update(values)
-        current["checked_at"] = time.time()
-        _V92_DIAG[key] = current
-        if len(_V92_DIAG) > 180:
-            for old_key in list(_V92_DIAG)[:40]:
-                _V92_DIAG.pop(old_key, None)
-
-
-def _v92_diag_get(username: str) -> dict[str, Any]:
-    with _V92_STATE_LOCK:
-        return dict(_V92_DIAG.get(_v92_key(username), {}) or {})
-
-
-def _v92_extract_http_status(exc: BaseException | None) -> int:
-    try:
-        return int(getattr(exc, "code", 0) or 0)
-    except Exception:
-        return 0
-
-
-def _v92_nitter_disable(reason: str, *, permanent: bool = False) -> None:
-    now = time.time()
-    with _V92_STATE_LOCK:
-        _V92_NITTER_STATE["mode"] = "gone" if permanent else "cooldown"
-        _V92_NITTER_STATE["reason"] = str(reason or "")[:400]
-        _V92_NITTER_STATE["checked_at"] = now
-        _V92_NITTER_STATE["disabled_until"] = (now + 365 * 24 * 3600) if permanent else (now + 10 * 60)
-
-
-def _v92_nitter_available_for_probe() -> bool:
-    now = time.time()
-    with _V92_STATE_LOCK:
-        mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
-        until = float(_V92_NITTER_STATE.get("disabled_until", 0.0) or 0.0)
-        if mode == "gone":
-            return False
-        if mode == "cooldown" and now < until:
-            return False
-        if mode == "cooldown" and now >= until:
-            _V92_NITTER_STATE["mode"] = "unknown"
-            _V92_NITTER_STATE["reason"] = ""
-        return True
-
-
-def _v92_nitter_rss_request_once(username: str, limit: int) -> tuple[list[Post], Exception | None]:
-    """One ordinary Nitter RSS request; never retries and never contacts a mirror."""
-    canonical = str(username or "").strip().lstrip("@")
-    if not canonical:
-        return [], ValueError("empty_username")
-    url = V92_NITTER_RSS_TEMPLATE.format(username=urllib.parse.quote(canonical))
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            "Cache-Control": "no-cache",
-        },
-    )
-    started = time.perf_counter()
-    try:
-        with _V92_STATE_LOCK:
-            _V92_NITTER_STATE["network_calls"] = int(_V92_NITTER_STATE.get("network_calls", 0) or 0) + 1
-        with urllib.request.urlopen(request, timeout=V92_LIVE_TIMEOUT_SECONDS) as response:
-            body = response.read(4_000_000)
-        rows = [p for p in (parse_posts(canonical, body, "nitter.net") or []) if isinstance(p, Post)]
-        rows.sort(key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-        with _V92_STATE_LOCK:
-            _V92_NITTER_STATE.update({"mode": "live", "reason": "", "checked_at": time.time(), "disabled_until": 0.0})
-        _v92_diag_set(canonical, route="nitter-rss", live=True, posts=len(rows), seconds=time.perf_counter() - started, error="")
-        return rows[:max(1, int(limit))], None
-    except Exception as exc:
-        status = _v92_extract_http_status(exc)
-        detail = f"{type(exc).__name__}: {short_error(exc, 260)}"
-        if status in {404, 410, 451}:
-            _v92_nitter_disable(detail, permanent=True)
-        else:
-            _v92_nitter_disable(detail, permanent=False)
-        _v92_diag_set(canonical, route="nitter-rss", live=False, posts=0, seconds=time.perf_counter() - started, error=detail, http_status=status)
-        return [], exc
-
-
-def _v92_try_nitter(username: str, limit: int) -> tuple[list[Post], Exception | None]:
-    """Single-flight Nitter health probe prevents 17 identical 410 requests."""
-    if not _v92_nitter_available_for_probe():
-        with _V92_STATE_LOCK:
-            reason = str(_V92_NITTER_STATE.get("reason", "Nitter disabled") or "Nitter disabled")
-        return [], RuntimeError("Nitter globally unavailable: " + reason)
-
-    with _V92_STATE_LOCK:
-        mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
-    if mode == "live":
-        return _v92_nitter_rss_request_once(username, limit)
-
-    # Only the first concurrent writer is allowed to discover global Nitter health.
-    with _V92_NITTER_PROBE_LOCK:
-        if not _v92_nitter_available_for_probe():
-            with _V92_STATE_LOCK:
-                reason = str(_V92_NITTER_STATE.get("reason", "Nitter disabled") or "Nitter disabled")
-            return [], RuntimeError("Nitter globally unavailable: " + reason)
-        with _V92_STATE_LOCK:
-            mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
-        if mode == "live":
-            return _v92_nitter_rss_request_once(username, limit)
-        return _v92_nitter_rss_request_once(username, limit)
-
-
-def _v92_cached_live(username: str, limit: int) -> list[Post]:
-    key = _v92_key(username)
-    with _V92_STATE_LOCK:
-        row = _V92_LIVE_CACHE.get(key)
-    if not row:
-        return []
-    saved_at, posts = row
-    if time.time() - float(saved_at or 0.0) > V92_LIVE_CACHE_SECONDS:
-        return []
-    return list(posts or [])[:max(1, int(limit))]
-
-
-def _v92_store_live_cache(username: str, rows: list[Post]) -> None:
-    key = _v92_key(username)
-    if not key or not rows:
-        return
-    with _V92_STATE_LOCK:
-        _V92_LIVE_CACHE[key] = (time.time(), list(rows[:80]))
-        if len(_V92_LIVE_CACHE) > 180:
-            for old_key in list(_V92_LIVE_CACHE)[:40]:
-                _V92_LIVE_CACHE.pop(old_key, None)
-
-
-def _v92_direct_cooldown_error() -> Exception | None:
-    now = time.time()
-    with _V92_STATE_LOCK:
-        mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
-        until = float(_V92_DIRECT_STATE.get("disabled_until", 0.0) or 0.0)
-        reason = str(_V92_DIRECT_STATE.get("reason", "") or "")
-        if mode == "cooldown" and now < until:
-            return RuntimeError("X syndication cooldown: " + (reason or "provider temporarily unavailable"))
-        if mode == "cooldown" and now >= until:
-            _V92_DIRECT_STATE.update({"mode": "unknown", "reason": "", "disabled_until": 0.0})
-    return None
-
-
-def _v92_set_direct_cooldown(reason: str, seconds: float | None = None) -> None:
-    wait_seconds = V92_PROVIDER_COOLDOWN_SECONDS if seconds is None else max(10.0, float(seconds))
-    with _V92_STATE_LOCK:
-        _V92_DIRECT_STATE.update({
-            "mode": "cooldown",
-            "reason": str(reason or "")[:400],
-            "checked_at": time.time(),
-            "disabled_until": time.time() + wait_seconds,
-        })
-
-
-def _v92_parse_syndication_html(username: str, raw: str, limit: int) -> list[Post]:
-    match = re.search(
-        r'<script\b[^>]*\bid=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
-        str(raw or ""),
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if not match:
-        return []
-    try:
-        payload = json.loads(html.unescape(match.group(1)).strip())
-    except Exception:
-        return []
-    rows: list[Post] = []
-    try:
-        rows = list(_v87_posts_from_syndication_next_data(username, payload, max(1, int(limit))) or [])
-    except Exception:
-        rows = []
-    if not rows:
-        try:
-            rows = [p for p in (_reliable_posts_from_profile_payload(username, payload) or []) if isinstance(p, Post)]
-        except Exception:
-            rows = []
-    rows.sort(key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-    return rows[:max(1, int(limit))]
-
-
-def _v92_syndication_network_once(username: str, limit: int) -> tuple[list[Post], Exception | None]:
-    canonical = str(username or "").strip().lstrip("@")
-    if not canonical:
-        return [], ValueError("empty_username")
-
-    cooldown_error = _v92_direct_cooldown_error()
-    if cooldown_error is not None:
-        _v92_diag_set(canonical, route="x-syndication-cooldown", live=False, posts=0, seconds=0.0, error=short_error(cooldown_error, 260))
-        return [], cooldown_error
-
-    cached = _v92_cached_live(canonical, limit)
-    if cached:
-        _v92_diag_set(canonical, route="x-syndication-cache", live=True, posts=len(cached), seconds=0.0, error="")
-        return cached, None
-
-    url = V92_SYNDICATION_TEMPLATE.format(username=urllib.parse.quote(canonical))
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://publish.x.com/",
-        "Cache-Control": "no-cache",
-    }
-    if globals().get("_V87_DIRECT_COOKIE"):
-        headers["Cookie"] = str(globals().get("_V87_DIRECT_COOKIE") or "")
-    request = urllib.request.Request(url, headers=headers)
-    started = time.perf_counter()
-    try:
-        global _V92_DIRECT_LAST_REQUEST_AT
-        with _V92_DIRECT_SEMAPHORE:
-            # The syndication profile endpoint is aggressively rate-limited.  Keep
-            # the old V87 production pacing principle: one request at a time with
-            # a small global gap.  Button acknowledgement is separate, so this
-            # does not freeze Telegram controls while the data check is running.
-            with _V92_DIRECT_REQUEST_LOCK:
-                now_mono = time.monotonic()
-                wait_for = max(0.0, V92_DIRECT_MIN_GAP_SECONDS - (now_mono - float(_V92_DIRECT_LAST_REQUEST_AT or 0.0)))
-                if wait_for > 0:
-                    time.sleep(wait_for)
-                _V92_DIRECT_LAST_REQUEST_AT = time.monotonic()
-            with _V92_STATE_LOCK:
-                _V92_DIRECT_STATE["network_calls"] = int(_V92_DIRECT_STATE.get("network_calls", 0) or 0) + 1
-            with urllib.request.urlopen(request, timeout=V92_LIVE_TIMEOUT_SECONDS) as response:
-                status = int(getattr(response, "status", 200) or 200)
-                body = response.read(4_000_000)
-        raw = body.decode("utf-8", errors="replace")
-        rows = _v92_parse_syndication_html(canonical, raw, max(1, int(limit)))
-        if not rows:
-            error = RuntimeError(f"X syndication HTTP {status} returned no parsable timeline posts")
-            _v92_diag_set(canonical, route="x-syndication", live=False, posts=0, seconds=time.perf_counter() - started, error=str(error), http_status=status)
-            # A 200 with globally unparseable HTML is often a provider-format/WAF event.
-            # Do not globally kill the provider on the first account; other writers may differ.
-            return [], error
-        with _V92_STATE_LOCK:
-            _V92_DIRECT_STATE.update({"mode": "live", "reason": "", "checked_at": time.time(), "disabled_until": 0.0})
-        _v92_store_live_cache(canonical, rows)
-        _v92_diag_set(canonical, route="x-syndication", live=True, posts=len(rows), seconds=time.perf_counter() - started, error="", http_status=status)
-        return rows, None
-    except urllib.error.HTTPError as exc:
-        status = _v92_extract_http_status(exc)
-        detail = f"HTTPError: {short_error(exc, 260)}"
-        if status in {401, 403, 429, 451} or status >= 500:
-            retry_after = 0.0
-            try:
-                raw_retry = str(getattr(exc, "headers", {}).get("Retry-After", "") or "").strip()
-                if raw_retry.isdigit():
-                    retry_after = min(15 * 60.0, max(V92_PROVIDER_COOLDOWN_SECONDS, float(raw_retry)))
-            except Exception:
-                retry_after = 0.0
-            _v92_set_direct_cooldown(detail, retry_after or V92_PROVIDER_COOLDOWN_SECONDS)
-        _v92_diag_set(canonical, route="x-syndication", live=False, posts=0, seconds=time.perf_counter() - started, error=detail, http_status=status)
-        return [], exc
-    except Exception as exc:
-        detail = f"{type(exc).__name__}: {short_error(exc, 260)}"
-        _v92_diag_set(canonical, route="x-syndication", live=False, posts=0, seconds=time.perf_counter() - started, error=detail)
-        return [], exc
-
-
-def _v92_syndication_once(username: str, limit: int) -> tuple[list[Post], Exception | None]:
-    """Single-flight the very first provider check, then allow normal 4-way outer parallelism."""
-    with _V92_STATE_LOCK:
-        direct_mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
-    if direct_mode != "unknown":
-        return _v92_syndication_network_once(username, limit)
-    with _V92_DIRECT_PROBE_LOCK:
-        with _V92_STATE_LOCK:
-            direct_mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
-        if direct_mode != "unknown":
-            return _v92_syndication_network_once(username, limit)
-        return _v92_syndication_network_once(username, limit)
-
-
-def _v92_remember_live_rows(username: str, rows: list[Post]) -> None:
-    if not rows:
-        return
-    canonical = str(username or "").strip().lstrip("@")
-    # Reuse the existing durable stores without changing any filename/key/schema.
-    try:
-        _stable_rss_remember(canonical, rows)
-    except Exception:
-        pass
-    try:
-        _remember_control_rss_posts(canonical, rows)
-    except Exception:
-        pass
-    try:
-        _ten_history_save(canonical, rows[:80])
-    except Exception:
-        pass
-
-
-def _v92_live_then_memory(username: str, limit: int = 30) -> tuple[list[Post], Exception | None, str]:
-    canonical = str(username or "").strip().lstrip("@")
-    wanted = max(1, int(limit))
-
-    nitter_rows: list[Post] = []
-    nitter_error: Exception | None = None
-    if _v92_nitter_available_for_probe():
-        nitter_rows, nitter_error = _v92_try_nitter(canonical, max(wanted, 30))
-        if nitter_rows:
-            _v92_store_live_cache(canonical, nitter_rows)
-            _v92_remember_live_rows(canonical, nitter_rows)
-            return nitter_rows[:wanted], None, "nitter-rss"
-
-    direct_rows, direct_error = _v92_syndication_once(canonical, max(wanted, 30))
-    if direct_rows:
-        _v92_remember_live_rows(canonical, direct_rows)
-        return direct_rows[:wanted], None, "x-syndication"
-
-    cached = _v91_memory_posts(canonical, limit=max(wanted, 60))
-    combined_error: Exception | None = direct_error or nitter_error
-    final_route = "memory" if cached else "none"
-    _v92_diag_set(
-        canonical,
-        route=final_route,
-        live=False,
-        posts=len(cached),
-        seconds=float(_v92_diag_get(canonical).get("seconds", 0.0) or 0.0),
-        error=short_error(combined_error, 260) if combined_error else "",
-    )
-    return cached[:wanted], combined_error, final_route
-
-
-def fetch_posts(username: str) -> list[Post]:
-    rows, _error, _route = _v92_live_then_memory(username, max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
-    return rows
-
-
-def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
-    canonical = str(username or "").strip().lstrip("@")
-    rows, error, _route = _v92_live_then_memory(canonical, 30)
-    return canonical, rows, error
-
-
-def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    canonical = str(username or "").strip().lstrip("@")
-    started = time.perf_counter()
-    rows, error, route = _v92_live_then_memory(canonical, max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
-    try:
-        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
-    except Exception:
-        pass
-    if error and route in {"memory", "none"}:
-        failures = int(FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) or 0) + 1
-        FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
-        if failures == 1 or failures % 30 == 0:
-            logging.warning(
-                "⚠️ מקור חי לא החזיר נתונים עבור @%s; route=%s memory=%s: %s",
-                canonical,
-                route,
-                len(rows),
-                short_error(error, 260),
-            )
-    else:
-        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
-    ordered = sorted(
-        [p for p in (rows or []) if isinstance(p, Post)],
-        key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0),
-        reverse=True,
-    )
-    return canonical, ordered[:int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)]
-
-
-def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
-    rows, _error, _route = _v92_live_then_memory(username, max(1, int(limit)))
-    return rows[:max(1, int(limit))]
-
-
-def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    wanted = max(1, int(limit))
-    live_rows, error, route = _v92_live_then_memory(canonical, max(20, wanted))
-    merged: dict[str, Post] = {}
-    for post in list(live_rows or []) + _v91_memory_posts(canonical, limit=max(60, wanted * 6)):
-        if not isinstance(post, Post):
-            continue
-        try:
-            post.username = canonical
-        except Exception:
-            pass
-        identity = str(
-            getattr(post, "post_id", "")
-            or getattr(post, "link", "")
-            or post_content_signature(canonical, str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or ""))
-        ).strip()
-        if identity:
-            merged.setdefault(identity, post)
-    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-    try:
-        LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = {
-            "route": "v92_" + route,
-            "live": len(live_rows or []),
-            "memory_after_merge": len(ordered),
-            "errors": [short_error(error, 300)] if error else [],
-            "returned": min(wanted, len(ordered)),
-        }
-    except Exception:
-        pass
-    return ordered[:wanted]
-
-
-def fetch_latest_post_fast(username: str) -> Post | None:
-    rows, _error, _route = _v92_live_then_memory(username, 1)
-    return rows[0] if rows else None
-
-
-def fetch_control_posts_for_accounts(accounts: list[str]) -> dict[str, tuple[list[Post], Exception | None]]:
-    """All-source control check with one live request/account at most; provider outages short-circuit."""
-    ordered_accounts = [str(x or "").strip().lstrip("@") for x in list(accounts or []) if str(x or "").strip()]
-    result: dict[str, tuple[list[Post], Exception | None]] = {name: ([], None) for name in ordered_accounts}
-    if not ordered_accounts:
-        return result
-    workers = min(max(1, V91_CONTROL_NITTER_WORKERS), len(ordered_accounts))
-    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="live-control-v92") as executor:
-        future_map = {executor.submit(fetch_control_posts, name): name for name in ordered_accounts}
-        for future in as_completed(future_map):
-            name = future_map[future]
-            try:
-                _canonical, posts, error = future.result()
-                result[name] = (list(posts or []), error)
-            except Exception as exc:
-                result[name] = ([], exc)
-    return result
-
-
-def _v92_status_lines(accounts: list[str], title: str) -> str:
-    fetched = fetch_control_posts_for_accounts(accounts)
-    with _V92_STATE_LOCK:
-        nitter_mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
-        nitter_reason = str(_V92_NITTER_STATE.get("reason", "") or "")
-        nitter_calls = int(_V92_NITTER_STATE.get("network_calls", 0) or 0)
-        direct_calls = int(_V92_DIRECT_STATE.get("network_calls", 0) or 0)
-        direct_mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
-    lines = [title, ""]
-    if nitter_mode == "gone":
-        lines.append("⛔ nitter.net RSS הושבת גלובלית אחרי HTTP 410/Gone; לא מבוצעות עוד 17 בקשות מתות.")
-    elif nitter_mode == "live":
-        lines.append("✅ nitter.net RSS חי ונשאר המקור הראשון.")
-    else:
-        lines.append(f"ℹ️ מצב Nitter: {nitter_mode}.")
-    lines.append("🔁 כש-Nitter אינו זמין: X syndication ציבורי ללא API key — בקשה אחת לכל מקור, ללא RSS mirrors וללא retry באותו סבב.")
-    lines.append("")
-
-    live_nitter = 0
-    live_direct = 0
-    memory_used = 0
-    recent_total = 0
-    for username in accounts:
-        label = _hebrew_account_label(username)
-        posts, error = fetched.get(username, ([], None))
-        recent = recent_24h_posts(posts)
-        recent_total += len(recent)
-        diag = _v92_diag_get(username)
-        route = str(diag.get("route", "") or "")
-        seconds = float(diag.get("seconds", 0.0) or 0.0)
-        if route == "nitter-rss" and bool(diag.get("live")):
-            live_nitter += 1
-            lines.append(f"✅ {label}: Nitter RSS | {len(recent)} ביממה | {seconds:.2f}s")
-        elif route in {"x-syndication", "x-syndication-cache"} and bool(diag.get("live")):
-            live_direct += 1
-            cache_note = " cache" if route.endswith("cache") else ""
-            lines.append(f"✅ {label}: X public{cache_note} | {len(recent)} ביממה | {seconds:.2f}s")
-        elif posts:
-            memory_used += 1
-            lines.append(f"🟡 {label}: מקור חי נכשל; זיכרון מקומי | {len(recent)} ביממה")
-        else:
-            detail = str(diag.get("error", "") or (short_error(error, 170) if error else "לא התקבל פוסט"))
-            lines.append(f"❌ {label}: אין נתונים חיים | {detail[:170]}")
-
-    lines.extend([
-        "",
-        f"תוצאה: Nitter={live_nitter}, X-public={live_direct}, זיכרון={memory_used}, פוסטים מהיממה={recent_total}.",
-        f"פעולות רשת בתהליך מאז העלייה: Nitter={nitter_calls}, X-public={direct_calls}. מצב X-public={direct_mode}.",
-    ])
-    if nitter_reason and nitter_mode == "gone":
-        lines.append("סיבת השבתת Nitter: " + nitter_reason[:220])
-    return "\n".join(lines)[:4050]
-
-
-def rss_status_text() -> str:
-    accounts = _v91_active_rss_accounts()
-    return _v92_status_lines(accounts, f"📡 בדיקת מקורות חיים לכל {len(accounts)} המקורות הפעילים")
-
-
-def facts_rss_status_text() -> str:
-    accounts = [source for source in list(FACTS_SOURCE_ORDER or []) if not control_state_account_disabled(source)]
-    return _v92_status_lines(accounts, f"📡 בדיקת מקורות חיים ל־{len(accounts)} מקורות העובדות הפעילים")
-
-
-def check_all_accounts_now_text() -> str:
-    accounts = _v91_active_rss_accounts()
-    return _v92_status_lines(accounts, f"🔄 בדיקה מלאה עכשיו — {len(accounts)} מקורות פעילים")
-
-
-def _v92_final_audit() -> None:
-    if int(CHECK_EVERY_SECONDS) != 20:
-        raise RuntimeError("v92_scan_cadence_changed")
-    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
-        raise RuntimeError("v92_account_workers_changed")
-    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v92_post_cap_changed")
-    if int(FEED_HTTP_RETRIES) != 1 or int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 1:
-        raise RuntimeError("v92_duplicate_network_retry_enabled")
-    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
-        raise RuntimeError("v92_duplicate_discovery_enabled")
-    names = set(fetch_posts_safely.__code__.co_names)
-    if "_v92_live_then_memory" not in names:
-        raise RuntimeError("v92_final_scanner_not_active")
-    # Critical regression guard: no old multi-mirror collector in the final scanner.
-    forbidden = {"_v56_final_rss_network_fetch", "collect_posts_from_feed_templates", "_v90_network_then_memory"}
-    if names.intersection(forbidden):
-        raise RuntimeError("v92_old_multi_source_route_leaked")
-    executor = globals().get("_V52_BUTTON_EXECUTOR")
-    if executor is None or int(getattr(executor, "_max_workers", 0) or 0) < 20:
-        raise RuntimeError("v92_fast_button_pool_not_preserved")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v92_final_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v92_final_audit")
-
-logging.info(
-    "V92 active: global Nitter 410 short-circuit + one-request X public syndication live rescue; "
-    "no RSS mirror fan-out or same-cycle retry; short live cache reduces button/scan duplication; "
-    "V91 translation, filters, Telegram, RTL, media, Shabbat and persistent state preserved."
-)
-
-# ====== END V92 NITTER OUTAGE-AWARE LIVE RESTORE ======
-
-
-
-# ====== V93 FINAL: FXTWITTER PRIMARY + DEEP PROVIDER DIAGNOSTICS (2026-08-27) ======
-# Root-cause restore after nitter.net 410 shutdown and Railway X-syndication 429.
-# Provider order is intentionally bounded and low-operation:
-#   1) Nitter: V92 single process-wide probe only (currently 410 -> globally disabled)
-#   2) FxTwitter API v2 profile timeline: free/no API key, one request/account
-#   3) FxTwitter RSS profile feed: only when API v2 did not produce rows
-#   4) X public syndication: only when both FxTwitter lanes did not produce rows
-#   5) Official X API: OPTIONAL and OFF by default even if a token exists
-#   6) Existing local memory/history
-# Every failure lane records a classified reason so the control diagnostic explains
-# whether the problem is rate-limit, provider removal, DNS/TLS/timeout, auth/policy,
-# invalid JSON/XML, schema change, parser zero, empty timeline, or stale data.
-
-BOT_BUILD_ID = "winner-v93-fxtwitter-primary-deep-diagnostic-2026-08-27"
-
-V93_FX_API_TEMPLATE = os.environ.get(
-    "V93_FX_API_TEMPLATE",
-    "https://api.fxtwitter.com/2/profile/{username}/statuses?count={count}",
-).strip()
-V93_FX_FEED_TEMPLATE = os.environ.get(
-    "V93_FX_FEED_TEMPLATE",
-    "https://fxtwitter.com/{username}/feed.xml?count={count}&with_replies=1",
-).strip()
-V93_TIMEOUT_SECONDS = max(2.0, min(8.0, float(os.environ.get("V93_TIMEOUT_SECONDS", "4.0"))))
-V93_LIVE_CACHE_SECONDS = max(8.0, min(30.0, float(os.environ.get("V93_LIVE_CACHE_SECONDS", "16.0"))))
-V93_PROVIDER_COOLDOWN_SECONDS = max(20.0, min(600.0, float(os.environ.get("V93_PROVIDER_COOLDOWN_SECONDS", "60.0"))))
-V93_NETWORK_LIMIT = max(12, min(60, int(os.environ.get("V93_NETWORK_LIMIT", "30"))))
-V93_ENABLE_FX_FEED_FALLBACK = os.environ.get("V93_ENABLE_FX_FEED_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
-# Paid X API must never activate merely because a token happens to exist.
-V93_ENABLE_OFFICIAL_X_FALLBACK = os.environ.get("V93_ENABLE_OFFICIAL_X_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}
-
-_V93_LOCK = RLock()
-_V93_PROVIDER_PROBE_LOCKS = {
-    "fxtwitter-api": Lock(),
-    "fxtwitter-feed": Lock(),
-    "x-syndication": Lock(),
-}
-_V93_PROVIDER_STATE: dict[str, dict[str, Any]] = {
-    "fxtwitter-api": {"mode": "unknown", "reason": "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0},
-    "fxtwitter-feed": {"mode": "unknown", "reason": "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0},
-    "official-x": {"mode": "disabled" if not V93_ENABLE_OFFICIAL_X_FALLBACK else "unknown", "reason": "opt-in required" if not V93_ENABLE_OFFICIAL_X_FALLBACK else "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0},
-}
-_V93_ACCOUNT_DIAG: dict[str, dict[str, Any]] = {}
-_V93_LIVE_CACHE: dict[str, tuple[float, list[Post], str]] = {}
-
-
-def _v93_key(username: str) -> str:
-    return str(username or "").strip().lstrip("@").casefold()
-
-
-def _v93_now() -> float:
-    return time.time()
-
-
-def _v93_classify_exception(exc: BaseException | None, *, status: int | None = None, context: str = "") -> str:
-    if status is None and exc is not None:
-        try:
-            status = _v92_extract_http_status(exc)
-        except Exception:
-            status = None
-    if status == 410:
-        return "http_410_provider_removed"
-    if status == 429:
-        return "http_429_rate_limit"
-    if status == 401:
-        return "http_401_auth_or_user_agent"
-    if status == 403:
-        return "http_403_blocked"
-    if status == 404:
-        return "http_404_empty_or_unknown_handle"
-    if status == 451:
-        return "http_451_policy_block"
-    if status is not None and 500 <= int(status) <= 599:
-        return "http_5xx_provider_upstream"
-    text = (f"{type(exc).__name__}: {exc}" if exc is not None else str(context or "")).casefold()
-    if "timed out" in text or "timeout" in text:
-        return "timeout"
-    if "name or service not known" in text or "temporary failure in name resolution" in text or "nodename nor servname" in text or "getaddrinfo" in text:
-        return "dns_failure"
-    if "ssl" in text or "certificate" in text or "tls" in text:
-        return "tls_failure"
-    if "json" in text or "expecting value" in text:
-        return "invalid_json"
-    if "schema" in text:
-        return "schema_changed"
-    if "parser" in text:
-        return "parser_zero"
-    if "empty" in text or "no results" in text or "no posts" in text:
-        return "empty_timeline"
-    if status is not None:
-        return f"http_{int(status)}"
-    return "network_or_provider_error"
-
-
-def _v93_attempt(provider: str, *, ok: bool, reason: str, status: int | None = None, posts: int = 0, seconds: float = 0.0, detail: str = "", cached: bool = False) -> dict[str, Any]:
-    return {
-        "provider": str(provider),
-        "ok": bool(ok),
-        "reason": str(reason or ("ok" if ok else "unknown")),
-        "status": status,
-        "posts": int(posts or 0),
-        "seconds": round(max(0.0, float(seconds or 0.0)), 3),
-        "detail": str(detail or "")[:300],
-        "cached": bool(cached),
-    }
-
-
-def _v93_diag_begin(username: str) -> None:
-    key = _v93_key(username)
-    with _V93_LOCK:
-        _V93_ACCOUNT_DIAG[key] = {"username": str(username or "").strip().lstrip("@"), "attempts": [], "route": "", "live": False, "posts": 0, "recent": 0, "finished_at": 0.0}
-
-
-def _v93_diag_add(username: str, attempt: dict[str, Any]) -> None:
-    key = _v93_key(username)
-    with _V93_LOCK:
-        row = _V93_ACCOUNT_DIAG.setdefault(key, {"username": str(username or "").strip().lstrip("@"), "attempts": []})
-        row.setdefault("attempts", []).append(dict(attempt))
-        row["attempts"] = row["attempts"][-10:]
-
-
-def _v93_diag_finish(username: str, route: str, rows: list[Post], *, live: bool) -> None:
-    key = _v93_key(username)
-    recent = 0
-    try:
-        recent = len(recent_24h_posts(rows or []))
-    except Exception:
-        recent = 0
-    with _V93_LOCK:
-        row = _V93_ACCOUNT_DIAG.setdefault(key, {"username": str(username or "").strip().lstrip("@"), "attempts": []})
-        row.update({"route": str(route or ""), "live": bool(live), "posts": len(rows or []), "recent": recent, "finished_at": _v93_now()})
-
-
-def _v93_diag_get(username: str) -> dict[str, Any]:
-    with _V93_LOCK:
-        return dict(_V93_ACCOUNT_DIAG.get(_v93_key(username), {}) or {})
-
-
-def _v93_provider_state(provider: str) -> dict[str, Any]:
-    with _V93_LOCK:
-        return dict(_V93_PROVIDER_STATE.get(provider, {}) or {})
-
-
-def _v93_provider_available(provider: str) -> tuple[bool, str]:
-    now = _v93_now()
-    with _V93_LOCK:
-        state = _V93_PROVIDER_STATE.setdefault(provider, {"mode": "unknown", "reason": "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0})
-        mode = str(state.get("mode", "unknown") or "unknown")
-        until = float(state.get("disabled_until", 0.0) or 0.0)
-        reason = str(state.get("reason", "") or "")
-        if mode in {"cooldown", "degraded"} and now >= until:
-            state.update({"mode": "unknown", "reason": "", "disabled_until": 0.0})
-            return True, ""
-        if mode in {"cooldown", "degraded", "disabled"} and now < until:
-            return False, reason or mode
-        if mode == "disabled":
-            return False, reason or "disabled"
-        return True, ""
-
-
-def _v93_provider_mark(provider: str, *, mode: str, reason: str = "", status: int | None = None, cooldown: float = 0.0) -> None:
-    with _V93_LOCK:
-        state = _V93_PROVIDER_STATE.setdefault(provider, {"network_calls": 0})
-        state.update({
-            "mode": str(mode),
-            "reason": str(reason or "")[:400],
-            "last_status": status,
-            "checked_at": _v93_now(),
-            "disabled_until": (_v93_now() + max(1.0, float(cooldown))) if cooldown > 0 else 0.0,
-        })
-
-
-def _v93_provider_increment(provider: str) -> None:
-    with _V93_LOCK:
-        state = _V93_PROVIDER_STATE.setdefault(provider, {"mode": "unknown", "reason": "", "disabled_until": 0.0, "network_calls": 0, "last_status": None, "checked_at": 0.0})
-        state["network_calls"] = int(state.get("network_calls", 0) or 0) + 1
-
-
-def _v93_provider_failure_policy(provider: str, classification: str, status: int | None, detail: str) -> None:
-    # Account-specific 404/empty results do not mark the whole provider down.
-    if classification in {"http_404_empty_or_unknown_handle", "empty_timeline"}:
-        _v93_provider_mark(provider, mode="live", reason="", status=status)
-        return
-    if classification in {"http_429_rate_limit"}:
-        _v93_provider_mark(provider, mode="cooldown", reason=detail or classification, status=status, cooldown=max(60.0, V93_PROVIDER_COOLDOWN_SECONDS))
-        return
-    if classification in {"http_401_auth_or_user_agent", "http_403_blocked", "http_451_policy_block"}:
-        _v93_provider_mark(provider, mode="cooldown", reason=detail or classification, status=status, cooldown=max(300.0, V93_PROVIDER_COOLDOWN_SECONDS))
-        return
-    if classification in {"http_5xx_provider_upstream", "timeout", "dns_failure", "tls_failure", "network_or_provider_error"}:
-        _v93_provider_mark(provider, mode="cooldown", reason=detail or classification, status=status, cooldown=max(30.0, V93_PROVIDER_COOLDOWN_SECONDS))
-        return
-    if classification in {"invalid_json", "schema_changed", "parser_zero"}:
-        _v93_provider_mark(provider, mode="degraded", reason=detail or classification, status=status, cooldown=max(180.0, V93_PROVIDER_COOLDOWN_SECONDS))
-        return
-    _v93_provider_mark(provider, mode="live", reason="", status=status)
-
-
-def _v93_cached_live(username: str, limit: int) -> tuple[list[Post], str]:
-    key = _v93_key(username)
-    with _V93_LOCK:
-        cached = _V93_LIVE_CACHE.get(key)
-    if not cached:
-        return [], ""
-    saved_at, rows, route = cached
-    if _v93_now() - float(saved_at or 0.0) > V93_LIVE_CACHE_SECONDS:
-        return [], ""
-    return list(rows or [])[:max(1, int(limit))], str(route or "cache")
-
-
-def _v93_store_live(username: str, rows: list[Post], route: str) -> None:
-    if not rows:
-        return
-    with _V93_LOCK:
-        _V93_LIVE_CACHE[_v93_key(username)] = (_v93_now(), list(rows[:80]), str(route or "live"))
-        if len(_V93_LIVE_CACHE) > 200:
-            oldest = sorted(_V93_LIVE_CACHE.items(), key=lambda kv: float(kv[1][0] or 0.0))[:40]
-            for key, _value in oldest:
-                _V93_LIVE_CACHE.pop(key, None)
-
-
-def _v93_timestamp_from_fx(node: dict[str, Any], tweet_id: str) -> float:
-    raw_ts = node.get("created_timestamp")
-    try:
-        value = float(raw_ts)
-        if value > 1_000_000_000:
-            return value
-    except Exception:
-        pass
-    raw = str(node.get("created_at") or "").strip()
-    if raw:
-        try:
-            normalized = raw.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(normalized)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-            return dt.timestamp()
-        except Exception:
-            pass
-        try:
-            return parsedate_to_datetime(raw).timestamp()
-        except Exception:
-            pass
-    try:
-        return float(_reliable_snowflake_timestamp(tweet_id) or 0.0)
-    except Exception:
-        return 0.0
-
-
-def _v93_media_from_fx(node: dict[str, Any]) -> tuple[list[str], list[str]]:
-    images: list[str] = []
-    videos: list[str] = []
-    try:
-        i, v = _precise_tweet_media(node)
-        images.extend(i or [])
-        videos.extend(v or [])
-    except Exception:
-        pass
-    media = node.get("media") if isinstance(node.get("media"), dict) else {}
-    for item in list(media.get("photos") or []) + list(media.get("all") or []):
-        if not isinstance(item, dict):
-            continue
-        kind = str(item.get("type") or "").casefold()
-        url = str(item.get("url") or item.get("thumbnail_url") or "").strip()
-        if url:
-            if kind in {"video", "gif", "animated_gif"} or ".mp4" in url.casefold():
-                videos.append(url)
-            else:
-                images.append(url)
-    for item in list(media.get("videos") or []):
-        if not isinstance(item, dict):
-            continue
-        for candidate in (item.get("url"), item.get("transcode_url")):
-            if isinstance(candidate, str) and candidate.strip():
-                videos.append(candidate.strip())
-        thumb = item.get("thumbnail_url")
-        if isinstance(thumb, str) and thumb.strip():
-            images.append(thumb.strip())
-    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
-
-
-def _v93_fx_status_nodes(payload: Any) -> list[dict[str, Any]]:
-    if not isinstance(payload, dict):
-        return []
-    results = payload.get("results")
-    if not isinstance(results, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for item in results:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("type") or "").casefold() == "thread":
-            for key in ("statuses", "thread", "posts"):
-                child = item.get(key)
-                if isinstance(child, list):
-                    out.extend(x for x in child if isinstance(x, dict))
-                    break
-        else:
-            out.append(item)
-    return out
-
-
-def _v93_parse_fx_payload(username: str, payload: Any, limit: int) -> tuple[list[Post], str]:
-    canonical = str(username or "").strip().lstrip("@")
-    if not isinstance(payload, dict):
-        return [], "schema_changed: top-level JSON is not an object"
-    if "results" not in payload:
-        return [], "schema_changed: missing results"
-    if not isinstance(payload.get("results"), list):
-        return [], "schema_changed: results is not a list"
-    nodes = _v93_fx_status_nodes(payload)
-    if not nodes:
-        return [], "empty_timeline"
-    merged: dict[str, Post] = {}
-    parser_candidates = 0
-    for node in nodes:
-        tweet_id = str(node.get("id") or "").strip()
-        if not re.fullmatch(r"\d{15,22}", tweet_id):
-            continue
-        text_value = _reliable_normalize_x_text(str(node.get("text") or ""))
-        if not text_value:
-            continue
-        parser_candidates += 1
-        author = node.get("author") if isinstance(node.get("author"), dict) else {}
-        author_handle = str(author.get("screen_name") or author.get("username") or "").strip().lstrip("@")
-        # Timeline APIs may include reposted content authored by another account.
-        # Keep it attached to the configured source account while preserving author in text.
-        reposted_by = node.get("reposted_by") if isinstance(node.get("reposted_by"), dict) else {}
-        repost_handle = str(reposted_by.get("screen_name") or reposted_by.get("username") or "").strip().lstrip("@")
-        if author_handle and author_handle.casefold() != canonical.casefold() and repost_handle.casefold() == canonical.casefold():
-            text_value = f"RT @{author_handle}: {text_value}"
-        link = str(node.get("url") or "").strip()
-        if not link or "/status/" not in link:
-            link = f"https://x.com/{canonical}/status/{tweet_id}"
-        else:
-            try:
-                parsed = urllib.parse.urlparse(link)
-                if parsed.netloc.casefold() not in {"x.com", "twitter.com", "www.x.com", "www.twitter.com"}:
-                    link = f"https://x.com/{canonical}/status/{tweet_id}"
-            except Exception:
-                link = f"https://x.com/{canonical}/status/{tweet_id}"
-        images, videos = _v93_media_from_fx(node)
-        quote = node.get("quote") if isinstance(node.get("quote"), dict) else {}
-        quoted_text = _reliable_normalize_x_text(str(quote.get("text") or "")) if quote else ""
-        quote_author_obj = quote.get("author") if isinstance(quote.get("author"), dict) else {}
-        quoted_author = str(quote_author_obj.get("screen_name") or quote_author_obj.get("username") or "").strip().lstrip("@") if quote else ""
-        q_images: list[str] = []
-        q_videos: list[str] = []
-        if quote:
-            q_images, q_videos = _v93_media_from_fx(quote)
-        post = Post(
-            tweet_id,
-            canonical,
-            text_value,
-            link,
-            images,
-            videos,
-            bool(videos or q_videos),
-            bool(videos),
-            bool(q_videos),
-            quoted_author,
-            quoted_text,
-            _v93_timestamp_from_fx(node, tweet_id),
-            [tweet_id, f"{canonical}:{tweet_id}", f"{canonical}:{link}", post_content_signature(canonical, text_value, quoted_text)],
-            "fxtwitter-v2",
-        )
-        post.original_text = text_value
-        post.source_structure_available = True
-        post.exact_source_structure = True
-        post.exact_source_provider = "fxtwitter-v2"
-        post.exact_media_checked = True
-        if q_images and not images:
-            # Keep quote image available if the primary post has no image.
-            try:
-                post.image_urls = list(dict.fromkeys(list(post.image_urls or []) + q_images))
-            except Exception:
-                pass
-        merged.setdefault(tweet_id, post)
-    if not merged:
-        if parser_candidates:
-            return [], "parser_zero: candidates existed but no Post survived"
-        return [], "parser_zero: results existed but no valid status id/text"
-    rows = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-    return rows[:max(1, int(limit))], ""
-
-
-def _v93_http_error_body(exc: urllib.error.HTTPError) -> bytes:
-    try:
-        return exc.read(4_000_000)
-    except TypeError:
-        try:
-            return exc.read()
-        except Exception:
-            return b""
-    except Exception:
-        return b""
-
-
-def _v93_fx_api_network_once(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
-    canonical = str(username or "").strip().lstrip("@")
-    count = max(5, min(V93_NETWORK_LIMIT, max(int(limit), 12)))
-    url = V93_FX_API_TEMPLATE.format(username=urllib.parse.quote(canonical), count=count)
-    request = urllib.request.Request(url, headers={
-        "User-Agent": "NetoSportBot/1.0 (Telegram football news monitor; contact=operator)",
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-    })
-    started = time.perf_counter()
-    _v93_provider_increment("fxtwitter-api")
-    status: int | None = None
-    body = b""
-    try:
-        with urllib.request.urlopen(request, timeout=V93_TIMEOUT_SECONDS) as response:
-            status = int(getattr(response, "status", 200) or 200)
-            body = response.read(4_000_000)
-    except urllib.error.HTTPError as exc:
-        status = int(getattr(exc, "code", 0) or 0) or None
-        body = _v93_http_error_body(exc)
-        # FxTwitter list endpoints document 404 for both unknown/empty timelines.
-        if status != 404:
-            classification = _v93_classify_exception(exc, status=status)
-            detail = f"{classification}: HTTP {status}: {body.decode('utf-8', errors='replace')[:180]}"
-            _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
-            return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-    except Exception as exc:
-        classification = _v93_classify_exception(exc)
-        detail = f"{classification}: {type(exc).__name__}: {short_error(exc, 180)}"
-        _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
-        return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-    try:
-        payload = json.loads(body.decode("utf-8", errors="strict")) if body else {}
-    except Exception as exc:
-        classification = "invalid_json"
-        detail = f"invalid_json: HTTP {status}; body={body[:120]!r}"
-        _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
-        return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-    rows, parse_reason = _v93_parse_fx_payload(canonical, payload, max(1, int(limit)))
-    if rows:
-        _v93_provider_mark("fxtwitter-api", mode="live", status=status)
-        return rows, _v93_attempt("FxTwitter API", ok=True, reason="ok", status=status, posts=len(rows), seconds=time.perf_counter()-started)
-    classification = "http_404_empty_or_unknown_handle" if status == 404 else (parse_reason.split(":",1)[0] if parse_reason else "empty_timeline")
-    detail = parse_reason or classification
-    _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
-    return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-
-def _v93_provider_guarded_call(provider: str, callback, username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
-    available, reason = _v93_provider_available(provider)
-    if not available:
-        return [], _v93_attempt(provider, ok=False, reason="cooldown", detail=f"provider cooldown: {reason}")
-    state = _v93_provider_state(provider)
-    if str(state.get("mode", "unknown")) == "live":
-        return callback(username, limit)
-    # First request after startup/cooldown is single-flight. If it discovers a
-    # provider-wide 429/403/schema outage, the other account workers skip it.
-    lock = _V93_PROVIDER_PROBE_LOCKS[provider]
-    with lock:
-        available, reason = _v93_provider_available(provider)
-        if not available:
-            return [], _v93_attempt(provider, ok=False, reason="cooldown", detail=f"provider cooldown: {reason}")
-        state = _v93_provider_state(provider)
-        if str(state.get("mode", "unknown")) == "live":
-            return callback(username, limit)
-        return callback(username, limit)
-
-
-def _v93_fx_feed_network_once(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
-    canonical = str(username or "").strip().lstrip("@")
-    count = max(5, min(V93_NETWORK_LIMIT, max(int(limit), 12)))
-    url = V93_FX_FEED_TEMPLATE.format(username=urllib.parse.quote(canonical), count=count)
-    request = urllib.request.Request(url, headers={
-        "User-Agent": "NetoSportBot/1.0 (Telegram football news monitor; contact=operator)",
-        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.2",
-        "Cache-Control": "no-cache",
-    })
-    started = time.perf_counter()
-    _v93_provider_increment("fxtwitter-feed")
-    status: int | None = None
-    body = b""
-    try:
-        with urllib.request.urlopen(request, timeout=V93_TIMEOUT_SECONDS) as response:
-            status = int(getattr(response, "status", 200) or 200)
-            body = response.read(4_000_000)
-    except urllib.error.HTTPError as exc:
-        status = int(getattr(exc, "code", 0) or 0) or None
-        raw = _v93_http_error_body(exc)
-        classification = _v93_classify_exception(exc, status=status)
-        detail = f"{classification}: HTTP {status}: {raw.decode('utf-8', errors='replace')[:180]}"
-        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
-        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-    except Exception as exc:
-        classification = _v93_classify_exception(exc)
-        detail = f"{classification}: {type(exc).__name__}: {short_error(exc, 180)}"
-        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
-        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-    try:
-        rows = [p for p in (parse_posts(canonical, body, "fxtwitter-feed") or []) if isinstance(p, Post)]
-    except Exception as exc:
-        classification = "parser_zero"
-        detail = f"parser_zero: {type(exc).__name__}: {short_error(exc, 180)}"
-        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
-        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-    if rows:
-        for post in rows:
-            try:
-                post.username = canonical
-                post.source_name = "fxtwitter-feed"
-                parts = tweet_parts_from_link(str(getattr(post, "link", "") or ""))
-                if parts:
-                    post.link = f"https://x.com/{canonical}/status/{parts[1]}"
-            except Exception:
-                pass
-        rows.sort(key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-        _v93_provider_mark("fxtwitter-feed", mode="live", status=status)
-        return rows[:max(1, int(limit))], _v93_attempt("FxTwitter RSS", ok=True, reason="ok", status=status, posts=len(rows), seconds=time.perf_counter()-started)
-    raw_lower = body[:300_000].decode("utf-8", errors="replace").casefold()
-    if "<item" in raw_lower or "<entry" in raw_lower:
-        classification = "parser_zero"
-        detail = "parser_zero: feed contains item/entry but parser returned 0"
-    else:
-        classification = "empty_timeline"
-        detail = "empty_timeline: HTTP 200 feed contains no item/entry"
-    _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
-    return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-
-def _v93_syndication_guarded(username: str, limit: int) -> tuple[list[Post], Exception | None]:
-    """Single-flight X syndication fallback. Rechecks cooldown after the lock.
-
-    V92 already serializes network calls, but concurrent workers could queue before
-    the first 429 flips the global cooldown. This extra lock makes one 429 enough.
-    """
-    cooldown = _v92_direct_cooldown_error()
-    if cooldown is not None:
-        return [], cooldown
-    lock = _V93_PROVIDER_PROBE_LOCKS["x-syndication"]
-    with lock:
-        cooldown = _v92_direct_cooldown_error()
-        if cooldown is not None:
-            return [], cooldown
-        return _v92_syndication_network_once(username, limit)
-
-
-def _v93_optional_official_x(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
-    if not V93_ENABLE_OFFICIAL_X_FALLBACK:
-        return [], _v93_attempt("Official X API", ok=False, reason="disabled", detail="V93_ENABLE_OFFICIAL_X_FALLBACK=0")
-    token = (
-        os.environ.get("X_BEARER_TOKEN", "").strip()
-        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
-        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
-    )
-    if not token:
-        return [], _v93_attempt("Official X API", ok=False, reason="not_configured", detail="no bearer token")
-    started = time.perf_counter()
-    try:
-        # Existing reader performs two official requests: username lookup + timeline.
-        with _V93_LOCK:
-            _V93_PROVIDER_STATE["official-x"]["network_calls"] = int(_V93_PROVIDER_STATE["official-x"].get("network_calls", 0) or 0) + 2
-        rows = list(_reliable_official_x_profile_posts(str(username or "").strip().lstrip("@"), max(5, int(limit))) or [])
-        if rows:
-            _v93_provider_mark("official-x", mode="live")
-            return rows[:max(1, int(limit))], _v93_attempt("Official X API", ok=True, reason="ok", posts=len(rows), seconds=time.perf_counter()-started)
-        return [], _v93_attempt("Official X API", ok=False, reason="empty_timeline", seconds=time.perf_counter()-started)
-    except Exception as exc:
-        status = _v92_extract_http_status(exc)
-        classification = _v93_classify_exception(exc, status=status)
-        return [], _v93_attempt("Official X API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=short_error(exc, 180))
-
-
-def _v93_remember(username: str, rows: list[Post]) -> None:
-    if not rows:
-        return
-    try:
-        _v91_remember_nitter_rows(username, rows)
-    except Exception:
-        pass
-
-
-def _v93_live_then_memory(username: str, limit: int = 30) -> tuple[list[Post], Exception | None, str]:
-    canonical = str(username or "").strip().lstrip("@")
-    wanted = max(1, int(limit))
-    _v93_diag_begin(canonical)
-
-    cached, cached_route = _v93_cached_live(canonical, wanted)
-    if cached:
-        _v93_diag_add(canonical, _v93_attempt(cached_route, ok=True, reason="cache_hit", posts=len(cached), cached=True))
-        _v93_diag_finish(canonical, cached_route + "-cache", cached, live=True)
-        return cached, None, cached_route + "-cache"
-
-    # 1) Preserve V92's one-time Nitter health probe. 410 is process-wide and
-    # immediately prevents the remaining account workers from touching it.
-    nitter_rows: list[Post] = []
-    nitter_error: Exception | None = None
-    nitter_started = time.perf_counter()
-    try:
-        nitter_rows, nitter_error = _v92_try_nitter(canonical, wanted)
-    except Exception as exc:
-        nitter_error = exc
-        nitter_rows = []
-    if nitter_rows:
-        attempt = _v93_attempt("Nitter RSS", ok=True, reason="ok", posts=len(nitter_rows), seconds=time.perf_counter()-nitter_started)
-        _v93_diag_add(canonical, attempt)
-        _v93_remember(canonical, nitter_rows)
-        _v93_store_live(canonical, nitter_rows, "nitter-rss")
-        _v93_diag_finish(canonical, "nitter-rss", nitter_rows, live=True)
-        return nitter_rows[:wanted], None, "nitter-rss"
-    n_status = _v92_extract_http_status(nitter_error) if nitter_error else None
-    n_class = _v93_classify_exception(nitter_error, status=n_status, context="nitter unavailable")
-    if nitter_error and "globally unavailable" in str(nitter_error).casefold():
-        with _V92_STATE_LOCK:
-            n_reason = str(_V92_NITTER_STATE.get("reason", "") or "")
-        n_class = "http_410_provider_removed" if "410" in n_reason else "provider_disabled"
-    _v93_diag_add(canonical, _v93_attempt("Nitter RSS", ok=False, reason=n_class, status=n_status, seconds=time.perf_counter()-nitter_started, detail=short_error(nitter_error, 180) if nitter_error else "no rows"))
-
-    # 2) FxTwitter v2 structured JSON timeline. Single-flight only while provider
-    # health is unknown, then the existing four account workers may use it normally.
-    fx_rows, fx_attempt = _v93_provider_guarded_call("fxtwitter-api", _v93_fx_api_network_once, canonical, wanted)
-    _v93_diag_add(canonical, fx_attempt)
-    if fx_rows:
-        _v93_remember(canonical, fx_rows)
-        _v93_store_live(canonical, fx_rows, "fxtwitter-api")
-        _v93_diag_finish(canonical, "fxtwitter-api", fx_rows, live=True)
-        return fx_rows[:wanted], None, "fxtwitter-api"
-
-    # 3) Independent RSS surface on FxTwitter, consulted only if v2 JSON did not
-    # produce rows. This costs no extra operation on healthy v2 cycles.
-    if V93_ENABLE_FX_FEED_FALLBACK:
-        feed_rows, feed_attempt = _v93_provider_guarded_call("fxtwitter-feed", _v93_fx_feed_network_once, canonical, wanted)
-        _v93_diag_add(canonical, feed_attempt)
-        if feed_rows:
-            _v93_remember(canonical, feed_rows)
-            _v93_store_live(canonical, feed_rows, "fxtwitter-feed")
-            _v93_diag_finish(canonical, "fxtwitter-feed", feed_rows, live=True)
-            return feed_rows[:wanted], None, "fxtwitter-feed"
-
-    # 4) Existing X syndication is now only the third free provider. Its V92
-    # global 429 circuit breaker remains active, so a Railway IP block cannot fan
-    # out into 17 repeated calls.
-    syn_started = time.perf_counter()
-    try:
-        syn_rows, syn_error = _v93_syndication_guarded(canonical, wanted)
-    except Exception as exc:
-        syn_rows, syn_error = [], exc
-    if syn_rows:
-        _v93_diag_add(canonical, _v93_attempt("X Syndication", ok=True, reason="ok", posts=len(syn_rows), seconds=time.perf_counter()-syn_started))
-        _v93_remember(canonical, syn_rows)
-        _v93_store_live(canonical, syn_rows, "x-syndication")
-        _v93_diag_finish(canonical, "x-syndication", syn_rows, live=True)
-        return syn_rows[:wanted], None, "x-syndication"
-    s_status = _v92_extract_http_status(syn_error) if syn_error else None
-    s_class = _v93_classify_exception(syn_error, status=s_status, context="syndication empty")
-    if syn_error and "cooldown" in str(syn_error).casefold():
-        s_class = "cooldown"
-    _v93_diag_add(canonical, _v93_attempt("X Syndication", ok=False, reason=s_class, status=s_status, seconds=time.perf_counter()-syn_started, detail=short_error(syn_error, 180) if syn_error else "no rows"))
-
-    # 5) Optional paid official API is deliberately opt-in, protecting credits.
-    official_rows, official_attempt = _v93_optional_official_x(canonical, wanted)
-    _v93_diag_add(canonical, official_attempt)
-    if official_rows:
-        _v93_remember(canonical, official_rows)
-        _v93_store_live(canonical, official_rows, "official-x")
-        _v93_diag_finish(canonical, "official-x", official_rows, live=True)
-        return official_rows[:wanted], None, "official-x"
-
-    # 6) Local history is always last and never renamed/reset.
-    memory = _v91_memory_posts(canonical, limit=max(60, wanted * 3))
-    if memory:
-        _v93_diag_add(canonical, _v93_attempt("Memory", ok=True, reason="local_history", posts=len(memory), cached=True))
-        _v93_diag_finish(canonical, "memory", memory[:wanted], live=False)
-        return memory[:wanted], RuntimeError("all live providers failed; local memory used"), "memory"
-    _v93_diag_add(canonical, _v93_attempt("Memory", ok=False, reason="empty", detail="no stored posts for this source"))
-    _v93_diag_finish(canonical, "none", [], live=False)
-    attempts = _v93_diag_get(canonical).get("attempts", [])
-    chain = " -> ".join(f"{a.get('provider')}:{a.get('reason')}" for a in attempts if not a.get("ok"))
-    return [], RuntimeError(chain or "all live providers failed"), "none"
-
-
-def fetch_posts(username: str) -> list[Post]:
-    rows, _error, _route = _v93_live_then_memory(username, max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
-    return rows
-
-
-def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
-    canonical = str(username or "").strip().lstrip("@")
-    rows, error, _route = _v93_live_then_memory(canonical, 30)
-    return canonical, rows, error
-
-
-def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    canonical = str(username or "").strip().lstrip("@")
-    started = time.perf_counter()
-    rows, error, route = _v93_live_then_memory(canonical, max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)))
-    try:
-        daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
-    except Exception:
-        pass
-    if error and route in {"memory", "none"}:
-        failures = int(FEED_NO_POSTS_FAILURE_COUNTS.get(canonical, 0) or 0) + 1
-        FEED_NO_POSTS_FAILURE_COUNTS[canonical] = failures
-        if failures == 1 or failures % 30 == 0:
-            logging.warning("⚠️ live providers failed for @%s; route=%s memory=%s: %s", canonical, route, len(rows), short_error(error, 300))
-    else:
-        FEED_NO_POSTS_FAILURE_COUNTS.pop(canonical, None)
-    ordered = sorted([p for p in (rows or []) if isinstance(p, Post)], key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-    return canonical, ordered[:int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)]
-
-
-def fetch_control_posts_reliable(username: str, limit: int = 10) -> list[Post]:
-    rows, _error, _route = _v93_live_then_memory(username, max(1, int(limit)))
-    return rows[:max(1, int(limit))]
-
-
-def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    wanted = max(1, int(limit))
-    live_rows, error, route = _v93_live_then_memory(canonical, max(20, wanted))
-    merged: dict[str, Post] = {}
-    for post in list(live_rows or []) + _v91_memory_posts(canonical, limit=max(60, wanted * 6)):
-        if not isinstance(post, Post):
-            continue
-        try:
-            post.username = canonical
-        except Exception:
-            pass
-        identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or post_content_signature(canonical, str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or ""))).strip()
-        if identity:
-            merged.setdefault(identity, post)
-    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-    try:
-        LAST_TEN_HISTORY_DIAGNOSTICS[_ten_history_account_key(canonical)] = {
-            "route": "v93_" + route,
-            "live": len(live_rows or []),
-            "memory_after_merge": len(ordered),
-            "errors": [short_error(error, 300)] if error else [],
-            "returned": min(wanted, len(ordered)),
-        }
-    except Exception:
-        pass
-    return ordered[:wanted]
-
-
-def fetch_latest_post_fast(username: str) -> Post | None:
-    rows, _error, _route = _v93_live_then_memory(username, 1)
-    return rows[0] if rows else None
-
-
-def fetch_control_posts_for_accounts(accounts: list[str]) -> dict[str, tuple[list[Post], Exception | None]]:
-    ordered_names = [str(x or "").strip().lstrip("@") for x in list(accounts or []) if str(x or "").strip()]
-    result: dict[str, tuple[list[Post], Exception | None]] = {name: ([], None) for name in ordered_names}
-    if not ordered_names:
-        return result
-    workers = min(max(1, int(MAX_PARALLEL_ACCOUNT_CHECKS)), len(ordered_names))
-    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="live-control-v93") as executor:
-        future_map = {executor.submit(fetch_control_posts, name): name for name in ordered_names}
-        for future in as_completed(future_map):
-            name = future_map[future]
-            try:
-                _canonical, posts, error = future.result()
-                result[name] = (list(posts or []), error)
-            except Exception as exc:
-                result[name] = ([], exc)
-    return result
-
-
-def _v93_attempt_short(attempt: dict[str, Any]) -> str:
-    provider = str(attempt.get("provider", "?") or "?")
-    aliases = {
-        "Nitter RSS": "Nit",
-        "FxTwitter API": "FxAPI",
-        "fxtwitter-api": "FxAPI",
-        "FxTwitter RSS": "FxRSS",
-        "fxtwitter-feed": "FxRSS",
-        "X Syndication": "XSyn",
-        "Official X API": "XAPI",
-        "Memory": "Mem",
-    }
-    provider = aliases.get(provider, provider)
-    reason = str(attempt.get("reason", "?") or "?")
-    reason_aliases = {
-        "http_410_provider_removed": "410",
-        "http_429_rate_limit": "429",
-        "http_401_auth_or_user_agent": "401",
-        "http_403_blocked": "403",
-        "http_404_empty_or_unknown_handle": "404/empty",
-        "http_451_policy_block": "451",
-        "http_5xx_provider_upstream": "5xx",
-        "network_or_provider_error": "network",
-        "schema_changed": "schema",
-        "invalid_json": "bad-json",
-        "parser_zero": "parser0",
-        "empty_timeline": "empty",
-        "cache_hit": "cache",
-        "local_history": "history",
-        "not_configured": "off",
-        "disabled": "off",
-        "cooldown": "cooldown",
-    }
-    reason = reason_aliases.get(reason, reason)
-    if attempt.get("ok"):
-        cache = "C" if attempt.get("cached") else "OK"
-        return f"{provider}:{cache}({int(attempt.get('posts', 0) or 0)})"
-    return f"{provider}:{reason}"
-
-def _v93_status_lines(accounts: list[str], title: str) -> str:
-    fetched = fetch_control_posts_for_accounts(accounts)
-    with _V92_STATE_LOCK:
-        nitter_mode = str(_V92_NITTER_STATE.get("mode", "unknown") or "unknown")
-        nitter_reason = str(_V92_NITTER_STATE.get("reason", "") or "")
-        nitter_calls = int(_V92_NITTER_STATE.get("network_calls", 0) or 0)
-        synd_mode = str(_V92_DIRECT_STATE.get("mode", "unknown") or "unknown")
-        synd_reason = str(_V92_DIRECT_STATE.get("reason", "") or "")
-        synd_calls = int(_V92_DIRECT_STATE.get("network_calls", 0) or 0)
-    fx_api = _v93_provider_state("fxtwitter-api")
-    fx_feed = _v93_provider_state("fxtwitter-feed")
-    official = _v93_provider_state("official-x")
-    lines = [title, ""]
-    lines.append(f"• Nitter: {nitter_mode} | calls={nitter_calls}" + (f" | {nitter_reason[:90]}" if nitter_reason else ""))
-    lines.append(f"• FxTwitter API v2: {fx_api.get('mode','unknown')} | calls={int(fx_api.get('network_calls',0) or 0)}" + (f" | {str(fx_api.get('reason',''))[:90]}" if fx_api.get('reason') else ""))
-    lines.append(f"• FxTwitter RSS: {fx_feed.get('mode','unknown')} | calls={int(fx_feed.get('network_calls',0) or 0)}" + (f" | {str(fx_feed.get('reason',''))[:90]}" if fx_feed.get('reason') else ""))
-    lines.append(f"• X Syndication: {synd_mode} | calls={synd_calls}" + (f" | {synd_reason[:90]}" if synd_reason else ""))
-    if V93_ENABLE_OFFICIAL_X_FALLBACK:
-        lines.append(f"• Official X API: {official.get('mode','unknown')} | calls≈{int(official.get('network_calls',0) or 0)}")
-    else:
-        lines.append("• Official X API: כבוי בכוונה כדי לא לצרוך קרדיטים (opt-in בלבד)")
-    lines.append("")
-
-    route_counts: dict[str, int] = {}
-    recent_total = 0
-    for username in accounts:
-        label = _hebrew_account_label(username)
-        posts, error = fetched.get(username, ([], None))
-        diag = _v93_diag_get(username)
-        route = str(diag.get("route", "none") or "none")
-        route_counts[route] = route_counts.get(route, 0) + 1
-        recent = len(recent_24h_posts(posts)) if posts else 0
-        recent_total += recent
-        attempts = [
-            a for a in list(diag.get("attempts", []) or [])
-            if not (str(a.get("provider", "")) == "Official X API" and str(a.get("reason", "")) in {"disabled", "not_configured"})
-        ]
-        chain = "→".join(_v93_attempt_short(a) for a in attempts)
-        if bool(diag.get("live")) and posts:
-            lines.append(f"✅ {label}: {route} | {recent}/24h | {chain}"[:205])
-        elif posts:
-            lines.append(f"🟡 {label}: memory | {recent}/24h | {chain}"[:205])
-        else:
-            detail = short_error(error, 120) if error else "no data"
-            lines.append(f"❌ {label}: {chain or detail}"[:205])
-
-    summary = ", ".join(f"{k}={v}" for k, v in sorted(route_counts.items()))
-    lines.extend([
-        "",
-        f"תוצאה: {summary}; פוסטים מהיממה={recent_total}.",
-        f"הגדרות: scan={int(CHECK_EVERY_SECONDS)}s | account-workers={int(MAX_PARALLEL_ACCOUNT_CHECKS)} | cap={int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK)} | live-cache={V93_LIVE_CACHE_SECONDS:.0f}s.",
-        "ℹ️ כל ❌ מציג שרשרת סיבות לפי ספק; 429=rate-limit/IP, 410=provider removed, schema_changed=שינוי מבנה, parser_zero=הגיע תוכן אך parser לא הצליח.",
-    ])
-    return "\n".join(lines)[:4050]
-
-
-def rss_status_text() -> str:
-    accounts = _v91_active_rss_accounts()
-    return _v93_status_lines(accounts, f"📡 בדיקת עומק לכל {len(accounts)} המקורות הפעילים")
-
-
-def facts_rss_status_text() -> str:
-    accounts = [source for source in list(FACTS_SOURCE_ORDER or []) if not control_state_account_disabled(source)]
-    return _v93_status_lines(accounts, f"📡 בדיקת עומק ל־{len(accounts)} מקורות העובדות הפעילים")
-
-
-def check_all_accounts_now_text() -> str:
-    accounts = _v91_active_rss_accounts()
-    return _v93_status_lines(accounts, f"🔄 בדיקה מלאה עכשיו — {len(accounts)} מקורות פעילים")
-
-
-def _v93_final_audit() -> None:
-    if int(CHECK_EVERY_SECONDS) != 20:
-        raise RuntimeError("v93_scan_cadence_changed")
-    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
-        raise RuntimeError("v93_account_workers_changed")
-    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v93_post_cap_changed")
-    if bool(CONTINUOUS_FORCE_DISCOVERY_ENABLED):
-        raise RuntimeError("v93_duplicate_discovery_enabled")
-    names = set(fetch_posts_safely.__code__.co_names)
-    if "_v93_live_then_memory" not in names:
-        raise RuntimeError("v93_final_scanner_not_active")
-    executor = globals().get("_V52_BUTTON_EXECUTOR")
-    if executor is None or int(getattr(executor, "_max_workers", 0) or 0) < 20:
-        raise RuntimeError("v93_fast_button_pool_not_preserved")
-    if V93_ENABLE_OFFICIAL_X_FALLBACK and not (
-        os.environ.get("X_BEARER_TOKEN", "").strip()
-        or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
-        or os.environ.get("X_API_BEARER_TOKEN", "").strip()
-    ):
-        logging.warning("V93 official X fallback opt-in is enabled but no bearer token is configured.")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v93_final_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v93_final_audit")
-
-logging.info(
-    "V93 active: Nitter one-time probe -> FxTwitter v2 timeline -> FxTwitter RSS -> "
-    "X syndication circuit-breaker -> optional official X opt-in -> persistent memory; "
-    "classified provider diagnostics enabled; V92/V91 translation, filters, Telegram, "
-    "RTL, media, Shabbat and persistent state preserved."
-)
-
-# ====== END V93 FXTWITTER PRIMARY + DEEP PROVIDER DIAGNOSTICS ======
-
-# ====== V94 FINAL: FORCED TRANSLATION RELIABILITY (2026-08-27) ======
-# Scope: translation only. V93 discovery/provider chain remains untouched.
-# Goals:
-# - 10-latest is a forced Google-Translate operation (no Gemini, no raw English fallback).
-# - Publishing prefers Gemini, then always attempts a bounded robust Google fallback.
-# - Successful translations are cached; failures are NEVER cached as translations.
-# - A temporary translator outage never permanently marks a fresh post as handled.
-# - Translation diagnostics distinguish network/provider failures from local validation.
-
-BOT_BUILD_ID = "winner-v94-fxtwitter-primary-forced-translation-2026-08-27"
-
-# Current supported Flash family first. Keep configured models too, but known current
-# stable models are always available as fallbacks when a Railway override is stale.
-_FINAL_GEMINI_STABLE_MODELS = (
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-)
-
-# Google: deliberately low parallelism. The old 10-latest screen could fan out five
-# workers and each worker could trigger extra rescue calls; that created avoidable bursts.
-V94_GOOGLE_MAX_PARALLEL = max(1, min(3, int(os.environ.get("V94_GOOGLE_MAX_PARALLEL", "2") or 2)))
-V94_GOOGLE_TIMEOUT_SECONDS = max(3.0, min(10.0, float(os.environ.get("V94_GOOGLE_TIMEOUT_SECONDS", "6.0") or 6.0)))
-V94_GOOGLE_RETRY_WAIT_SECONDS = max(0.10, min(2.0, float(os.environ.get("V94_GOOGLE_RETRY_WAIT_SECONDS", "0.45") or 0.45)))
-V94_HISTORY_TOTAL_TIMEOUT_SECONDS = max(20.0, min(90.0, float(os.environ.get("V94_HISTORY_TOTAL_TIMEOUT_SECONDS", "45") or 45)))
-V94_GEMINI_FAILURE_SKIP_SECONDS = max(30.0, min(15 * 60.0, float(os.environ.get("V94_GEMINI_FAILURE_SKIP_SECONDS", "180") or 180)))
-V94_TRANSLATION_RETRY_SECONDS = max(15, min(120, int(os.environ.get("V94_TRANSLATION_RETRY_SECONDS", "30") or 30)))
-
-_V94_GOOGLE_SEMAPHORE = BoundedSemaphore(V94_GOOGLE_MAX_PARALLEL)
-_V94_GOOGLE_LOCK = RLock()
-_V94_GOOGLE_SUCCESS_CACHE: dict[str, str] = {}
-_V94_GOOGLE_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
-_V94_GEMINI_POST_FAILURE_UNTIL: dict[str, float] = {}
-_V94_GEMINI_FAILURE_LOCK = RLock()
-_V94_HISTORY_EXECUTOR = ThreadPoolExecutor(max_workers=V94_GOOGLE_MAX_PARALLEL, thread_name_prefix="history-google-v94")
-_V94_GOOGLE_CACHE_PREFIX = "v94-google-forced:"
-
-# Keep fresh posts retryable for their entire two-hour window. 240 attempts at 30s is
-# exactly two hours; no extra Gemini is spent because recent Gemini failures are skipped.
-AUTO_GEMINI_RETRY_ATTEMPTS = max(int(globals().get("AUTO_GEMINI_RETRY_ATTEMPTS", 2) or 2), max(4, int(MAX_POST_AGE_SECONDS // V94_TRANSLATION_RETRY_SECONDS) + 2))
-TRANSLATION_TOTAL_ATTEMPTS = max(2, min(4, int(globals().get("TRANSLATION_TOTAL_ATTEMPTS", 2) or 2)))
-AUTO_GEMINI_RETRY_WAIT_SECONDS = V94_TRANSLATION_RETRY_SECONDS
-TRANSLATION_RETRY_INTERVAL_SECONDS = V94_TRANSLATION_RETRY_SECONDS
-
-
-def _v94_translation_source(post: Post, quoted: bool = False) -> str:
-    # History/Google must receive the real source text, not an AI-prepared prompt.
-    raw = str(getattr(post, "quoted_text" if quoted else "text", "") or "")
-    if not raw and not quoted:
-        raw = str(getattr(post, "title", "") or "")
-    raw = html.unescape(raw).replace("\r\n", "\n").replace("\r", "\n")
-    raw = remove_urls(raw)
-    raw = clean_before_translation(raw)
-    return str(raw or "").strip()
-
-
-def _v94_google_cache_key(source: str) -> str:
-    return hashlib.sha256(str(source or "").encode("utf-8", errors="ignore")).hexdigest()
-
-
-def _v94_translation_diag_key(source: str) -> str:
-    return _v94_google_cache_key(source)[:20]
-
-
-def _v94_classify_translation_error(exc: Exception | None) -> str:
-    if exc is None:
-        return "unknown"
-    text = str(exc or "").casefold()
-    code = int(getattr(exc, "code", 0) or 0)
-    if code == 429 or "429" in text or "too many requests" in text:
-        return "http_429_rate_limit"
-    if code in {401, 403} or "forbidden" in text or "unauthorized" in text:
-        return f"http_{code or 'auth'}"
-    if code == 404:
-        return "http_404"
-    if code >= 500:
-        return f"http_{code}_upstream"
-    if "timed out" in text or "timeout" in text:
-        return "timeout"
-    if "name resolution" in text or "getaddrinfo" in text or "dns" in text:
-        return "dns_failure"
-    if "ssl" in text or "certificate" in text or "tls" in text:
-        return "tls_failure"
-    if "json" in text:
-        return "invalid_json"
-    if "empty" in text:
-        return "empty_translation"
-    if "validation" in text or "not_hebrew" in text or "untranslated" in text:
-        return "local_validation"
-    return type(exc).__name__
-
-
-def _v94_set_google_diag(source: str, **values: Any) -> None:
-    key = _v94_translation_diag_key(source)
-    row = {"at": time.time(), **values}
-    with _V94_GOOGLE_LOCK:
-        _V94_GOOGLE_DIAGNOSTICS[key] = row
-        if len(_V94_GOOGLE_DIAGNOSTICS) > 600:
-            for old in list(_V94_GOOGLE_DIAGNOSTICS)[:120]:
-                _V94_GOOGLE_DIAGNOSTICS.pop(old, None)
-
-
-def _v94_parse_google_payload(body: bytes) -> str:
-    data = json.loads(body.decode("utf-8", errors="replace"))
-    if not isinstance(data, list) or not data or not isinstance(data[0], list):
-        raise RuntimeError("Google invalid_json/schema")
-    parts: list[str] = []
-    for row in data[0]:
-        if isinstance(row, list) and row and isinstance(row[0], str):
-            parts.append(row[0])
-    value = "".join(parts).strip()
-    if not value:
-        raise RuntimeError("Google empty translation")
-    return value
-
-
-def _v94_google_network_once(source: str) -> tuple[str, str]:
-    params = urllib.parse.urlencode({"client": "gtx", "sl": "auto", "tl": "he", "dt": "t", "q": source})
-    endpoints = (
-        "https://translate.googleapis.com/translate_a/single?",
-        "https://translate.google.com/translate_a/single?",
-    )
-    errors: list[str] = []
-    last_exc: Exception | None = None
-    # At most three network attempts total: primary, alternate host, short primary retry.
-    sequence = (endpoints[0], endpoints[1], endpoints[0])
-    with _V94_GOOGLE_SEMAPHORE:
-        for attempt, endpoint in enumerate(sequence, 1):
-            if attempt == 3:
-                time.sleep(V94_GOOGLE_RETRY_WAIT_SECONDS)
-            request = urllib.request.Request(
-                endpoint + params,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0 Safari/537.36",
-                    "Accept": "application/json,text/plain,*/*",
-                    "Accept-Language": "he,en-US;q=0.8,en;q=0.7",
-                },
-            )
-            started = time.perf_counter()
-            try:
-                with urllib.request.urlopen(request, timeout=V94_GOOGLE_TIMEOUT_SECONDS) as response:
-                    body = response.read(1_500_000)
-                    status = int(getattr(response, "status", 200) or 200)
-                translated = _v94_parse_google_payload(body)
-                host = urllib.parse.urlsplit(endpoint).netloc
-                _v94_set_google_diag(source, ok=True, provider=host, status=status, attempt=attempt, seconds=round(time.perf_counter() - started, 3), reason="ok")
-                return translated, host
-            except Exception as exc:
-                last_exc = exc
-                reason = _v94_classify_translation_error(exc)
-                errors.append(f"{urllib.parse.urlsplit(endpoint).netloc}:{reason}")
-                _v94_set_google_diag(source, ok=False, provider=urllib.parse.urlsplit(endpoint).netloc, status=int(getattr(exc, "code", 0) or 0), attempt=attempt, seconds=round(time.perf_counter() - started, 3), reason=reason, error=short_error(exc, 300))
-                # Auth/4xx other than 429 will not heal on the same host, but the alternate
-                # host is still worth one try. 429/timeout get the bounded third attempt.
-                continue
-    raise TranslationUnavailable("Google network failed: " + " | ".join(errors) + (" | " + short_error(last_exc, 180) if last_exc else ""))
-
-
-def _v94_relaxed_hebrew_valid(source: str, translated: str) -> tuple[bool, str]:
-    src = str(source or "").strip()
-    out = str(translated or "").strip()
-    if not out or not has_meaningful_text(out):
-        return False, "empty"
-    src_he = len(re.findall(r"[א-ת]", src))
-    src_lat = len(re.findall(r"[A-Za-z]", src))
-    out_he = len(re.findall(r"[א-ת]", out))
-    out_lat = len(re.findall(r"[A-Za-z]", out))
-    if src_he >= 6 and src_lat <= max(4, src_he // 4):
-        return (out_he >= 4), ("" if out_he >= 4 else "hebrew_source_damaged")
-    needed = 3 if len(src) < 45 else 6
-    if out_he < needed:
-        return False, "not_hebrew"
-    # Reject a clear unchanged English copy, but do not reject names, acronyms or numbers.
-    if src_lat >= 10:
-        src_norm = re.sub(r"\W+", "", src, flags=re.UNICODE).casefold()
-        out_norm = re.sub(r"\W+", "", out, flags=re.UNICODE).casefold()
-        if src_norm and src_norm == out_norm:
-            return False, "unchanged_source"
-    if out_lat >= 40 and out_lat > out_he * 2.2:
-        return False, "too_much_untranslated_latin"
-    if _final_translation_is_still_english(src, out):
-        return False, "still_english"
-    return True, ""
-
-
-def _v94_minimal_google_cleanup(source: str, translated: str) -> str:
-    value = html.unescape(str(translated or "")).strip()
-    # Keep the cleanup deterministic and light. The old heavy fidelity engine was
-    # the source of false rejections in 10-latest.
-    try:
-        value = preserve_original_country_flags(source, preserve_original_emojis(source, value))
-    except Exception:
-        pass
-    try:
-        value = apply_phrase_replacements(value, TEAM_REPLACEMENTS)
-        value = apply_phrase_replacements(value, PLAYER_REPLACEMENTS)
-        value = apply_phrase_replacements(value, HEBREW_FINAL_FIXES)
-    except Exception:
-        pass
-    try:
-        value = _v60_translation_cleanup(source, value)
-    except Exception:
-        pass
-    value = final_visual_cleanup(final_hebrew_polish(value))
-    return str(value or "").strip()
-
-
-def _v94_google_translate_forced(source: str, max_chars: int = 2500) -> str:
-    global TRANSLATION_CACHE_DIRTY
-    original = compact_debug_text(str(source or ""), max_chars).strip()
-    if not original:
-        return ""
-    if len(re.findall(r"[א-ת]", original)) >= 6 and latin_ratio(original) < 0.10:
-        return final_visual_cleanup(final_hebrew_polish(original))
-
-    cache_key = _v94_google_cache_key(original)
-    persistent_key = _V94_GOOGLE_CACHE_PREFIX + cache_key
-    with _V94_GOOGLE_LOCK:
-        cached = str(_V94_GOOGLE_SUCCESS_CACHE.get(cache_key, "") or "")
-    if not cached:
-        cached = str(TRANSLATION_CACHE.get(persistent_key, "") or "")
-    if cached:
-        ok, _reason = _v94_relaxed_hebrew_valid(original, cached)
-        if ok:
-            return cached
-
-    whole_error: Exception | None = None
-    try:
-        raw, provider = _v94_google_network_once(original)
-        candidate = _v94_minimal_google_cleanup(original, raw)
-        ok, reason = _v94_relaxed_hebrew_valid(original, candidate)
-        if ok:
-            with _V94_GOOGLE_LOCK:
-                _V94_GOOGLE_SUCCESS_CACHE[cache_key] = candidate
-            TRANSLATION_CACHE[persistent_key] = candidate
-            TRANSLATION_CACHE_DIRTY = True
-            _v94_set_google_diag(original, ok=True, provider=provider, reason="accepted_whole", validation="relaxed", chars=len(candidate))
-            return candidate
-        whole_error = TranslationUnavailable("Google whole-text rejected locally: " + reason)
-        _v94_set_google_diag(original, ok=False, provider=provider, reason="local_validation", validation_reason=reason)
-    except Exception as exc:
-        whole_error = exc
-
-    # Rescue only after a real whole-text failure. Translate lines/sentences, not one
-    # word at a time, to avoid both request explosions and mangled football names.
-    units = [u.strip() for u in re.split(r"(?<=\n)|(?<=[.!?])\s+", original) if u and u.strip()]
-    if not units or len(units) > 8:
-        units = [original]
-    if len(units) == 1:
-        raise TranslationUnavailable("Google forced translation failed: " + short_error(whole_error, 420)) from whole_error
-
-    output: list[str] = []
-    rescue_errors: list[str] = []
-    for unit in units:
-        if len(re.findall(r"[א-ת]", unit)) >= 5 and latin_ratio(unit) < 0.10:
-            output.append(unit)
-            continue
-        try:
-            raw, _provider = _v94_google_network_once(unit)
-            fixed = _v94_minimal_google_cleanup(unit, raw)
-            ok, reason = _v94_relaxed_hebrew_valid(unit, fixed)
-            if not ok:
-                raise TranslationUnavailable(reason)
-            output.append(fixed)
-        except Exception as exc:
-            rescue_errors.append(_v94_classify_translation_error(exc) + ":" + short_error(exc, 120))
-            output.append("")
-    candidate = " ".join(x for x in output if x).strip()
-    ok, reason = _v94_relaxed_hebrew_valid(original, candidate)
-    if ok and len([x for x in output if x]) == len(units):
-        with _V94_GOOGLE_LOCK:
-            _V94_GOOGLE_SUCCESS_CACHE[cache_key] = candidate
-        TRANSLATION_CACHE[persistent_key] = candidate
-        TRANSLATION_CACHE_DIRTY = True
-        _v94_set_google_diag(original, ok=True, provider="google_chunk_rescue", reason="accepted_chunked", chars=len(candidate))
-        return candidate
-    raise TranslationUnavailable(
-        "Google forced translation failed. whole=" + short_error(whole_error, 220)
-        + " | rescue=" + "; ".join(rescue_errors[:5])
-        + (" | validation=" + reason if reason else "")
-    )
-
-
-# All late Google callers get the new reliable path. No V89/V91 fidelity rejection layer.
-def google_translate(text: str) -> str:
-    source = str(text or "").strip()
-    if not source:
-        return ""
-    raw, _provider = _v94_google_network_once(source)
-    return raw
-
-
-def _v91_google_translate_strict(source: str, max_chars: int = 2500) -> str:
-    return _v94_google_translate_forced(source, max_chars)
-
-
-def _v88_google_translate_strict(source: str, max_chars: int = 2500) -> str:
-    return _v94_google_translate_forced(source, max_chars)
-
-
-def google_translate_hebrew_safe(text: str, max_chars: int = 900) -> str:
-    # Important: never return raw English on translator failure.
-    return _v94_google_translate_forced(str(text or ""), max_chars)
-
-
-def _translate_history_post(post: Post) -> str:
-    source = _v94_translation_source(post, quoted=False)
-    if not source:
-        return "אין טקסט זמין לתרגום"
-    try:
-        translated = _v94_google_translate_forced(source, 1800)
-        return translated
-    except Exception as exc:
-        reason = _v94_classify_translation_error(exc)
-        logging.warning("V94 forced Google history translation failed for @%s: %s", getattr(post, "username", ""), short_error(exc, 500))
-        return f"⚠️ תרגום Google נכשל ({reason}) — יבוצע ניסיון חדש בלחיצה הבאה"
-
-
-def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
-    values = list(posts or [])
-    if not values:
-        return []
-    results = [""] * len(values)
-    futures: dict[Any, int] = {}
-    for index, item in enumerate(values):
-        try:
-            futures[_V94_HISTORY_EXECUTOR.submit(_translate_history_post, item)] = index
-        except RuntimeError:
-            results[index] = _translate_history_post(item)
-    if futures:
-        done, pending = _reliable_wait(set(futures), timeout=V94_HISTORY_TOTAL_TIMEOUT_SECONDS)
-        for future in done:
-            index = futures[future]
-            try:
-                results[index] = str(future.result() or "").strip()
-            except Exception as exc:
-                results[index] = f"⚠️ תרגום Google נכשל ({_v94_classify_translation_error(exc)}) — יבוצע ניסיון חדש בלחיצה הבאה"
-        # Do not silently convert timeout to raw English. One final sequential forced
-        # attempt is made for each unfinished item because the user explicitly asked
-        # that pressing 10-latest forces translation.
-        for future in pending:
-            index = futures[future]
-            future.cancel()
-            try:
-                results[index] = _translate_history_post(values[index])
-            except Exception as exc:
-                results[index] = f"⚠️ תרגום Google נכשל ({_v94_classify_translation_error(exc)}) — יבוצע ניסיון חדש בלחיצה הבאה"
-    for index, value in enumerate(results):
-        if not value:
-            results[index] = "⚠️ תרגום Google לא התקבל — יבוצע ניסיון חדש בלחיצה הבאה"
-    return results
-
-
-def _v94_post_translation_identity(post: Post) -> str:
-    try:
-        return str(_acceptance_retry_identity(post) or "")
-    except Exception:
-        return str(getattr(post, "post_id", "") or getattr(post, "link", "") or "")
-
-
-def _v94_gemini_recently_failed(post: Post) -> bool:
-    key = _v94_post_translation_identity(post)
-    if not key:
-        return False
-    now = time.time()
-    with _V94_GEMINI_FAILURE_LOCK:
-        until = float(_V94_GEMINI_POST_FAILURE_UNTIL.get(key, 0.0) or 0.0)
-        if until <= now:
-            _V94_GEMINI_POST_FAILURE_UNTIL.pop(key, None)
-            return False
-        return True
-
-
-def _v94_mark_gemini_failed(post: Post) -> None:
-    key = _v94_post_translation_identity(post)
-    if not key:
-        return
-    with _V94_GEMINI_FAILURE_LOCK:
-        _V94_GEMINI_POST_FAILURE_UNTIL[key] = time.time() + V94_GEMINI_FAILURE_SKIP_SECONDS
-        if len(_V94_GEMINI_POST_FAILURE_UNTIL) > 2000:
-            now = time.time()
-            for old, until in list(_V94_GEMINI_POST_FAILURE_UNTIL.items()):
-                if float(until or 0.0) <= now:
-                    _V94_GEMINI_POST_FAILURE_UNTIL.pop(old, None)
-
-
-def _v94_validate_for_publish(source: str, translated: str) -> tuple[bool, str]:
-    ok, reason = _v94_relaxed_hebrew_valid(source, translated)
-    if not ok:
-        return False, reason
-    publish_ok, publish_reason = is_publishable_hebrew_for_main_channel(translated, "")
-    if not publish_ok:
-        return False, publish_reason
-    return True, ""
-
-
-def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    """Forced publish translation: Gemini preferred, robust Google always follows failure."""
-    main_source = _v94_translation_source(post, quoted=False)
-    quote_source = _v94_translation_source(post, quoted=True) if (TRANSLATE_QUOTED_POSTS and not is_self_quote(post)) else ""
-    if not main_source:
-        raise TranslationUnavailable("Source text is empty")
-
-    gemini_exc: Exception | None = None
-    if not _v94_gemini_recently_failed(post):
-        try:
-            main, quote, author = gemini_translate_post_once(post, bool(quote_source))
-            main = _v94_minimal_google_cleanup(main_source, main)
-            if quote_source and quote:
-                quote = _v94_minimal_google_cleanup(quote_source, quote)
-            ok, reason = _v94_validate_for_publish(main_source, main)
-            if not ok:
-                raise TranslationUnavailable("Gemini local validation: " + reason)
-            if quote_source and quote:
-                q_ok, q_reason = _v94_relaxed_hebrew_valid(quote_source, quote)
-                if not q_ok:
-                    raise TranslationUnavailable("Gemini quote validation: " + q_reason)
-            setattr(post, "translation_provider", "gemini")
-            return main, quote, author
-        except Exception as exc:
-            gemini_exc = exc
-            _v94_mark_gemini_failed(post)
-            logging.warning("V94 Gemini failed; switching immediately to forced Google for @%s: %s", getattr(post, "username", ""), short_error(exc, 500))
-    else:
-        gemini_exc = TranslationUnavailable("Gemini skipped temporarily after a recent failure for this post")
-
-    try:
-        main = _v94_google_translate_forced(main_source, 2200)
-        ok, reason = _v94_validate_for_publish(main_source, main)
-        if not ok:
-            raise TranslationUnavailable("Google local validation: " + reason)
-        quote = ""
-        author = ""
-        if quote_source:
-            quote = _v94_google_translate_forced(quote_source, 1200)
-            q_ok, q_reason = _v94_relaxed_hebrew_valid(quote_source, quote)
-            if not q_ok:
-                raise TranslationUnavailable("Google quote validation: " + q_reason)
-            raw_author = clean_before_translation(str(getattr(post, "quoted_author", "") or "")).strip()
-            if raw_author:
-                try:
-                    author = _v94_google_translate_forced(raw_author, 180)
-                except Exception:
-                    author = raw_author
-        setattr(post, "translation_provider", "google")
-        setattr(post, "gemini_translation_failure", short_error(gemini_exc, 500))
-        return main, quote, author
-    except Exception as google_exc:
-        setattr(post, "translation_provider", "none")
-        raise TranslationUnavailable(
-            "Forced translation unavailable. Gemini=" + short_error(gemini_exc, 260)
-            + " | Google=" + short_error(google_exc, 420)
-        ) from google_exc
-
-
-# Clear old exhausted retry entries lazily for still-fresh posts and let the existing
-# safe send transaction retry them. Translation failures remain unseen/retryable.
-_V94_PRE_SEND_POST = send_post
-
-
-def _v94_unexhaust_translation_retry(post: Post, state: dict[str, Any] | None) -> None:
-    identity = _v94_post_translation_identity(post)
-    if not identity:
-        return
-    published = float(getattr(post, "published_ts", 0.0) or 0.0)
-    if published > 0 and time.time() - published > float(MAX_POST_AGE_SECONDS):
-        return
-    try:
-        with _GEMINI_RETRY_SCHEDULE_LOCK:
-            schedule = _gemini_retry_schedule(state)
-            entry = dict(schedule.get(identity, {}) or {})
-            if not entry:
-                return
-            if entry.get("sent"):
-                return
-            if bool(entry.get("exhausted")) or int(entry.get("attempts_done", 0) or 0) >= int(AUTO_GEMINI_RETRY_ATTEMPTS):
-                entry["exhausted"] = False
-                entry["attempts_done"] = min(int(entry.get("attempts_done", 0) or 0), max(0, int(AUTO_GEMINI_RETRY_ATTEMPTS) - 1))
-                entry["next_retry_at"] = min(float(entry.get("next_retry_at", 0.0) or 0.0), time.time())
-                entry["attempt_in_progress"] = False
-                entry["updated_at"] = time.time()
-                schedule[identity] = entry
-                _store_gemini_retry_schedule(state, schedule)
-    except Exception as exc:
-        logging.debug("V94 could not refresh translation retry schedule: %s", short_error(exc, 220))
-
-
-def send_post(post: Post, reply_message_ids: Any = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
-    _v94_unexhaust_translation_retry(post, state)
-    result = _V94_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
-    if isinstance(result, dict):
-        mode = str(result.get("mode", "") or "")
-        if "translation_unavailable_retries_exhausted" in mode:
-            # Never turn a temporary translator outage into a permanent handled state.
-            result["mode"] = "translation_unavailable_retry_scheduled"
-            result["retry_after_seconds"] = V94_TRANSLATION_RETRY_SECONDS
-    return result
-
-
-def _v94_translation_audit() -> None:
-    if V94_GOOGLE_MAX_PARALLEL > 3:
-        raise RuntimeError("v94_google_parallelism_too_high")
-    if V94_HISTORY_TOTAL_TIMEOUT_SECONDS < 20:
-        raise RuntimeError("v94_history_timeout_too_short")
-    if AUTO_GEMINI_RETRY_ATTEMPTS < 4:
-        raise RuntimeError("v94_translation_retry_budget_too_low")
-    if "_v94_google_translate_forced" not in translate_post_for_send.__code__.co_names:
-        raise RuntimeError("v94_publish_google_fallback_not_active")
-    if "_v94_google_translate_forced" not in _translate_history_post.__code__.co_names:
-        raise RuntimeError("v94_history_google_not_active")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v94_translation_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v94_translation_audit")
-
-logging.info(
-    "V94 translation active: forced Google for 10-latest, Gemini->Google for publish, "
-    "success-only cache, low-burst Google transport, exact failure diagnostics, and "
-    "fresh translation failures remain retryable for the full age window."
-)
-
-# ====== END V94 FORCED TRANSLATION RELIABILITY ======
-
-
-
-
-# ====== V94 GOOGLE MULTI-TRANSPORT: CLIENTS5 + LEGACY FALLBACKS ======
-def _v94_parse_google_any_payload(body: bytes) -> str:
-    data = json.loads(body.decode("utf-8", errors="replace"))
-    if isinstance(data, dict):
-        sentences = data.get("sentences")
-        if isinstance(sentences, list):
-            value = "".join(str(item.get("trans", "") or "") for item in sentences if isinstance(item, dict)).strip()
-            if value:
-                return value
-        for key in ("translation", "translatedText", "text"):
-            value = data.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    if isinstance(data, list):
-        # Standard translate_a/single shape: data[0] contains [translated, source, ...] rows.
-        if data and isinstance(data[0], list):
-            parts: list[str] = []
-            for row in data[0]:
-                if isinstance(row, list) and row and isinstance(row[0], str):
-                    parts.append(row[0])
-            value = "".join(parts).strip()
-            if value:
-                return value
-        # clients5 has used more deeply nested list shapes over time. Prefer a
-        # meaningful Hebrew string because Hebrew is always the requested target.
-        strings: list[str] = []
-        def walk(value: Any) -> None:
-            if isinstance(value, str):
-                if value.strip():
-                    strings.append(value.strip())
-            elif isinstance(value, list):
-                for item in value:
-                    walk(item)
-            elif isinstance(value, dict):
-                for item in value.values():
-                    walk(item)
-        walk(data)
-        hebrew = [x for x in strings if re.search(r"[א-ת]", x)]
-        if hebrew:
-            return max(hebrew, key=lambda x: (len(re.findall(r"[א-ת]", x)), len(x)))
-        if strings:
-            return strings[0]
-    raise RuntimeError("Google invalid_json/schema")
-
-
-def _v94_google_network_once(source: str) -> tuple[str, str]:
-    source = str(source or "").strip()
-    if not source:
-        return "", ""
-    transports = (
-        (
-            "clients5.google.com",
-            "https://clients5.google.com/translate_a/t?" + urllib.parse.urlencode({
-                "client": "dict-chrome-ex", "sl": "auto", "tl": "he", "q": source,
-            }),
-        ),
-        (
-            "translate.googleapis.com",
-            "https://translate.googleapis.com/translate_a/single?" + urllib.parse.urlencode({
-                "client": "gtx", "sl": "auto", "tl": "he", "dt": "t", "q": source,
-            }),
-        ),
-        (
-            "translate.google.com",
-            "https://translate.google.com/translate_a/single?" + urllib.parse.urlencode({
-                "client": "gtx", "sl": "auto", "tl": "he", "dt": "t", "q": source,
-            }),
-        ),
-        # One short retry on the transport that is independent from the legacy
-        # translate.googleapis.com endpoint. No unbounded retry loop.
-        (
-            "clients5.google.com",
-            "https://clients5.google.com/translate_a/t?" + urllib.parse.urlencode({
-                "client": "dict-chrome-ex", "sl": "auto", "tl": "he", "q": source,
-            }),
-        ),
-    )
-    errors: list[str] = []
-    last_exc: Exception | None = None
-    with _V94_GOOGLE_SEMAPHORE:
-        for attempt, (host, url) in enumerate(transports, 1):
-            if attempt == len(transports):
-                time.sleep(V94_GOOGLE_RETRY_WAIT_SECONDS)
-            started = time.perf_counter()
-            request = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0 Safari/537.36",
-                    "Accept": "application/json,text/plain,*/*",
-                    "Accept-Language": "he,en-US;q=0.8,en;q=0.7",
-                },
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=V94_GOOGLE_TIMEOUT_SECONDS) as response:
-                    body = response.read(1_500_000)
-                    status = int(getattr(response, "status", 200) or 200)
-                translated = _v94_parse_google_any_payload(body)
-                if not translated:
-                    raise RuntimeError("Google empty translation")
-                _v94_set_google_diag(source, ok=True, provider=host, status=status, attempt=attempt, seconds=round(time.perf_counter() - started, 3), reason="ok")
-                return translated, host
-            except Exception as exc:
-                last_exc = exc
-                reason = _v94_classify_translation_error(exc)
-                errors.append(f"{host}:{reason}")
-                _v94_set_google_diag(source, ok=False, provider=host, status=int(getattr(exc, "code", 0) or 0), attempt=attempt, seconds=round(time.perf_counter() - started, 3), reason=reason, error=short_error(exc, 300))
-                continue
-    raise TranslationUnavailable("Google network failed: " + " | ".join(errors) + (" | " + short_error(last_exc, 180) if last_exc else ""))
-
-# ====== END V94 GOOGLE MULTI-TRANSPORT ======
-
-# ====== V94.1 TRANSLATION HEALTH DIAGNOSTICS ======
-_V94_PRE_SYSTEM_HEALTH_TEXT = system_health_text
-
-
-def current_gemini_translation_model() -> str:
-    models = list(gemini_models_for_operation() or [])
-    return str(models[0] if models else "gemini-3.6-flash")
-
-
-def _v94_last_google_diag_text() -> str:
-    with _V94_GOOGLE_LOCK:
-        rows = list(_V94_GOOGLE_DIAGNOSTICS.values())
-    if not rows:
-        return "Google: עדיין לא בוצעה בקשת תרגום מאז העלייה"
-    row = max(rows, key=lambda item: float(item.get("at", 0.0) or 0.0))
-    provider = str(row.get("provider", "google") or "google")
-    reason = str(row.get("reason", "unknown") or "unknown")
-    status = int(row.get("status", 0) or 0)
-    if bool(row.get("ok")):
-        return f"Google: תקין | {provider} | {reason}" + (f" | HTTP {status}" if status else "")
-    error = str(row.get("error", "") or "")
-    return f"Google: כשל אחרון | {provider} | {reason}" + (f" | HTTP {status}" if status else "") + (f" | {error[:150]}" if error else "")
-
-
-def system_health_text() -> str:
-    base = str(_V94_PRE_SYSTEM_HEALTH_TEXT() or "").rstrip()
-    lines = [base, "", "תרגום V94:", f"- {_v94_last_google_diag_text()}"]
-    try:
-        refresh_gemini_api_keys_from_env()
-        models = list(gemini_models_for_operation() or [])
-        paused = gemini_requests_paused_until_refill()
-        available_keys = len(gemini_translation_keys_for_operation()) if not paused else 0
-        lines.append(
-            f"- Gemini: {'עצור ידנית' if paused else ('זמין' if available_keys else 'אין מפתח זמין כרגע')}"
-            f" | keys={available_keys}/{len(GEMINI_API_KEYS)}"
-            f" | model={models[0] if models else 'none'}"
-        )
-        last = dict(GEMINI_LAST_TRANSLATION_FAILURE or {})
-        if last:
-            lines.append("- Gemini כשל אחרון: " + gemini_public_error_label(last.get("summary") or last.get("error")) + " | " + short_error(last.get("error") or last.get("summary"), 180))
-    except Exception as exc:
-        lines.append("- Gemini diagnostics failed: " + short_error(exc, 180))
-    lines.append(f"- 10 אחרונים: Google חובה | parallel={V94_GOOGLE_MAX_PARALLEL} | timeout כולל={int(V94_HISTORY_TOTAL_TIMEOUT_SECONDS)}s | כשל לא נשמר ב-cache")
-    return "\n".join(lines)[:4050]
-
-# ====== END V94.1 TRANSLATION HEALTH DIAGNOSTICS ======
-
-
-
-
-# ====== V95 FINAL: V72 BEHAVIOR + CURRENT V93/V94 RSS/TRANSLATION (2026-08-27) ======
-# User-selected compatibility boundary:
-# - V72 is the authoritative behavior/presentation/filter/control baseline.
-# - V93 live discovery/provider chain is preserved exactly.
-# - V94 forced translation / Google fallback / no-English-send is preserved exactly.
-# - Persistent filenames, keys and history are untouched.
-
-BOT_BUILD_ID = "winner-v95-v72-behavior-current-rss-translation-2026-08-27"
-
-# Lock the working V93/V94 entrypoints before any presentation/control wrappers.
-_V95_RSS_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V95_RSS_FETCH_POSTS = fetch_posts
-_V95_TRANSLATE_POST_FOR_SEND = translate_post_for_send
-_V95_MANUAL_FORCE_TRANSLATION = manual_force_translation
-_V95_GOOGLE_NETWORK_ONCE = globals().get("_v94_google_network_once")
-
-# Current V94 boundaries that V72 behavior is allowed to wrap, never replace underneath.
-_V95_PRE_TELEGRAM_API = telegram_api
-_V95_PRE_PROCESS_CONTROL_TEXT_UPDATE = process_control_text_update
-_V95_PRE_BUILD_MESSAGE = build_message
-_V95_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
-_V95_PRE_TIDY_TRANSLATED_TEXT = tidy_translated_text
-_V95_PRE_IS_OTHER_SPORT_POST = is_other_sport_post
-_V95_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
-_V95_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
 
 # ---------------------------------------------------------------------------
-# V68 AS PRESENT INSIDE V72: pasted X link preparation, channel RTL and footer.
+# I. DETERMINISTIC FINAL AUDIT — verifies there is ONE active RSS engine
+# ---------------------------------------------------------------------------
+def _v67_single_rss_engine_audit() -> None:
+    expected = list(V67_RSS_BASE_FEED_TEMPLATES)
+    if list(active_feed_templates()) != expected:
+        raise RuntimeError("v67_feed_templates_not_exact")
+
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v67_retries_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v67_request_timeout_changed")
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v67_collection_timeout_changed")
+    if int(MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT) != 3:
+        raise RuntimeError("v67_feed_parallelism_changed")
+    if int(FEED_SOURCE_MAX_PARALLEL) != 2:
+        raise RuntimeError("v67_feed_source_parallelism_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3:
+        raise RuntimeError("v67_primary_count_changed")
+    if not bool(RSS_ENABLE_FALLBACK):
+        raise RuntimeError("v67_fallback_disabled")
+    if int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v67_fallback_count_changed")
+    if bool(RSS_ENABLE_STALE_FALLBACK):
+        raise RuntimeError("v67_stale_fallback_should_be_off")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v67_scan_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v67_account_parallelism_changed")
+    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
+        raise RuntimeError("v67_post_cap_changed")
+
+    # Active public entrypoints must be the functions declared in this block,
+    # not aliases to any historical Vxx function.
+    for name in (
+        "http_get_feed",
+        "fetch_feed",
+        "collect_posts_from_feed_templates",
+        "fetch_posts",
+        "fetch_control_posts",
+        "fetch_posts_safely",
+        "fetch_control_posts_for_accounts",
+        "rss_status_text",
+    ):
+        fn = globals().get(name)
+        if not callable(fn):
+            raise RuntimeError(f"v67_missing_active_entrypoint:{name}")
+
+    if fetch_posts.__name__ != "fetch_posts":
+        raise RuntimeError("v67_fetch_posts_is_alias")
+    if fetch_control_posts.__name__ != "fetch_control_posts":
+        raise RuntimeError("v67_fetch_control_is_alias")
+    if http_get_feed.__name__ != "http_get_feed":
+        raise RuntimeError("v67_http_is_alias")
+
+
+_v67_single_rss_engine_audit()
+logging.info(
+    "V67 active: one consolidated RSS engine owns all active RSS settings and entrypoints; "
+    "3 primary + 2 fallback, 6s/8s, 2 retries, 20s scan, 4 accounts, 12-post cap."
+)
+
+# ====== END V67 FINAL SINGLE RSS ENGINE ======
+
+# ====== V68 ADD-ONLY: PASTED-X PREP + BOT/CHANNEL RTL + SAFE NETO FOOTER ======
+# No existing V67 code is edited or removed.
+# Scope:
+# 1) A pasted X/Twitter status link in the quiet/control chat always prepares
+#    that exact post as a normal report preview (text + original media + Gemini).
+# 2) The existing fast in-place RTL editor also repairs bot-authored channel posts
+#    when needed; it never delete/reposts and remains idempotent.
+# 3) The Neto Sport footer is canonical HTML at every Telegram text/caption send
+#    boundary, with the dot inside the blue link and the pen outside.
+
+BOT_BUILD_ID = "winner-v68-link-prep-rtl-footer-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# 1) PASTE X/TWITTER LINK -> PREPARE EXACT POST IN QUIET CHANNEL
 # ---------------------------------------------------------------------------
 _V68_X_STATUS_URL_RE = re.compile(
     r"(?iu)https?://(?:www\.)?(?:x\.com|twitter\.com)/"
@@ -70335,7 +64800,8 @@ def _v68_extract_x_status(text: Any) -> tuple[str, str, str] | None:
     tweet_id = str(match.group("tweet_id") or "").strip()
     if not username or not tweet_id:
         return None
-    return username, tweet_id, f"https://x.com/{username}/status/{tweet_id}"
+    canonical = f"https://x.com/{username}/status/{tweet_id}"
+    return username, tweet_id, canonical
 
 
 def _v68_post_from_x_link(username: str, tweet_id: str, link: str) -> Post:
@@ -70343,7 +64809,7 @@ def _v68_post_from_x_link(username: str, tweet_id: str, link: str) -> Post:
         published = float(_reliable_snowflake_timestamp(tweet_id) or 0.0)
     except Exception:
         published = 0.0
-    return Post(
+    post = Post(
         post_id=tweet_id,
         username=username,
         text="",
@@ -70356,17 +64822,35 @@ def _v68_post_from_x_link(username: str, tweet_id: str, link: str) -> Post:
         quoted_author="",
         quoted_text="",
         published_ts=published or time.time(),
-        dedupe_ids=[tweet_id, f"{username}:{tweet_id}", f"{username}:{link}"],
+        dedupe_ids=[
+            tweet_id,
+            f"{username}:{tweet_id}",
+            f"{username}:{link}",
+        ],
         source_name="manual-x-link",
     )
+    return post
 
 
-def _v68_prepare_pasted_x_link(username: str, tweet_id: str, link: str, reply_message_id: int = 0) -> None:
+def _v68_prepare_pasted_x_link(
+    username: str,
+    tweet_id: str,
+    link: str,
+    reply_message_id: int = 0,
+) -> None:
     key = f"{username.casefold()}:{tweet_id}"
     try:
         post = _v68_post_from_x_link(username, tweet_id, link)
+
+        # Reuse the bot's established exact-post/media hydration. This is an
+        # on-demand operation only; it adds no continuous polling/server cost.
         _reliable_hydrate_exact_post(post, force=True)
-        source_text = str(getattr(post, "original_text", "") or getattr(post, "text", "") or "").strip()
+
+        source_text = str(
+            getattr(post, "original_text", "")
+            or getattr(post, "text", "")
+            or ""
+        ).strip()
         if not source_text:
             try:
                 exact_text, provider = _reliable_fetch_exact_post_text(post)
@@ -70377,6 +64861,7 @@ def _v68_prepare_pasted_x_link(username: str, tweet_id: str, link: str, reply_me
                 post.original_text = exact_text
                 post.source_name = provider or post.source_name
                 source_text = exact_text
+
         if not source_text:
             send_control_text(
                 "⛔ לא הצלחתי לקרוא את הציוץ מהקישור. הקישור עצמו תקין, אבל מקורות X החיצוניים לא החזירו את תוכן הפוסט כרגע.",
@@ -70384,13 +64869,22 @@ def _v68_prepare_pasted_x_link(username: str, tweet_id: str, link: str, reply_me
                 control_delete_message_reply_markup(),
             )
             return
-        # IMPORTANT: this resolves dynamically to V94's current forced translation.
+
+        # Manual link preparation is intentionally a preparation action, not an
+        # automatic publish decision: use the established force-translation path
+        # and the exact same final renderer/media preview used elsewhere.
         translated, quoted, author = manual_force_translation(post)
         token = remember_control_prepared_send(post, translated, quoted, author)
-        rendered = build_message(post, translated, quoted, author, include_video_link=False)
+        rendered = build_message(
+            post,
+            translated,
+            quoted,
+            author,
+            include_video_link=False,
+        )
         _send_full_control_candidate(post, token, rendered)
     except Exception as exc:
-        logging.exception("V95/V68 pasted-X preparation failed")
+        logging.exception("V68 pasted-X preparation failed")
         try:
             send_control_text(
                 "⛔ הכנת הציוץ מהקישור נכשלה:\n" + short_error(exc, 900),
@@ -70411,24 +64905,35 @@ def _v68_prepare_pasted_x_link(username: str, tweet_id: str, link: str, reply_me
 
 def _v68_try_prepare_pasted_x_link(update: dict[str, Any]) -> bool:
     message = (
-        update.get("message") or update.get("edited_message") or
-        update.get("channel_post") or update.get("edited_channel_post") or {}
+        update.get("message")
+        or update.get("edited_message")
+        or update.get("channel_post")
+        or update.get("edited_channel_post")
+        or {}
     )
     if not isinstance(message, dict):
         return False
     chat_id = str((message.get("chat") or {}).get("id", ""))
     if not CONTROL_CHAT_ID or chat_id != str(CONTROL_CHAT_ID):
         return False
+
+    # Do not reinterpret forwarded/replied report-management messages as a new
+    # pasted-link command; their established details/prepare behavior wins.
     if (
-        message.get("forward_origin") or message.get("forward_from_chat") or
-        message.get("forward_from_message_id") or isinstance(message.get("reply_to_message"), dict)
+        message.get("forward_origin")
+        or message.get("forward_from_chat")
+        or message.get("forward_from_message_id")
+        or isinstance(message.get("reply_to_message"), dict)
     ):
         return False
-    parsed = _v68_extract_x_status(str(message.get("text") or message.get("caption") or ""))
+
+    text = str(message.get("text") or message.get("caption") or "")
+    parsed = _v68_extract_x_status(text)
     if not parsed:
         return False
     username, tweet_id, link = parsed
     key = f"{username.casefold()}:{tweet_id}"
+
     with _V68_LINK_PREP_LOCK:
         if key in _V68_LINK_PREP_INFLIGHT:
             return True
@@ -70436,12 +64941,21 @@ def _v68_try_prepare_pasted_x_link(update: dict[str, Any]) -> bool:
         if last_done and time.time() - last_done < 3.0:
             return True
         _V68_LINK_PREP_INFLIGHT.add(key)
+
     reply_id = int(message.get("message_id", 0) or 0)
     try:
         if callable(globals().get("_reliable_submit_control")):
-            _reliable_submit_control(_v68_prepare_pasted_x_link, (username, tweet_id, link, reply_id), f"pasted-x-{tweet_id}")
+            _reliable_submit_control(
+                _v68_prepare_pasted_x_link,
+                (username, tweet_id, link, reply_id),
+                f"pasted-x-{tweet_id}",
+            )
         else:
-            Thread(target=_v68_prepare_pasted_x_link, args=(username, tweet_id, link, reply_id), daemon=True).start()
+            Thread(
+                target=_v68_prepare_pasted_x_link,
+                args=(username, tweet_id, link, reply_id),
+                daemon=True,
+            ).start()
     except Exception:
         with _V68_LINK_PREP_LOCK:
             _V68_LINK_PREP_INFLIGHT.discard(key)
@@ -70449,13 +64963,21 @@ def _v68_try_prepare_pasted_x_link(update: dict[str, Any]) -> bool:
     return True
 
 
+_V68_PRE_PROCESS_CONTROL_TEXT_UPDATE = process_control_text_update
+
+
 def process_control_text_update(update: dict[str, Any]) -> None:
     if _v68_try_prepare_pasted_x_link(update):
         return
-    return _V95_PRE_PROCESS_CONTROL_TEXT_UPDATE(update)
+    return _V68_PRE_PROCESS_CONTROL_TEXT_UPDATE(update)
 
 
-# Exact V68/V72 RTL policy: bot-authored channel posts are NOT skipped.
+# ---------------------------------------------------------------------------
+# 2) FAST IN-PLACE RTL FOR ALL CHANNEL POSTS, INCLUDING BOT-AUTHORED POSTS.
+# The old editor skipped bot-authored posts. Outgoing bot messages normally
+# already arrive wrapped, so this is a no-op. If a copy/manual bot path produced
+# an unwrapped post, it is repaired in place once with Telegram entities preserved.
+# ---------------------------------------------------------------------------
 def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
     if not V43_ALL_CHANNEL_RTL_EDIT_ENABLED:
         return False
@@ -70469,13 +64991,20 @@ def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
     message_id = int(message.get("message_id", 0) or 0)
     if not chat_id or not message_id:
         return False
+
     kind, original, entities = _v42_message_text_and_entities(message)
     if not kind or not original or not _v42_message_needs_rtl_repair(original):
         return False
+
     transformed = _v42_transform_text_entities(original, entities)
     if transformed is None:
-        logging.info("V95/V68 channel RTL skipped only because an entity crosses multiple lines: chat=%s message=%s", chat_id, message_id)
+        logging.info(
+            "V68 channel RTL skipped only because an entity crosses multiple lines: chat=%s message=%s",
+            chat_id,
+            message_id,
+        )
         return False
+
     fixed_text, fixed_entities = transformed
     key = f"{chat_id}:{message_id}"
     with _V43_CHANNEL_RTL_EDIT_LOCK:
@@ -70483,99 +65012,234 @@ def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
             return True
         _V43_CHANNEL_RTL_EDIT_INFLIGHT.add(key)
     try:
-        _v42_edit_message_rtl(chat_id, message_id, kind, fixed_text, fixed_entities)
-        logging.info("V95/V68 repaired channel post RTL in place: %s", key)
+        _v42_edit_message_rtl(
+            chat_id,
+            message_id,
+            kind,
+            fixed_text,
+            fixed_entities,
+        )
+        logging.info("V68 repaired channel post RTL in place: %s", key)
         return True
     except Exception as exc:
-        logging.warning("V95/V68 could not edit channel RTL in place (Edit Messages required): %s error=%s", key, short_error(exc, 420))
+        # Never copy/delete/repost: preserve the exact fast behavior requested.
+        logging.warning(
+            "V68 could not edit channel RTL in place (Edit Messages required): %s error=%s",
+            key,
+            short_error(exc, 420),
+        )
         return False
     finally:
         with _V43_CHANNEL_RTL_EDIT_LOCK:
             _V43_CHANNEL_RTL_EDIT_INFLIGHT.discard(key)
 
 
+# ---------------------------------------------------------------------------
+# 3) ONE CANONICAL NETO SPORT FOOTER AT TELEGRAM BOUNDARY.
+# This prevents literal/raw <a href=...> markup from being shown to users.
+# The period is inside the blue link, the pen is outside.
+# ---------------------------------------------------------------------------
 _V68_NETO_FOOTER_HTML = '<a href="https://t.me/neto_sport">נטו ספורט.</a>📝'
 SIGNATURE_TEXT = "נטו ספורט."
 NETO_SPORT_FOOTER_HTML = _V68_NETO_FOOTER_HTML
 _V31_SIGNATURE_HTML = RTL_MARK + _V68_NETO_FOOTER_HTML
+
 _V68_NETO_FOOTER_PATTERNS = (
-    re.compile(r'(?iu)<a\s+href=["\']https?://t\.me/neto_sport["\'][^>]*>\s*נטו\s+ספורט\.?\s*</a>\s*\.?\s*📝'),
-    re.compile(r'(?iu)נטו\s+ספורט\.?\s*\(\s*https?://t\.me/neto_sport\s*\)\s*\.?\s*📝'),
-    re.compile(r'(?iu)\[\s*נטו\s+ספורט\.?\s*\]\(\s*https?://t\.me/neto_sport\s*\)\s*📝'),
+    re.compile(
+        r'(?iu)<a\s+href=["\']https?://t\.me/neto_sport["\'][^>]*>\s*נטו\s+ספורט\.?\s*</a>\s*\.?\s*📝'
+    ),
+    re.compile(
+        r'(?iu)נטו\s+ספורט\.?\s*\(\s*https?://t\.me/neto_sport\s*\)\s*\.?\s*📝'
+    ),
+    re.compile(
+        r'(?iu)\[\s*נטו\s+ספורט\.?\s*\]\(\s*https?://t\.me/neto_sport\s*\)\s*📝'
+    ),
 )
 
 
 def _v68_canonicalize_neto_footer(value: Any) -> Any:
-    if not isinstance(value, str) or ("neto_sport" not in value and "נטו ספורט" not in value):
+    if not isinstance(value, str) or (
+        "neto_sport" not in value and "נטו ספורט" not in value
+    ):
         return value
     text = html.unescape(value)
     for pattern in _V68_NETO_FOOTER_PATTERNS:
         text = pattern.sub(_V68_NETO_FOOTER_HTML, text)
-    # Escaped/raw anchor forms from historical prepared messages.
+
+    # Catch a literal escaped/raw anchor footer without touching other HTML.
     text = re.sub(
-        r'(?iu)\\?<a\s+href=["\']https?\\?[:/]*/?t\.me/?neto_sport["\'][^>]*>\s*נטו\s+ספורט\.?\s*\\?</a>\s*\.?\s*📝',
+        r'(?iu)\\?<a\s+href=["\']https?\\?[:/]*/?t\.me/?neto_sport["\'][^>]*>'
+        r'\s*נטו\s+ספורט\.?\s*\\?</a>\s*\.?\s*📝',
         _V68_NETO_FOOTER_HTML,
         text,
     )
     return text
 
 
-def telegram_api(method: str, payload: dict[str, Any] | None = None, *, max_attempts: int = HTTP_RETRIES, timeout: int = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
+_V68_PRE_TELEGRAM_API = telegram_api
+
+
+def telegram_api(
+    method: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    max_attempts: int = HTTP_RETRIES,
+    timeout: int = REQUEST_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     data = dict(payload or {})
     method_name = str(method or "")
-    if method_name in {"sendMessage", "editMessageText", "sendPhoto", "sendVideo", "sendAnimation", "editMessageCaption"}:
+
+    if method_name in {
+        "sendMessage",
+        "editMessageText",
+        "sendPhoto",
+        "sendVideo",
+        "sendAnimation",
+        "editMessageCaption",
+    }:
         for field in ("text", "caption"):
             if isinstance(data.get(field), str):
-                after = _v68_canonicalize_neto_footer(data[field])
+                before = data[field]
+                after = _v68_canonicalize_neto_footer(before)
                 data[field] = after
-                if _V68_NETO_FOOTER_HTML in str(after) and "<a " in str(after):
+                if (
+                    _V68_NETO_FOOTER_HTML in str(after)
+                    and "<a " in str(after)
+                ):
+                    # The report renderer already uses Telegram HTML. Make the
+                    # footer interpretation explicit so raw anchor syntax can
+                    # never appear as visible text.
                     data["parse_mode"] = "HTML"
                     data.pop("entities", None)
                     data.pop("caption_entities", None)
-    return _V95_PRE_TELEGRAM_API(method_name, data, max_attempts=max_attempts, timeout=timeout)
+
+    return _V68_PRE_TELEGRAM_API(
+        method_name,
+        data,
+        max_attempts=max_attempts,
+        timeout=timeout,
+    )
 
 
 # ---------------------------------------------------------------------------
-# V69 EDITORIAL POLICY AS PRESENT INSIDE V72.  Gemini budget/failover is NOT restored.
+# 4) LOCAL SELF-AUDIT — no Telegram/X/Gemini network calls.
+# ---------------------------------------------------------------------------
+def _v68_self_audit() -> None:
+    parsed = _v68_extract_x_status(
+        "https://x.com/FabrizioRomano/status/1234567890123456789?s=20"
+    )
+    if parsed != (
+        "FabrizioRomano",
+        "1234567890123456789",
+        "https://x.com/FabrizioRomano/status/1234567890123456789",
+    ):
+        raise RuntimeError("v68_x_link_parser_failed")
+
+    footer_cases = [
+        '<a href="https://t.me/neto_sport">נטו ספורט</a>.📝',
+        'נטו ספורט (https://t.me/neto_sport).📝',
+        '[נטו ספורט.](https://t.me/neto_sport)📝',
+    ]
+    for case in footer_cases:
+        fixed = _v68_canonicalize_neto_footer(case)
+        if fixed != _V68_NETO_FOOTER_HTML:
+            raise RuntimeError(f"v68_footer_normalization_failed:{case!r}->{fixed!r}")
+
+    # Already-strong text must remain a no-op, preventing edit loops.
+    strong = _v41_strong_rtl_all_lines("🚨 הודעה בעברית עם 20 מיליון אירו")
+    if _v42_message_needs_rtl_repair(strong):
+        raise RuntimeError("v68_rtl_not_idempotent")
+
+    # Exact V67 single RSS engine stays active.
+    if fetch_posts.__name__ != "fetch_posts":
+        raise RuntimeError("v68_v67_rss_fetch_changed")
+    if fetch_control_posts.__name__ != "fetch_control_posts":
+        raise RuntimeError("v68_v67_rss_control_changed")
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v68_rss_cadence_changed")
+
+
+_v68_self_audit()
+logging.info(
+    "V68 active: pasted X links prepare exact reports in quiet chat; "
+    "bot/manual channel posts get fast in-place RTL when needed; "
+    "Neto Sport footer HTML is canonical at Telegram boundary; V67 RSS unchanged."
+)
+
+# ====== END V68 ADD-ONLY LINK PREP / RTL / FOOTER ======
+
+# ====== V69 ADD-ONLY: GEMINI KEY FAILOVER + LOW-VALUE INTERVIEW BLOCK + MEN'S FOOTBALL RESCUE ======
+# No existing V68 code is edited or removed.
+# RSS/discovery cadence and the V67 single RSS engine are intentionally untouched.
+
+BOT_BUILD_ID = "winner-v69-reliability-filters-2026-08-10"
+
+# ---------------------------------------------------------------------------
+# 1) Gemini: use the configured key pool for translation reliability.
+# V65/V62 intentionally forced one real request per operation. With multiple
+# independent keys configured, that can drop a publishable post after only one
+# key-specific 429/auth/network failure. Translation may now try up to 10 locally
+# available keys. Model-wide overload still switches model instead of burning
+# every key on the same overloaded model.
+# ---------------------------------------------------------------------------
+_V69_GEMINI_KEY_LIMIT = max(1, min(10, len(GEMINI_API_KEYS) if GEMINI_API_KEYS else 1))
+GEMINI_MAX_REAL_TRANSLATION_REQUESTS = _V69_GEMINI_KEY_LIMIT
+GEMINI_MAX_KEYS_PER_OPERATION = _V69_GEMINI_KEY_LIMIT
+GEMINI_LOCAL_KEY_SWEEP_SIZE = max(int(GEMINI_LOCAL_KEY_SWEEP_SIZE), _V69_GEMINI_KEY_LIMIT)
+
+
+def gemini_translation_keys_for_operation() -> list[tuple[int, str]]:
+    if gemini_requests_paused_until_refill():
+        return []
+    keys = gemini_key_order()
+    now = time.time()
+    available = [
+        (index, key)
+        for index, key in keys
+        if float(GEMINI_KEY_COOLDOWNS.get(key, 0.0) or 0.0) <= now
+    ]
+    # Never resurrect a cooled key merely to fill the list. If eight of ten are
+    # healthy, try those eight; a failed key waits for its own cooldown.
+    return available[:_V69_GEMINI_KEY_LIMIT]
+
+
+# ---------------------------------------------------------------------------
+# 2) Strong men's-football news rescue.
+# Fixes false "not men's football" classifications caused by odd Unicode names
+# or weak entity matching when the post is plainly a transfer between football clubs.
+# Explicit women's/other-sport markers always win and are never rescued.
 # ---------------------------------------------------------------------------
 _V69_WOMEN_OR_OTHER_SPORT_RE = re.compile(
-    r"(?iu)(?:\bwomen(?:'s)?\b|\bwsl\b|\bwnba\b|\bnba\b|\bnfl\b|\bufc\b|"
+    r"(?iu)(?:"
+    r"\bwomen(?:'s)?\b|\bwsl\b|\bwnba\b|\bnba\b|\bnfl\b|\bufc\b|"
     r"\bbasketball\b|\btennis\b|\bgolf\b|\bformula\s*1\b|\bf1\b|"
-    r"כדורגל\s+נשים|נשים\b.*כדורגל|כדורסל|טניס|גולף|פורמולה)"
+    r"כדורגל\s+נשים|נשים\b.*כדורגל|כדורסל|טניס|גולף|פורמולה"
+    r")"
 )
+
 _V69_MENS_FOOTBALL_ACTION_RE = re.compile(
-    r"(?iu)(?:\btransfer\b|\bmove\b|\bsign(?:s|ed|ing)?\b|\bjoin(?:s|ed|ing)?\b|"
+    r"(?iu)(?:"
+    r"\btransfer\b|\bmove\b|\bsign(?:s|ed|ing)?\b|\bjoin(?:s|ed|ing)?\b|"
     r"\bdeal\b|\bbid\b|\boffer\b|\bagreement\b|\bterms\b|\bmedical\b|"
     r"\bnegotiat(?:e|es|ed|ing|ion|ions)\b|\bloan\b|\bcontract\b|"
     r"\bfee\b|\bclub\b|\bplayer\b|\bmanager\b|\bcoach\b|"
     r"העבר(?:ה|תו|ת)|מעבר|חתם|חתימה|יחתום|מצטרף|להצטרף|עסקה|"
     r"הצעה|סיכום|הסכם|תנאים|בדיקות\s+רפואיות|משא\s+ומתן|השאלה|"
-    r"חוזה|דמי\s+העברה|מועדון|שחקן|מאמן)"
+    r"חוזה|דמי\s+העברה|מועדון|שחקן|מאמן"
+    r")"
 )
+
 _V69_KNOWN_FOOTBALL_CONTEXT_RE = re.compile(
-    r"(?iu)(?:Newcastle|Marseille|Barcelona|Real\s+Madrid|Manchester\s+(?:United|City)|"
+    r"(?iu)(?:"
+    r"Newcastle|Marseille|Barcelona|Real\s+Madrid|Manchester\s+(?:United|City)|"
     r"Liverpool|Arsenal|Chelsea|Tottenham|Aston\s+Villa|Crystal\s+Palace|"
     r"PSG|Paris\s+Saint-Germain|Bayern|Dortmund|Juventus|Inter|Milan|Napoli|Roma|"
     r"Porto|Benfica|Sporting|Galatasaray|Fenerbahce|Fenerbahçe|"
     r"ניוקאסל|מארסיי|ברצלונה|ריאל\s+מדריד|מנצ'סטר\s+(?:יונייטד|סיטי)|"
     r"ליברפול|ארסנל|צ'לסי|טוטנהאם|אסטון\s+וילה|קריסטל\s+פאלאס|"
     r"פריז\s+סן[- ]ז'רמן|פ\.?ס\.?ז|באיירן|דורטמונד|יובנטוס|אינטר|מילאן|"
-    r"נאפולי|רומא|פורטו|בנפיקה|גלאטסראיי|פנרבחצ'ה)"
-)
-_V69_INTERVIEW_OR_REACTION_RE = re.compile(
-    r"(?iu)(?:\binterview\b|\basked\b|\bquestion\b|\bdiscuss(?:ed|es|ing)?\b|"
-    r"\breaction\b|\bthoughts?\b|\bopinion\b|\bspeaking\s+about\b|"
-    r"\bon\s+the\s+question\b|🎙️|🗣️|ראיון|בראיון|נשאל|שאלה|דן\s+ב|תגובה|דעה|מה\s+דעת|מדבר\s+על)"
-)
-_V69_CONCRETE_NEWS_RE = re.compile(
-    r"(?iu)(?:\btransfer\b|\bsign(?:s|ed|ing)?\b|\bjoin(?:s|ed|ing)?\b|\bdeal\b|"
-    r"\bbid\b|\boffer\b|\bagreement\b|\bpersonal\s+terms\b|\bmedical\b|"
-    r"\bcontract\b|\brenew(?:al|ed|s)?\b|\binjur(?:y|ed)\b|\boperation\b|"
-    r"\bnegotiat(?:e|es|ed|ing|ion|ions)\b|\bloan\b|\brelease\s+clause\b|"
-    r"\bofficial\b|\bappointed\b|\bsacked\b|\bdismissed\b|\bsquad\b|\bcall[- ]?up\b|"
-    r"העבר(?:ה|תו|ת)|מעבר|חתם|חתימה|יחתום|מצטרף|להצטרף|עסקה|"
-    r"הצעה|סיכום|הסכם|תנאים\s+אישיים|בדיקות\s+רפואיות|חוזה|הארכת\s+חוזה|"
-    r"פציעה|ניתוח|משא\s+ומתן|השאלה|סעיף\s+שחרור|רשמי|מונה|פוטר|סגל|זימון)"
+    r"נאפולי|רומא|פורטו|בנפיקה|גלאטסראיי|פנרבחצ'ה"
+    r")"
 )
 
 
@@ -70583,7 +65247,12 @@ def _v69_source_text(post: Post) -> str:
     try:
         return html.unescape(str(_final_source_text(post) or ""))
     except Exception:
-        return html.unescape("\n".join([str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or "")]))
+        return html.unescape(
+            "\n".join([
+                str(getattr(post, "text", "") or ""),
+                str(getattr(post, "quoted_text", "") or ""),
+            ])
+        )
 
 
 def _v69_is_plain_mens_football_news(post: Post) -> bool:
@@ -70592,48 +65261,911 @@ def _v69_is_plain_mens_football_news(post: Post) -> bool:
         return False
     if not _V69_MENS_FOOTBALL_ACTION_RE.search(text):
         return False
+    # One known club plus a transfer/contract/club action is enough. Requiring
+    # perfect player-name transliteration is exactly what caused the false block.
     return bool(_V69_KNOWN_FOOTBALL_CONTEXT_RE.search(text))
+
+
+_V69_PRE_IS_OTHER_SPORT = is_other_sport_post
 
 
 def is_other_sport_post(post: Post) -> bool:
     if _v69_is_plain_mens_football_news(post):
         return False
-    return bool(_V95_PRE_IS_OTHER_SPORT_POST(post))
+    return bool(_V69_PRE_IS_OTHER_SPORT(post))
+
+
+# ---------------------------------------------------------------------------
+# 3) Block low-value interviews/commentary regardless of source.
+# Long/heavy video makes the block stronger, but the core rule is editorial:
+# interview/reaction/opinion with no concrete football-news action is blocked.
+# A quote containing a real transfer, contract, injury, official decision, bid,
+# medical, squad call-up, etc. is still allowed to continue through existing rules.
+# ---------------------------------------------------------------------------
+_V69_INTERVIEW_OR_REACTION_RE = re.compile(
+    r"(?iu)(?:"
+    r"\binterview\b|\basked\b|\bquestion\b|\bdiscuss(?:ed|es|ing)?\b|"
+    r"\breaction\b|\bthoughts?\b|\bopinion\b|\bspeaking\s+about\b|"
+    r"\bon\s+the\s+question\b|🎙️|🗣️|"
+    r"ראיון|בראיון|נשאל|שאלה|דן\s+ב|תגובה|דעה|מה\s+דעת|מדבר\s+על"
+    r")"
+)
+
+_V69_CONCRETE_NEWS_RE = re.compile(
+    r"(?iu)(?:"
+    r"\btransfer\b|\bsign(?:s|ed|ing)?\b|\bjoin(?:s|ed|ing)?\b|\bdeal\b|"
+    r"\bbid\b|\boffer\b|\bagreement\b|\bpersonal\s+terms\b|\bmedical\b|"
+    r"\bcontract\b|\brenew(?:al|ed|s)?\b|\binjur(?:y|ed)\b|\boperation\b|"
+    r"\bnegotiat(?:e|es|ed|ing|ion|ions)\b|\bloan\b|\brelease\s+clause\b|"
+    r"\bofficial\b|\bappointed\b|\bsacked\b|\bdismissed\b|\bsquad\b|\bcall[- ]?up\b|"
+    r"העבר(?:ה|תו|ת)|מעבר|חתם|חתימה|יחתום|מצטרף|להצטרף|עסקה|"
+    r"הצעה|סיכום|הסכם|תנאים\s+אישיים|בדיקות\s+רפואיות|חוזה|הארכת\s+חוזה|"
+    r"פציעה|ניתוח|משא\s+ומתן|השאלה|סעיף\s+שחרור|רשמי|מונה|פוטר|סגל|זימון"
+    r")"
+)
 
 
 def _v69_is_low_value_interview(post: Post) -> bool:
     text = _v69_source_text(post)
     if not text or not _V69_INTERVIEW_OR_REACTION_RE.search(text):
         return False
+    # Concrete news inside the interview is allowed to be judged by the older
+    # policy engine; this block is for no-punch interviews/reactions only.
     if _V69_CONCRETE_NEWS_RE.search(text):
         return False
     return True
 
 
+_V69_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
 def pre_send_final_local_block_reason(post: Post) -> str:
     if _v69_is_low_value_interview(post):
         return "low_value_interview_or_reaction"
-    reason = str(_V95_PRE_FINAL_LOCAL_BLOCK(post) or "")
+    reason = str(_V69_PRE_FINAL_LOCAL_BLOCK(post) or "")
+    # Rescue only the exact false category the user reported. Do not override
+    # duplicate/live/youth/women/podcast/gambling/etc.
     if reason and _v69_is_plain_mens_football_news(post):
         low = reason.casefold()
-        if ("other_sport" in low or "not_mens" in low or "not_male" in low or "mens_football" in low or "כדורגל גברים" in reason):
+        if (
+            "other_sport" in low
+            or "not_mens" in low
+            or "not_male" in low
+            or "mens_football" in low
+            or "כדורגל גברים" in reason
+        ):
             return ""
     return reason
+
+
+_V69_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
 
 
 def hebrew_block_reason(reason: str) -> str:
     raw = str(reason or "")
     if "low_value_interview_or_reaction" in raw:
         return "ראיון, תגובה או פרשנות ללא מידע חדשותי ממשי נחסמו"
-    return str(_V95_PRE_HEBREW_BLOCK_REASON(reason) or "")
+    return str(_V69_PRE_HEBREW_BLOCK_REASON(reason) or "")
 
 
 # ---------------------------------------------------------------------------
-# V71/V72 ROOT FORMAT ENGINE EXACT BEHAVIOR, applied above current V94 renderer.
+# 4) Preserve V68 link-prep / RTL / footer exactly and audit the requested cases.
+# No RSS/discovery-speed setting is changed in V69.
+# ---------------------------------------------------------------------------
+def _v69_test_post(text: str, username: str = "FabrizioRomano", video: bool = False, pid: str = "v69") -> Post:
+    return Post(
+        post_id=pid,
+        username=username,
+        text=text,
+        link=f"https://x.com/{username}/status/{pid}",
+        image_urls=[],
+        video_urls=["https://example.invalid/video.mp4"] if video else [],
+        has_video=video,
+        primary_has_video=video,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[pid],
+        source_name=username,
+    )
+
+
+def _v69_self_audit() -> None:
+    # Gemini pool: when ten keys are configured, all ten are eligible locally.
+    if GEMINI_API_KEYS:
+        expected = min(10, len(GEMINI_API_KEYS))
+        if int(GEMINI_MAX_REAL_TRANSLATION_REQUESTS) != expected:
+            raise RuntimeError("v69_gemini_real_request_limit_wrong")
+        if int(GEMINI_MAX_KEYS_PER_OPERATION) != expected:
+            raise RuntimeError("v69_gemini_key_limit_wrong")
+
+    # User's false men's-football example must be recognized as football.
+    hoj = _v69_test_post(
+        "🚨⚠️ EXCLUSIVE: Pierre-Emile Højbjerg's move to Newcastle is currently off "
+        "following fresh talks. Newcastle were ready to pay what Marseille wanted, "
+        "but Højbjerg decided to reject the move.",
+        username="FabrizioRomano",
+        pid="v69-hoj",
+    )
+    if not _v69_is_plain_mens_football_news(hoj):
+        raise RuntimeError("v69_hojbjerg_mens_football_rescue_failed")
+
+    # User's no-punch interview example must be blocked.
+    gyok = _v69_test_post(
+        "😲 Viktor Gyokeres is stunned by the question here. We need to change the culture "
+        "in Britain around the Community Shield. In other countries they call it the Super Cup "
+        "and it is a huge game. We seem to think it is a glorified friendly.",
+        username="Footballtweet",
+        video=True,
+        pid="v69-gyok",
+    )
+    if not _v69_is_low_value_interview(gyok):
+        raise RuntimeError("v69_low_value_interview_not_blocked")
+
+    # But a news-bearing quote must not be killed by this new interview rule.
+    news_quote = _v69_test_post(
+        '🗣️ Agent: "The player has agreed personal terms with Newcastle and the clubs are '
+        'negotiating the transfer fee."',
+        username="Footballtweet",
+        video=True,
+        pid="v69-newsquote",
+    )
+    if _v69_is_low_value_interview(news_quote):
+        raise RuntimeError("v69_news_interview_wrongly_blocked")
+
+    # V68 facilities must remain present.
+    if not callable(globals().get("_v68_try_prepare_pasted_x_link")):
+        raise RuntimeError("v69_v68_pasted_link_lost")
+    if not callable(globals().get("_v43_try_edit_any_admin_channel_post")):
+        raise RuntimeError("v69_v68_rtl_lost")
+    if str(globals().get("_V68_NETO_FOOTER_HTML", "")) != '<a href="https://t.me/neto_sport">נטו ספורט.</a>📝':
+        raise RuntimeError("v69_v68_footer_lost")
+
+    # Do not alter V67 discovery speed/RSS configuration in this change.
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v69_rss_cadence_changed")
+    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4:
+        raise RuntimeError("v69_rss_parallelism_changed")
+
+
+_v69_self_audit()
+logging.info(
+    "V69 active: up to %s Gemini keys can fail over for translation; "
+    "low-value interviews/reactions are blocked; strong men's-football transfer news "
+    "cannot be mislabeled as another sport; V68 link/RTL/footer and V67 RSS unchanged.",
+    _V69_GEMINI_KEY_LIMIT,
+)
+
+# ====== END V69 ADD-ONLY RELIABILITY FILTERS ======
+
+# ====== V70 ADD-ONLY: RSS-FIRST DIRECT-X FALLBACK + ETAG/304 CACHE ======
+# Scope is intentionally limited:
+# 1) If live RSS returns posts, automatic discovery returns them immediately and
+#    does NOT wake Direct-X.
+# 2) Direct-X runs only when the live RSS network path returned zero/error.
+# 3) RSS mirrors that support ETag / Last-Modified get conditional requests.
+#    HTTP 304 returns already parsed Post objects from memory, avoiding XML body
+#    download and parse_posts() work.
+#
+# No change to: 20s cadence, feed order, 3-primary/2-fallback policy, filters,
+# Gemini, Telegram, media, RTL, persistence files/keys, Shabbat or buttons.
+
+BOT_BUILD_ID = "winner-v70-rss-first-etag-2026-08-10"
+
+
+# ---------------------------------------------------------------------------
+# 1) Conditional RSS cache.
+# Cache is intentionally in-memory only. A restart simply performs a normal
+# HTTP 200 fetch again and rebuilds the validators; no persistent state changes.
+# ---------------------------------------------------------------------------
+_V70_CONDITIONAL_RSS_LOCK = RLock()
+_V70_CONDITIONAL_RSS_CACHE: dict[str, dict[str, Any]] = {}
+_V70_CONDITIONAL_RSS_URL_LOCKS: dict[str, Lock] = {}
+_V70_CONDITIONAL_RSS_URL_LOCKS_GUARD = Lock()
+
+_V70_RSS_STATS_LOCK = Lock()
+_V70_RSS_STATS: dict[str, int] = {
+    "http_200": 0,
+    "http_304": 0,
+    "etag_requests": 0,
+    "last_modified_requests": 0,
+    "parse_calls": 0,
+    "direct_x_fallbacks": 0,
+    "direct_x_skipped_rss_success": 0,
+}
+
+
+def _v70_stat_inc(name: str, amount: int = 1) -> None:
+    with _V70_RSS_STATS_LOCK:
+        _V70_RSS_STATS[name] = int(_V70_RSS_STATS.get(name, 0)) + int(amount)
+
+
+def _v70_url_lock(url: str) -> Lock:
+    key = str(url or "")
+    with _V70_CONDITIONAL_RSS_URL_LOCKS_GUARD:
+        lock = _V70_CONDITIONAL_RSS_URL_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _V70_CONDITIONAL_RSS_URL_LOCKS[key] = lock
+        return lock
+
+
+def _v70_cached_feed_state(url: str) -> dict[str, Any]:
+    with _V70_CONDITIONAL_RSS_LOCK:
+        state = _V70_CONDITIONAL_RSS_CACHE.get(str(url or ""))
+        return dict(state or {})
+
+
+def _v70_store_feed_state(
+    url: str,
+    *,
+    etag: str,
+    last_modified: str,
+    posts: list[Post],
+) -> None:
+    with _V70_CONDITIONAL_RSS_LOCK:
+        _V70_CONDITIONAL_RSS_CACHE[str(url or "")] = {
+            "etag": str(etag or ""),
+            "last_modified": str(last_modified or ""),
+            "posts": list(posts or []),
+            "updated_at": time.time(),
+        }
+
+
+def _v70_conditional_feed_request(
+    url: str,
+    timeout: float,
+) -> tuple[str, bytes, str, str]:
+    """Return (state, body, etag, last_modified).
+
+    state:
+      "modified"     -> HTTP 2xx with a body
+      "not_modified" -> HTTP 304, cached parsed posts may be reused
+
+    When a mirror does not advertise validators, this behaves exactly like the
+    existing request path: a normal GET on every scan.
+    """
+    cached = _v70_cached_feed_state(url)
+    etag = str(cached.get("etag", "") or "")
+    last_modified = str(cached.get("last_modified", "") or "")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/137.0",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    }
+    if etag:
+        headers["If-None-Match"] = etag
+        _v70_stat_inc("etag_requests")
+    if last_modified:
+        headers["If-Modified-Since"] = last_modified
+        _v70_stat_inc("last_modified_requests")
+
+    request = urllib.request.Request(url, headers=headers)
+    last_error: Exception | None = None
+    attempts = max(1, int(FEED_HTTP_RETRIES))
+
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read()
+                new_etag = str(response.headers.get("ETag", "") or "")
+                new_last_modified = str(
+                    response.headers.get("Last-Modified", "") or ""
+                )
+                _v70_stat_inc("http_200")
+                return "modified", body, new_etag, new_last_modified
+
+        except urllib.error.HTTPError as exc:
+            if int(getattr(exc, "code", 0) or 0) == 304:
+                # We only send validators after a successful cached response,
+                # so 304 has a valid parsed-post cache to reuse.
+                cached_now = _v70_cached_feed_state(url)
+                if cached_now.get("posts") is not None:
+                    _v70_stat_inc("http_304")
+                    return (
+                        "not_modified",
+                        b"",
+                        str(cached_now.get("etag", "") or ""),
+                        str(cached_now.get("last_modified", "") or ""),
+                    )
+                # Defensive fallback: if cache vanished unexpectedly, retry once
+                # without validators instead of treating 304 as a feed failure.
+                bare_request = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": headers["User-Agent"],
+                        "Accept": headers["Accept"],
+                    },
+                )
+                try:
+                    with urllib.request.urlopen(
+                        bare_request,
+                        timeout=timeout,
+                    ) as response:
+                        body = response.read()
+                        new_etag = str(
+                            response.headers.get("ETag", "") or ""
+                        )
+                        new_last_modified = str(
+                            response.headers.get("Last-Modified", "") or ""
+                        )
+                        _v70_stat_inc("http_200")
+                        return (
+                            "modified",
+                            body,
+                            new_etag,
+                            new_last_modified,
+                        )
+                except Exception as retry_exc:
+                    last_error = retry_exc
+            else:
+                last_error = exc
+
+        except Exception as exc:
+            last_error = exc
+
+        if attempt < attempts:
+            time.sleep(0.4)
+
+    raise RuntimeError(
+        f"RSS conditional GET failed: {url}. Last error: {last_error}"
+    )
+
+
+# Final active feed fetcher.
+def fetch_feed(username: str, template: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    url = template.format(username=urllib.parse.quote(canonical))
+    source_name = feed_source_name(template)
+
+    # One in-flight request per exact writer+mirror URL. This also prevents two
+    # overlapping control/automatic checks from both parsing the same fresh body.
+    with _v70_url_lock(url):
+        with feed_source_semaphore(source_name):
+            state, body, etag, last_modified = (
+                _v70_conditional_feed_request(
+                    url,
+                    FEED_REQUEST_TIMEOUT_SECONDS,
+                )
+            )
+
+        if state == "not_modified":
+            cached = _v70_cached_feed_state(url)
+            return list(cached.get("posts", []) or [])
+
+        _v70_stat_inc("parse_calls")
+        posts = list(parse_posts(canonical, body, source_name) or [])
+        _v70_store_feed_state(
+            url,
+            etag=etag,
+            last_modified=last_modified,
+            posts=posts,
+        )
+        return posts
+
+
+# ---------------------------------------------------------------------------
+# 2) Automatic discovery: RSS first. Direct-X is true fallback only.
+# ---------------------------------------------------------------------------
+def _v70_live_rss_network_rows(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return []
+
+    # Use the same account lock as the consolidated RSS engine so a control
+    # button and automatic cycle cannot race the same account's network fetch.
+    with _rss_engine_account_lock(canonical):
+        try:
+            return list(_rss_engine_network_fetch(canonical) or [])
+        except Exception as exc:
+            logging.warning(
+                "⚠️ RSS network path failed for @%s; Direct-X fallback is allowed: %s",
+                canonical,
+                short_error(exc, 500),
+            )
+            return []
+
+
+def _v70_direct_x_fallback_rows(
+    username: str,
+    timeout: float = 4.0,
+) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    _v70_stat_inc("direct_x_fallbacks")
+
+    # First reuse a still-valid Direct-X result if some manual/control action
+    # already fetched it. This costs no new X request.
+    try:
+        cached = list(_full_speed_cache_get(canonical) or [])
+    except Exception:
+        cached = []
+    if cached:
+        return cached
+
+    try:
+        future = _full_speed_start_live(canonical)
+        rows = _full_speed_future_rows(
+            future,
+            max(0.0, float(timeout)),
+        )
+        if rows:
+            return list(rows)
+    except Exception as exc:
+        logging.debug(
+            "Direct-X fallback failed safely for @%s: %s",
+            canonical,
+            short_error(exc, 300),
+        )
+
+    try:
+        return list(_full_speed_cache_get(canonical) or [])
+    except Exception:
+        return []
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+
+    # CRITICAL COST RULE:
+    # A successful live RSS fetch ends discovery for this cycle.
+    rss_rows = _v70_live_rss_network_rows(canonical)
+    if rss_rows:
+        _v70_stat_inc("direct_x_skipped_rss_success")
+
+        ordered = sorted(
+            [post for post in rss_rows if isinstance(post, Post)],
+            key=lambda post: float(
+                getattr(post, "published_ts", 0.0) or 0.0
+            ),
+            reverse=True,
+        )
+
+        observed = time.time()
+        elapsed = time.perf_counter() - started
+        for post in ordered:
+            try:
+                _pipeline_mark_seen(
+                    post,
+                    "automatic:rss_success_no_direct_x",
+                    observed,
+                    elapsed,
+                )
+            except Exception:
+                pass
+
+        return ordered[
+            : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+        ]
+
+    # Only a real zero/error from the live RSS network path is allowed to wake X.
+    live_rows = _v70_direct_x_fallback_rows(canonical, timeout=4.0)
+
+    # Last safety net: persistent RSS cache/history. It does not cause an X call;
+    # it is used only after both live RSS and Direct-X produced no rows.
+    if not live_rows:
+        try:
+            live_rows = list(_rss_engine_cached(canonical, limit=60) or [])
+        except Exception:
+            live_rows = []
+
+    ordered = sorted(
+        [post for post in live_rows if isinstance(post, Post)],
+        key=lambda post: float(
+            getattr(post, "published_ts", 0.0) or 0.0
+        ),
+        reverse=True,
+    )
+
+    if ordered:
+        try:
+            _stable_rss_remember(canonical, ordered)
+            _remember_control_rss_posts(canonical, ordered)
+            _ten_history_save(canonical, ordered)
+        except Exception:
+            pass
+
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in ordered:
+        try:
+            _pipeline_mark_seen(
+                post,
+                "automatic:direct_x_only_after_rss_zero",
+                observed,
+                elapsed,
+            )
+        except Exception:
+            pass
+
+    return ordered[
+        : max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 3) Local audit. No external network calls.
+# ---------------------------------------------------------------------------
+def _v70_self_audit() -> None:
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v70_scan_cadence_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3:
+        raise RuntimeError("v70_primary_rss_count_changed")
+    if int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v70_fallback_rss_count_changed")
+    if int(FEED_HTTP_RETRIES) != 2:
+        raise RuntimeError("v70_rss_retries_changed")
+    if float(FEED_REQUEST_TIMEOUT_SECONDS) != 6.0:
+        raise RuntimeError("v70_rss_timeout_changed")
+    if float(FEED_COLLECTION_TIMEOUT_SECONDS) != 8.0:
+        raise RuntimeError("v70_rss_collection_timeout_changed")
+
+    # The active automatic fetcher must contain no unconditional wake-up of
+    # Direct-X before the RSS-success return.
+    names = set(fetch_posts.__code__.co_names)
+    if "_v70_live_rss_network_rows" not in names:
+        raise RuntimeError("v70_rss_first_fetcher_not_active")
+    if "_v70_direct_x_fallback_rows" not in names:
+        raise RuntimeError("v70_direct_x_fallback_missing")
+
+    # Conditional feed fetcher must own both parser and validator path.
+    feed_names = set(fetch_feed.__code__.co_names)
+    if "_v70_conditional_feed_request" not in feed_names:
+        raise RuntimeError("v70_conditional_rss_not_active")
+    if "parse_posts" not in feed_names:
+        raise RuntimeError("v70_rss_parser_missing")
+
+
+_v70_self_audit()
+logging.info(
+    "V70 active: Direct-X wakes only after live RSS returns zero/error; "
+    "ETag/Last-Modified conditional RSS enabled with parsed-post reuse on HTTP 304; "
+    "all V69 filters/Gemini/Telegram behavior unchanged."
+)
+
+# ====== END V70 RSS-FIRST / ETAG ======
+
+# ====== V71 ADD-ONLY: ONLY USER-REQUESTED FORMAT FIXES (2026-08-11) ======
+# Scope is STRICTLY limited to the user's five reported output issues:
+# 1) Never print "מיחזור של <writer>"; use the normal writer name.
+# 2) Canonical FC Porto display: "פ.צ. פורטו" / split "פ.צ.\nפורטו" -> "פורטו".
+# 3) Preserve/split structured list rows such as "🌍 מונדיאל" and keep following
+#    prose on its own row instead of flattening it into the list.
+# 4) Remove a dangling source-attribution fragment such as "🕶️ מדווח ב" and
+#    clean a redundant "- " before an emoji list row.
+# 5) Keep keycap shirt-number emoji sequences in their logical order under RTL,
+#    e.g. 1️⃣9️⃣👕 must not render visually as 9️⃣1️⃣.
+#
+# NOTHING ELSE is changed here: RSS, Direct-X, ETag, Gemini, filtering, duplicate
+# policy, Telegram cadence, media, Shabbat, buttons and persistence remain V70.
+
+BOT_BUILD_ID = "winner-v71-only-requested-format-fixes-2026-08-11"
+
+
+# ---------------------------------------------------------------------------
+# 1) Recycled reports: keep the existing eligibility/filter behavior, but never
+#    rename the writer to "מיחזור של ...".
 # ---------------------------------------------------------------------------
 def should_label_recycled_report(post: Post) -> bool:
     return False
 
+
+# ---------------------------------------------------------------------------
+# 2) FC Porto canonical display.
+# This targets FC Porto specifically. It does not globally delete FC/F.C. from
+# other clubs and avoids reserve/youth suffixes.
+# ---------------------------------------------------------------------------
+_V71_FC_PORTO_RE = re.compile(
+    r"(?iu)(?<![A-Za-zא-ת])(?:"
+    r"פ\s*[.\-]?\s*צ\s*[.]?|"
+    r"אפ\s*[.\-]?\s*סי\s*[.]?|"
+    r"F\s*[.]?\s*C\s*[.]?"
+    r")"
+    r"[ \t]*(?:\n[ \t]*|[ \t]+)פורטו\b"
+    r"(?![ \t]*(?:B\b|U(?:19|21|23)\b|ב['׳]?))"
+)
+
+
+def _v71_normalize_fc_porto(value: Any) -> str:
+    text = str(value or "")
+    return _V71_FC_PORTO_RE.sub("פורטו", text)
+
+
+_V71_PRE_NORMALIZE_ENTITY_NAMES = _v52_normalize_entity_names
+
+
+def _v52_normalize_entity_names(value: Any) -> str:
+    return _v71_normalize_fc_porto(_V71_PRE_NORMALIZE_ENTITY_NAMES(value))
+
+
+# ---------------------------------------------------------------------------
+# 3) Structured-line repair.
+# Extend only the final marker recognition needed by the reported failures.
+# ---------------------------------------------------------------------------
+_V71_EXTRA_MARKER_TOKEN = (
+    r"(?:"
+    r"[\U0001F1E6-\U0001F1FF]{2}|"
+    r"🌍|🌎|🌏|🛩️?|🗂️?|🕶️?|"
+    r"🏆|🏅|🥇|🥈|🥉|⚽️?|🎯|🧤|✅|❌|⭐️?"
+    r")"
+)
+_V71_STRUCTURED_START_RE = re.compile(
+    rf"^\s*(?:{_V71_EXTRA_MARKER_TOKEN})(?:\s+(?:{_V71_EXTRA_MARKER_TOKEN}))*\s+\S",
+    re.UNICODE,
+)
+_V71_DANGLING_ATTRIBUTION_RE = re.compile(
+    r"(?iu)^\s*(?:(?:🕶️?|🎙️?|🗣️?)\s*)?"
+    r"(?:מדווח(?:ת|ים|ות)?\s+ב|דיווח\s+ב|reports?\s+(?:at|on|via))"
+    r"\s*[:\-–—]?\s*$"
+)
+_V71_GLOBE_COMPETITION_TAIL_RE = re.compile(
+    r"(?iu)^(?P<marker>🌍|🌎|🌏)\s+"
+    r"(?P<label>"
+    r"מונדיאל(?:\s+המועדונים)?|"
+    r"גביע\s+העולם(?:\s+למועדונים)?|"
+    r"World\s+Cup(?:\s+Club)?"
+    r")"
+    r"(?P<tail>\s+\S.*)$"
+)
+
+
+def _v71_marker_count(text: str) -> int:
+    return len(re.findall(_V71_EXTRA_MARKER_TOKEN, text, re.UNICODE))
+
+
+def _v71_split_inline_structured_markers(text: str) -> str:
+    """Split only proven inline list markers.
+
+    A marker is split from preceding text only when the whole message contains at
+    least two structured markers, preventing an ordinary trailing flag in prose
+    from becoming an accidental new paragraph.
+    """
+    if _v71_marker_count(text) < 2:
+        return text
+    pattern = re.compile(
+        rf"(?<=\S)[ \t]+(?=(?:{_V71_EXTRA_MARKER_TOKEN})(?:\s+(?:{_V71_EXTRA_MARKER_TOKEN}))*\s+\S)",
+        re.UNICODE,
+    )
+    return pattern.sub("\n", text)
+
+
+def _v71_split_globe_label_from_following_prose(lines: list[str]) -> list[str]:
+    output: list[str] = []
+    for line in lines:
+        match = _V71_GLOBE_COMPETITION_TAIL_RE.match(line.strip())
+        if not match:
+            output.append(line)
+            continue
+        tail = match.group("tail").strip()
+        # A real continuation sentence is substantially longer than a compact
+        # competition label. Do not split simple labels like "מונדיאל 2026".
+        tail_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", tail)
+        if len(tail_words) >= 4:
+            output.append(f"{match.group('marker')} {match.group('label')}")
+            output.append(tail)
+        else:
+            output.append(line)
+    return output
+
+
+def _v71_repair_requested_body_layout(value: Any) -> str:
+    text = _v71_normalize_fc_porto(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _v71_split_inline_structured_markers(text)
+
+    raw_lines = text.split("\n")
+    cleaned: list[str] = []
+    nonempty_total = sum(1 for line in raw_lines if line.strip())
+
+    for raw_line in raw_lines:
+        line = raw_line.rstrip()
+        visible = re.sub(
+            r"^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+|"
+            r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+$",
+            "",
+            line.strip(),
+        )
+
+        # The reported Gerard Romero shape was created after an @handle/source
+        # fragment was removed, leaving only "מדווח ב". Such an empty attribution
+        # carries no news and is removed only when other content exists.
+        if nonempty_total > 1 and _V71_DANGLING_ATTRIBUTION_RE.match(visible):
+            continue
+
+        # "- 🛩️ report..." is a redundant bullet+emoji double marker. Keep the
+        # emoji marker and the row, remove only the redundant dash.
+        line = re.sub(
+            rf"^\s*[-–—]\s+(?=(?:{_V71_EXTRA_MARKER_TOKEN})\s+\S)",
+            "",
+            line,
+        )
+        cleaned.append(line)
+
+    cleaned = _v71_split_globe_label_from_following_prose(cleaned)
+
+    # Preserve one physical row per structured item. Do not invent blank rows.
+    result = "\n".join(cleaned)
+    result = re.sub(r"[ \t]+\n", "\n", result)
+    result = re.sub(r"\n[ \t]+", "\n", result)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+# Teach the existing V52/V53 structured-row logic that the reported globe/plane/
+# folder markers are list markers too. Existing markers remain untouched.
+_V71_PRE_V52_MARKER_PARTS = _v52_marker_parts
+
+
+def _v52_marker_parts(line: Any) -> tuple[str, str]:
+    marker, body = _V71_PRE_V52_MARKER_PARTS(line)
+    if marker:
+        return marker, body
+    visible = _v49_line_visible(line) if "_v49_line_visible" in globals() else str(line or "").strip()
+    match = re.match(
+        rf"^\s*(?P<marker>(?:{_V71_EXTRA_MARKER_TOKEN})(?:\s+(?:{_V71_EXTRA_MARKER_TOKEN}))*)\s+(?P<body>.+)$",
+        visible,
+        re.UNICODE,
+    )
+    if not match:
+        return "", visible
+    return re.sub(r"\s+", "", match.group("marker")), match.group("body").strip()
+
+
+_V71_PRE_V53_IS_STRUCTURED_ROW = _v53_is_structured_row
+
+
+def _v53_is_structured_row(line: Any) -> bool:
+    if _V71_STRUCTURED_START_RE.match(_v52_visible_line(line)):
+        return True
+    return bool(_V71_PRE_V53_IS_STRUCTURED_ROW(line))
+
+
+# Apply the requested body repairs before the existing renderer/layout stack.
+_V71_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    translated = _v71_repair_requested_body_layout(translated)
+    if quoted_translated:
+        quoted_translated = _v71_repair_requested_body_layout(quoted_translated)
+    rendered = _V71_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    return _v71_normalize_fc_porto(rendered)
+
+
+# ---------------------------------------------------------------------------
+# 4) RTL keycap sequence protection.
+# Keep the established full-line RTL behavior. Only a consecutive keycap-number
+# cluster is wrapped in an internal LTR isolate so 1️⃣9️⃣ stays 19 visually.
+# ---------------------------------------------------------------------------
+_V71_LRI = "\u2066"
+_V71_PDI = "\u2069"
+_V71_KEYCAP_CLUSTER_RE = re.compile(
+    r"(?:\u2066)?"
+    r"(?P<seq>(?:[0-9#*]\ufe0f?\u20e3){2,}(?:[ \t]*👕)?)"
+    r"(?:\u2069)?",
+    re.UNICODE,
+)
+
+
+def _v71_protect_keycap_clusters(value: Any) -> Any:
+    if not isinstance(value, str) or not value:
+        return value
+    return _V71_KEYCAP_CLUSTER_RE.sub(
+        lambda match: _V71_LRI + match.group("seq") + _V71_PDI,
+        value,
+    )
+
+
+_V71_PRE_STRONG_RTL_ALL_LINES = _v41_strong_rtl_all_lines
+
+
+def _v41_strong_rtl_all_lines(value: Any) -> Any:
+    return _V71_PRE_STRONG_RTL_ALL_LINES(
+        _v71_protect_keycap_clusters(value)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5) Deterministic local audit for exactly the five reported cases.
+# No network calls.
+# ---------------------------------------------------------------------------
+def _v71_self_audit() -> None:
+    # 1) Recycling label is gone.
+    if should_label_recycled_report(None):
+        raise RuntimeError("v71_recycle_label_still_enabled")
+
+    # 2) FC Porto split form.
+    porto = _v71_repair_requested_body_layout(
+        "🚨🐉 פ.צ.\nפורטו יצרה קשר עם סביבתו של סאנטי חימנס."
+    )
+    if "פ.צ." in porto or "🚨🐉 פורטו יצרה קשר" not in porto:
+        raise RuntimeError(f"v71_fc_porto_failed:{porto!r}")
+
+    # 3) Ozil list: globe item and following prose get their own rows.
+    ozil = _v71_repair_requested_body_layout(
+        "🇪🇺 יורו 🌍 מונדיאל הכוכב הגרמני אולי אפילו מוערך בחסר, אתם יודעים."
+    )
+    ozil_lines = [line.strip() for line in ozil.splitlines() if line.strip()]
+    if ozil_lines != [
+        "🇪🇺 יורו",
+        "🌍 מונדיאל",
+        "הכוכב הגרמני אולי אפילו מוערך בחסר, אתם יודעים.",
+    ]:
+        raise RuntimeError(f"v71_ozil_layout_failed:{ozil_lines!r}")
+
+    # 4) Gerard Romero dangling attribution and redundant dash are removed.
+    gerard = _v71_repair_requested_body_layout(
+        "🕶️ מדווח ב\n- 🛩️ הקטור פורט יעזוב בחלון ההעברות הזה\n"
+        "🇩🇪 🗂️ עם מספר הצעות על השולחן, המועדון והשחקן בוחנים את ההשאלה."
+    )
+    gerard_lines = [line.strip() for line in gerard.splitlines() if line.strip()]
+    if gerard_lines != [
+        "🛩️ הקטור פורט יעזוב בחלון ההעברות הזה",
+        "🇩🇪 🗂️ עם מספר הצעות על השולחן, המועדון והשחקן בוחנים את ההשאלה.",
+    ]:
+        raise RuntimeError(f"v71_gerard_layout_failed:{gerard_lines!r}")
+
+    # 5) Keycap number keeps logical LTR order inside RTL.
+    protected = _v71_protect_keycap_clusters("קרלוס אספי 1️⃣9️⃣👕")
+    expected = _V71_LRI + "1️⃣9️⃣👕" + _V71_PDI
+    if expected not in protected or "9️⃣1️⃣" in protected:
+        raise RuntimeError(f"v71_keycap_order_failed:{protected!r}")
+
+    # Explicitly ensure V70 operational settings were not touched.
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v71_rss_cadence_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v71_rss_source_policy_changed")
+
+
+_v71_self_audit()
+logging.info(
+    "V71 active: only requested output fixes — no recycle label; FC Porto canonical; "
+    "structured list/newline repair; dangling attribution cleanup; keycap shirt-number RTL order."
+)
+
+# ====== END V71 ONLY USER-REQUESTED FORMAT FIXES ======
+
+# ====== V72 ROOT FORMAT ENGINE — FIX CAUSES, NOT EXAMPLES (2026-08-11) ======
+# Scope remains ONLY the presentation defects reported after V70:
+# - recycled-report display label
+# - club-prefix/name line break such as F.C./פ.צ. + known club
+# - list/paragraph line structure
+# - dangling source-attribution shells
+# - RTL order of multi-keycap numeric emoji
+#
+# V71's example-specific helpers are superseded below by source-aware/catalog-
+# driven logic. RSS, Direct-X, ETag, Gemini request policy, filtering, duplicates,
+# Telegram polling, media, Shabbat, buttons and persistent state are untouched.
+
+BOT_BUILD_ID = "winner-v72-root-format-engine-2026-08-11"
+
+
+# ---------------------------------------------------------------------------
+# ROOT CAUSE A — "מיחזור של ..." was not a Telegram/translation bug at all.
+# The base builder deliberately replaced the normal writer display name whenever
+# should_label_recycled_report() returned True. Keep all duplicate/recycle
+# eligibility decisions, but remove this presentation label globally.
+# ---------------------------------------------------------------------------
+def should_label_recycled_report(post: Post) -> bool:
+    return False
+
+
+# Also clean already-prepared historical render text if it still contains the old
+# presentation prefix. This changes display only; it does not change duplicate state.
 _V72_RECYCLE_HEADING_RE = re.compile(
     r"(?imu)^(?P<prefix>\s*(?:<b>)?[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]*)"
     r"מיחזור\s+של\s+(?P<name>[^:\n]{2,80}:)"
@@ -70641,9 +66173,22 @@ _V72_RECYCLE_HEADING_RE = re.compile(
 
 
 def _v72_remove_recycle_display_label(value: Any) -> str:
-    return _V72_RECYCLE_HEADING_RE.sub(lambda m: (m.group("prefix") or "") + m.group("name"), str(value or ""))
+    return _V72_RECYCLE_HEADING_RE.sub(
+        lambda m: (m.group("prefix") or "") + m.group("name"),
+        str(value or ""),
+    )
 
 
+# ---------------------------------------------------------------------------
+# ROOT CAUSE B — club abbreviations were normalized too late.
+# Example class: a translator can output:
+#   פ.צ.
+#   <known club>
+# The short first row ends with a dot, so V52's sentence-repair correctly refuses
+# to join it. The root fix is entity normalization BEFORE layout heuristics.
+#
+# This is catalog-driven for every known club; Porto is not hardcoded.
+# ---------------------------------------------------------------------------
 def _v72_known_club_display_names() -> list[str]:
     names: set[str] = set()
     try:
@@ -70655,6 +66200,7 @@ def _v72_known_club_display_names() -> list[str]:
                 names.add(name)
             for alias in info.get("aliases", []) or []:
                 alias = str(alias or "").strip()
+                # Hebrew aliases are safe final-display candidates.
                 if alias and re.search(r"[א-ת]", alias):
                     names.add(alias)
     except Exception:
@@ -70670,11 +66216,18 @@ def _v72_known_club_display_names() -> list[str]:
 
 
 _V72_KNOWN_CLUB_NAMES = _v72_known_club_display_names()
-if _V72_KNOWN_CLUB_NAMES:
-    _V72_CLUB_ALTERNATION = "|".join(re.escape(name) for name in _V72_KNOWN_CLUB_NAMES)
+_V72_CLUB_ALT = "|".join(re.escape(name) for name in _V72_KNOWN_CLUB_NAMES if len(name) >= 3)
+
+if _V72_CLUB_ALT:
     _V72_CLUB_PREFIX_RE = re.compile(
-        rf"(?iu)(?<![A-Za-zא-ת])(?:פ\s*[.\-]?\s*צ\s*[.]?|אפ\s*[.\-]?\s*סי\s*[.]?|F\s*[.]?\s*C\s*[.]?)"
-        rf"[ \t]*(?:\n[ \t]*|[ \t]+)(?P<club>{_V72_CLUB_ALTERNATION})\b"
+        rf"(?iu)(?<![A-Za-zא-ת])"
+        rf"(?:"
+        rf"F\s*[.]?\s*C\s*[.]?|"
+        rf"אפ\s*[.]?\s*סי\s*[.]?|"
+        rf"פ\s*[.]?\s*צ\s*[.]?"
+        rf")"
+        rf"[ \t]*(?:\n[ \t]*)?"
+        rf"(?P<club>{_V72_CLUB_ALT})(?![A-Za-zא-ת])"
     )
 else:
     _V72_CLUB_PREFIX_RE = re.compile(r"(?!x)x")
@@ -70682,22 +66235,60 @@ else:
 
 def _v72_normalize_known_club_prefixes(value: Any) -> str:
     text = str(value or "")
-    return _V72_CLUB_PREFIX_RE.sub(lambda m: str(m.group("club") or ""), text)
+
+    def repl(match: re.Match[str]) -> str:
+        return str(match.group("club") or "").strip()
+
+    return _V72_CLUB_PREFIX_RE.sub(repl, text)
 
 
+# V71 called this Porto-specific helper dynamically. Rebinding it here removes the
+# specific-case behavior and makes the existing V71 wrapper catalog-driven.
 def _v71_normalize_fc_porto(value: Any) -> str:
     return _v72_normalize_known_club_prefixes(value)
 
 
-_V72_EMOJI_BASE = (r"(?:" r"[\U0001F1E6-\U0001F1FF]{2}|" r"[\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf]" r")")
-_V72_EMOJI_TRAIL = (r"(?:" r"\ufe0f|" r"[\U0001F3FB-\U0001F3FF]|" r"[\U000E0020-\U000E007F]|" r"\u200d(?:[\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf])\ufe0f?" r")*")
+# ---------------------------------------------------------------------------
+# ROOT CAUSE C — multiple layout layers disagreed about what an emoji line means.
+#
+# V49: every emoji-only line = decoration belonging to PREVIOUS row.
+# V52/V53: a short unpunctuated line can be joined to NEXT row.
+#
+# That combination can move a real list marker and then flatten the list. Define
+# one generic Unicode marker grammar and let every active line-join decision use it.
+# ---------------------------------------------------------------------------
+_V72_EMOJI_BASE = (
+    r"(?:"
+    r"[\U0001F1E6-\U0001F1FF]{2}|"
+    r"[\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf]"
+    r")"
+)
+_V72_EMOJI_TRAIL = (
+    r"(?:"
+    r"\ufe0f|"
+    r"[\U0001F3FB-\U0001F3FF]|"
+    r"[\U000E0020-\U000E007F]|"
+    r"\u200d(?:[\U0001F300-\U0001FAFF\u2300-\u23ff\u2600-\u27bf])\ufe0f?"
+    r")*"
+)
 _V72_EMOJI_UNIT = rf"(?:{_V72_EMOJI_BASE}{_V72_EMOJI_TRAIL})"
 _V72_EMOJI_SEQUENCE = rf"(?:{_V72_EMOJI_UNIT}(?:[ \t]*))+"
+
 _V72_LINE_MARKER_RE = re.compile(
-    rf"^\s*(?P<marker>{_V72_EMOJI_SEQUENCE}|[-–—•▪▫◦‣]|\d{{1,3}}[.)])"
-    rf"(?:[ \t]+(?P<body>\S.*)|(?P<empty_body>\s*))$", re.UNICODE,
+    rf"^\s*(?P<marker>"
+    rf"{_V72_EMOJI_SEQUENCE}|"
+    rf"[-–—•▪▫◦‣]|"
+    rf"\d{{1,3}}[.)]"
+    rf")"
+    rf"(?:[ \t]+(?P<body>\S.*)|(?P<empty_body>\s*))$",
+    re.UNICODE,
 )
-_V72_ANY_EMOJI_MARKER_RE = re.compile(rf"(?P<marker>{_V72_EMOJI_SEQUENCE})(?=[ \t]+\S)", re.UNICODE)
+
+_V72_ANY_EMOJI_MARKER_RE = re.compile(
+    rf"(?P<marker>{_V72_EMOJI_SEQUENCE})(?=[ \t]+\S)",
+    re.UNICODE,
+)
+
 _V72_BIDI_EDGE_RE = re.compile(
     r"^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+|"
     r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]+$"
@@ -70724,11 +66315,15 @@ def _v72_marker_parts(value: Any) -> tuple[str, str]:
     match = _V72_LINE_MARKER_RE.match(visible)
     if not match:
         return "", visible
-    return str(match.group("marker") or "").strip(), str(match.group("body") or "").strip()
+    marker = str(match.group("marker") or "").strip()
+    body = str(match.group("body") or "").strip()
+    return marker, body
 
 
 def _v72_marker_key(marker: Any) -> str:
-    return re.sub(r"[\s\ufe0f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", str(marker or ""))
+    value = str(marker or "")
+    value = re.sub(r"[\s\ufe0f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", value)
+    return value
 
 
 def _v72_has_leading_marker(value: Any) -> bool:
@@ -70740,9 +66335,14 @@ def _v72_short_label(value: Any) -> bool:
     _marker, body = _v72_marker_parts(value)
     visible = body or _v72_visible_line(value)
     words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", visible)
-    return bool(1 <= len(words) <= 12 and not re.search(r"[.!?…;]\s*$", visible))
+    return bool(
+        1 <= len(words) <= 12
+        and not re.search(r"[.!?…;]\s*$", visible)
+    )
 
 
+# Replace V52 marker parsing with the generic grammar. This is deliberately not a
+# hardcoded emoji list.
 def _v52_marker_parts(line: Any) -> tuple[str, str]:
     return _v72_marker_parts(line)
 
@@ -70750,9 +66350,16 @@ def _v52_marker_parts(line: Any) -> tuple[str, str]:
 def _v52_line_is_list_or_marker(value: Any) -> bool:
     visible = _v72_visible_line(value)
     marker, _body = _v72_marker_parts(visible)
-    return bool(marker or _V49_LIST_RE.match(visible) or re.match(r"^\s*(?:[•▪▫◦‣]|\d+[.)])", visible))
+    return bool(
+        marker
+        or _V49_LIST_RE.match(visible)
+        or re.match(r"^\s*(?:[•▪▫◦‣]|\d+[.)])", visible)
+    )
 
 
+# Structured-row compaction remains conservative: any bullet/number is a list;
+# emoji-led rows are list-like only when their label is compact. Long emoji-led
+# news paragraphs are merely protected from auto-joining, not compressed as a list.
 def _v53_is_structured_row(line: Any) -> bool:
     visible = _v72_visible_line(line)
     marker, body = _v72_marker_parts(visible)
@@ -70764,33 +66371,55 @@ def _v53_is_structured_row(line: Any) -> bool:
     return bool(1 <= len(words) <= 14 and not re.search(r"[.!?…]\s*$", body))
 
 
+# ---------------------------------------------------------------------------
+# Root correction for the dangerous sentence-join heuristic.
+# Only plain prose may be repaired. An emoji/bullet/list/opening/writer row is
+# never guessed into another row.
+# ---------------------------------------------------------------------------
 def _v72_join_only_plain_accidental_wraps(value: Any) -> str:
     lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     out: list[str] = []
     index = 0
+
     while index < len(lines):
         current = lines[index]
         if index + 1 >= len(lines):
-            out.append(current); break
+            out.append(current)
+            break
+
         nxt = lines[index + 1]
         cur = _v72_visible_line(current)
         next_visible = _v72_visible_line(nxt)
+
         if not cur or not next_visible:
-            out.append(current); index += 1; continue
+            out.append(current)
+            index += 1
+            continue
+
         cur_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", cur)
         next_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", next_visible)
+
         can_join = bool(
-            2 <= len(cur_words) <= 10 and len(next_words) >= 2
+            2 <= len(cur_words) <= 10
+            and len(next_words) >= 2
             and not re.search(r"[.!?…:;]\s*$", cur)
-            and not _v72_has_leading_marker(current) and not _v72_has_leading_marker(nxt)
+            and not _v72_has_leading_marker(current)
+            and not _v72_has_leading_marker(nxt)
             and not _v52_is_writer_heading(current)
-            and not _V52_OPENING_RE.match(cur) and not _V52_OPENING_RE.match(next_visible)
+            and not _V52_OPENING_RE.match(cur)
+            and not _V52_OPENING_RE.match(next_visible)
             and not _V49_FOOTER_RE.search(next_visible)
             and not (_v49_is_emoji_only_line(nxt) if "_v49_is_emoji_only_line" in globals() else False)
         )
+
         if can_join:
-            out.append(current.rstrip() + " " + nxt.lstrip()); index += 2; continue
-        out.append(current); index += 1
+            out.append(current.rstrip() + " " + nxt.lstrip())
+            index += 2
+            continue
+
+        out.append(current)
+        index += 1
+
     return "\n".join(out)
 
 
@@ -70802,9 +66431,18 @@ def _v53_join_wrapped_prose(value: Any) -> str:
     return _v72_join_only_plain_accidental_wraps(value)
 
 
+# ---------------------------------------------------------------------------
+# ROOT CAUSE D — source structure existed, but the final formatter had no
+# provenance. Use the ORIGINAL source row markers to restore boundaries before
+# the old rendering stack sees the translated body.
+#
+# No marker names are hardcoded. We follow the exact marker sequence from source.
+# ---------------------------------------------------------------------------
 def _v72_source_structured_rows(source: Any) -> list[tuple[int, str, str]]:
     rows: list[tuple[int, str, str]] = []
-    for index, line in enumerate(str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")):
+    for index, line in enumerate(
+        str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ):
         marker, body = _v72_marker_parts(line)
         if marker and body:
             rows.append((index, _v72_marker_key(marker), body))
@@ -70824,10 +66462,15 @@ def _v72_find_marker_occurrences(value: str) -> list[tuple[int, int, str]]:
 def _v72_restore_source_marker_boundaries(source: Any, translated: Any) -> str:
     text = str(translated or "").replace("\r\n", "\n").replace("\r", "\n")
     rows = _v72_source_structured_rows(source)
+
+    # A single leading emoji can just be a news/reaction emoji. Two or more
+    # structured rows in source is the strong evidence that this is a list/block.
     if len(rows) < 2:
         return text
+
     wanted = [key for _idx, key, _body in rows]
     occurrences = _v72_find_marker_occurrences(text)
+
     selected: list[int] = []
     cursor = 0
     for wanted_key in wanted:
@@ -70835,24 +66478,30 @@ def _v72_restore_source_marker_boundaries(source: Any, translated: Any) -> str:
         for position in range(cursor, len(occurrences)):
             start, _end, key = occurrences[position]
             if key == wanted_key:
-                chosen = (position, start); break
+                chosen = (position, start)
+                break
         if chosen is None:
             continue
         cursor = chosen[0] + 1
         selected.append(chosen[1])
+
+    # Insert from right to left so indexes stay valid.
     for start in sorted(set(selected), reverse=True):
         if start <= 0:
             continue
         prefix = text[:start]
+        # Ignore spaces immediately before a source-declared row marker.
         line_start = prefix.rfind("\n") + 1
         if prefix[line_start:].strip() == "":
             continue
         text = prefix.rstrip(" \t") + "\n" + text[start:]
+
     return text
 
 
 def _v72_known_structured_labels(source_body: str) -> list[str]:
     labels: set[str] = set()
+
     def add(value: Any) -> None:
         value = str(value or "").strip()
         if not value:
@@ -70860,71 +66509,156 @@ def _v72_known_structured_labels(source_body: str) -> list[str]:
         labels.add(value)
         if re.match(r"^ה[א-ת]", value) and len(value) >= 5:
             labels.add(value[1:])
+
+    # Domain catalogs already maintained by the bot — no one-off competition
+    # or club names are introduced here.
     try:
         for info in (globals().get("TEAM_CATALOG", {}) or {}).values():
-            if isinstance(info, dict): add(info.get("name"))
-    except Exception: pass
+            if isinstance(info, dict):
+                add(info.get("name"))
+    except Exception:
+        pass
+
     try:
         for spec in globals().get("_FINAL_TOURNAMENT_SPECS", ()) or ():
             if isinstance(spec, dict):
                 pattern = spec.get("pattern")
-                if pattern is not None and pattern.search(source_body): add(spec.get("label"))
-    except Exception: pass
+                if pattern is not None and pattern.search(source_body):
+                    add(spec.get("label"))
+    except Exception:
+        pass
+
     for mapping_name in ("FOOTBALL_TERMS", "TEAM_REPLACEMENTS", "PLAYER_REPLACEMENTS"):
         try:
             mapping = globals().get(mapping_name, {}) or {}
             locally = str(source_body or "")
             for src, target in sorted(mapping.items(), key=lambda item: len(str(item[0])), reverse=True):
-                if re.fullmatch(re.escape(str(src)), locally, flags=re.IGNORECASE): add(target)
-        except Exception: pass
-    if re.search(r"[א-ת]", source_body): add(source_body)
+                if re.fullmatch(re.escape(str(src)), locally, flags=re.IGNORECASE):
+                    add(target)
+        except Exception:
+            pass
+
+    if re.search(r"[א-ת]", source_body):
+        add(source_body)
+
     return sorted(labels, key=len, reverse=True)
 
 
 def _v72_split_last_list_label_from_source_prose(source: Any, translated: Any) -> str:
+    """Split a merged final list row only when source proves prose follows it.
+
+    We do NOT guess a word count. The prefix must match a canonical label already
+    present in the bot's team/tournament/football dictionaries.
+    """
     src_lines = str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     structured = _v72_source_structured_rows(source)
-    if len(structured) < 2: return str(translated or "")
+    if len(structured) < 2:
+        return str(translated or "")
+
     last_src_index, last_key, last_source_body = structured[-1]
-    next_source_index = next((i for i in range(last_src_index + 1, len(src_lines)) if src_lines[i].strip()), None)
-    if next_source_index is None: return str(translated or "")
+    next_source_index = next(
+        (i for i in range(last_src_index + 1, len(src_lines)) if src_lines[i].strip()),
+        None,
+    )
+    if next_source_index is None:
+        return str(translated or "")
+
     next_marker, _ = _v72_marker_parts(src_lines[next_source_index])
-    if next_marker: return str(translated or "")
+    if next_marker:
+        return str(translated or "")
+
     text = str(translated or "")
     lines = text.split("\n")
+
+    # Find the last translated row carrying the last source marker key.
     candidate_index = None
     for i, line in enumerate(lines):
         marker, body = _v72_marker_parts(line)
-        if marker and body and _v72_marker_key(marker) == last_key: candidate_index = i
-    if candidate_index is None: return text
+        if marker and body and _v72_marker_key(marker) == last_key:
+            candidate_index = i
+    if candidate_index is None:
+        return text
+
     marker, body = _v72_marker_parts(lines[candidate_index])
     labels = _v72_known_structured_labels(last_source_body)
     body_fold = body.casefold()
+
     for label in labels:
         label_fold = label.casefold()
-        if not body_fold.startswith(label_fold): continue
-        if len(body) == len(label): return text
+        if not body_fold.startswith(label_fold):
+            continue
+        if len(body) == len(label):
+            return text
+        # Respect a lexical boundary after the canonical label.
         after = body[len(label):]
-        if after and not after[0].isspace(): continue
+        if after and not after[0].isspace():
+            continue
         tail = after.strip()
-        if len(re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", tail)) < 3: return text
+        tail_words = re.findall(r"[A-Za-zÀ-ÿא-ת0-9]+", tail)
+        if len(tail_words) < 3:
+            return text
         lines[candidate_index] = f"{marker} {body[:len(label)].strip()}".strip()
         lines.insert(candidate_index + 1, tail)
         return "\n".join(lines)
+
     return text
 
 
 def _v72_remove_redundant_double_markers(value: Any) -> str:
+    """If a bullet only wraps an emoji-led row, keep the semantic emoji marker."""
     lines: list[str] = []
     for line in str(value or "").split("\n"):
-        line = re.sub(rf"^\s*[-–—•▪▫◦‣]\s+(?={_V72_EMOJI_SEQUENCE}[ \t]+\S)", "", line)
+        line = re.sub(
+            rf"^\s*[-–—•▪▫◦‣]\s+(?={_V72_EMOJI_SEQUENCE}[ \t]+\S)",
+            "",
+            line,
+        )
         lines.append(line)
     return "\n".join(lines)
 
 
+def _v72_general_body_layout(source: Any, translated: Any) -> str:
+    text = _v72_normalize_known_club_prefixes(translated)
+    text = _v72_restore_source_marker_boundaries(source, text)
+    text = _v72_split_last_list_label_from_source_prose(source, text)
+    text = _v72_remove_redundant_double_markers(text)
+    text = _v72_cleanup_dangling_source_shells(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+# V71's hardcoded body repair is called dynamically by its builder. Replace it
+# with a generic fallback that performs no source-specific guess when no source
+# object is available.
+def _v71_split_inline_structured_markers(text: str) -> str:
+    return str(text or "")
+
+
+def _v71_split_globe_label_from_following_prose(lines: list[str]) -> list[str]:
+    return list(lines)
+
+
+def _v71_repair_requested_body_layout(value: Any) -> str:
+    text = _v72_normalize_known_club_prefixes(value)
+    text = _v72_remove_redundant_double_markers(text)
+    text = _v72_cleanup_dangling_source_shells(text)
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# ROOT CAUSE E — handle/source cleanup left grammar shells behind.
+# tidy_translated_text removes @handles after earlier source cleanup already ran.
+# Therefore "reported by @X" can become "reported by" / "מדווח ב".
+# Run a final semantic shell cleanup AFTER handle removal.
+# ---------------------------------------------------------------------------
 _V72_DANGLING_SOURCE_SHELL_RE = re.compile(
     rf"(?iu)^\s*(?:{_V72_EMOJI_SEQUENCE}\s*)?"
-    rf"(?:מדווח(?:ת|ים|ות)?|דיווח|לפי|מקור|reported|reports?|according\s+to|via|source)"
+    rf"(?:"
+    rf"מדווח(?:ת|ים|ות)?|דיווח|לפי|מקור|"
+    rf"reported|reports?|according\s+to|via|source"
+    rf")"
     rf"(?:\s+(?:ב|אצל|מאת|של|על\s+ידי|by|at|on|via|from|to))?"
     rf"\s*[:\-–—.,;]*\s*$"
 )
@@ -70940,4934 +66674,177 @@ def _v72_cleanup_dangling_source_shells(value: Any) -> str:
     return "\n".join(output).strip()
 
 
-def _v72_general_body_layout(source: Any, translated: Any) -> str:
-    text = _v72_normalize_known_club_prefixes(translated)
-    text = _v72_restore_source_marker_boundaries(source, text)
-    text = _v72_split_last_list_label_from_source_prose(source, text)
-    text = _v72_remove_redundant_double_markers(text)
-    text = _v72_cleanup_dangling_source_shells(text)
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n[ \t]+", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def _v71_split_inline_structured_markers(text: str) -> str: return str(text or "")
-def _v71_split_globe_label_from_following_prose(lines: list[str]) -> list[str]: return list(lines)
-def _v71_repair_requested_body_layout(value: Any) -> str:
-    text = _v72_normalize_known_club_prefixes(value)
-    text = _v72_remove_redundant_double_markers(text)
-    text = _v72_cleanup_dangling_source_shells(text)
-    return text.strip()
+_V72_PRE_TIDY_TRANSLATED_TEXT = tidy_translated_text
 
 
 def tidy_translated_text(text: str) -> str:
-    rendered = _V95_PRE_TIDY_TRANSLATED_TEXT(text)
+    rendered = _V72_PRE_TIDY_TRANSLATED_TEXT(text)
     rendered = _v72_cleanup_dangling_source_shells(rendered)
     return _v72_normalize_known_club_prefixes(rendered).strip()
 
 
+# ---------------------------------------------------------------------------
+# ROOT CAUSE F — keycap digits are neutral emoji under Unicode bidi.
+# Whole-line RTL is correct for Hebrew, but a logical sequence such as 1️⃣9️⃣ can
+# be visually reordered. Protect EVERY multi-keycap number run as one LTR isolate;
+# there is no shirt-number-specific value or player-specific exception.
+# ---------------------------------------------------------------------------
 _V72_LRI = "\u2066"
 _V72_PDI = "\u2069"
 _V72_KEYCAP_RUN_RE = re.compile(
-    r"(?:\u2066)?(?P<run>(?:[0-9#*]\ufe0f?\u20e3){2,}(?:[ \t]*[\U0001F300-\U0001FAFF\u2600-\u27bf]\ufe0f?)?)(?:\u2069)?",
+    r"(?:\u2066)?"
+    r"(?P<run>(?:[0-9#*]\ufe0f?\u20e3){2,}(?:[ \t]*[\U0001F300-\U0001FAFF\u2600-\u27bf]\ufe0f?)?)"
+    r"(?:\u2069)?",
     re.UNICODE,
 )
 
+
 def _v72_protect_keycap_runs(value: Any) -> Any:
-    if not isinstance(value, str) or not value: return value
-    return _V72_KEYCAP_RUN_RE.sub(lambda m: _V72_LRI + m.group("run") + _V72_PDI, value)
+    if not isinstance(value, str) or not value:
+        return value
 
-def _v71_protect_keycap_clusters(value: Any) -> Any: return _v72_protect_keycap_runs(value)
+    def repl(match: re.Match[str]) -> str:
+        return _V72_LRI + match.group("run") + _V72_PDI
+
+    return _V72_KEYCAP_RUN_RE.sub(repl, value)
 
 
-def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
+def _v71_protect_keycap_clusters(value: Any) -> Any:
+    return _v72_protect_keycap_runs(value)
+
+
+# ---------------------------------------------------------------------------
+# Source-aware final builder boundary.
+# Apply the root repair BEFORE V71/V58/V54/V53/V52/V51/V49 layout layers.
+# Those layers remain present, but their dangerous line join functions above now
+# share the same marker grammar and cannot flatten a source-declared structured row.
+# ---------------------------------------------------------------------------
+_V72_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
     main_source = _final_corresponding_source_text(post, quoted=False)
     quote_source = _final_corresponding_source_text(post, quoted=True)
+
     translated = _v72_general_body_layout(main_source, translated)
     if quoted_translated:
         quoted_translated = _v72_general_body_layout(quote_source, quoted_translated)
-    rendered = _V95_PRE_BUILD_MESSAGE(post, translated, quoted_translated, quoted_author_translated, include_video_link)
-    # V94 contains later render layers that can flatten a structure after the pre-layout.
-    # Re-assert the SAME V72 source provenance at the final display boundary.
-    rendered = _v72_restore_source_marker_boundaries(main_source, rendered)
-    rendered = _v72_split_last_list_label_from_source_prose(main_source, rendered)
-    if quoted_translated and quote_source:
-        rendered = _v72_restore_source_marker_boundaries(quote_source, rendered)
-    rendered = _v72_remove_recycle_display_label(rendered)
-    rendered = _v72_normalize_known_club_prefixes(rendered)
-    rendered = _v72_remove_redundant_double_markers(rendered)
-    # V72 inherited this from V71; V94 does not contain V71, so preserve composite V72 behavior here.
-    rendered = _v72_cleanup_dangling_source_shells(rendered)
-    rendered = re.sub(r"[ \t]+\n", "\n", rendered)
-    rendered = re.sub(r"\n[ \t]+", "\n", rendered)
-    rendered = re.sub(r"\n{3,}", "\n\n", rendered)
-    # V30 is part of the V72 lineage: exact writer gap, opening-label layout and punctuation.
-    rendered = _v30_format_report_body(rendered)
-    rendered = _v72_protect_keycap_runs(rendered)
-    return rendered.strip()
 
-
-_V95_CANONICAL_FOOTER_REMOVE_RE = re.compile(
-    r'(?is)[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*'
-    r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>'
-    r'\s*[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*נטו\s+ספורט\.?\s*'
-    r'</a>\s*\.?\s*📝'
-)
-
-def _finalize_outgoing_message_only(message: Any) -> str:
-    text = _v72_remove_recycle_display_label(message)
-    text = _v72_normalize_known_club_prefixes(text)
-    text = _v72_cleanup_dangling_source_shells(text)
-    text = _v72_protect_keycap_runs(text)
-    # Keep all established current sanitizing, then enforce the final V72 display boundary.
-    text = _V95_PRE_FINALIZE_OUTGOING(text)
-    text = _v30_format_report_body(text)
-    text = _V95_CANONICAL_FOOTER_REMOVE_RE.sub("", text)
-    text = _v30_remove_all_neto_footers(text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    text = _v72_protect_keycap_runs(text)
-    signature = RTL_MARK + _V68_NETO_FOOTER_HTML
-    return (text + "\n\n" + signature).strip() if text else signature
-
-
-# ---------------------------------------------------------------------------
-# V72 CONTROL/OPTIONAL MEDIA behavior: exact pre-V89 implementations are appended below.
-# ---------------------------------------------------------------------------
-
-def control_loop() -> None:
-    if not CONTROL_CHAT_ID:
-        return
-    delete_control_webhook_if_needed()
-    offset = control_saved_offset()
-    last_conflict_cleanup = 0.0
-    startup_panel_done = False
-    while True:
-        try:
-            if is_shabbat_now():
-                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
-                continue
-            if not startup_panel_done:
-                startup_panel_done = True
-                if CONTROL_SEND_PANEL_ON_STARTUP:
-                    try:
-                        send_quick_control_panel(force_new=True)
-                    except Exception as exc:
-                        logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
-                else:
-                    try:
-                        ensure_control_panel_once_if_requested()
-                    except Exception as exc:
-                        logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
-
-            response = telegram_api(
-                "getUpdates",
-                {
-                    "offset": offset,
-                    "timeout": int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "20")),
-                    "allowed_updates": [
-                        "callback_query", "message", "edited_message",
-                        "channel_post", "edited_channel_post",
-                    ],
-                },
-            )
-            # Candle-lighting can begin while getUpdates is waiting.  Process
-            # absolutely nothing from that batch once Shabbat is active.
-            if is_shabbat_now():
-                continue
-            updates = list(response.get("result", []) or [])
-            if not updates:
-                continue
-            batch_offset = offset
-            callbacks: list[dict[str, Any]] = []
-            noncallbacks: list[dict[str, Any]] = []
-            for update in updates:
-                try:
-                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
-                except Exception:
-                    pass
-                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
-                    callbacks.append(update)
-                else:
-                    noncallbacks.append(update)
-            for update in callbacks:
-                process_control_update(update)
-            for update in noncallbacks:
-                if update.get("channel_post") or update.get("edited_channel_post"):
-                    try:
-                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
-                    except RuntimeError:
-                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
-                else:
-                    try:
-                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
-                    except RuntimeError:
-                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
-            if batch_offset != offset:
-                offset = batch_offset
-                try:
-                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
-                except RuntimeError:
-                    pass
-        except Exception as exc:
-            if is_getupdates_conflict(exc):
-                now = time.time()
-                if now - last_conflict_cleanup > 30:
-                    last_conflict_cleanup = now
-                    try:
-                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1)
-                    except Exception as cleanup_exc:
-                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
-                time.sleep(CONTROL_POLL_SECONDS)
-                continue
-            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
-            time.sleep(CONTROL_POLL_SECONDS)
-
-
-def _final_ytdlp_candidates(post: Post) -> list[dict[str, Any]]:
-    link = str(getattr(post, "link", "") or "")
-    if not link:
-        return []
-    out: dict[str, dict[str, Any]] = {}
-    try:
-        import yt_dlp  # type: ignore
-        options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": False,
-            "socket_timeout": FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS,
-            "extractor_args": {"twitter": {"api": ["syndication"]}},
-        }
-        with yt_dlp.YoutubeDL(options) as downloader:
-            info = downloader.extract_info(link, download=False)
-        _final_walk_video_variants(info, out)
-    except Exception as exc:
-        logging.debug("Optional yt-dlp module video lookup unavailable/failed safely: %s", short_error(exc, 180))
-    if out:
-        return list(out.values())
-    executable = shutil.which("yt-dlp")
-    if not executable:
-        return []
-    try:
-        import subprocess
-        completed = subprocess.run(
-            [executable, "-J", "--no-warnings", "--extractor-args", "twitter:api=syndication", link],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=max(15.0, FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS * 2),
-            check=False,
-        )
-        if completed.returncode == 0 and completed.stdout.strip():
-            _final_walk_video_variants(json.loads(completed.stdout), out)
-    except Exception as exc:
-        logging.debug("Optional yt-dlp command video lookup failed safely: %s", short_error(exc, 180))
-    return list(out.values())
-
-
-
-# ---------------------------------------------------------------------------
-# V95 audit: prove current RSS/translation remain unchanged while V72 behavior wins.
-# ---------------------------------------------------------------------------
-def _v95_v72_behavior_audit() -> None:
-    if fetch_posts_safely is not _V95_RSS_FETCH_POSTS_SAFELY or fetch_posts is not _V95_RSS_FETCH_POSTS:
-        raise RuntimeError("v95_current_rss_changed")
-    if translate_post_for_send is not _V95_TRANSLATE_POST_FOR_SEND:
-        raise RuntimeError("v95_current_send_translation_changed")
-    if manual_force_translation is not _V95_MANUAL_FORCE_TRANSLATION:
-        raise RuntimeError("v95_current_manual_translation_changed")
-    if globals().get("_v94_google_network_once") is not _V95_GOOGLE_NETWORK_ONCE:
-        raise RuntimeError("v95_google_transport_changed")
-    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v95_current_scan_settings_changed")
-    if _V68_NETO_FOOTER_HTML != '<a href="https://t.me/neto_sport">נטו ספורט.</a>📝':
-        raise RuntimeError("v95_v72_footer_wrong")
-    if _v68_extract_x_status("https://x.com/FabrizioRomano/status/1234567890123456789?s=20") != (
-        "FabrizioRomano", "1234567890123456789", "https://x.com/FabrizioRomano/status/1234567890123456789"
-    ):
-        raise RuntimeError("v95_v72_pasted_link_parser_failed")
-    control_names = set(control_loop.__code__.co_names)
-    if "_V57_CHANNEL_EXECUTOR" not in control_names or "_V57_CONTROL_TEXT_EXECUTOR" not in control_names:
-        raise RuntimeError("v95_v72_control_loop_not_restored")
-    if "_v89_control_warn_throttled" in control_names:
-        raise RuntimeError("v95_v89_control_loop_still_active")
-    rtl_names = set(_v43_try_edit_any_admin_channel_post.__code__.co_names)
-    if "_v42_is_bot_authored_update" in rtl_names or "_V89_RTL_UNEDITABLE_KEYS" in rtl_names:
-        raise RuntimeError("v95_v89_rtl_skip_still_active")
-    if should_label_recycled_report(None):
-        raise RuntimeError("v95_recycle_label_enabled")
-    if "מיחזור של" in _v72_remove_recycle_display_label("<b>מיחזור של פבריציו רומאנו:</b>\nטקסט"):
-        raise RuntimeError("v95_recycle_cleanup_failed")
-    for row in ("🌍 תחרות", "🛩️ מעבר", "🇩🇪 🗂️ הצעה", "🏆 תואר"):
-        marker, body = _v72_marker_parts(row)
-        if not marker or not body:
-            raise RuntimeError("v95_marker_grammar_failed:" + row)
-    if _v72_remove_redundant_double_markers("- 🛩️ שחקן יעזוב") != "🛩️ שחקן יעזוב":
-        raise RuntimeError("v95_double_marker_failed")
-    if _v72_cleanup_dangling_source_shells("🕶️ מדווח ב"):
-        raise RuntimeError("v95_dangling_source_failed")
-    protected = _v72_protect_keycap_runs("מספר 1️⃣9️⃣👕")
-    if _V72_LRI + "1️⃣9️⃣👕" + _V72_PDI not in protected:
-        raise RuntimeError("v95_keycap_failed")
-    if "\n\n\n" in _v72_general_body_layout("", "א\n\n\n\nב"):
-        raise RuntimeError("v95_excess_blank_lines")
-
-
-_v95_v72_behavior_audit()
-logging.info(
-    "V95 active: V72 behavior/presentation/control/filter boundary restored; "
-    "V93 live providers and V94 forced translation/no-English safeguards preserved exactly."
-)
-# ====== END V95 V72 BEHAVIOR + CURRENT RSS/TRANSLATION ======
-
-
-# ====== V96 FINAL: USER AUG-07..28 FIXES + LATEST DEDUPE PRESERVED (2026-08-28) ======
-# Add-only compatibility layer above V95.
-# - V72 remains the behavior / presentation baseline.
-# - V93 live providers / scan mechanics remain untouched.
-# - V94 forced translation / no-English safeguards remain untouched underneath.
-# - Latest event-level dedupe and same-status album delivery lock are preserved exactly.
-# - This layer only closes concrete editorial/name-normalization gaps reported by the operator.
-
-BOT_BUILD_ID = "winner-v96-v72-current-rss-translation-latest-dedupe-user-fixes-2026-08-28"
-
-# Hard locks: V96 must never replace these working mechanisms.
-_V96_KEEP_FETCH_POSTS = fetch_posts
-_V96_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V96_KEEP_DEDUPE = find_recent_duplicate_event
-_V96_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
-_V96_KEEP_DELIVERY_KEY = _v58_delivery_key
-_V96_KEEP_SEND_POST = send_post
-_V96_KEEP_GOOGLE_NETWORK = globals().get("_v94_google_network_once")
-
-# ---------------------------------------------------------------------------
-# 1) Final post-translation canonical Hebrew spellings.
-# These repairs are deterministic and cost zero AI/network requests.
-# ---------------------------------------------------------------------------
-PLAYER_REPLACEMENTS.update({
-    "Thiago Pitarch": "תיאגו פיטארץ'",
-    "Tiago Pitarch": "תיאגו פיטארץ'",
-})
-
-_V96_MAN_CITY_BAD_RE = re.compile(
-    r"(?u)(?<![א-ת])(?:מאן\s*סיטי|מאנסיטי|מאנ\s*סיי|מאן\s*סיי|מן\s*סיטי)(?![א-ת])"
-)
-_V96_ATHLETIC_CLUB_BAD_RE = re.compile(
-    r"(?u)(?<![א-ת])(?:אתלטיק\s+קלאב(?:\s+בילבאו)?|אתלטיקו\s+בילבאו)(?![א-ת])"
-)
-_V96_RIVER_PLATE_REPEAT_RE = re.compile(
-    r"(?u)(?<![א-ת])ריבר\s+פלייט(?:\s+פלייט)+(?![א-ת])"
-)
-_V96_HANSI_FLICK_BAD_RE = re.compile(
-    r"(?u)(?<![א-ת])(?:הנס|האנס|האנצי|הנזי|הנזי|הנצי)\s+פליק(?![א-ת])"
-)
-_V96_PITARCH_BAD_RE = re.compile(
-    r"(?u)(?<![א-ת])(?:טיאגו|תיאגו)\s+פיטאר(?:ק|ץ['׳]?)(?![א-ת])"
-)
-
-
-def _v96_hebrew_canonicalize(value: Any) -> str:
-    text = html.unescape(str(value or ""))
-    if not text:
-        return ""
-
-    # English aliases that Google/Gemini sometimes leaves intact.
-    text = re.sub(r"(?iu)(?<![A-Za-z])Man\s+City(?![A-Za-z])", "מנצ'סטר סיטי", text)
-    text = re.sub(r"(?iu)(?<![A-Za-z])Athletic\s+Club(?![A-Za-z])", "אתלטיק בילבאו", text)
-    text = re.sub(r"(?iu)(?<![A-Za-z])(?:Thiago|Tiago)\s+Pitarch(?![A-Za-z])", "תיאגו פיטארץ'", text)
-
-    # User-approved Hebrew canonicals after machine translation.
-    text = _V96_MAN_CITY_BAD_RE.sub("מנצ'סטר סיטי", text)
-    text = _V96_ATHLETIC_CLUB_BAD_RE.sub("אתלטיק בילבאו", text)
-    text = _V96_RIVER_PLATE_REPEAT_RE.sub("ריבר פלייט", text)
-    text = _V96_HANSI_FLICK_BAD_RE.sub("האנזי פליק", text)
-    text = _V96_PITARCH_BAD_RE.sub("תיאגו פיטארץ'", text)
-
-    # Collapse accidental duplicate canonical club names without touching prose.
-    text = re.sub(r"(?u)(ריבר\s+פלייט)(?:\s+\1)+", r"\1", text)
-    text = re.sub(r"(?u)(מנצ'סטר\s+סיטי)(?:\s+\1)+", r"\1", text)
-    text = re.sub(r"(?u)(אתלטיק\s+בילבאו)(?:\s+\1)+", r"\1", text)
-    return text
-
-
-# Wrap V94's forced Google return so old successful-cache entries also receive the
-# canonical spelling fix. No network/retry/validation policy is changed.
-_V96_PRE_GOOGLE_FORCED = _v94_google_translate_forced
-
-
-def _v94_google_translate_forced(source: str, max_chars: int = 2500) -> str:
-    return _v96_hebrew_canonicalize(_V96_PRE_GOOGLE_FORCED(source, max_chars))
-
-
-# Gemini can also produce the same bad Hebrew aliases, so canonicalize only after
-# the already-working V94 translation decision has finished.
-_V96_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
-
-
-def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    main, quote, author = _V96_PRE_TRANSLATE_POST_FOR_SEND(post)
-    return (
-        _v96_hebrew_canonicalize(main),
-        _v96_hebrew_canonicalize(quote) if quote else quote,
-        _v96_hebrew_canonicalize(author) if author else author,
-    )
-
-
-# ---------------------------------------------------------------------------
-# 2) Final live-match / result / engagement hard gates.
-# These are editorial exclusions and must not be rescued by reporter priority.
-# ---------------------------------------------------------------------------
-_V96_LIVE_SENT_OFF_RE = re.compile(
-    r"(?iu)(?:"
-    r"\bsent\s+off\b|\bshown\s+(?:a\s+)?red\s+card\b|\breceiv(?:e|ed|es)\s+(?:one|two|\d+)?\s*red\s+cards?\b|"
-    r"\bdown\s+to\s+(?:9|10|nine|ten)\s+(?:men|players)\b|\bdismissed\s+(?:in|on)\s+the\s+\d{1,3}(?:st|nd|rd|th)?\s+minute\b|"
-    r"הורחק(?:ה|ו)?|קיבל(?:ה|ו)?\s+(?:שני\s+|2\s+)?כרטיס(?:ים)?\s+אדומ(?:ים|ות)|"
-    r"ירד(?:ה|ו)?\s+ל[-־]?\s*(?:9|10)\s+שחקנים"
-    r")"
-)
-_V96_LIVE_MINUTE_RE = re.compile(
-    r"(?iu)(?:"
-    r"\b(?:in\s+the\s+)?\d{1,3}(?:st|nd|rd|th)\s+minute\b|"
-    r"\b\d{1,3}\s*(?:'|’|′)\b|"
-    r"בדקה\s+(?:ה[-־]?)?\d{1,3}\b|דקה\s+(?:ה[-־]?)?\d{1,3}\b"
-    r")"
-)
-_V96_RESULT_ACTION_RE = re.compile(
-    r"(?iu)(?:"
-    r"\bbeat(?:s)?\b|\bdefeat(?:s|ed)?\b|\bwon\b|\bwins?\b|\bvictory\b|"
-    r"ניצח(?:ה|ו)?|גבר(?:ה|ו)?\s+על|הביס(?:ה|ו)?|ניצחון"
-    r")"
-)
-_V96_AUDIENCE_RE = re.compile(
-    r"(?iu)(?:"
-    r"who\s+was\s+(?:your|the)\s+man\s+of\s+the\s+match|"
-    r"who\s+was\s+your\s+player\s+of\s+the\s+match|"
-    r"vote\s+(?:now|below)|your\s+motm|"
-    r"מי\s+היה\s+איש\s+המשחק|מי\s+איש\s+המשחק|הצביעו|מה\s+דעתכם"
-    r")"
-)
-_V96_UNCLEAR_FRAGMENT_RE = re.compile(
-    r"(?iu)(?:^|\n)\s*(?:created|prepared|made)\s+(?:ahead\s+of|for)\s+(?:the\s+)?arrival\s+of\b|"
-    r"(?:^|\n)\s*(?:נוצר|הוכן)\s+לקראת\s+הגעת(?:ו|ה)?\s+של\b"
-)
-
-
-def _v96_is_hard_live_update(post: Post) -> bool:
-    text = _v66_raw_source_text(post) if "_v66_raw_source_text" in globals() else html.unescape(str(_final_source_text(post) or ""))
-    if not text:
-        return False
-    # Preserve the established weather/safety/administrative rescue.
-    if "_V66_ADMIN_RESCUE_RE" in globals() and _V66_ADMIN_RESCUE_RE.search(text):
-        return False
-    if _V96_LIVE_SENT_OFF_RE.search(text) and (
-        _V96_LIVE_MINUTE_RE.search(text)
-        or re.search(r"(?iu)\b(?:red\s+cards?|down\s+to\s+(?:9|10))\b|כרטיס(?:ים)?\s+אדומ|ל[-־]?\s*(?:9|10)\s+שחקנים", text)
-    ):
-        return True
-    return False
-
-
-def _v96_is_match_result_or_engagement(post: Post) -> bool:
-    text = _v66_raw_source_text(post) if "_v66_raw_source_text" in globals() else html.unescape(str(_final_source_text(post) or ""))
-    if not text:
-        return False
-    if "_V66_ADMIN_RESCUE_RE" in globals() and _V66_ADMIN_RESCUE_RE.search(text):
-        return False
-    # Reuse the long-established classifier, but enforce it at the final boundary
-    # so writer-priority rescue cannot re-enable a result/poll.
-    try:
-        if is_match_result_or_engagement_post(post):
-            return True
-    except Exception:
-        pass
-    return bool(_V96_RESULT_ACTION_RE.search(text) and _V96_AUDIENCE_RE.search(text))
-
-
-# ---------------------------------------------------------------------------
-# 3) Final policy wrapper: governance rescue + narrow unclear-fragment block.
-# ---------------------------------------------------------------------------
-_V96_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
-
-
-def pre_send_final_local_block_reason(post: Post) -> str:
-    if _v96_is_hard_live_update(post):
-        return "v96_global_live_card_or_minute_update"
-    if _v96_is_match_result_or_engagement(post):
-        return "v96_match_result_or_engagement"
-
-    reason = str(_V96_PRE_FINAL_LOCAL_BLOCK(post) or "")
-
-    # V95's restored V69 interview layer sits above the V60 governance rescue.
-    # An official FIFA/UEFA/federation statement/investigation is real governance
-    # news, not low-value pundit reaction.
-    if reason == "low_value_interview_or_reaction":
-        try:
-            if _v60_governance_story(post):
-                return ""
-        except Exception:
-            pass
-
-    # Narrow protection against contextless feed fragments such as
-    # "Created ahead of the arrival of ...". Existing ordinary word-count rules
-    # already catch most of these; this only closes translations that happen to
-    # cross the word threshold without gaining a real news action.
-    text = _v66_raw_source_text(post) if "_v66_raw_source_text" in globals() else html.unescape(str(_final_source_text(post) or ""))
-    if not reason and _V96_UNCLEAR_FRAGMENT_RE.search(text):
-        try:
-            words = count_regular_words(text)
-        except Exception:
-            words = len(text.split())
-        if words <= 12 and not _V69_CONCRETE_NEWS_RE.search(text):
-            return "v96_unclear_arrival_fragment"
-    return reason
-
-
-_V96_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
-
-
-def hebrew_block_reason(reason: str) -> str:
-    raw = str(reason or "")
-    if "v96_global_live_card_or_minute_update" in raw:
-        return "עדכון חי מתוך משחק — כרטיס אדום, הרחקה או אירוע בדקה מסוימת — נחסם"
-    if "v96_match_result_or_engagement" in raw:
-        return "תוצאת משחק, עדכון משחק או שאלת קהל/איש המשחק נחסמו"
-    if "v96_unclear_arrival_fragment" in raw:
-        return "דיווח חלקי ולא ברור ללא פעולה חדשותית ממשית נחסם"
-    return str(_V96_PRE_HEBREW_BLOCK_REASON(reason) or "")
-
-
-# ---------------------------------------------------------------------------
-# 4) Regression audit: the reported examples + immutable working mechanisms.
-# ---------------------------------------------------------------------------
-def _v96_test_post(username: str, text: str, pid: str, *, media: bool = False) -> Post:
-    return Post(
-        post_id=pid,
-        username=username,
-        text=text,
-        link=f"https://x.com/{username}/status/{pid}",
-        image_urls=["https://pbs.twimg.com/media/test.jpg"] if media else [],
-        video_urls=[],
-        has_video=False,
-        primary_has_video=False,
-        quoted_has_video=False,
-        quoted_author="",
-        quoted_text="",
-        published_ts=time.time(),
-        dedupe_ids=[pid],
-        source_name=username,
-    )
-
-
-def _v96_self_audit() -> None:
-    # Working transport/scan mechanism remains exactly V95/V93.
-    if fetch_posts is not _V96_KEEP_FETCH_POSTS or fetch_posts_safely is not _V96_KEEP_FETCH_POSTS_SAFELY:
-        raise RuntimeError("v96_rss_provider_boundary_changed")
-    if globals().get("_v94_google_network_once") is not _V96_KEEP_GOOGLE_NETWORK:
-        raise RuntimeError("v96_google_transport_changed")
-    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v96_scan_settings_changed")
-
-    # Latest semantic duplicate engine + same-status delivery lock are not replaced.
-    if find_recent_duplicate_event is not _V96_KEEP_DEDUPE:
-        raise RuntimeError("v96_latest_dedupe_replaced")
-    if find_recent_duplicate_event_ai_aware is not _V96_KEEP_DEDUPE_AI:
-        raise RuntimeError("v96_latest_ai_aware_dedupe_replaced")
-    if _v58_delivery_key is not _V96_KEEP_DELIVERY_KEY or send_post is not _V96_KEEP_SEND_POST:
-        raise RuntimeError("v96_album_delivery_lock_replaced")
-
-    # User-requested zero-cost spelling canonicals.
-    cases = {
-        "מאן סיטי צפויה להגיש הצעה": "מנצ'סטר סיטי צפויה להגיש הצעה",
-        "אתלטיק קלאב הפסידה לברצלונה": "אתלטיק בילבאו הפסידה לברצלונה",
-        "ריבר פלייט פלייט": "ריבר פלייט",
-        "הנס פליק נפרד מהשחקן": "האנזי פליק נפרד מהשחקן",
-        "טיאגו פיטארק צפוי להישאר": "תיאגו פיטארץ' צפוי להישאר",
-    }
-    for raw, expected in cases.items():
-        fixed = _v96_hebrew_canonicalize(raw)
-        if expected not in fixed:
-            raise RuntimeError("v96_canonicalization_failed:" + raw + "=>" + fixed)
-
-    # Live red-card/minute report must be blocked even without a scoreline.
-    red = _v96_test_post(
-        "TrollFootball2",
-        "Trabzonspor received two red cards and went down to 9 men. Mohamed Salah was sent off in the 64th minute.",
-        "2091000000000000001",
-    )
-    if pre_send_final_local_block_reason(red) != "v96_global_live_card_or_minute_update":
-        raise RuntimeError("v96_live_red_card_update_not_blocked")
-
-    # Completed match + MOTM engagement must never be rescued by a priority writer.
-    result_poll = _v96_test_post(
-        "FabrizioRomano",
-        "Barcelona beat Athletic Club with Raphinha and Fermin already on three goals in two games. Who was your man of the match?",
-        "2091000000000000002",
-    )
-    if pre_send_final_local_block_reason(result_poll) != "v96_match_result_or_engagement":
-        raise RuntimeError("v96_result_poll_not_blocked")
-
-    # Official governance statement is concrete football news, not pundit reaction.
-    gov = _v96_test_post(
-        "JacobsBen",
-        'FIFA issued an official statement claiming there is a coordinated and sustained effort by some to undermine FIFA and its president, following discussions with member associations.',
-        "2091000000000000003",
-    )
-    if pre_send_final_local_block_reason(gov):
-        raise RuntimeError("v96_governance_statement_false_block")
-
-    # Album/media mirrors carrying the same canonical X status must share one lock key.
-    p1 = _v96_test_post("FabrizioRomano", "Same album item", "2091000000000000004", media=True)
-    p2 = _v96_test_post("FabrizioRomano", "Same album item second mirror", "2091000000000000005", media=True)
-    p1.link = "https://x.com/FabrizioRomano/status/2091999999999999999"
-    p2.link = "https://twitter.com/FabrizioRomano/status/2091999999999999999?ref=mirror"
-    if _v58_delivery_key(p1) != _v58_delivery_key(p2):
-        raise RuntimeError("v96_same_status_album_delivery_key_mismatch")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v96_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v96_self_audit")
-
-logging.info(
-    "V96 active: V72 behavior + V93 live providers + V94 forced translation preserved; "
-    "latest semantic dedupe and album same-status lock preserved; final live/result gates and "
-    "zero-cost Hebrew canonical team/player fixes applied."
-)
-# ====== END V96 USER FIXES + LATEST DEDUPE PRESERVED ======
-
-
-# ====== V97 FINAL: ORPHAN TRANSLATION FRAGMENTS + PROMO/PODCAST GATE + INLINE LIST RESTORE (2026-08-28) ======
-# Add-only layer above V96.  Working V93/V94 providers/translation and the latest
-# semantic duplicate/album-delivery mechanisms are immutable here.
-BOT_BUILD_ID = "winner-v97-v72-current-rss-translation-latest-dedupe-editorial-format-2026-08-28"
-
-# Immutable working boundaries.
-_V97_KEEP_FETCH_POSTS = fetch_posts
-_V97_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V97_KEEP_GOOGLE_NETWORK = globals().get("_v94_google_network_once")
-_V97_KEEP_TRANSLATE_POST_FOR_SEND_UNDER = translate_post_for_send
-_V97_KEEP_DEDUPE = find_recent_duplicate_event
-_V97_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
-_V97_KEEP_DELIVERY_KEY = _v58_delivery_key
-_V97_KEEP_SEND_POST = send_post
-
-# ---------------------------------------------------------------------------
-# A) Remove ONLY orphan Hebrew glue-word fragments created by translation.
-#    Example: "... Chelsea. 🇦🇷 עם. ✍" -> "... Chelsea. 🇦🇷 ✍"
-#    Normal syntax such as "עם צ'לסי" / "אם תוגש הצעה" is untouched.
-# ---------------------------------------------------------------------------
-_V97_ORPHAN_GLUE_WORD = r"(?:עם|של|על|אל|או|גם|כי|אם|אך|אבל|מול|אצל|עבור|לפי)"
-_V97_ORPHAN_GLUE_FRAGMENT_RE = re.compile(
-    rf"(?iu)(?<![א-ת]){_V97_ORPHAN_GLUE_WORD}\s*[.!?…;:,]+(?=\s*(?:$|[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]))"
-)
-_V97_ORPHAN_GLUE_WHOLE_LINE_RE = re.compile(
-    rf"(?iu)^\s*(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]\ufe0f?\s*)*"
-    rf"{_V97_ORPHAN_GLUE_WORD}\s*[.!?…;:,]*\s*"
-    rf"(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]\ufe0f?\s*)*$"
-)
-
-
-def _v97_remove_orphan_translation_fragments(value: Any) -> str:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    text = _V97_ORPHAN_GLUE_FRAGMENT_RE.sub("", text)
-    rows = text.split("\n")
-    nonempty = [row for row in rows if row.strip()]
-    cleaned: list[str] = []
-    for row in rows:
-        visible = re.sub(r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", row).strip()
-        if len(nonempty) > 1 and visible and _V97_ORPHAN_GLUE_WHOLE_LINE_RE.match(visible):
-            # If the entire row is only decorative emoji + a broken glue word,
-            # remove the broken row rather than publishing meaningless grammar.
-            continue
-        row = re.sub(r"[ \t]{2,}", " ", row).rstrip()
-        cleaned.append(row)
-    text = "\n".join(cleaned)
-    text = re.sub(r"\s+([,.!?…;:])", r"\1", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-# ---------------------------------------------------------------------------
-# B) Generic inline structured-list repair.
-# V72 restores physical rows when the source has physical rows. Some provider
-# payloads arrive flattened into one line. In that case, split only when the
-# line proves list structure through >=3 semantic emoji-led items; for the old
-# V71 restricted marker vocabulary, keep its >=2-marker safety rule.
-# ---------------------------------------------------------------------------
-_V97_GENERIC_MARKER_UNIT = _V72_EMOJI_UNIT
-_V97_GENERIC_MARKER_SEQ = _V72_EMOJI_SEQUENCE
-_V97_INLINE_MARKER_START_RE = re.compile(
-    rf"(?:^|[ \t]+)(?P<marker>{_V97_GENERIC_MARKER_SEQ})(?=[ \t]*[A-Za-zÀ-ÿא-ת0-9])",
-    re.UNICODE,
-)
-_V97_INLINE_SPLIT_RE = re.compile(
-    rf"(?<=\S)[ \t]+(?=(?:{_V97_GENERIC_MARKER_SEQ})[ \t]*[A-Za-zÀ-ÿא-ת0-9])",
-    re.UNICODE,
-)
-
-
-def _v97_split_inline_structured_items(value: Any) -> str:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    # Decide list-ness at message scope, not per physical row. Providers may
-    # preserve one row break while flattening the rest of the same list.
-    generic_total = len(list(_V97_INLINE_MARKER_START_RE.finditer(text)))
-    output: list[str] = []
-    for row in text.split("\n"):
-        if not row.strip():
-            output.append(row)
-            continue
-        old_count = 0
-        try:
-            old_count = len(re.findall(_V71_EXTRA_MARKER_TOKEN, row, re.UNICODE))
-        except Exception:
-            pass
-        if generic_total >= 3:
-            row = _V97_INLINE_SPLIT_RE.sub("\n", row)
-        elif old_count >= 2:
-            try:
-                row = re.sub(
-                    rf"(?<=\S)[ \t]+(?=(?:{_V71_EXTRA_MARKER_TOKEN})(?:\s+(?:{_V71_EXTRA_MARKER_TOKEN}))*\s*\S)",
-                    "\n",
-                    row,
-                    flags=re.UNICODE,
-                )
-            except Exception:
-                pass
-        output.extend(row.split("\n"))
-
-    # Add one visual space after an emoji marker when translation attached the
-    # first word directly to it ("⌛️עדכון" -> "⌛️ עדכון").
-    normalized: list[str] = []
-    for row in output:
-        row = re.sub(
-            rf"^(?P<marker>{_V97_GENERIC_MARKER_SEQ})(?=[A-Za-zÀ-ÿא-ת0-9])",
-            lambda m: str(m.group("marker")) + " ",
-            row,
-            flags=re.UNICODE,
-        )
-        normalized.append(row.rstrip())
-    text = "\n".join(normalized)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-# Apply the zero-cost cleanup to BOTH new translations and already-cached Hebrew.
-_V97_PRE_TIDY_TRANSLATED_TEXT = tidy_translated_text
-
-def tidy_translated_text(text: str) -> str:
-    rendered = _V97_PRE_TIDY_TRANSLATED_TEXT(text)
-    rendered = _v97_remove_orphan_translation_fragments(rendered)
-    rendered = _v97_split_inline_structured_items(rendered)
-    return rendered.strip()
-
-
-_V97_PRE_BUILD_MESSAGE = build_message
-
-def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
-    translated = _v97_split_inline_structured_items(_v97_remove_orphan_translation_fragments(translated))
-    if quoted_translated:
-        quoted_translated = _v97_split_inline_structured_items(_v97_remove_orphan_translation_fragments(quoted_translated))
-    rendered = _V97_PRE_BUILD_MESSAGE(post, translated, quoted_translated, quoted_author_translated, include_video_link)
-    # Last display boundary: protects cached/prepared text that bypassed tidy.
-    rendered = _v97_remove_orphan_translation_fragments(rendered)
-    rendered = _v97_split_inline_structured_items(rendered)
-    return rendered.strip()
-
-
-# ---------------------------------------------------------------------------
-# C) Final podcast/show/interview-PROMO gate.
-# Do not globally ban a factual news quote. Block a post whose *purpose* is to
-# advertise an episode/show/interview/guest appearance or teaser rundown.
-# ---------------------------------------------------------------------------
-_V97_PODCAST_SHOW_PROMO_RE = re.compile(
-    r"(?iu)(?:"
-    r"\bpodcast\b|\bnew\s+episode\b|\bfull\s+episode\b|\bepisode\s+\d+\b|"
-    r"\bcoming\s+up(?:\s+next)?\b|\bwhat(?:'|’)s\s+coming\s+up\b|"
-    r"\b(?:our|the)\s+guest\b|\bguest\s*[:\-]|\bhost\s*[:\-]|"
-    r"\bjoin(?:s|ing)?\s+us\b|\btune\s+in\b|\blisten\s+(?:now|here|to)\b|"
-    r"\bwatch\s+(?:now|live|the\s+full)\b|\bfull\s+interview\b|\bexclusive\s+interview\b|"
-    r"\binterview\s+with\b|\bon\s+(?:our|the)\s+(?:show|podcast)\b|"
-    r"פודקאסט|פודקסט|פרק\s+חדש|פרק\s+מלא|מגיע\s+הבא|מה\s+בהמשך|"
-    r"אורח\s*[:\-]|האורח|מנחה\s*[:\-]|האזינו|צפו\s+(?:עכשיו|בלייב|בפרק)|"
-    r"ראיון\s+מלא|ראיון\s+בלעדי|ראיון\s+עם"
-    r")"
-)
-_V97_TEASER_RUNDOWN_RE = re.compile(
-    r"(?iu)(?:\btransfer\s+window\s+update\b|עדכון\s+חלון\s+(?:ההעברות|העברה))"
-)
-
-
-def _v97_is_podcast_show_or_interview_promo(post: Post) -> bool:
-    text = html.unescape("\n".join([
-        str(getattr(post, "text", "") or ""),
-        str(getattr(post, "quoted_text", "") or ""),
-    ]))
-    if not text:
-        return False
-    if _V97_PODCAST_SHOW_PROMO_RE.search(text):
-        return True
-    # Teaser/rundown posts often omit the literal word "podcast". Require a
-    # rundown cue plus multiple semantic markers so a normal transfer update is safe.
-    if _V97_TEASER_RUNDOWN_RE.search(text):
-        marker_count = len(list(_V97_INLINE_MARKER_START_RE.finditer(text)))
-        if marker_count >= 3:
-            return True
-    return False
-
-
-_V97_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
-
-def pre_send_final_local_block_reason(post: Post) -> str:
-    if _v97_is_podcast_show_or_interview_promo(post):
-        return "v97_podcast_show_interview_promo"
-    return str(_V97_PRE_FINAL_LOCAL_BLOCK(post) or "")
-
-
-_V97_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
-
-def hebrew_block_reason(reason: str) -> str:
-    raw = str(reason or "")
-    if "v97_podcast_show_interview_promo" in raw:
-        return "פודקאסט, תוכנית, ראיון פרסומי או פוסט טיזר/אורחים נחסם"
-    return str(_V97_PRE_HEBREW_BLOCK_REASON(reason) or "")
-
-
-# ---------------------------------------------------------------------------
-# D) Regression audit for the exact reported failures + immutable dedupe/provider locks.
-# ---------------------------------------------------------------------------
-def _v97_self_audit() -> None:
-    if fetch_posts is not _V97_KEEP_FETCH_POSTS or fetch_posts_safely is not _V97_KEEP_FETCH_POSTS_SAFELY:
-        raise RuntimeError("v97_live_provider_changed")
-    if globals().get("_v94_google_network_once") is not _V97_KEEP_GOOGLE_NETWORK:
-        raise RuntimeError("v97_google_transport_changed")
-    if find_recent_duplicate_event is not _V97_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V97_KEEP_DEDUPE_AI:
-        raise RuntimeError("v97_latest_dedupe_changed")
-    if _v58_delivery_key is not _V97_KEEP_DELIVERY_KEY or send_post is not _V97_KEEP_SEND_POST:
-        raise RuntimeError("v97_delivery_or_send_changed")
-    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v97_scan_settings_changed")
-
-    broken = "מנצ'סטר סיטי בטוחה בהחתמת אנזו פרננדס, שצ'אבי אלונסו מתעקש שנשאר בחוץ מול לוטון בשל ההחלטה שלו ושל צ'לסי. 🇦🇷 עם. ✍"
-    fixed = _v97_remove_orphan_translation_fragments(broken)
-    if "עם." in fixed or "עם ." in fixed:
-        raise RuntimeError("v97_orphan_glue_not_removed:" + fixed)
-    valid = "מנצ'סטר סיטי הגיעה להסכם עם צ'לסי על אנזו פרננדס."
-    if _v97_remove_orphan_translation_fragments(valid) != valid:
-        raise RuntimeError("v97_valid_with_phrase_damaged")
-
-    inline = "▶️מגיע הבא! ⌛️עדכון חלון העברה! 🎤אורח: בן ג'ייקובס ✍️מרמוש חתום 🧩מרדף גאקפו 👋יציאות אפשריות"
-    split = _v97_split_inline_structured_items(inline)
-    if len([x for x in split.splitlines() if x.strip()]) < 6:
-        raise RuntimeError("v97_inline_list_not_split:" + repr(split))
-
-    promo = _v96_test_post(
-        "JacobsBen",
-        "Coming up next! Transfer window update! Guest: Ben Jacobs. Marmoush signed. Potential signings and exits.",
-        "2092000000000000001",
-    )
-    if pre_send_final_local_block_reason(promo) != "v97_podcast_show_interview_promo":
-        raise RuntimeError("v97_promo_not_blocked")
-
-    # A genuine concrete report containing the word 'interview' only as context
-    # must not be converted into a blanket interview ban unless it is a promo form.
-    news = _v96_test_post(
-        "JacobsBen",
-        "Chelsea submitted a formal bid for the player after talks today; the club expects an answer tomorrow.",
-        "2092000000000000002",
-    )
-    if pre_send_final_local_block_reason(news) == "v97_podcast_show_interview_promo":
-        raise RuntimeError("v97_real_news_false_promo_block")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v97_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v97_self_audit")
-
-logging.info(
-    "V97 active: V96/V72 behavior, V93 live providers, V94 forced translation and latest dedupe remain locked; "
-    "orphan translation glue fragments removed, podcast/show/interview promos blocked, flattened structured lists restored."
-)
-# ====== END V97 EDITORIAL/FORMAT FIXES ======
-
-
-# ====== V98 FINAL: HALF VIDEO SEND LIMIT (2026-08-28) ======
-# User-requested isolated change: keep all V97 behavior intact and only reduce
-# the maximum video file size eligible for Telegram sending from 25 MiB to
-# exactly half: 12.5 MiB (13,107,200 bytes).
-_V98_PRE_VIDEO_LIMIT_BYTES = MAX_VIDEO_BYTES
-MAX_VIDEO_BYTES = (25 * 1024 * 1024) // 2
-
-
-def _v98_video_limit_audit() -> None:
-    if MAX_VIDEO_BYTES != 13_107_200:
-        raise RuntimeError("v98_video_limit_not_12_5_mib")
-    if _V98_PRE_VIDEO_LIMIT_BYTES != 25 * 1024 * 1024:
-        raise RuntimeError("v98_unexpected_previous_video_limit")
-    # Keep the active scan settings unchanged.
-    if int(CHECK_EVERY_SECONDS) != 20 or int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v98_scan_settings_changed")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v98_video_limit_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v98_video_limit_audit")
-
-logging.info(
-    "V98 active: video send limit reduced from 25 MiB to 12.5 MiB only; all V97 behavior remains unchanged."
-)
-# ====== END V98 VIDEO LIMIT ======
-
-
-# ====== V99 FINAL: DAY 30s / NIGHT 300s SCAN CADENCE (2026-08-28) ======
-# User-requested isolated server-operations saving change:
-# - Daytime: scan every 30 seconds.
-# - Night (02:00 <= local Israel time < 09:00): scan every 300 seconds (5 minutes),
-#   exactly 10x slower than daytime.
-# - ONLY cadence changes at night. Account workers / send workers remain identical
-#   to daytime, so this does not alter source coverage, filtering, translation,
-#   dedupe, formatting, media, buttons, or delivery behavior.
-V99_DAY_SCAN_SECONDS = 30
-V99_NIGHT_SCAN_SECONDS = 300
-V99_NIGHT_START_HOUR = 2
-V99_NIGHT_END_HOUR = 9
-
-CHECK_EVERY_SECONDS = V99_DAY_SCAN_SECONDS
-NIGHT_MODE_ENABLED = True
-NIGHT_START_HOUR = V99_NIGHT_START_HOUR
-NIGHT_END_HOUR = V99_NIGHT_END_HOUR
-NIGHT_CHECK_EVERY_SECONDS = V99_NIGHT_SCAN_SECONDS
-
-# Keep concurrency unchanged; night mode is cadence-only.
-NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = int(MAX_PARALLEL_ACCOUNT_CHECKS)
-NIGHT_MAX_PARALLEL_POST_SENDS = int(MAX_PARALLEL_POST_SENDS)
-
-
-def _v99_scan_interval_for_hour(hour: int) -> int:
-    hour = int(hour) % 24
-    if V99_NIGHT_START_HOUR <= hour < V99_NIGHT_END_HOUR:
-        return V99_NIGHT_SCAN_SECONDS
-    return V99_DAY_SCAN_SECONDS
-
-
-def is_night_mode_now() -> bool:
-    hour = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).hour
-    return V99_NIGHT_START_HOUR <= hour < V99_NIGHT_END_HOUR
-
-
-def current_check_every_seconds() -> int:
-    hour = datetime.now(ZoneInfo(SHABBAT_TIMEZONE)).hour
-    return _v99_scan_interval_for_hour(hour)
-
-
-def _v99_scan_cadence_audit() -> None:
-    if int(CHECK_EVERY_SECONDS) != 30:
-        raise RuntimeError('v99_day_scan_not_30s')
-    if int(NIGHT_CHECK_EVERY_SECONDS) != 300:
-        raise RuntimeError('v99_night_scan_not_300s')
-    if (int(NIGHT_START_HOUR), int(NIGHT_END_HOUR)) != (2, 9):
-        raise RuntimeError('v99_night_window_not_02_09')
-    if int(NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS) != int(MAX_PARALLEL_ACCOUNT_CHECKS):
-        raise RuntimeError('v99_night_account_workers_changed')
-    if int(NIGHT_MAX_PARALLEL_POST_SENDS) != int(MAX_PARALLEL_POST_SENDS):
-        raise RuntimeError('v99_night_send_workers_changed')
-    expected = {0:30, 1:30, 2:300, 3:300, 8:300, 9:30, 12:30, 23:30}
-    for hour, seconds in expected.items():
-        if _v99_scan_interval_for_hour(hour) != seconds:
-            raise RuntimeError(f'v99_bad_interval_hour_{hour}')
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v99_scan_cadence_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append('_v99_scan_cadence_audit')
-
-logging.info(
-    'V99 active: scan cadence only changed to 30s daytime and 300s from 02:00-09:00 Asia/Jerusalem; concurrency and all V98 behavior unchanged.'
-)
-# ====== END V99 SCAN CADENCE ======
-
-
-# ====== V100 FINAL: HIGH-IMPACT CREDIT SAVER (2026-08-28) ======
-# User-requested ONLY high-impact savings #2/#3/#4:
-# 2) When the newest returned post is already known, do not re-walk the full 12-row timeline.
-# 3) When there are new posts, stop at the first already-known post; older rows are not reprocessed.
-# 4) Avoid the main loop's full state JSON serialization on unchanged cycles; keep immediate
-#    saves for real changes and a 5-minute safety checkpoint.
-# RSS/providers, V94 translation, latest dedupe, V72 behavior, filters, media, buttons,
-# 30s day / 300s night cadence and all persistent filenames/keys remain unchanged.
-
-V100_STATE_SAFETY_CHECK_SECONDS = 300.0
-_V100_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V100_PRE_RUN_ONCE = run_once
-_V100_PRE_SAVE_STATE = save_state
-
-_V100_SCAN_CONTEXT_LOCK = RLock()
-_V100_ACTIVE_SCAN_STATE: dict[str, Any] | None = None
-_V100_ACTIVE_SCAN_OPTIMIZE = False
-_V100_CYCLE_FRONTIER_CHANGED = False
-_V100_MAIN_SAVE_EXPECTATION: bool | None = None
-_V100_MAIN_SAVE_OWNER_THREAD_ID: int | None = None
-_V100_LAST_STATE_CHECK_MONO = time.monotonic()
-_V100_METRICS: dict[str, int] = {
-    'unchanged_top_cycles': 0,
-    'rows_pruned_after_seen_frontier': 0,
-    'rows_returned_to_pipeline': 0,
-    'rows_avoided': 0,
-    'state_serializations_skipped': 0,
-    'state_safety_checks': 0,
-}
-
-
-def _v100_post_seen(post: Post, seen: set[str]) -> bool:
-    ids = {str(x).strip() for x in (getattr(post, 'dedupe_ids', []) or []) if str(x).strip()}
-    for raw in (getattr(post, 'post_id', ''), getattr(post, 'link', '')):
-        value = str(raw or '').strip()
-        if value:
-            ids.add(value)
-    return bool(ids and any(item in seen for item in ids))
-
-
-def _v100_trim_to_seen_frontier(username: str, posts: list[Post]) -> list[Post]:
-    """Keep only the new chronological prefix plus one known boundary row.
-
-    fetch_posts_safely already sorts newest -> oldest. Once a known row is reached,
-    every later row is older and does not need to traverse all filters/dedupe/translation.
-    Keeping the single known boundary row preserves the established run_once account
-    initialization/stat behavior while reducing a stable 12-row timeline to 1 row.
-    """
-    global _V100_CYCLE_FRONTIER_CHANGED
-    rows = [p for p in (posts or []) if isinstance(p, Post)]
-    if not rows:
-        return rows
-
-    with _V100_SCAN_CONTEXT_LOCK:
-        state = _V100_ACTIVE_SCAN_STATE
-        enabled = bool(_V100_ACTIVE_SCAN_OPTIMIZE)
-    if not enabled or not isinstance(state, dict) or not any(state.values()) or username not in state:
-        _V100_METRICS['rows_returned_to_pipeline'] += len(rows)
-        if rows:
-            _V100_CYCLE_FRONTIER_CHANGED = True
-        return rows
-
-    seen = {str(x).strip() for x in (state.get(username, []) or []) if str(x).strip()}
-    if not seen:
-        _V100_METRICS['rows_returned_to_pipeline'] += len(rows)
-        _V100_CYCLE_FRONTIER_CHANGED = True
-        return rows
-
-    boundary = None
-    for idx, post in enumerate(rows):
-        if _v100_post_seen(post, seen):
-            boundary = idx
-            break
-
-    if boundary is None:
-        # All returned rows are newer than our durable frontier. Preserve all of them.
-        _V100_METRICS['rows_returned_to_pipeline'] += len(rows)
-        _V100_CYCLE_FRONTIER_CHANGED = True
-        return rows
-
-    # Keep the known boundary itself so the old run_once still sees a normal non-empty
-    # account result and can apply its existing state/control semantics. Everything older
-    # than that boundary is guaranteed unnecessary for this cycle.
-    kept = rows[: boundary + 1]
-    avoided = max(0, len(rows) - len(kept))
-    _V100_METRICS['rows_returned_to_pipeline'] += len(kept)
-    _V100_METRICS['rows_avoided'] += avoided
-    if boundary == 0:
-        _V100_METRICS['unchanged_top_cycles'] += 1
-    else:
-        _V100_METRICS['rows_pruned_after_seen_frontier'] += avoided
-        _V100_CYCLE_FRONTIER_CHANGED = True
-    return kept
-
-
-def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    canonical, rows = _V100_PRE_FETCH_POSTS_SAFELY(username)
-    canonical = str(canonical or username or '').strip().lstrip('@')
-    return canonical, _v100_trim_to_seen_frontier(canonical, list(rows or []))
-
-
-def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
-    global _V100_ACTIVE_SCAN_STATE, _V100_ACTIVE_SCAN_OPTIMIZE
-    global _V100_CYCLE_FRONTIER_CHANGED, _V100_MAIN_SAVE_EXPECTATION, _V100_MAIN_SAVE_OWNER_THREAD_ID
-    with _V100_SCAN_CONTEXT_LOCK:
-        _V100_ACTIVE_SCAN_STATE = state
-        # Startup must retain the exact established backlog/forced-Fabrizio behavior.
-        _V100_ACTIVE_SCAN_OPTIMIZE = not bool(startup_cycle)
-        _V100_CYCLE_FRONTIER_CHANGED = False
-    try:
-        result = _V100_PRE_RUN_ONCE(state, startup_cycle=startup_cycle, min_published_ts=min_published_ts)
-        # A changed live frontier means run_once may have added seen/blocked/sent IDs.
-        # Startup always gets a normal save, preserving all existing initialization.
-        _V100_MAIN_SAVE_EXPECTATION = bool(startup_cycle or _V100_CYCLE_FRONTIER_CHANGED)
-        _V100_MAIN_SAVE_OWNER_THREAD_ID = _v40_threading.get_ident()
-        return result
-    except Exception:
-        # On an exceptional cycle never suppress the caller's safety save.
-        _V100_MAIN_SAVE_EXPECTATION = True
-        _V100_MAIN_SAVE_OWNER_THREAD_ID = _v40_threading.get_ident()
-        raise
-    finally:
-        with _V100_SCAN_CONTEXT_LOCK:
-            _V100_ACTIVE_SCAN_STATE = None
-            _V100_ACTIVE_SCAN_OPTIMIZE = False
-
-
-def save_state(state: dict[str, Any]) -> None:
-    """Skip only the known no-op save immediately following an unchanged main scan.
-
-    Other callers (fast lane, manual/control actions, Shabbat resume, migrations) keep
-    their established immediate persistence. Every 5 minutes the main loop also delegates
-    to the old save_state, whose existing JSON equality guard prevents an actual disk write
-    when nothing changed.
-    """
-    global _V100_MAIN_SAVE_EXPECTATION, _V100_MAIN_SAVE_OWNER_THREAD_ID, _V100_LAST_STATE_CHECK_MONO
-    current_thread_id = _v40_threading.get_ident()
-    expectation = _V100_MAIN_SAVE_EXPECTATION if _V100_MAIN_SAVE_OWNER_THREAD_ID == current_thread_id else None
-    if expectation is not None:
-        _V100_MAIN_SAVE_EXPECTATION = None
-        _V100_MAIN_SAVE_OWNER_THREAD_ID = None
-        now_mono = time.monotonic()
-        checkpoint_due = (now_mono - _V100_LAST_STATE_CHECK_MONO) >= V100_STATE_SAFETY_CHECK_SECONDS
-        if not expectation and not checkpoint_due:
-            _V100_METRICS['state_serializations_skipped'] += 1
-            return
-        if checkpoint_due:
-            _V100_METRICS['state_safety_checks'] += 1
-        _V100_LAST_STATE_CHECK_MONO = now_mono
-        return _V100_PRE_SAVE_STATE(state)
-
-    # Not the routine post-run main-loop save: preserve old durability exactly.
-    _V100_LAST_STATE_CHECK_MONO = time.monotonic()
-    return _V100_PRE_SAVE_STATE(state)
-
-
-def v100_credit_saver_status() -> dict[str, Any]:
-    return {
-        'safety_checkpoint_seconds': int(V100_STATE_SAFETY_CHECK_SECONDS),
-        **{k: int(v) for k, v in _V100_METRICS.items()},
-    }
-
-
-def _v100_credit_saver_audit() -> None:
-    # Lock all behavior explicitly excluded from this change.
-    if int(CHECK_EVERY_SECONDS) != 30 or int(NIGHT_CHECK_EVERY_SECONDS) != 300:
-        raise RuntimeError('v100_scan_cadence_changed')
-    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError('v100_scan_coverage_changed')
-    if fetch_posts_safely is _V100_PRE_FETCH_POSTS_SAFELY:
-        raise RuntimeError('v100_frontier_wrapper_missing')
-    if run_once is _V100_PRE_RUN_ONCE or save_state is _V100_PRE_SAVE_STATE:
-        raise RuntimeError('v100_main_or_state_wrapper_missing')
-    if int(V100_STATE_SAFETY_CHECK_SECONDS) != 300:
-        raise RuntimeError('v100_bad_state_checkpoint')
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v100_credit_saver_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append('_v100_credit_saver_audit')
-
-logging.info(
-    'V100 active: known-top cycles stop at one boundary row; new timelines stop at the first seen ID; '
-    'unchanged main cycles skip full state JSON serialization with a 5-minute safety checkpoint. '
-    'All V99 providers/translation/dedupe/editorial behavior and cadence remain unchanged.'
-)
-# ====== END V100 HIGH-IMPACT CREDIT SAVER ======
-
-
-# ====== V101 FINAL: ADAPTIVE PER-WRITER SCAN + V72 SOURCE-LINE BOUNDARY (2026-08-28) ======
-# High-impact server-operation saving requested by the operator:
-# - One automatic scanner only; no extra discovery loop is created.
-# - Selected lower-urgency/high-volume writers: 60 -> 120 -> 180 -> 240 -> 300 seconds.
-# - Every other active source: 30 -> 60 -> 90 -> 120 seconds.
-# - Each adaptive tier lasts a full hour of no newly observed top post.
-# - Any newly observed top post immediately resets that writer to its first tier.
-# - Existing 02:00-09:00 Israel night policy remains a 300-second floor for everyone.
-# - Adaptive state is intentionally in-memory only: restart safely starts fast rather than
-#   risking a stale persisted scheduler state or adding extra disk writes.
-# Presentation correction:
-# - V72 is again the final authority for source-aware line/paragraph/list structure.
-# - Preserve blank-line structure from the original X post when source/translation line counts align.
-# - Inline multi-marker rundowns are split only when the ORIGINAL source itself proves it is a list.
-# Everything else (V93 providers, V94 forced translation/no-English, latest dedupe, V97 editorial
-# filters, V98 12.5 MiB video cap, V99 day/night cadence and V100 frontier/state savings) stays intact.
-
-BOT_BUILD_ID = "winner-v101-adaptive-scan-v72-exact-lines-credit-saver-2026-08-28"
-
-V101_ADAPTIVE_TIER_HOLD_SECONDS = 60 * 60
-V101_NORMAL_ADAPTIVE_STEPS = (30, 60, 90, 120)
-V101_SLOW_ADAPTIVE_STEPS = (60, 120, 180, 240, 300)
-V101_SLOW_ADAPTIVE_ACCOUNTS = {
-    "trollfootball2",
-    "nicoschira",
-    "dimarzio",
-    "sofascore",
-    "gerardromero",
-    "fabricehawkins",
-    "optajoe",
-}
-
-_V101_PRE_ORDERED_ACCOUNTS = ordered_accounts
-_V101_PRE_RUN_ONCE = run_once
-_V101_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V101_PRE_BUILD_MESSAGE = build_message
-# The pre-late-experiment full-text builder preserves every paragraph and the established
-# reporter/special-source heading policy. V72 then remains the final formatting authority.
-_V101_FULL_TEXT_BUILD_MESSAGE = globals().get("_retained_build_message_L36669", None)
-if not callable(_V101_FULL_TEXT_BUILD_MESSAGE):
-    _V101_FULL_TEXT_BUILD_MESSAGE = globals().get("_V97_PRE_BUILD_MESSAGE", _V101_PRE_BUILD_MESSAGE)
-
-_V101_SCHED_LOCK = RLock()
-_V101_AUTO_SCAN_CONTEXT = False
-_V101_AUTO_SCAN_STARTUP = False
-_V101_ACCOUNT_SCHED: dict[str, dict[str, Any]] = {}
-_V101_ADAPTIVE_METRICS: dict[str, int] = {
-    "accounts_due": 0,
-    "accounts_skipped_not_due": 0,
-    "new_top_resets": 0,
-    "slow_group_fetches": 0,
-    "normal_group_fetches": 0,
-}
-
-
-def _v101_key(username: Any) -> str:
-    return str(username or "").strip().lstrip("@").casefold()
-
-
-def _v101_steps(username: Any) -> tuple[int, ...]:
-    return V101_SLOW_ADAPTIVE_STEPS if _v101_key(username) in V101_SLOW_ADAPTIVE_ACCOUNTS else V101_NORMAL_ADAPTIVE_STEPS
-
-
-def _v101_post_identity(post: Any) -> str:
-    if not isinstance(post, Post):
-        return ""
-    for value in (getattr(post, "post_id", ""), getattr(post, "link", "")):
-        clean = str(value or "").strip()
-        if clean:
-            return clean
-    try:
-        return post_content_signature(
-            str(getattr(post, "username", "") or ""),
-            str(getattr(post, "text", "") or ""),
-            str(getattr(post, "quoted_text", "") or ""),
-        )
-    except Exception:
-        return ""
-
-
-def _v101_interval_for(username: Any, now_wall: float | None = None) -> int:
-    now_wall = float(now_wall if now_wall is not None else time.time())
-    key = _v101_key(username)
-    steps = _v101_steps(key)
-    with _V101_SCHED_LOCK:
-        row = _V101_ACCOUNT_SCHED.get(key) or {}
-        last_activity = float(row.get("last_activity_wall", now_wall) or now_wall)
-    inactive = max(0.0, now_wall - last_activity)
-    tier = min(len(steps) - 1, int(inactive // V101_ADAPTIVE_TIER_HOLD_SECONDS))
-    interval = int(steps[tier])
-    # Preserve V99 exactly as the night floor: no account is scanned faster than once/5m.
-    if is_night_mode_now():
-        interval = max(interval, int(NIGHT_CHECK_EVERY_SECONDS))
-    return interval
-
-
-def _v101_note_scan_result(username: str, posts: list[Post]) -> None:
-    key = _v101_key(username)
-    if not key:
-        return
-    now_wall = time.time()
-    now_mono = time.monotonic()
-    top_id = _v101_post_identity(posts[0]) if posts else ""
-    with _V101_SCHED_LOCK:
-        row = _V101_ACCOUNT_SCHED.setdefault(key, {})
-        previous_top = str(row.get("top_id", "") or "")
-        # First observation is the baseline, not a fake new-news event.
-        if "last_activity_wall" not in row:
-            row["last_activity_wall"] = now_wall
-        elif top_id and previous_top and top_id != previous_top:
-            row["last_activity_wall"] = now_wall
-            _V101_ADAPTIVE_METRICS["new_top_resets"] += 1
-        elif top_id and not previous_top:
-            # Provider recovered from an empty/error scan: treat visible activity as hot again.
-            row["last_activity_wall"] = now_wall
-        if top_id:
-            row["top_id"] = top_id
-        # Calculate after possible reset.
-        last_activity = float(row.get("last_activity_wall", now_wall) or now_wall)
-        steps = _v101_steps(key)
-        tier = min(len(steps) - 1, int(max(0.0, now_wall - last_activity) // V101_ADAPTIVE_TIER_HOLD_SECONDS))
-        interval = int(steps[tier])
-        night = bool(is_night_mode_now())
-        if night:
-            interval = max(interval, int(NIGHT_CHECK_EVERY_SECONDS))
-        row["tier"] = tier
-        row["interval"] = interval
-        row["next_due_mono"] = now_mono + float(interval)
-        row["was_night"] = night
-        row["last_scan_wall"] = now_wall
-        if key in V101_SLOW_ADAPTIVE_ACCOUNTS:
-            _V101_ADAPTIVE_METRICS["slow_group_fetches"] += 1
-        else:
-            _V101_ADAPTIVE_METRICS["normal_group_fetches"] += 1
-
-
-def ordered_accounts() -> list[str]:
-    base = list(_V101_PRE_ORDERED_ACCOUNTS() or [])
-    if not _V101_AUTO_SCAN_CONTEXT or _V101_AUTO_SCAN_STARTUP:
-        return base
-    now_mono = time.monotonic()
-    night = bool(is_night_mode_now())
-    due: list[str] = []
-    skipped = 0
-    with _V101_SCHED_LOCK:
-        for username in base:
-            key = _v101_key(username)
-            row = _V101_ACCOUNT_SCHED.get(key)
-            if not row:
-                due.append(username)
-                continue
-            # At 09:00 do not let a prior 5-minute night deadline delay daytime news.
-            if bool(row.get("was_night", False)) and not night:
-                row["next_due_mono"] = 0.0
-                row["was_night"] = False
-            if now_mono >= float(row.get("next_due_mono", 0.0) or 0.0):
-                due.append(username)
-            else:
-                skipped += 1
-    _V101_ADAPTIVE_METRICS["accounts_due"] += len(due)
-    _V101_ADAPTIVE_METRICS["accounts_skipped_not_due"] += skipped
-    return due
-
-
-def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    canonical, posts = _V101_PRE_FETCH_POSTS_SAFELY(username)
-    rows = list(posts or [])
-    if _V101_AUTO_SCAN_CONTEXT:
-        _v101_note_scan_result(str(canonical or username or ""), rows)
-    return canonical, rows
-
-
-def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
-    global _V101_AUTO_SCAN_CONTEXT, _V101_AUTO_SCAN_STARTUP
-    previous_context = _V101_AUTO_SCAN_CONTEXT
-    previous_startup = _V101_AUTO_SCAN_STARTUP
-    _V101_AUTO_SCAN_CONTEXT = True
-    _V101_AUTO_SCAN_STARTUP = bool(startup_cycle)
-    try:
-        return _V101_PRE_RUN_ONCE(state, startup_cycle=startup_cycle, min_published_ts=min_published_ts)
-    finally:
-        _V101_AUTO_SCAN_CONTEXT = previous_context
-        _V101_AUTO_SCAN_STARTUP = previous_startup
-
-
-def v101_adaptive_status() -> dict[str, Any]:
-    now_wall = time.time()
-    rows: dict[str, Any] = {}
-    for username in list(active_x_accounts() or []):
-        key = _v101_key(username)
-        with _V101_SCHED_LOCK:
-            state = dict(_V101_ACCOUNT_SCHED.get(key) or {})
-        rows[str(username)] = {
-            "group": "60-300" if key in V101_SLOW_ADAPTIVE_ACCOUNTS else "30-120",
-            "interval": _v101_interval_for(username, now_wall),
-            "tier": int(state.get("tier", 0) or 0),
-            "last_activity_wall": float(state.get("last_activity_wall", 0.0) or 0.0),
-        }
-    return {"accounts": rows, "metrics": dict(_V101_ADAPTIVE_METRICS)}
-
-
-# ---------------------------------------------------------------------------
-# V72 exact/source-aware visible line structure.
-# ---------------------------------------------------------------------------
-_V101_INLINE_MARKER_SEQ = rf"(?:{_V30_EMOJI_CLUSTER}[ \t]*)+"
-_V101_INLINE_MARKER_RE = re.compile(
-    rf"(?:^|[ \t]+)(?P<marker>{_V101_INLINE_MARKER_SEQ})(?=[A-Za-zÀ-ÿא-ת0-9])",
-    re.UNICODE,
-)
-_V101_INLINE_SPLIT_RE = re.compile(
-    rf"(?<=\S)[ \t]+(?={_V101_INLINE_MARKER_SEQ}[A-Za-zÀ-ÿא-ת0-9])",
-    re.UNICODE,
-)
-_V101_ANY_NETO_FOOTER_RE = re.compile(
-    r'(?is)[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]*'
-    r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>'
-    r'\s*[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]*נטו\s+ספורט\.?\s*'
-    r'</a>\s*\.?\s*📝?'
-)
-
-def _v101_split_proven_inline_list(value: Any) -> str:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    if len(list(_V101_INLINE_MARKER_RE.finditer(text))) < 3:
-        return text
-    rows: list[str] = []
-    for row in text.split("\n"):
-        rows.extend(_V101_INLINE_SPLIT_RE.sub("\n", row).split("\n"))
-    return "\n".join(part.rstrip() for part in rows).strip()
-
-def _v101_source_inline_list(source: Any) -> bool:
-    text = str(source or "").replace("\r\n", "\n").replace("\r", "\n")
-    # Do not invent structure merely because translation contains emoji. The source
-    # itself must prove a rundown/list with >=3 markers on at least one source line.
-    return any(len(list(_V101_INLINE_MARKER_RE.finditer(line))) >= 3 for line in text.split("\n"))
-
-
-def _v101_restore_source_blank_pattern(source: Any, translated: Any) -> str:
-    src_lines = str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    out_text = str(translated or "").replace("\r\n", "\n").replace("\r", "\n")
-    out_lines = out_text.split("\n")
-    src_nonempty = [i for i, line in enumerate(src_lines) if line.strip()]
-    out_nonempty = [i for i, line in enumerate(out_lines) if line.strip()]
-    # Exact mapping only when we can prove the translated logical-row count matches source.
-    if len(src_nonempty) < 2 or len(src_nonempty) != len(out_nonempty):
-        return out_text
-    wanted_blank_after: list[bool] = []
-    for pos in range(len(src_nonempty) - 1):
-        left, right = src_nonempty[pos], src_nonempty[pos + 1]
-        wanted_blank_after.append(any(not src_lines[i].strip() for i in range(left + 1, right)))
-    logical = [out_lines[i].strip() for i in out_nonempty]
-    rebuilt: list[str] = []
-    for pos, line in enumerate(logical):
-        rebuilt.append(line)
-        if pos < len(wanted_blank_after) and wanted_blank_after[pos]:
-            rebuilt.append("")
-    return "\n".join(rebuilt).strip()
-
-
-def _v101_v72_prepare_body(source: Any, translated: Any) -> str:
-    text = str(translated or "")
-    # Keep the V97 useful orphan-word cleanup, but not its unconditional presentation guesses.
-    if "_v97_remove_orphan_translation_fragments" in globals():
-        text = _v97_remove_orphan_translation_fragments(text)
-    text = _v72_general_body_layout(source, text)
-    # For an actual inline rundown proven by the original X source, keep V97's useful list split.
-    if _v101_source_inline_list(source):
-        text = _v101_split_proven_inline_list(text)
-        text = _v72_general_body_layout(source, text)
-    text = _v101_restore_source_blank_pattern(source, text)
-    return text.strip()
-
-
-def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
-    main_source = _final_corresponding_source_text(post, quoted=False)
-    quote_source = _final_corresponding_source_text(post, quoted=True)
-    translated = _v101_v72_prepare_body(main_source, translated)
-    if quoted_translated:
-        quoted_translated = _v101_v72_prepare_body(quote_source, quoted_translated)
-    rendered = _V101_FULL_TEXT_BUILD_MESSAGE(
+    rendered = _V72_PRE_BUILD_MESSAGE(
         post,
         translated,
         quoted_translated,
         quoted_author_translated,
         include_video_link,
     )
-    # Remove standalone direction/separator rows left by intermediate renderers;
-    # direction marks inside real text remain untouched.
-    rendered = re.sub(r"(?m)^[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]+[ \t]*$", "", rendered)
-    # A proven source inline-list may have been flattened again by the legacy renderer.
-    if _v101_source_inline_list(main_source):
-        rendered = _v101_split_proven_inline_list(rendered)
-    # Final V72 boundary after the legacy/current renderer stack.
-    rendered = _v72_restore_source_marker_boundaries(main_source, rendered)
-    rendered = _v72_split_last_list_label_from_source_prose(main_source, rendered)
     rendered = _v72_remove_recycle_display_label(rendered)
     rendered = _v72_normalize_known_club_prefixes(rendered)
-    rendered = _v72_remove_redundant_double_markers(rendered)
-    rendered = _v72_cleanup_dangling_source_shells(rendered)
-    rendered = re.sub(r"(?m)^[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]+[ \t]*$", "", rendered)
-    if "_final_is_plettigoal" in globals() and "_final_remove_sky_germany_credit" in globals():
-        try:
-            if _final_is_plettigoal(post):
-                rendered = _final_remove_sky_germany_credit(rendered)
-        except Exception:
-            pass
-    rendered = _v30_format_report_body(rendered)
-    rendered = _V101_ANY_NETO_FOOTER_RE.sub("", rendered)
-    rendered = _v30_remove_all_neto_footers(rendered)
-    rendered = re.sub(r"[ \t]+\n", "\n", rendered)
-    rendered = re.sub(r"\n[ \t]+", "\n", rendered)
-    rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
-    rendered = _v72_protect_keycap_runs(rendered).strip()
-    signature = RTL_MARK + _V68_NETO_FOOTER_HTML
-    return (rendered + "\n\n" + signature).strip() if rendered else signature
-
-
-def _v101_self_audit() -> None:
-    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120):
-        raise RuntimeError("v101_normal_steps_changed")
-    if tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
-        raise RuntimeError("v101_slow_steps_changed")
-    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 3600:
-        raise RuntimeError("v101_tier_hold_not_one_hour")
-    required = {"trollfootball2", "nicoschira", "dimarzio", "sofascore", "gerardromero", "fabricehawkins", "optajoe"}
-    if set(V101_SLOW_ADAPTIVE_ACCOUNTS) != required:
-        raise RuntimeError("v101_slow_group_changed")
-    # Existing global cadence / coverage remains V99/V100.
-    if int(CHECK_EVERY_SECONDS) != 30 or int(NIGHT_CHECK_EVERY_SECONDS) != 300:
-        raise RuntimeError("v101_global_cadence_changed")
-    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v101_scan_coverage_changed")
-    if int(globals().get("V98_VIDEO_LIMIT_BYTES", int(12.5 * 1024 * 1024))) != int(12.5 * 1024 * 1024):
-        # tolerate older symbol names; hard check only if V98 symbol exists with wrong value
-        if "V98_VIDEO_LIMIT_BYTES" in globals():
-            raise RuntimeError("v101_video_limit_changed")
-    # Formatting behavior proofs.
-    if _v101_restore_source_blank_pattern("א\n\nב", "אחד\nשתיים") != "אחד\n\nשתיים":
-        raise RuntimeError("v101_source_blank_gap_not_restored")
-    if _v101_restore_source_blank_pattern("א\nב", "אחד\nשתיים") != "אחד\nשתיים":
-        raise RuntimeError("v101_false_blank_gap_added")
-    if not _v101_source_inline_list("▶️ One ⌛️ Two 🎤 Three"):
-        raise RuntimeError("v101_inline_source_list_not_detected")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v101_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v101_self_audit")
-
-logging.info(
-    "V101 active: per-writer adaptive scan (normal 30/60/90/120; selected group 60/120/180/240/300; one hour/tier; new top resets); "
-    "02:00-09:00 keeps 300s floor; V72 source-aware lines are final; V100 credit saver and current providers/translation/dedupe remain active."
-)
-# ====== END V101 ======
-
-
-# ====== V102 FINAL: 5-MIN ADAPTIVE TIERS + SMART IDLE SLEEP + PER-ACCOUNT FAILURE BACKOFF (2026-08-28) ======
-# Requested high-impact server-operation savings only:
-# 1) Adaptive tiers advance every 5 minutes of no newly observed top post (not every hour).
-#    Selected slow group remains 60/120/180/240/300 seconds; all others remain 30/60/90/120.
-# 2) The main loop's existing sleep interval becomes scheduler-aware immediately after a normal scan:
-#    it sleeps until the earliest writer is actually due instead of waking every 30 seconds just to skip everyone.
-#    No writer is delayed beyond its own adaptive next_due deadline. Paused/Shabbat/control paths retain their
-#    established base cadence because the smart value is valid only for a few seconds after a completed run_once.
-# 3) Per-account live failure backoff: ordinary quiet/no-new-post behavior never triggers it. Only a proven live
-#    provider/network/schema failure increments the counter. 3 consecutive failures => 5m; 6+ => 10m.
-#    A successful live fetch immediately clears the account backoff.
-# No changes to providers/RSS, V94 translation/no-English, latest dedupe, V72/V101 formatting, V100 frontier/state
-# saver, 12.5 MiB video limit, filters, media policy, persistent JSON/state keys, or account membership.
-
-BOT_BUILD_ID = "winner-v102-adaptive-5min-smart-sleep-failure-backoff-2026-08-28"
-
-# V101 reads this global dynamically when calculating tiers, so changing the hold duration is sufficient and
-# keeps the exact two step tables/account groups already verified there.
-V101_ADAPTIVE_TIER_HOLD_SECONDS = 5 * 60
-
-V102_FAILURE_BACKOFF_AFTER = 3
-V102_FAILURE_BACKOFF_ESCALATE_AFTER = 6
-V102_FAILURE_BACKOFF_FIRST_SECONDS = 5 * 60
-V102_FAILURE_BACKOFF_MAX_SECONDS = 10 * 60
-V102_SMART_SLEEP_VALID_WINDOW_SECONDS = 12.0
-
-_V102_PRE_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V102_PRE_RUN_ONCE = run_once
-_V102_PRE_CURRENT_CHECK_EVERY_SECONDS = current_check_every_seconds
-_V102_RUN_ANCHOR_MONO = 0.0
-_V102_RUN_FINISHED_MONO = 0.0
-_V102_BACKOFF_METRICS: dict[str, int] = {
-    "proven_live_failures": 0,
-    "backoff_5m_applied": 0,
-    "backoff_10m_applied": 0,
-    "backoff_resets": 0,
-    "smart_sleep_queries": 0,
-}
-
-_V102_FAILURE_REASONS = {
-    "http_429", "http_403", "http_401", "http_451", "http_5xx", "timeout", "dns_failure", "tls_failure",
-    "connection_error", "network_error", "invalid_json", "schema_changed", "parser_zero", "cooldown", "degraded",
-    "http_404_empty_or_unknown_handle",
-}
-
-
-def _v102_diag_proven_live_failure(username: str) -> tuple[bool, str]:
-    """Return failure only when V93 diagnostics prove the live route failed.
-
-    A normal no-new-post situation with a healthy/cached live timeline is not a failure.
-    Memory fallback counts only when preceding live attempts contain an explicit provider/network/parser failure.
-    """
-    getter = globals().get("_v93_diag_get")
-    if not callable(getter):
-        return False, ""
-    try:
-        diag = dict(getter(username) or {})
-    except Exception:
-        return False, ""
-    if not diag:
-        return False, ""
-    if bool(diag.get("live", False)):
-        return False, ""
-    route = str(diag.get("route", "") or "").strip().casefold()
-    attempts = list(diag.get("attempts", []) or [])
-    reasons: list[str] = []
-    for attempt in attempts:
-        if not isinstance(attempt, dict):
-            continue
-        provider = str(attempt.get("provider", "") or "").strip().casefold()
-        if provider == "memory":
-            continue
-        ok = bool(attempt.get("ok", False))
-        reason = str(attempt.get("reason", "") or "").strip().casefold()
-        status = int(attempt.get("status", 0) or 0)
-        if ok:
-            continue
-        hard = False
-        if status in {401, 403, 429, 451} or status >= 500:
-            hard = True
-        if reason in _V102_FAILURE_REASONS:
-            hard = True
-        if any(token in reason for token in ("timeout", "dns", "tls", "schema", "json", "parser", "cooldown", "network", "connection")):
-            hard = True
-        if hard:
-            reasons.append(reason or (f"http_{status}" if status else "live_failure"))
-    if reasons and route in {"", "none", "memory"}:
-        return True, reasons[-1]
-    return False, ""
-
-
-def _v102_update_account_failure_backoff(username: str) -> None:
-    key = _v101_key(username)
-    if not key:
-        return
-    failed, reason = _v102_diag_proven_live_failure(username)
-    now_mono = time.monotonic()
-    with _V101_SCHED_LOCK:
-        row = _V101_ACCOUNT_SCHED.setdefault(key, {})
-        if not failed:
-            previous = int(row.get("failure_count", 0) or 0)
-            if previous:
-                _V102_BACKOFF_METRICS["backoff_resets"] += 1
-            row["failure_count"] = 0
-            row["failure_backoff_until_mono"] = 0.0
-            row["last_failure_reason"] = ""
-            return
-        count = int(row.get("failure_count", 0) or 0) + 1
-        row["failure_count"] = count
-        row["last_failure_reason"] = reason
-        _V102_BACKOFF_METRICS["proven_live_failures"] += 1
-        if count < V102_FAILURE_BACKOFF_AFTER:
-            return
-        delay = V102_FAILURE_BACKOFF_MAX_SECONDS if count >= V102_FAILURE_BACKOFF_ESCALATE_AFTER else V102_FAILURE_BACKOFF_FIRST_SECONDS
-        until = now_mono + float(delay)
-        row["failure_backoff_until_mono"] = until
-        row["next_due_mono"] = max(float(row.get("next_due_mono", 0.0) or 0.0), until)
-        if delay == V102_FAILURE_BACKOFF_MAX_SECONDS:
-            _V102_BACKOFF_METRICS["backoff_10m_applied"] += 1
-        else:
-            _V102_BACKOFF_METRICS["backoff_5m_applied"] += 1
-
-
-def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
-    canonical, rows = _V102_PRE_FETCH_POSTS_SAFELY(username)
-    # Only automatic scanner failures affect per-account backoff. Manual diagnostics / 10-last buttons remain
-    # forceful and never penalize the automatic schedule because an operator clicked a button.
-    if _V101_AUTO_SCAN_CONTEXT:
-        _v102_update_account_failure_backoff(str(canonical or username or ""))
-    return canonical, list(rows or [])
-
-
-def run_once(state: dict[str, list[str]], startup_cycle: bool = False, min_published_ts: float = 0.0) -> int:
-    global _V102_RUN_ANCHOR_MONO, _V102_RUN_FINISHED_MONO
-    _V102_RUN_ANCHOR_MONO = time.monotonic()
-    try:
-        return _V102_PRE_RUN_ONCE(state, startup_cycle=startup_cycle, min_published_ts=min_published_ts)
-    finally:
-        _V102_RUN_FINISHED_MONO = time.monotonic()
-
-
-def _v102_scheduler_nominal_cycle_seconds() -> int | None:
-    """Nominal cycle interval compatible with the legacy main loop's `interval - elapsed` sleep.
-
-    next_due is measured from now, while the legacy main subtracts total cycle elapsed. Add elapsed since run_once
-    began so the resulting sleep lands at (or a fraction early from) the earliest due writer, never after it.
-    """
-    now = time.monotonic()
-    if _V102_RUN_FINISHED_MONO <= 0 or (now - _V102_RUN_FINISHED_MONO) > V102_SMART_SLEEP_VALID_WINDOW_SECONDS:
-        return None
-    if _V102_RUN_ANCHOR_MONO <= 0:
-        return None
-    accounts = list(active_x_accounts() or [])
-    if not accounts:
-        return None
-    earliest: float | None = None
-    with _V101_SCHED_LOCK:
-        for username in accounts:
-            row = _V101_ACCOUNT_SCHED.get(_v101_key(username))
-            if not row:
-                # A newly enabled/unseen source should get the ordinary base-cycle opportunity, never a long sleep.
-                return None
-            due = float(row.get("next_due_mono", 0.0) or 0.0)
-            if due <= 0:
-                return None
-            earliest = due if earliest is None else min(earliest, due)
-    if earliest is None:
-        return None
-    remaining = earliest - now
-    if remaining <= 0.5:
-        return None
-    elapsed_since_anchor = max(0.0, now - _V102_RUN_ANCHOR_MONO)
-    _V102_BACKOFF_METRICS["smart_sleep_queries"] += 1
-    return max(1, int(math.ceil(remaining + elapsed_since_anchor)))
-
-
-def current_check_every_seconds() -> int:
-    smart = _v102_scheduler_nominal_cycle_seconds()
-    if smart is not None:
-        return int(smart)
-    return int(_V102_PRE_CURRENT_CHECK_EVERY_SECONDS())
-
-
-def v102_savings_status() -> dict[str, Any]:
-    now_mono = time.monotonic()
-    accounts: dict[str, Any] = {}
-    with _V101_SCHED_LOCK:
-        for username in list(active_x_accounts() or []):
-            key = _v101_key(username)
-            row = dict(_V101_ACCOUNT_SCHED.get(key) or {})
-            backoff_until = float(row.get("failure_backoff_until_mono", 0.0) or 0.0)
-            accounts[str(username)] = {
-                "adaptive_group": "60-300" if key in V101_SLOW_ADAPTIVE_ACCOUNTS else "30-120",
-                "interval": int(row.get("interval", _v101_interval_for(username)) or _v101_interval_for(username)),
-                "failure_count": int(row.get("failure_count", 0) or 0),
-                "failure_backoff_seconds_left": max(0, int(round(backoff_until - now_mono))),
-                "last_failure_reason": str(row.get("last_failure_reason", "") or ""),
-            }
-    return {
-        "tier_hold_seconds": int(V101_ADAPTIVE_TIER_HOLD_SECONDS),
-        "failure_backoff_after": int(V102_FAILURE_BACKOFF_AFTER),
-        "failure_backoff_escalate_after": int(V102_FAILURE_BACKOFF_ESCALATE_AFTER),
-        "accounts": accounts,
-        "metrics": dict(_V102_BACKOFF_METRICS),
-    }
-
-
-def _v102_self_audit() -> None:
-    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 300:
-        raise RuntimeError("v102_adaptive_tier_not_5_minutes")
-    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120):
-        raise RuntimeError("v102_normal_adaptive_steps_changed")
-    if tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
-        raise RuntimeError("v102_slow_adaptive_steps_changed")
-    required = {"trollfootball2", "nicoschira", "dimarzio", "sofascore", "gerardromero", "fabricehawkins", "optajoe"}
-    if set(V101_SLOW_ADAPTIVE_ACCOUNTS) != required:
-        raise RuntimeError("v102_slow_group_changed")
-    if int(CHECK_EVERY_SECONDS) != 30 or int(NIGHT_CHECK_EVERY_SECONDS) != 300:
-        raise RuntimeError("v102_day_night_cadence_changed")
-    if int(MAX_PARALLEL_ACCOUNT_CHECKS) != 4 or int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v102_scan_coverage_changed")
-    if fetch_posts is not globals().get("_V97_KEEP_FETCH_POSTS", fetch_posts):
-        # V97 lock is for fetch_posts; V102 wraps only fetch_posts_safely.
-        raise RuntimeError("v102_fetch_posts_provider_changed")
-    if find_recent_duplicate_event is not globals().get("_V97_KEEP_DEDUPE", find_recent_duplicate_event):
-        raise RuntimeError("v102_latest_dedupe_changed")
-    if globals().get("_v94_google_network_once") is not globals().get("_V97_KEEP_GOOGLE_NETWORK", globals().get("_v94_google_network_once")):
-        raise RuntimeError("v102_google_transport_changed")
-    if int(MAX_VIDEO_BYTES) != 13_107_200:
-        raise RuntimeError("v102_video_limit_changed")
-    # Exact 5-minute tier progression proofs.
-    now = 10_000.0
-    key = "dimarzio"
-    with _V101_SCHED_LOCK:
-        _V101_ACCOUNT_SCHED[key] = {"last_activity_wall": now}
-    expected_slow = [(0,60),(299,60),(300,120),(600,180),(900,240),(1200,300)]
-    for delta, expected in expected_slow:
-        tier = min(len(V101_SLOW_ADAPTIVE_STEPS) - 1, int(delta // V101_ADAPTIVE_TIER_HOLD_SECONDS))
-        if int(V101_SLOW_ADAPTIVE_STEPS[tier]) != expected:
-            raise RuntimeError(f"v102_bad_slow_tier_{delta}")
-    key2 = "fabrizioromano"
-    with _V101_SCHED_LOCK:
-        _V101_ACCOUNT_SCHED[key2] = {"last_activity_wall": now}
-    expected_normal = [(0,30),(299,30),(300,60),(600,90),(900,120)]
-    for delta, expected in expected_normal:
-        tier = min(len(V101_NORMAL_ADAPTIVE_STEPS) - 1, int(delta // V101_ADAPTIVE_TIER_HOLD_SECONDS))
-        if int(V101_NORMAL_ADAPTIVE_STEPS[tier]) != expected:
-            raise RuntimeError(f"v102_bad_normal_tier_{delta}")
-    with _V101_SCHED_LOCK:
-        _V101_ACCOUNT_SCHED.pop("dimarzio", None)
-        _V101_ACCOUNT_SCHED.pop("fabrizioromano", None)
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v102_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v102_self_audit")
-
-logging.info(
-    "V102 active: adaptive tiers advance every 5m; selected writers 60/120/180/240/300 and others 30/60/90/120; "
-    "post-scan sleep targets earliest next_due; proven per-account live failures back off after 3=5m and 6+=10m; "
-    "V101/V100 providers, translation, dedupe, formatting and persistence behavior otherwise unchanged."
-)
-# ====== END V102 ======
-
-# ====== V103 FINAL: SAFE HIGH-IMPACT SERVER CREDIT SAVER 3-8,10 (NO #9) (2026-08-28) ======
-# User-requested savings from the V102 recommendation list:
-# 3) FxTwitter HTTP connection pooling / keep-alive (fallback to existing urllib if unavailable).
-# 4) Control/latest/history reuse the live scanner cache; 10-latest uses cache ONLY when >=10 rows are present.
-# 5) Smaller adaptive FxTwitter timelines on routine scans, with guaranteed full catch-up when the known frontier
-#    is not present. 10-latest is never allowed to rely on an undersized scanner cache.
-# 6) Heavy optional yt-dlp probing is hard-lazy in automatic scans: never before a successful translation.
-# 7) Latest LOCAL duplicate engine gets one final chance before the translation/send stack, so duplicate lanes that
-#    bypass the normal run_once filter wall do not spend Gemini/Google/media work.
-# 8) A conservative process-local cache stores only clearly static hard-block decisions; dynamic/time/config reasons
-#    are never cached.
-# 10) Exact repeated INFO/DEBUG log lines are coalesced for 10 minutes; WARNING/ERROR are never suppressed.
-# Explicitly NOT implemented here: recommendation #9 (provider/media/translation backoff changes).
-# V102 adaptive scheduler, V100 frontier/state saver, V97 latest dedupe, V94 translation, V93 provider fallback,
-# V72 formatting and all persistent files/keys remain unchanged.
-
-BOT_BUILD_ID = "winner-v103-safe-credit-saver-3-8-10-no9-2026-08-28"
-
-V103_FAST_TIMELINE_LIMIT = 5
-V103_MEDIUM_TIMELINE_LIMIT = 8
-V103_SLOW_TIMELINE_LIMIT = 12
-V103_CATCHUP_TIMELINE_LIMIT = min(int(V93_NETWORK_LIMIT), 30)
-V103_HISTORY_REQUIRED_ROWS = 10
-V103_STATIC_BLOCK_CACHE_TTL_SECONDS = 60 * 60
-V103_REPEAT_LOG_WINDOW_SECONDS = 10 * 60
-V103_HTTP_POOL_MAXSIZE = max(4, min(16, int(MAX_PARALLEL_ACCOUNT_CHECKS) * 2))
-
-_V103_METRICS: dict[str, int] = {
-    "pooled_http_calls": 0,
-    "pooled_http_fallback_calls": 0,
-    "compact_scan_calls": 0,
-    "compact_limit_5": 0,
-    "compact_limit_8": 0,
-    "compact_limit_12": 0,
-    "full_catchups": 0,
-    "history_cache_complete_hits": 0,
-    "history_cache_incomplete_forced_refresh": 0,
-    "history_full_retries": 0,
-    "ytdlp_pretranslation_skips": 0,
-    "pretranslation_duplicate_blocks": 0,
-    "static_block_cache_hits": 0,
-    "static_block_cache_stores": 0,
-    "repeat_logs_suppressed": 0,
-}
-
-# ---------------------------------------------------------------------------
-# 3) FxTwitter keep-alive pool. urllib3.PoolManager is thread-safe. If urllib3
-#    is unexpectedly unavailable on Railway, the exact pre-V103 urllib function
-#    remains the fallback so availability is never traded for optimization.
-# ---------------------------------------------------------------------------
-_V103_PRE_FX_API_NETWORK_ONCE = _v93_fx_api_network_once
-_V103_PRE_FX_FEED_NETWORK_ONCE = _v93_fx_feed_network_once
-_V103_HTTP_POOL = None
-_V103_URLLIB3 = None
-try:
-    import urllib3 as _v103_urllib3  # type: ignore
-    _V103_URLLIB3 = _v103_urllib3
-    _V103_HTTP_POOL = _v103_urllib3.PoolManager(
-        num_pools=max(2, int(MAX_PARALLEL_ACCOUNT_CHECKS)),
-        maxsize=int(V103_HTTP_POOL_MAXSIZE),
-        block=False,
-        retries=False,
-        timeout=_v103_urllib3.Timeout(connect=min(2.0, float(V93_TIMEOUT_SECONDS)), read=float(V93_TIMEOUT_SECONDS)),
-    )
-except Exception:
-    _V103_HTTP_POOL = None
-    _V103_URLLIB3 = None
-
-
-def _v103_pool_get(url: str, headers: dict[str, str], max_bytes: int = 4_000_000) -> tuple[int, bytes]:
-    if _V103_HTTP_POOL is None:
-        _V103_METRICS["pooled_http_fallback_calls"] += 1
-        request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=V93_TIMEOUT_SECONDS) as response:
-            return int(getattr(response, "status", 200) or 200), response.read(max_bytes)
-    _V103_METRICS["pooled_http_calls"] += 1
-    response = _V103_HTTP_POOL.request(
-        "GET",
-        url,
-        headers=headers,
-        redirect=True,
-        preload_content=True,
-        timeout=_V103_URLLIB3.Timeout(connect=min(2.0, float(V93_TIMEOUT_SECONDS)), read=float(V93_TIMEOUT_SECONDS)),
-        retries=False,
-    )
-    try:
-        status = int(getattr(response, "status", 0) or 0)
-        body = bytes(getattr(response, "data", b"") or b"")[:max_bytes]
-        return status, body
-    finally:
-        try:
-            response.release_conn()
-        except Exception:
-            pass
-
-
-def _v103_http_status_failure(provider: str, display: str, status: int, body: bytes, started: float) -> tuple[list[Post], dict[str, Any]]:
-    classification = _v93_classify_exception(None, status=status)
-    detail = f"{classification}: HTTP {status}: {body.decode('utf-8', errors='replace')[:180]}"
-    _v93_provider_failure_policy(provider, classification, status, detail)
-    return [], _v93_attempt(display, ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-
-def _v93_fx_api_network_once(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
-    canonical = str(username or "").strip().lstrip("@")
-    # V103 deliberately honors the requested timeline size. The prior code forced >=12
-    # and the automatic entrypoint requested 30 even though only 12 could reach the pipeline.
-    count = max(1, min(int(V93_NETWORK_LIMIT), int(limit or 1)))
-    url = V93_FX_API_TEMPLATE.format(username=urllib.parse.quote(canonical), count=count)
-    headers = {
-        "User-Agent": "NetoSportBot/1.0 (Telegram football news monitor; contact=operator)",
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-    }
-    started = time.perf_counter()
-    _v93_provider_increment("fxtwitter-api")
-    status: int | None = None
-    body = b""
-    try:
-        status, body = _v103_pool_get(url, headers, 4_000_000)
-        if status >= 400 and status != 404:
-            return _v103_http_status_failure("fxtwitter-api", "FxTwitter API", status, body, started)
-    except Exception as exc:
-        status = int(getattr(exc, "status", 0) or getattr(exc, "code", 0) or 0) or None
-        classification = _v93_classify_exception(exc, status=status)
-        detail = f"{classification}: {type(exc).__name__}: {short_error(exc, 180)}"
-        _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
-        return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-    try:
-        payload = json.loads(body.decode("utf-8", errors="strict")) if body else {}
-    except Exception as exc:
-        if status == 404:
-            classification = "http_404_empty_or_unknown_handle"
-            detail = "http_404_empty_or_unknown_handle: HTTP 404"
-        else:
-            classification = "invalid_json"
-            detail = f"invalid_json: HTTP {status}; body={body[:120]!r}"
-        _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
-        return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-    rows, parse_reason = _v93_parse_fx_payload(canonical, payload, count)
-    if rows:
-        _v93_provider_mark("fxtwitter-api", mode="live", status=status)
-        return rows, _v93_attempt("FxTwitter API", ok=True, reason="ok", status=status, posts=len(rows), seconds=time.perf_counter()-started)
-    classification = "http_404_empty_or_unknown_handle" if status == 404 else (parse_reason.split(":",1)[0] if parse_reason else "empty_timeline")
-    detail = parse_reason or classification
-    _v93_provider_failure_policy("fxtwitter-api", classification, status, detail)
-    return [], _v93_attempt("FxTwitter API", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-
-def _v93_fx_feed_network_once(username: str, limit: int) -> tuple[list[Post], dict[str, Any]]:
-    canonical = str(username or "").strip().lstrip("@")
-    count = max(1, min(int(V93_NETWORK_LIMIT), int(limit or 1)))
-    url = V93_FX_FEED_TEMPLATE.format(username=urllib.parse.quote(canonical), count=count)
-    headers = {
-        "User-Agent": "NetoSportBot/1.0 (Telegram football news monitor; contact=operator)",
-        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.2",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-    }
-    started = time.perf_counter()
-    _v93_provider_increment("fxtwitter-feed")
-    status: int | None = None
-    body = b""
-    try:
-        status, body = _v103_pool_get(url, headers, 4_000_000)
-        if status >= 400:
-            return _v103_http_status_failure("fxtwitter-feed", "FxTwitter RSS", status, body, started)
-    except Exception as exc:
-        status = int(getattr(exc, "status", 0) or getattr(exc, "code", 0) or 0) or None
-        classification = _v93_classify_exception(exc, status=status)
-        detail = f"{classification}: {type(exc).__name__}: {short_error(exc, 180)}"
-        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
-        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-    try:
-        rows = [p for p in (parse_posts(canonical, body, "fxtwitter-feed") or []) if isinstance(p, Post)]
-    except Exception as exc:
-        classification = "parser_zero"
-        detail = f"parser_zero: {type(exc).__name__}: {short_error(exc, 180)}"
-        _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
-        return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-    if rows:
-        for post in rows:
-            try:
-                post.username = canonical
-                post.source_name = "fxtwitter-feed"
-                parts = tweet_parts_from_link(str(getattr(post, "link", "") or ""))
-                if parts:
-                    post.link = f"https://x.com/{canonical}/status/{parts[1]}"
-            except Exception:
-                pass
-        rows.sort(key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-        rows = rows[:count]
-        _v93_provider_mark("fxtwitter-feed", mode="live", status=status)
-        return rows, _v93_attempt("FxTwitter RSS", ok=True, reason="ok", status=status, posts=len(rows), seconds=time.perf_counter()-started)
-    raw_lower = body[:300_000].decode("utf-8", errors="replace").casefold()
-    if "<item" in raw_lower or "<entry" in raw_lower:
-        classification = "parser_zero"
-        detail = "parser_zero: feed contains item/entry but parser returned 0"
-    else:
-        classification = "empty_timeline"
-        detail = "empty_timeline: HTTP 200 feed contains no item/entry"
-    _v93_provider_failure_policy("fxtwitter-feed", classification, status, detail)
-    return [], _v93_attempt("FxTwitter RSS", ok=False, reason=classification, status=status, seconds=time.perf_counter()-started, detail=detail)
-
-
-# ---------------------------------------------------------------------------
-# 5) Routine scanner gets smaller timelines, but only when V100 has a durable
-#    known frontier. If the compact page is full and contains no known row, do a
-#    full catch-up immediately. This preserves the previous 30-row burst coverage.
-# ---------------------------------------------------------------------------
-_V103_PRE_LIVE_THEN_MEMORY = _v93_live_then_memory
-
-
-def _v103_auto_timeline_limit(username: str) -> int:
-    interval = int(_v101_interval_for(username))
-    if interval <= 60:
-        return int(V103_FAST_TIMELINE_LIMIT)
-    if interval <= 120:
-        return int(V103_MEDIUM_TIMELINE_LIMIT)
-    return int(V103_SLOW_TIMELINE_LIMIT)
-
-
-def _v103_seen_for_account(username: str) -> set[str]:
-    with _V100_SCAN_CONTEXT_LOCK:
-        state = _V100_ACTIVE_SCAN_STATE
-        enabled = bool(_V100_ACTIVE_SCAN_OPTIMIZE)
-    if not enabled or not isinstance(state, dict):
-        return set()
-    canonical = str(username or "").strip().lstrip("@")
-    raw = state.get(canonical, [])
-    if not raw:
-        # Account keys are normally canonical-cased, but tolerate case differences.
-        key = canonical.casefold()
-        for candidate, values in state.items():
-            if str(candidate or "").strip().lstrip("@").casefold() == key:
-                raw = values
-                break
-    return {str(x).strip() for x in (raw or []) if str(x).strip()}
-
-
-def _v103_has_known_frontier(rows: list[Post], seen: set[str]) -> bool:
-    if not seen:
-        return False
-    return any(_v100_post_seen(post, seen) for post in rows if isinstance(post, Post))
-
-
-def _v103_evict_live_cache(username: str) -> None:
-    try:
-        with _V93_LOCK:
-            _V93_LIVE_CACHE.pop(_v93_key(username), None)
-    except Exception:
-        pass
-
-
-def _v93_live_then_memory(username: str, limit: int = 30) -> tuple[list[Post], Exception | None, str]:
-    requested = max(1, int(limit))
-    if not (bool(_V101_AUTO_SCAN_CONTEXT) and bool(_V100_ACTIVE_SCAN_OPTIMIZE)):
-        return _V103_PRE_LIVE_THEN_MEMORY(username, requested)
-
-    seen = _v103_seen_for_account(username)
-    # No durable frontier (startup/new account/recovery) must NEVER pay a compact probe
-    # followed by another request. Go straight to the same full coverage used before V103.
-    if not seen:
-        return _V103_PRE_LIVE_THEN_MEMORY(username, min(requested, int(V103_CATCHUP_TIMELINE_LIMIT)))
-
-    compact = min(requested, _v103_auto_timeline_limit(username))
-    _V103_METRICS["compact_scan_calls"] += 1
-    _V103_METRICS[f"compact_limit_{compact}"] = int(_V103_METRICS.get(f"compact_limit_{compact}", 0)) + 1
-    rows, error, route = _V103_PRE_LIVE_THEN_MEMORY(username, compact)
-    rows = list(rows or [])
-    route_key = str(route or "").casefold()
-
-    # If the known boundary is visible, everything older is unnecessary (V100 trims it).
-    if _v103_has_known_frontier(rows, seen):
-        return rows, error, route
-
-    # Provider outage/memory fallback is not a burst signal. V102's existing circuit breaker/backoff
-    # remains the only retry policy (recommendation #9 is explicitly excluded).
-    if route_key in {"memory", "none", ""} or (error is not None and "cache" not in route_key and "fx" not in route_key and "nitter" not in route_key):
-        return rows, error, route
-
-    # A short REAL live page is exhausted. A short CACHE page, however, may simply be an
-    # old 5-row compact cache being reused for a later 8/12-row request, so force refresh.
-    if len(rows) < compact and "cache" not in route_key:
-        return rows, error, route
-
-    # Full compact page (or undersized cached compact page) with no known boundary = possible burst.
-    # Catch up to the exact pre-V103 V93 maximum so the optimization cannot create a news hole.
-    _v103_evict_live_cache(username)
-    _V103_METRICS["full_catchups"] += 1
-    return _V103_PRE_LIVE_THEN_MEMORY(username, min(requested, int(V103_CATCHUP_TIMELINE_LIMIT)))
-
-
-# ---------------------------------------------------------------------------
-# 4 + exact 10-latest safety: use a fresh cache only if it already contains 10
-#    complete rows. An undersized compact scanner cache is evicted and a full
-#    control fetch is forced. If the first result is still short, one bounded
-#    full 30-row refresh + history merge is attempted.
-# ---------------------------------------------------------------------------
-_V103_PRE_FETCH_LAST_TEN = fetch_last_ten_control_isolated
-
-
-def _v103_live_cache_snapshot(username: str) -> tuple[float, list[Post], str]:
-    try:
-        with _V93_LOCK:
-            item = _V93_LIVE_CACHE.get(_v93_key(username))
-        if not item:
-            return 0.0, [], ""
-        saved_at, rows, route = item
-        if _v93_now() - float(saved_at or 0.0) > float(V93_LIVE_CACHE_SECONDS):
-            return 0.0, [], ""
-        return float(saved_at or 0.0), [p for p in (rows or []) if isinstance(p, Post)], str(route or "")
-    except Exception:
-        return 0.0, [], ""
-
-
-def _v103_merge_history_rows(username: str, groups: list[list[Post]], wanted: int) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    merged: dict[str, Post] = {}
-    for values in groups:
-        for post in values or []:
-            if not isinstance(post, Post):
-                continue
-            try:
-                post.username = canonical
-            except Exception:
-                pass
-            identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or "").strip()
-            if not identity:
-                try:
-                    identity = post_content_signature(canonical, str(getattr(post, "text", "") or ""), str(getattr(post, "quoted_text", "") or ""))
-                except Exception:
-                    identity = ""
-            if identity:
-                merged.setdefault(identity, post)
-    ordered = sorted(merged.values(), key=lambda p: float(getattr(p, "published_ts", 0.0) or 0.0), reverse=True)
-    return ordered[:max(1, int(wanted))]
-
-
-def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
-    canonical = str(username or "").strip().lstrip("@")
-    wanted = max(1, int(limit))
-    if wanted >= V103_HISTORY_REQUIRED_ROWS:
-        _saved_at, cached_rows, _route = _v103_live_cache_snapshot(canonical)
-        if len(cached_rows) >= V103_HISTORY_REQUIRED_ROWS:
-            _V103_METRICS["history_cache_complete_hits"] += 1
-        elif cached_rows:
-            _V103_METRICS["history_cache_incomplete_forced_refresh"] += 1
-            _v103_evict_live_cache(canonical)
-
-    rows = list(_V103_PRE_FETCH_LAST_TEN(canonical, wanted) or [])
-    if wanted < V103_HISTORY_REQUIRED_ROWS or len(rows) >= wanted:
-        return rows[:wanted]
-
-    # Bounded rescue for exact 10 display. Never loop and never use a 5/8-row auto page
-    # as proof that only 5/8 posts exist.
-    _V103_METRICS["history_full_retries"] += 1
-    _v103_evict_live_cache(canonical)
-    live_rows, _error, _route = _V103_PRE_LIVE_THEN_MEMORY(canonical, max(V103_CATCHUP_TIMELINE_LIMIT, wanted))
-    try:
-        memory = _v91_memory_posts(canonical, limit=max(60, wanted * 6))
-    except Exception:
-        memory = []
-    combined = _v103_merge_history_rows(canonical, [rows, list(live_rows or []), list(memory or [])], wanted)
-    try:
-        if combined:
-            _ten_history_save(canonical, combined)
-    except Exception:
-        pass
-    return combined[:wanted]
-
-
-# ---------------------------------------------------------------------------
-# 6) Heavy optional yt-dlp is never allowed before translation in an automatic
-#    scan. Direct FxTwitter image/video URLs are untouched. Manual/control paths
-#    remain exactly as before.
-# ---------------------------------------------------------------------------
-_V103_PRE_YTDLP_CANDIDATES = _final_ytdlp_candidates
-
-
-def _final_ytdlp_candidates(post: Post) -> list[dict[str, Any]]:
-    if bool(_V101_AUTO_SCAN_CONTEXT) and not str(getattr(post, "translation_provider", "") or "").strip():
-        _V103_METRICS["ytdlp_pretranslation_skips"] += 1
-        return []
-    return _V103_PRE_YTDLP_CANDIDATES(post)
-
-
-# ---------------------------------------------------------------------------
-# 8) Conservative static hard-block decision cache. Only content-static reasons
-#    are cached. Anything time-, club-list-, transfer-value-, duplicate- or
-#    operator-setting-dependent is deliberately excluded.
-# ---------------------------------------------------------------------------
-_V103_PRE_LOCAL_BLOCK_REASON = pre_send_final_local_block_reason
-_V103_STATIC_BLOCK_LOCK = RLock()
-_V103_STATIC_BLOCK_CACHE: dict[str, tuple[float, str]] = {}
-_V103_STATIC_BLOCK_TOKENS = (
-    "podcast", "longform", "interview", "promo", "teaser", "live_match", "match_update",
-    "future_match", "prediction", "bet", "gambl", "kit", "jersey", "minor", "basketball",
-    "other_sport", "non_news", "social", "too_short", "short_post", "unclear", "link_only",
-    "writer_profile_noise", "giveaway", "competition_promo", "instagram", "reel", "poll",
-)
-
-
-def _v103_post_cache_key(post: Post) -> str:
-    identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or "").strip()
-    source = str(getattr(post, "original_text", "") or getattr(post, "text", "") or "")
-    digest = hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    return f"{str(getattr(post, 'username', '') or '').casefold()}|{identity}|{digest}"
-
-
-def _v103_cacheable_static_reason(reason: str) -> bool:
-    value = str(reason or "").strip().casefold()
-    if not value:
-        return False
-    if any(token in value for token in ("old_post", "duplicate", "destination", "transfer_value", "fee", "managed_club", "account_disabled", "temporary", "translation")):
-        return False
-    return any(token in value for token in _V103_STATIC_BLOCK_TOKENS)
-
-
-def pre_send_final_local_block_reason(post: Post) -> str:
-    key = _v103_post_cache_key(post)
-    now = time.time()
-    with _V103_STATIC_BLOCK_LOCK:
-        cached = _V103_STATIC_BLOCK_CACHE.get(key)
-        if cached and now - float(cached[0] or 0.0) <= V103_STATIC_BLOCK_CACHE_TTL_SECONDS:
-            _V103_METRICS["static_block_cache_hits"] += 1
-            return str(cached[1] or "")
-        if cached:
-            _V103_STATIC_BLOCK_CACHE.pop(key, None)
-    reason = str(_V103_PRE_LOCAL_BLOCK_REASON(post) or "")
-    if _v103_cacheable_static_reason(reason):
-        with _V103_STATIC_BLOCK_LOCK:
-            _V103_STATIC_BLOCK_CACHE[key] = (now, reason)
-            _V103_METRICS["static_block_cache_stores"] += 1
-            if len(_V103_STATIC_BLOCK_CACHE) > 4000:
-                oldest = sorted(_V103_STATIC_BLOCK_CACHE.items(), key=lambda kv: float(kv[1][0] or 0.0))[:800]
-                for old_key, _row in oldest:
-                    _V103_STATIC_BLOCK_CACHE.pop(old_key, None)
-    return reason
-
-
-# ---------------------------------------------------------------------------
-# 7) Final source-level local dedupe before the translation/media stack. Normal
-#    run_once already does this; this closes manual/fast-lane automatic paths that
-#    can enter send_post directly. It uses the SAME latest V97/V53 local engine.
-# ---------------------------------------------------------------------------
-_V103_PRE_SEND_POST = send_post
-
-
-def send_post(post: Post, reply_message_ids: Any = None, state: dict[str, Any] | None = None) -> dict[str, Any]:
-    # The normal run_once path already performs the latest local dedupe twice before
-    # remember_recent_news_event(... pending=True). Re-running it here during that same
-    # automatic context could mistake the post's own pending reservation for a duplicate.
-    # Therefore this extra gate is ONLY for direct send lanes that bypass run_once.
-    if (not bool(_V101_AUTO_SCAN_CONTEXT)) and isinstance(state, dict) and not bool(getattr(post, "force_startup_send", False)):
-        try:
-            duplicate = find_channel_duplicate_event(post, state) or find_recent_duplicate_event(post, state)
-        except Exception:
-            duplicate = None
-        if duplicate:
-            _V103_METRICS["pretranslation_duplicate_blocks"] += 1
-            try:
-                source = duplicate_event_source_he(duplicate)
-                detail = duplicate_event_debug_he(post, duplicate)
-                log_skip_once(
-                    "v103_pretranslation_duplicate",
-                    post,
-                    "דילוג כפילות לפני תרגום/מדיה: אותו אירוע כבר קיים מול %s. @%s לא נשלח: %s | %s",
-                    source,
-                    getattr(post, "username", ""),
-                    getattr(post, "link", ""),
-                    detail,
-                )
-            except Exception:
-                pass
-            return {"sent": False, "mode": "pre_send_blocked:v103_source_duplicate", "total_seconds": 0.0}
-    return _V103_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
-
-
-# ---------------------------------------------------------------------------
-# 10) Log-volume saver: suppress only an EXACT repeated INFO/DEBUG rendered line
-#    for a bounded window. Warnings/errors and distinct posts/errors are untouched.
-# ---------------------------------------------------------------------------
-class _V103RepeatInfoFilter(logging.Filter):
-    _v103_credit_filter = True
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._lock = RLock()
-        self._seen: dict[str, float] = {}
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if int(record.levelno) >= int(logging.WARNING):
-            return True
-        try:
-            rendered = record.getMessage()
-        except Exception:
-            return True
-        # Do not coalesce success/send lines even if a synthetic test repeats them.
-        if "✅" in rendered or "נשלח פוסט" in rendered:
-            return True
-        key = f"{record.levelno}|{record.name}|{rendered}"
-        now = time.monotonic()
-        with self._lock:
-            previous = float(self._seen.get(key, 0.0) or 0.0)
-            if previous and now - previous < V103_REPEAT_LOG_WINDOW_SECONDS:
-                _V103_METRICS["repeat_logs_suppressed"] += 1
-                return False
-            self._seen[key] = now
-            if len(self._seen) > 5000:
-                cutoff = now - V103_REPEAT_LOG_WINDOW_SECONDS
-                for old_key, ts in list(self._seen.items()):
-                    if float(ts or 0.0) < cutoff:
-                        self._seen.pop(old_key, None)
-                if len(self._seen) > 5000:
-                    for old_key in list(self._seen)[:1000]:
-                        self._seen.pop(old_key, None)
-        return True
-
-
-def _v103_install_log_filter() -> None:
-    root = logging.getLogger()
-    for handler in list(root.handlers or []):
-        if any(bool(getattr(item, "_v103_credit_filter", False)) for item in list(getattr(handler, "filters", []) or [])):
-            continue
-        handler.addFilter(_V103RepeatInfoFilter())
-
-
-_v103_install_log_filter()
-
-
-def v103_credit_saver_status() -> dict[str, Any]:
-    return {
-        "http_pool": bool(_V103_HTTP_POOL is not None),
-        "http_pool_maxsize": int(V103_HTTP_POOL_MAXSIZE),
-        "auto_timeline_limits": [int(V103_FAST_TIMELINE_LIMIT), int(V103_MEDIUM_TIMELINE_LIMIT), int(V103_SLOW_TIMELINE_LIMIT)],
-        "catchup_limit": int(V103_CATCHUP_TIMELINE_LIMIT),
-        "ten_latest_required_rows": int(V103_HISTORY_REQUIRED_ROWS),
-        "static_block_cache_ttl_seconds": int(V103_STATIC_BLOCK_CACHE_TTL_SECONDS),
-        "repeat_log_window_seconds": int(V103_REPEAT_LOG_WINDOW_SECONDS),
-        "metrics": dict(_V103_METRICS),
-    }
-
-
-def _v103_self_audit() -> None:
-    # User explicitly excluded #9: V102 failure-backoff constants must remain exactly intact.
-    if int(V102_FAILURE_BACKOFF_AFTER) != 3 or int(V102_FAILURE_BACKOFF_ESCALATE_AFTER) != 6:
-        raise RuntimeError("v103_v102_failure_backoff_changed")
-    if int(V102_FAILURE_BACKOFF_FIRST_SECONDS) != 300 or int(V102_FAILURE_BACKOFF_MAX_SECONDS) != 600:
-        raise RuntimeError("v103_v102_failure_backoff_durations_changed")
-    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120) or tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
-        raise RuntimeError("v103_adaptive_scheduler_changed")
-    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 300:
-        raise RuntimeError("v103_adaptive_hold_changed")
-    if int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK) != 12:
-        raise RuntimeError("v103_pipeline_cap_changed")
-    if int(MAX_VIDEO_BYTES) != 13_107_200:
-        raise RuntimeError("v103_video_limit_changed")
-    if globals().get("_v94_google_network_once") is not globals().get("_V97_KEEP_GOOGLE_NETWORK", globals().get("_v94_google_network_once")):
-        raise RuntimeError("v103_google_transport_changed")
-    if find_recent_duplicate_event is not globals().get("_V97_KEEP_DEDUPE", find_recent_duplicate_event):
-        raise RuntimeError("v103_latest_dedupe_engine_changed")
-    if tuple((V103_FAST_TIMELINE_LIMIT, V103_MEDIUM_TIMELINE_LIMIT, V103_SLOW_TIMELINE_LIMIT)) != (5, 8, 12):
-        raise RuntimeError("v103_compact_limits_bad")
-    if int(V103_HISTORY_REQUIRED_ROWS) != 10:
-        raise RuntimeError("v103_history_requirement_bad")
-    # Automatic media probe must be gated on a completed translation, while manual remains unaffected.
-    if "translation_provider" not in tuple(str(x) for x in _final_ytdlp_candidates.__code__.co_consts):
-        raise RuntimeError("v103_ytdlp_lazy_gate_missing")
-    # 10-latest route must be our completeness wrapper.
-    if fetch_last_ten_control_isolated is _V103_PRE_FETCH_LAST_TEN:
-        raise RuntimeError("v103_history_completeness_wrapper_missing")
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v103_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v103_self_audit")
-
-logging.info(
-    "V103 active: FxTwitter keep-alive pool; adaptive 5/8/12 routine timelines with full 30-row frontier catch-up; "
-    "10-latest requires 10 complete cached rows or forces full refresh; heavy yt-dlp is post-translation only in auto scans; "
-    "latest local dedupe runs before translation on direct send lanes; static hard blocks are cached conservatively; exact repeated INFO/DEBUG logs are coalesced. Recommendation #9 unchanged/excluded."
-)
-# ====== END V103 SAFE HIGH-IMPACT CREDIT SAVER ======
-
-
-
-# ====== V104 HIGH-IMPACT NO-WASTE PIPELINE (2026-08-28) ======
-# User-requested items from the V103 audit: 1,2,3,4,6,7 (explicitly NOT item 5).
-# V103 adaptive scan / smart sleep / failure backoff / compact 5-8-12 catch-up /
-# exact 10-latest / translation / dedupe / V72 layout remain untouched below.
-BOT_BUILD_ID = "winner-v104-no-wasted-media-batched-control-io-longpoll-2026-08-28"
-
-V104_CONTROL_FLUSH_SECONDS = max(5.0, float(os.environ.get("V104_CONTROL_FLUSH_SECONDS", "15") or 15))
-V104_CONTROL_FLUSH_MAX_ITEMS = max(10, int(os.environ.get("V104_CONTROL_FLUSH_MAX_ITEMS", "40") or 40))
-V104_CONTROL_LONG_POLL_SECONDS = max(20, int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "30") or 30))
-V104_CONTROL_HTTP_GRACE_SECONDS = max(10, int(os.environ.get("V104_CONTROL_HTTP_GRACE_SECONDS", "12") or 12))
-
-_V104_METRICS: dict[str, int] = {
-    "exact_no_media_fast_returns": 0,
-    "selected_images_cache_hits": 0,
-    "hydrate_fast_returns": 0,
-    "early_video_network_avoided": 0,
-    "direct_video_fast_path": 0,
-    "direct_video_fallbacks": 0,
-    "control_batched_events": 0,
-    "control_flushes": 0,
-}
-
-
-def _v104_is_exact_fxtwitter_post(post: Any) -> bool:
-    provider = str(getattr(post, "exact_source_provider", "") or getattr(post, "source_name", "") or "").casefold()
-    return bool(
-        isinstance(post, Post)
-        and bool(getattr(post, "exact_media_checked", False))
-        and "fxtwitter" in provider
-    )
-
-
-def _v104_direct_video_urls(post: Any) -> list[str]:
-    out: list[str] = []
-    for value in list(getattr(post, "video_urls", []) or []) + list(getattr(post, "exact_video_urls", []) or []):
-        url = str(value or "").strip()
-        if not url or url in out:
-            continue
-        try:
-            if _real_tweet_video_url(url) or is_video_url(url):
-                out.append(url)
-        except Exception:
-            if ".mp4" in url.casefold():
-                out.append(url)
-    try:
-        out.sort(key=lambda u: _final_video_quality(u, 0), reverse=True)
-    except Exception:
-        pass
-    return out
-
-
-# ---------------------------------------------------------------------------
-# 1 + 7) FxTwitter already resolved exact media. Never launch article/X/media
-# recovery merely to prove that an exact text-only post has no image. Also cache
-# the selected image plan per Post until its media signature changes.
-# ---------------------------------------------------------------------------
-_V104_PRE_SELECTED_POST_IMAGES = selected_post_images
-
-
-def _v104_image_signature(post: Any) -> tuple[Any, ...]:
-    return (
-        tuple(str(x or "") for x in list(getattr(post, "image_urls", []) or [])),
-        tuple(str(x or "") for x in list(getattr(post, "exact_image_urls", []) or [])),
-        tuple(str(x or "") for x in list(getattr(post, "external_preview_image_urls", []) or [])),
-        bool(getattr(post, "exact_media_checked", False)),
-        str(getattr(post, "exact_source_provider", "") or getattr(post, "source_name", "") or ""),
-    )
-
-
-def selected_post_images(post: Post) -> list[str]:
-    signature = _v104_image_signature(post)
-    cached = getattr(post, "_v104_selected_images_cache", None)
-    if isinstance(cached, tuple) and len(cached) == 2 and cached[0] == signature:
-        _V104_METRICS["selected_images_cache_hits"] += 1
-        return list(cached[1] or [])
-
-    if _v104_is_exact_fxtwitter_post(post):
-        rows = _final_dedupe_exact_photos([
-            *(getattr(post, "image_urls", []) or []),
-            *(getattr(post, "exact_image_urls", []) or []),
-        ])[:MAX_IMAGES_PER_POST]
-        # Exact FxTwitter media inventory is authoritative. Empty means empty;
-        # do not query X/Syndication/article-card providers merely for decoration.
-        if not rows:
-            _V104_METRICS["exact_no_media_fast_returns"] += 1
-        setattr(post, "_v104_selected_images_cache", (_v104_image_signature(post), list(rows)))
-        return list(rows)
-
-    rows = list(_V104_PRE_SELECTED_POST_IMAGES(post) or [])[:MAX_IMAGES_PER_POST]
-    setattr(post, "_v104_selected_images_cache", (_v104_image_signature(post), list(rows)))
-    return rows
-
-
-# Avoid repeated exact hydration for a Post already fully resolved by FxTwitter.
-# A genuinely expected-but-missing video is allowed through so final video recovery
-# can still run after the duplicate gate.
-_V104_PRE_HYDRATE_EXACT_POST = _reliable_hydrate_exact_post
-
-
-def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
-    if _v104_is_exact_fxtwitter_post(post):
-        expected_video = bool(
-            getattr(post, "video_expected", False)
-            or getattr(post, "has_video", False)
-            or getattr(post, "primary_has_video", False)
-            or getattr(post, "quoted_has_video", False)
-        )
-        direct_videos = _v104_direct_video_urls(post)
-        if direct_videos or not expected_video:
-            _V104_METRICS["hydrate_fast_returns"] += 1
-            return post
-    return _V104_PRE_HYDRATE_EXACT_POST(post, force=force)
-
-
-# ---------------------------------------------------------------------------
-# 2) The old send pipeline asks sendable_video_url BEFORE translated dedupe.
-# During automatic scans make this boundary network-free: return an already-known
-# direct FxTwitter MP4, otherwise empty. Final video recovery remains downstream.
-# ---------------------------------------------------------------------------
-_V104_PRE_SENDABLE_VIDEO_URL = sendable_video_url
-
-
-def sendable_video_url(post: Post) -> str:
-    if bool(globals().get("_V101_AUTO_SCAN_CONTEXT", False)):
-        direct = _v104_direct_video_urls(post)
-        if direct:
-            return direct[0]
-        _V104_METRICS["early_video_network_avoided"] += 1
-        return ""
-    return str(_V104_PRE_SENDABLE_VIDEO_URL(post) or "")
-
-
-# ---------------------------------------------------------------------------
-# 3) Direct-video-first. If FxTwitter already supplied MP4 variants, size-check
-# those first without querying any recovery provider. Only if no direct variant is
-# usable do we invoke the established full recovery chain.
-# ---------------------------------------------------------------------------
-_V104_PRE_ACCEPTANCE_VIDEO_STATUS = _acceptance_video_status
-
-
-def _acceptance_video_status(post: Post) -> tuple[str, str, int | None]:
-    identity = _final_tweet_numeric_id(post) or str(getattr(post, "post_id", "") or getattr(post, "link", "") or "")
-    try:
-        with _FINAL_VIDEO_CACHE_LOCK:
-            cached = _FINAL_VIDEO_RESULT_CACHE.get(identity)
-            if cached and time.time() - cached[0] < 30 * 60:
-                return cached[1]
-    except Exception:
-        pass
-
-    direct = _v104_direct_video_urls(post) if _v104_is_exact_fxtwitter_post(post) else []
-    if direct:
-        for url in direct:
-            size = _final_actual_video_size(url, None)
-            if size is not None and 0 < int(size) <= int(MAX_VIDEO_BYTES):
-                post.video_urls = list(dict.fromkeys([url, *(getattr(post, "video_urls", []) or [])]))
-                post.acceptance_video_url = url
-                post.acceptance_video_size = int(size)
-                result = (url, "ok", int(size))
-                try:
-                    with _FINAL_VIDEO_CACHE_LOCK:
-                        _FINAL_VIDEO_RESULT_CACHE[identity] = (time.time(), result)
-                except Exception:
-                    pass
-                _V104_METRICS["direct_video_fast_path"] += 1
-                return result
-        # Direct variants exist but none was proven sendable (oversized/unknown).
-        # Only now pay for the legacy independent recovery providers.
-        _V104_METRICS["direct_video_fallbacks"] += 1
-    return _V104_PRE_ACCEPTANCE_VIDEO_STATUS(post)
-
-
-# ---------------------------------------------------------------------------
-# 4) Batch user-facing blocked-history + blocked pipeline telemetry into ONE
-# read/modify/write transaction every few seconds. These are diagnostic histories,
-# never send/dedupe state. A report button flushes first, so displayed data stays exact.
-# ---------------------------------------------------------------------------
-_V104_CONTROL_BUFFER_LOCK = RLock()
-_V104_PENDING_BLOCK_ITEMS: list[dict[str, Any]] = []
-_V104_PENDING_PIPELINE_ITEMS: list[dict[str, Any]] = []
-from threading import Event as _V104Event
-_V104_CONTROL_FLUSH_EVENT = _V104Event()
-_V104_CONTROL_FLUSH_STOP = _V104Event()
-
-
-def _v104_build_block_item(reason: str, post: Post, rendered: str, duplicate: bool = False) -> dict[str, Any] | None:
-    base_reason = (reason or "").split(";", 1)[0].strip()
-    if (
-        base_reason == "old_post"
-        and SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS > 0
-        and time.time() - BOT_STARTED_AT < SUPPRESS_STARTUP_OLD_POST_BLOCK_REPORT_SECONDS
-    ):
-        return None
-    if ("_smart_is_two_hour_age_block" in globals() and _smart_is_two_hour_age_block(reason)) or _final_record_is_older_than_two_hours(post):
-        return None
-    duplicate_reasons = {"duplicate", "semantic_duplicate", "recent_duplicate", "same_cycle_duplicate", "post_translation_duplicate"}
-    is_dup = bool(duplicate or base_reason in duplicate_reasons or "duplicate" in base_reason or "כפיל" in str(rendered or ""))
-    now_ts = time.time()
-    score_match = re.search(r"(?:דמיון|similarity)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", str(rendered or ""), re.IGNORECASE)
-    verdict_match = re.search(r"(?:החלטה|verdict)\s*[:=]?\s*([A-Z_]+)", str(rendered or ""), re.IGNORECASE)
-    source_match = re.search(r"מול\s+([^|.\n]{2,90})", str(rendered or ""))
-    item = {
-        "id": control_block_item_id(post, reason, now_ts),
-        "ts": now_ts,
-        "source": getattr(post, "username", "unknown") or "unknown",
-        "reason": hebrew_block_reason(reason),
-        "raw_reason": reason,
-        "preview": filtered_post_text_preview(post),
-        "original_text": clean_for_ai_translation(html.unescape("\n".join([getattr(post, "text", "") or "", getattr(post, "quoted_text", "") or ""]))),
-        "link": getattr(post, "link", "") or "",
-        "post_id": getattr(post, "post_id", "") or "",
-        "dedupe_ids": list(getattr(post, "dedupe_ids", []) or []),
-        "post": post_to_control_payload(post),
-        "rendered": compact_debug_text(rendered, 900),
-        "is_duplicate": is_dup,
-    }
-    if score_match:
-        item["duplicate_score"] = float(score_match.group(1))
-    if verdict_match:
-        item["duplicate_verdict"] = verdict_match.group(1)
-    if source_match:
-        item["duplicate_source"] = source_match.group(1).strip()
-    return item
-
-
-def remember_control_block_event(reason: str, post: "Post", rendered: str, duplicate: bool = False) -> None:
-    try:
-        item = _v104_build_block_item(reason, post, rendered, duplicate=duplicate)
-        if not item:
-            return
-        with _V104_CONTROL_BUFFER_LOCK:
-            _V104_PENDING_BLOCK_ITEMS.append(item)
-            pending_count = len(_V104_PENDING_BLOCK_ITEMS) + len(_V104_PENDING_PIPELINE_ITEMS)
-        _V104_METRICS["control_batched_events"] += 1
-        try:
-            maybe_notify_control_borderline_item(item)
-        except Exception:
-            pass
-        if pending_count >= V104_CONTROL_FLUSH_MAX_ITEMS:
-            _V104_CONTROL_FLUSH_EVENT.set()
-    except Exception as exc:
-        logging.debug("V104 buffering control block failed safely: %s", short_error(exc, 220))
-
-
-def _pipeline_record_blocked(post: Post, reason: str) -> None:
-    if _final_record_is_older_than_two_hours(post) or _final_hide_from_block_reports(reason):
-        return
-    key = _pipeline_post_key(post)
-    if not key:
-        return
-    identity = hashlib.sha1((key + "|" + str(reason or "")).encode("utf-8", errors="ignore")).hexdigest()
-    with _PIPELINE_TIMING_LOCK:
-        if identity in _PIPELINE_BLOCK_RECORDED:
-            return
-        _PIPELINE_BLOCK_RECORDED.add(identity)
-        if len(_PIPELINE_BLOCK_RECORDED) > 4000:
-            _PIPELINE_BLOCK_RECORDED.clear()
-        seen = dict(_PIPELINE_FIRST_SEEN.get(key, {}))
-        stages = dict(_PIPELINE_STAGE_ACCUM.get(key, {}))
-        process_started = float(_PIPELINE_PROCESS_STARTED.get(key, 0.0) or time.time())
-        _PIPELINE_FIRST_SEEN.pop(key, None)
-        _PIPELINE_STAGE_ACCUM.pop(key, None)
-        _PIPELINE_PROCESS_STARTED.pop(key, None)
-    published = float(getattr(post, "published_ts", 0.0) or 0.0)
-    first_seen = float(seen.get("first_seen_at", 0.0) or 0.0)
-    blocked_at = time.time()
-    sample = {
-        "ts": blocked_at,
-        "status": "blocked",
-        "username": str(getattr(post, "username", "") or ""),
-        "post_id": str(getattr(post, "post_id", "") or ""),
-        "link": str(getattr(post, "link", "") or ""),
-        "published_at": published,
-        "first_seen_at": first_seen,
-        "first_seen_lane": str(seen.get("first_seen_lane", "") or ""),
-        "processing_started_at": process_started,
-        "blocked_at": blocked_at,
-        "publish_to_first_seen_seconds": max(0.0, first_seen - published) if first_seen and published else 0.0,
-        "first_seen_to_processing_seconds": max(0.0, process_started - first_seen) if first_seen else 0.0,
-        "filter_seconds": float(stages.get("filter_seconds", 0.0) or 0.0),
-        "duplicate_seconds": float(stages.get("duplicate_seconds", 0.0) or 0.0),
-        "block_reason": str(reason or ""),
-        "block_reason_he": hebrew_block_reason(str(reason or "")),
-    }
-    with _V104_CONTROL_BUFFER_LOCK:
-        _V104_PENDING_PIPELINE_ITEMS.append(sample)
-        pending_count = len(_V104_PENDING_BLOCK_ITEMS) + len(_V104_PENDING_PIPELINE_ITEMS)
-    _V104_METRICS["control_batched_events"] += 1
-    if pending_count >= V104_CONTROL_FLUSH_MAX_ITEMS:
-        _V104_CONTROL_FLUSH_EVENT.set()
-
-
-def _v104_flush_control_telemetry() -> None:
-    with _V104_CONTROL_BUFFER_LOCK:
-        if not _V104_PENDING_BLOCK_ITEMS and not _V104_PENDING_PIPELINE_ITEMS:
-            return
-        blocks = list(_V104_PENDING_BLOCK_ITEMS)
-        pipelines = list(_V104_PENDING_PIPELINE_ITEMS)
-        _V104_PENDING_BLOCK_ITEMS.clear()
-        _V104_PENDING_PIPELINE_ITEMS.clear()
-    try:
-        state = load_control_state()
-        if not isinstance(state, dict):
-            state = {}
-        if blocks:
-            current = [x for x in list(state.get("last_blocked_posts", []) or []) if isinstance(x, dict)]
-            # Deduplicate by item id while preserving chronology.
-            merged: dict[str, dict[str, Any]] = {}
-            order: list[str] = []
-            for item in current + blocks:
-                item_id = str(item.get("id") or hashlib.sha1(repr(item).encode("utf-8", errors="ignore")).hexdigest())
-                if item_id not in merged:
-                    order.append(item_id)
-                merged[item_id] = item
-            all_rows = [merged[k] for k in order if k in merged]
-            state["last_blocked_posts"] = all_rows[-CONTROL_BLOCK_HISTORY_LIMIT:]
-            dup_current = [x for x in list(state.get("last_duplicate_posts", []) or []) if isinstance(x, dict)]
-            dup_new = [x for x in blocks if bool(x.get("is_duplicate"))]
-            if dup_new:
-                dup_merged: dict[str, dict[str, Any]] = {}
-                dup_order: list[str] = []
-                for item in dup_current + dup_new:
-                    item_id = str(item.get("id") or hashlib.sha1(repr(item).encode("utf-8", errors="ignore")).hexdigest())
-                    if item_id not in dup_merged:
-                        dup_order.append(item_id)
-                    dup_merged[item_id] = item
-                state["last_duplicate_posts"] = [dup_merged[k] for k in dup_order if k in dup_merged][-CONTROL_BLOCK_HISTORY_LIMIT:]
-        if pipelines:
-            rows = [x for x in list(state.get(PIPELINE_BLOCKED_TIMING_STATE_KEY, []) or []) if isinstance(x, dict)]
-            rows.extend(pipelines)
-            state[PIPELINE_BLOCKED_TIMING_STATE_KEY] = rows[-PIPELINE_BLOCKED_TIMING_LIMIT:]
-        write_control_state(state)
-        _V104_METRICS["control_flushes"] += 1
-    except Exception as exc:
-        # Never lose diagnostic events because of a transient disk error.
-        with _V104_CONTROL_BUFFER_LOCK:
-            _V104_PENDING_BLOCK_ITEMS[:0] = blocks
-            _V104_PENDING_PIPELINE_ITEMS[:0] = pipelines
-        logging.warning("V104 control telemetry flush failed; events kept in RAM: %s", short_error(exc, 240))
-
-
-def _v104_control_flush_worker() -> None:
-    while not _V104_CONTROL_FLUSH_STOP.is_set():
-        _V104_CONTROL_FLUSH_EVENT.wait(timeout=V104_CONTROL_FLUSH_SECONDS)
-        _V104_CONTROL_FLUSH_EVENT.clear()
-        _v104_flush_control_telemetry()
-
-
-_V104_CONTROL_FLUSH_THREAD = Thread(target=_v104_control_flush_worker, name="v104-control-flush", daemon=True)
-_V104_CONTROL_FLUSH_THREAD.start()
-
-
-# Report/list buttons flush diagnostic RAM first, preserving exact visible history.
-_V104_PRE_PROCESS_CONTROL_UPDATE = process_control_update
-_V104_FLUSH_BEFORE_CONTROL_ACTIONS = {
-    "football_last_blocked", "football_blocked_summary", "football_last_duplicate",
-    "football_pipeline_timings", "football_system_health",
-}
-
-
-def process_control_update(update: dict[str, Any]) -> None:
-    callback = update.get("callback_query") or {}
-    data = str(callback.get("data", "") or "")
-    if data in _V104_FLUSH_BEFORE_CONTROL_ACTIONS:
-        _v104_flush_control_telemetry()
-    return _V104_PRE_PROCESS_CONTROL_UPDATE(update)
-
-
-# ---------------------------------------------------------------------------
-# 6) Real Telegram long-poll: server wait and HTTP timeout must agree. One HTTP
-# attempt is enough; the request returns immediately when a button/message arrives,
-# so a 30-second long-poll does NOT add button latency.
-# ---------------------------------------------------------------------------
-def control_loop() -> None:
-    if not CONTROL_CHAT_ID:
-        return
-    delete_control_webhook_if_needed()
-    offset = control_saved_offset()
-    last_conflict_cleanup = 0.0
-    startup_panel_done = False
-    while True:
-        try:
-            if is_shabbat_now():
-                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
-                continue
-            if not startup_panel_done:
-                startup_panel_done = True
-                if CONTROL_SEND_PANEL_ON_STARTUP:
-                    try:
-                        send_quick_control_panel(force_new=True)
-                    except Exception as exc:
-                        logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
-                else:
-                    try:
-                        ensure_control_panel_once_if_requested()
-                    except Exception as exc:
-                        logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
-
-            poll_seconds = int(V104_CONTROL_LONG_POLL_SECONDS)
-            response = telegram_api(
-                "getUpdates",
-                {
-                    "offset": offset,
-                    "timeout": poll_seconds,
-                    "allowed_updates": ["callback_query", "message", "edited_message", "channel_post", "edited_channel_post"],
-                },
-                max_attempts=1,
-                timeout=poll_seconds + int(V104_CONTROL_HTTP_GRACE_SECONDS),
-            )
-            if is_shabbat_now():
-                continue
-            updates = list(response.get("result", []) or [])
-            if not updates:
-                continue
-            batch_offset = offset
-            callbacks: list[dict[str, Any]] = []
-            noncallbacks: list[dict[str, Any]] = []
-            for update in updates:
-                try:
-                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
-                except Exception:
-                    pass
-                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
-                    callbacks.append(update)
-                else:
-                    noncallbacks.append(update)
-            for update in callbacks:
-                process_control_update(update)
-            for update in noncallbacks:
-                if update.get("channel_post") or update.get("edited_channel_post"):
-                    try:
-                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
-                    except RuntimeError:
-                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
-                else:
-                    try:
-                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
-                    except RuntimeError:
-                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
-            if batch_offset != offset:
-                offset = batch_offset
-                try:
-                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
-                except RuntimeError:
-                    pass
-        except Exception as exc:
-            if is_getupdates_conflict(exc):
-                now = time.time()
-                if now - last_conflict_cleanup > 30:
-                    last_conflict_cleanup = now
-                    try:
-                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1, timeout=10)
-                    except Exception as cleanup_exc:
-                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
-                time.sleep(CONTROL_POLL_SECONDS)
-                continue
-            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
-            time.sleep(CONTROL_POLL_SECONDS)
-
-
-# ---------------------------------------------------------------------------
-# V104 audit — item 5 intentionally absent. Prove earlier requested V103/V102
-# mechanisms remain active and these optimizations do not alter their constants.
-# ---------------------------------------------------------------------------
-def v104_no_waste_status() -> dict[str, Any]:
-    with _V104_CONTROL_BUFFER_LOCK:
-        pending = len(_V104_PENDING_BLOCK_ITEMS) + len(_V104_PENDING_PIPELINE_ITEMS)
-    return {
-        "control_long_poll_seconds": int(V104_CONTROL_LONG_POLL_SECONDS),
-        "control_http_timeout_seconds": int(V104_CONTROL_LONG_POLL_SECONDS + V104_CONTROL_HTTP_GRACE_SECONDS),
-        "control_flush_seconds": float(V104_CONTROL_FLUSH_SECONDS),
-        "control_pending_events": pending,
-        "metrics": dict(_V104_METRICS),
-    }
-
-
-def _v104_self_audit() -> None:
-    # Prior explicit settings remain exactly as V103/V102 established them.
-    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120):
-        raise RuntimeError("v104_normal_adaptive_changed")
-    if tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
-        raise RuntimeError("v104_slow_adaptive_changed")
-    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 300:
-        raise RuntimeError("v104_adaptive_hold_changed")
-    if int(V102_FAILURE_BACKOFF_AFTER) != 3 or int(V102_FAILURE_BACKOFF_ESCALATE_AFTER) != 6:
-        raise RuntimeError("v104_failure_backoff_changed")
-    if int(V103_HISTORY_REQUIRED_ROWS) != 10:
-        raise RuntimeError("v104_ten_latest_changed")
-    if tuple((V103_FAST_TIMELINE_LIMIT, V103_MEDIUM_TIMELINE_LIMIT, V103_SLOW_TIMELINE_LIMIT)) != (5, 8, 12):
-        raise RuntimeError("v104_compact_timeline_changed")
-    if int(MAX_VIDEO_BYTES) != 13_107_200:
-        raise RuntimeError("v104_video_limit_changed")
-    if int(V104_CONTROL_LONG_POLL_SECONDS) < 20:
-        raise RuntimeError("v104_long_poll_too_short")
-    if "max_attempts" not in control_loop.__code__.co_names and "telegram_api" not in control_loop.__code__.co_names:
-        raise RuntimeError("v104_control_longpoll_not_active")
-    if selected_post_images is _V104_PRE_SELECTED_POST_IMAGES:
-        raise RuntimeError("v104_media_plan_cache_not_active")
-    if sendable_video_url is _V104_PRE_SENDABLE_VIDEO_URL:
-        raise RuntimeError("v104_early_video_boundary_not_active")
-    if _acceptance_video_status is _V104_PRE_ACCEPTANCE_VIDEO_STATUS:
-        raise RuntimeError("v104_direct_video_first_not_active")
-
-
-_v104_self_audit()
-logging.info(
-    "V104 active: exact FxTwitter no-media fast path; per-post media-plan cache; automatic early video lookup is network-free; "
-    "direct FxTwitter MP4 is checked before recovery providers; blocked history/pipeline telemetry are batched into one control-state write; "
-    "Telegram control uses true long-poll with one HTTP attempt. V103/V102 savings and item #5 exclusion preserved."
-)
-# ====== END V104 HIGH-IMPACT NO-WASTE PIPELINE ======
-
-
-# ====== V105 HARD SABBATH ZERO-ACTIVITY MODE (2026-08-28) ======
-# Goal: during Shabbat, consume as close to zero server actions as a running
-# process can: no source polling, no Telegram getUpdates, no translation, no
-# media, no telemetry flush timer, no Hebcal network refresh, no state writes.
-# The process sleeps once until the cached Havdalah time (plus a small guard).
-# All V104/V103/V102 logic outside Shabbat remains unchanged.
-
-BOT_BUILD_ID = "winner-v105-hard-sabbath-zero-activity-2026-08-28"
-V105_SABBATH_EXIT_GUARD_SECONDS = 8
-V105_JERUSALEM_LAT = 31.7683
-V105_JERUSALEM_LON = 35.2137
-V105_JERUSALEM_CANDLE_MINUTES_BEFORE_SUNSET = 40
-V105_HAVDALAH_MINUTES_AFTER_SUNSET = int(SHABBAT_HAVDALAH_MINUTES)
-V105_MIN_HARD_SLEEP_SECONDS = 60
-
-_V105_PRE_IS_SHABBAT_NOW = is_shabbat_now
-_V105_PRE_MAIN = main
-_V105_SABBATH_LOCK = RLock()
-_V105_HARD_IDLE_ACTIVE = False
-_V105_HARD_IDLE_UNTIL_TS = 0.0
-_V105_FLUSH_THREAD_PAUSED = False
-_V105_LAST_IDLE_LOG_WINDOW = ""
-
-
-def _v105_read_shabbat_windows_any_age() -> list[tuple[datetime, datetime]]:
-    """Read cached Hebcal windows even if fetched_at is old. No network."""
-    try:
-        path = shabbat_cache_path()
-        if not path.exists():
-            return []
-        data = json.loads(path.read_text(encoding="utf-8"))
-        windows: list[tuple[datetime, datetime]] = []
-        for item in list(data.get("windows", []) or []):
-            if not isinstance(item, dict):
-                continue
-            start = parse_hebcal_datetime(str(item.get("start", "") or ""))
-            end = parse_hebcal_datetime(str(item.get("end", "") or ""))
-            if start and end and end > start:
-                windows.append((start, end))
-        return sorted(windows, key=lambda pair: pair[0])
-    except Exception:
-        return []
-
-
-def _v105_current_or_next_cached_window(now: datetime) -> tuple[datetime, datetime] | None:
-    windows = _v105_read_shabbat_windows_any_age()
-    current = next(((start, end) for start, end in windows if start <= now <= end), None)
-    if current:
-        return current
-    return next(((start, end) for start, end in windows if start > now), None)
-
-
-def _v105_local_sunset(day: Any) -> datetime | None:
-    """NOAA-style local sunset estimate for Jerusalem; zero network/dependencies."""
-    try:
-        import math
-        tz = ZoneInfo(SHABBAT_TIMEZONE)
-        n = int(day.timetuple().tm_yday)
-        lng_hour = float(V105_JERUSALEM_LON) / 15.0
-        t = n + ((18.0 - lng_hour) / 24.0)
-        mean_anomaly = (0.9856 * t) - 3.289
-        true_long = (
-            mean_anomaly
-            + (1.916 * math.sin(math.radians(mean_anomaly)))
-            + (0.020 * math.sin(math.radians(2.0 * mean_anomaly)))
-            + 282.634
-        ) % 360.0
-        right_ascension = math.degrees(math.atan(0.91764 * math.tan(math.radians(true_long)))) % 360.0
-        right_ascension += (math.floor(true_long / 90.0) * 90.0) - (math.floor(right_ascension / 90.0) * 90.0)
-        right_ascension /= 15.0
-        sin_dec = 0.39782 * math.sin(math.radians(true_long))
-        cos_dec = math.cos(math.asin(sin_dec))
-        cos_h = (
-            math.cos(math.radians(90.833))
-            - (sin_dec * math.sin(math.radians(float(V105_JERUSALEM_LAT))))
-        ) / (cos_dec * math.cos(math.radians(float(V105_JERUSALEM_LAT))))
-        if cos_h < -1.0 or cos_h > 1.0:
-            return None
-        local_hour_angle = math.degrees(math.acos(cos_h)) / 15.0
-        local_mean_time = local_hour_angle + right_ascension - (0.06571 * t) - 6.622
-        utc_hour = (local_mean_time - lng_hour) % 24.0
-        midnight_utc = datetime(day.year, day.month, day.day, tzinfo=ZoneInfo("UTC"))
-        return (midnight_utc + timedelta(hours=utc_hour)).astimezone(tz)
-    except Exception:
-        return None
-
-
-def _v105_fallback_window(now: datetime) -> tuple[datetime, datetime] | None:
-    """Offline Jerusalem Shabbat window from local sunset; absolutely no network."""
-    # Find the Friday belonging to this Friday/Saturday only. Outside that pair
-    # return None so weekday code may refresh the exact multi-day Hebcal cache.
-    if now.weekday() == 4:  # Friday
-        friday = now.date()
-    elif now.weekday() == 5:  # Saturday
-        friday = (now - timedelta(days=1)).date()
-    else:
-        return None
-    friday_sunset = _v105_local_sunset(friday)
-    saturday_sunset = _v105_local_sunset(friday + timedelta(days=1))
-    if not friday_sunset or not saturday_sunset:
-        return None
-    start = friday_sunset - timedelta(minutes=int(V105_JERUSALEM_CANDLE_MINUTES_BEFORE_SUNSET))
-    end = saturday_sunset + timedelta(minutes=int(V105_HAVDALAH_MINUTES_AFTER_SUNSET))
-    if start <= now <= end:
-        return start, end
-    return None
-
-
-def _v105_exact_current_window(now: datetime | None = None) -> tuple[datetime, datetime] | None:
-    now = now or datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
-    cached = _v105_current_or_next_cached_window(now)
-    if cached and cached[0] <= now <= cached[1]:
-        return cached
-    return _v105_fallback_window(now)
-
-
-def _v105_seconds_until_exit(now: datetime | None = None) -> int:
-    now = now or datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
-    window = _v105_exact_current_window(now)
-    if not window:
-        return 0
-    remaining = int((window[1] - now).total_seconds()) + int(V105_SABBATH_EXIT_GUARD_SECONDS)
-    return max(int(V105_MIN_HARD_SLEEP_SECONDS), remaining)
-
-
-def _v105_pause_v104_flush_worker(*, flush_before_pause: bool = False) -> None:
-    global _V105_FLUSH_THREAD_PAUSED
-    with _V105_SABBATH_LOCK:
-        if _V105_FLUSH_THREAD_PAUSED:
-            return
-        if flush_before_pause:
-            try:
-                _v104_flush_control_telemetry()
-            except Exception:
-                pass
-        try:
-            _V104_CONTROL_FLUSH_STOP.set()
-            _V104_CONTROL_FLUSH_EVENT.set()
-        except Exception:
-            pass
-        try:
-            thread = globals().get("_V104_CONTROL_FLUSH_THREAD")
-            if thread is not None and getattr(thread, "is_alive", lambda: False)():
-                thread.join(timeout=0.75)
-        except Exception:
-            pass
-        _V105_FLUSH_THREAD_PAUSED = True
-
-
-def _v105_resume_v104_flush_worker() -> None:
-    """Restart V104 batching timer only on weekdays/non-Shabbat."""
-    global _V104_CONTROL_FLUSH_EVENT, _V104_CONTROL_FLUSH_STOP, _V104_CONTROL_FLUSH_THREAD
-    global _V105_FLUSH_THREAD_PAUSED
-    with _V105_SABBATH_LOCK:
-        if not _V105_FLUSH_THREAD_PAUSED:
-            return
-        from threading import Event as _V105Event
-        _V104_CONTROL_FLUSH_EVENT = _V105Event()
-        _V104_CONTROL_FLUSH_STOP = _V105Event()
-        _V104_CONTROL_FLUSH_THREAD = Thread(
-            target=_v104_control_flush_worker,
-            name="v104-control-flush",
-            daemon=True,
-        )
-        _V104_CONTROL_FLUSH_THREAD.start()
-        _V105_FLUSH_THREAD_PAUSED = False
-
-
-def _v105_enter_hard_idle(window: tuple[datetime, datetime], now: datetime) -> None:
-    global _V105_HARD_IDLE_ACTIVE, _V105_HARD_IDLE_UNTIL_TS, SHABBAT_SLEEP_SECONDS, _V105_LAST_IDLE_LOG_WINDOW
-    until = float(window[1].timestamp()) + float(V105_SABBATH_EXIT_GUARD_SECONDS)
-    key = f"{window[0].isoformat()}->{window[1].isoformat()}"
-    with _V105_SABBATH_LOCK:
-        _V105_HARD_IDLE_ACTIVE = True
-        _V105_HARD_IDLE_UNTIL_TS = until
-        SHABBAT_SLEEP_SECONDS = max(
-            int(V105_MIN_HARD_SLEEP_SECONDS),
-            int(until - now.timestamp()),
-        )
-        if _V105_LAST_IDLE_LOG_WINDOW != key:
-            _V105_LAST_IDLE_LOG_WINDOW = key
-            logging.info(
-                "🕯️ V105 שבת HARD-IDLE: כל הרשת/Telegram/תרגום/מדיה/telemetry נעצרים עד %s",
-                window[1].strftime("%H:%M %d/%m/%Y"),
-            )
-    # One final diagnostic flush at entry, then stop the periodic timer entirely.
-    _v105_pause_v104_flush_worker(flush_before_pause=False)
-
-
-def _v105_leave_hard_idle() -> None:
-    global _V105_HARD_IDLE_ACTIVE, _V105_HARD_IDLE_UNTIL_TS, SHABBAT_SLEEP_SECONDS
-    with _V105_SABBATH_LOCK:
-        was_active = _V105_HARD_IDLE_ACTIVE
-        _V105_HARD_IDLE_ACTIVE = False
-        _V105_HARD_IDLE_UNTIL_TS = 0.0
-        SHABBAT_SLEEP_SECONDS = 300
-    if was_active:
-        _v105_resume_v104_flush_worker()
-        logging.info("✅ V105 שבת HARD-IDLE הסתיים; פעילות רגילה חוזרת")
-
-
-def is_shabbat_now() -> bool:
-    """Offline-first on Shabbat: NEVER contacts Hebcal while inside Shabbat."""
-    if not SHABBAT_MODE_ENABLED:
-        _v105_leave_hard_idle()
-        return False
-    now = datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
-
-    # First trust any cached window regardless of cache age. fetch_shabbat_windows()
-    # fetches a multi-day range, so an older fetched_at timestamp does not make the
-    # actual candle/Havdalah timestamps invalid.
-    cached = _v105_current_or_next_cached_window(now)
-    if cached and cached[0] <= now <= cached[1]:
-        _v105_enter_hard_idle(cached, now)
-        return True
-
-    # During the conservative Friday/Saturday safety window we categorically do
-    # not call Hebcal. If exact cache is missing, use offline fallback instead.
-    fallback = _v105_fallback_window(now)
-    if fallback:
-        _v105_enter_hard_idle(fallback, now)
-        return True
-
-    _v105_leave_hard_idle()
-
-    # If a cached future window already exists, no refresh is needed at all.
-    if cached and cached[0] > now:
-        return False
-
-    # Only outside Shabbat may the legacy function refresh Hebcal if needed.
-    try:
-        return bool(_V105_PRE_IS_SHABBAT_NOW())
-    except Exception:
-        return False
-
-
-def _v105_hard_sleep_until_exit(source: str = "loop") -> None:
-    seconds = _v105_seconds_until_exit()
-    if seconds <= 0:
-        seconds = max(int(V105_MIN_HARD_SLEEP_SECONDS), int(SHABBAT_SLEEP_SECONDS or 300))
-    # Exactly one sleep call for the whole remaining Shabbat. No polling loop.
-    time.sleep(seconds)
-
-
-# Stop V104's 15-second periodic worker immediately at import. main() resumes it
-# only if startup is outside Shabbat. This also covers a Railway restart on Shabbat.
-_v105_pause_v104_flush_worker(flush_before_pause=False)
-
-
-# Final Telegram control boundary: no getUpdates at all during Shabbat; one long
-# sleep until Havdalah instead of waking every 5 minutes.
-def control_loop() -> None:
-    if not CONTROL_CHAT_ID:
-        return
-    if is_shabbat_now():
-        _v105_hard_sleep_until_exit("control-startup")
-    _v105_resume_v104_flush_worker()
-    delete_control_webhook_if_needed()
-    offset = control_saved_offset()
-    last_conflict_cleanup = 0.0
-    startup_panel_done = False
-    while True:
-        try:
-            if is_shabbat_now():
-                _v105_hard_sleep_until_exit("control")
-                continue
-            if not startup_panel_done:
-                startup_panel_done = True
-                if CONTROL_SEND_PANEL_ON_STARTUP:
-                    try:
-                        send_quick_control_panel(force_new=True)
-                    except Exception as exc:
-                        logging.debug("לוח שליטה: אתחול נכשל: %s", exc)
-                else:
-                    try:
-                        ensure_control_panel_once_if_requested()
-                    except Exception as exc:
-                        logging.debug("לוח שליטה: יצירת לוח חסר נכשלה: %s", exc)
-
-            poll_seconds = int(V104_CONTROL_LONG_POLL_SECONDS)
-            response = telegram_api(
-                "getUpdates",
-                {
-                    "offset": offset,
-                    "timeout": poll_seconds,
-                    "allowed_updates": ["callback_query", "message", "edited_message", "channel_post", "edited_channel_post"],
-                },
-                max_attempts=1,
-                timeout=poll_seconds + int(V104_CONTROL_HTTP_GRACE_SECONDS),
-            )
-            # Sabbath may have started while Telegram long-poll was open. Discard
-            # the returned batch and go straight to hard idle without processing.
-            if is_shabbat_now():
-                _v105_hard_sleep_until_exit("control-edge")
-                continue
-            updates = list(response.get("result", []) or [])
-            if not updates:
-                continue
-            batch_offset = offset
-            callbacks: list[dict[str, Any]] = []
-            noncallbacks: list[dict[str, Any]] = []
-            for update in updates:
-                try:
-                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
-                except Exception:
-                    pass
-                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
-                    callbacks.append(update)
-                else:
-                    noncallbacks.append(update)
-            for update in callbacks:
-                process_control_update(update)
-            for update in noncallbacks:
-                if update.get("channel_post") or update.get("edited_channel_post"):
-                    try:
-                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
-                    except RuntimeError:
-                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
-                else:
-                    try:
-                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
-                    except RuntimeError:
-                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
-            if batch_offset != offset:
-                offset = batch_offset
-                try:
-                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
-                except RuntimeError:
-                    pass
-        except Exception as exc:
-            if is_shabbat_now():
-                _v105_hard_sleep_until_exit("control-error-edge")
-                continue
-            if is_getupdates_conflict(exc):
-                now_ts = time.time()
-                if now_ts - last_conflict_cleanup > 30:
-                    last_conflict_cleanup = now_ts
-                    try:
-                        telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1, timeout=10)
-                    except Exception as cleanup_exc:
-                        logging.warning("⚠️ לוח שליטה: ניקוי התנגשות נכשל: %s", cleanup_exc)
-                time.sleep(CONTROL_POLL_SECONDS)
-                continue
-            logging.warning("⚠️ לוח שליטה: האזנה לכפתורים נכשלה: %s", exc)
-            time.sleep(CONTROL_POLL_SECONDS)
-
-
-# Final startup boundary. On a Railway restart during Shabbat, sleep BEFORE the
-# legacy main can start Telegram polling, startup broadcasts, source scans, or AI.
-def main() -> None:
-    if is_shabbat_now():
-        _v105_hard_sleep_until_exit("main-startup")
-    _v105_resume_v104_flush_worker()
-    return _V105_PRE_MAIN()
-
-
-def v105_hard_sabbath_status() -> dict[str, Any]:
-    now = datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
-    window = _v105_exact_current_window(now)
-    return {
-        "active": bool(window),
-        "now": now.isoformat(),
-        "window_start": window[0].isoformat() if window else "",
-        "window_end": window[1].isoformat() if window else "",
-        "seconds_until_exit": _v105_seconds_until_exit(now) if window else 0,
-        "control_poll_during_shabbat": False,
-        "hebcal_network_during_shabbat": False,
-        "telemetry_timer_during_shabbat": False,
-        "source_scan_during_shabbat": False,
-        "translation_during_shabbat": False,
-        "media_during_shabbat": False,
-        "state_write_during_shabbat": False,
-    }
-
-
-def _v105_self_audit() -> None:
-    # All previous performance behavior remains intact.
-    if tuple(V101_NORMAL_ADAPTIVE_STEPS) != (30, 60, 90, 120):
-        raise RuntimeError("v105_adaptive_normal_changed")
-    if tuple(V101_SLOW_ADAPTIVE_STEPS) != (60, 120, 180, 240, 300):
-        raise RuntimeError("v105_adaptive_slow_changed")
-    if int(V101_ADAPTIVE_TIER_HOLD_SECONDS) != 300:
-        raise RuntimeError("v105_adaptive_hold_changed")
-    if int(V103_HISTORY_REQUIRED_ROWS) != 10:
-        raise RuntimeError("v105_ten_latest_changed")
-    if int(MAX_VIDEO_BYTES) != 13_107_200:
-        raise RuntimeError("v105_video_limit_changed")
-    # Final control loop must include hard-sleep boundary, not the old 5-minute clamp.
-    names = set(control_loop.__code__.co_names)
-    if "_v105_hard_sleep_until_exit" not in names or "telegram_api" not in names:
-        raise RuntimeError("v105_hard_control_boundary_missing")
-    if _V105_PRE_MAIN is main:
-        raise RuntimeError("v105_main_not_wrapped")
-
-
-_v105_self_audit()
-logging.info(
-    "V105 active: Hard Sabbath zero-activity mode. During cached/fallback Shabbat there is no source scan, Telegram polling, "
-    "translation, media, Hebcal refresh, telemetry timer, or state write; main/control sleep once until Havdalah. "
-    "V104/V103/V102 behavior outside Shabbat is preserved."
-)
-# ====== END V105 HARD SABBATH ZERO-ACTIVITY MODE ======
-
-
-# ====== V106 FINAL: EXACT V70/V72 SOURCE HEADERS + OPENING LAYOUT + LAMINE CAMARA (2026-08-28) ======
-# Restores the exact established presentation policy from the last working V70/V72 lineage:
-# - Fact/aggregation feeds NEVER show their channel/source name as a report heading.
-# - Normal reporters: text-only => compact "writer: report" on one line.
-# - Normal reporters with photo/video => writer heading, exactly one blank line, then report.
-# - Nicolò Schira => always compact on one line, regardless of media.
-# - Reporter opening labels (דיווח/רשמי/בלעדי/עדכון/חשיפה/פרסום ראשון/פרסום בלעדי/חדש)
-#   stay unbolded and inline with the first sentence.
-# - No-writer/fact-source opening labels are bold and occupy their own line; the body begins
-#   immediately on the next line, with no blank line between them.
-# - Final zero-cost correction: "לאמינה קאמארא/קאמארה" => "לאמינה קמרה".
-# All V105 hard-Shabbat, V104 server savings, V103 catch-up/cache, V102 adaptive/backoff,
-# V94 translation/no-English and latest dedupe/provider behavior remain untouched.
-
-BOT_BUILD_ID = "winner-v106-v72-exact-source-headings-openers-camara-2026-08-28"
-
-_V106_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V106_KEEP_TRANSLATE_POST_FOR_SEND = translate_post_for_send
-_V106_KEEP_DEDUPE = find_recent_duplicate_event
-_V106_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
-_V106_KEEP_MAIN = main
-_V106_KEEP_CONTROL_LOOP = control_loop
-_V106_PRE_TIDY = tidy_translated_text
-_V106_PRE_BUILD = build_message
-_V106_PRE_SEND_MAIN = send_prepared_message_to_main
-_V106_PRE_MANUAL_SEND = manual_force_send_prepared_message
-_V106_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
-
-_V106_FACT_USERNAMES = {
-    str(item or "").strip().lstrip("@").casefold()
-    for item in tuple(globals().get("FACTS_SOURCE_ORDER", ()))
-    if str(item or "").strip()
-}
-# Hard safety mirror of the exact active non-reporter family used in the working era.
-_V106_FACT_USERNAMES.update({
-    "footballfactly", "footballtweet", "optajoe", "centregoals",
-    "polymarketsport", "trollfootball2", "sofascore",
-})
-
-_V106_FACT_LABELS = {
-    "עובדות כדורגל", "ציוצי כדורגל", "אופטה", "מטרות מרכזיות",
-    "פולימרקט ספורט", "טרול פוטבול", "סופסקור פוטבול", "סופסקור",
-    "FootballFactly", "Footballtweet", "Opta", "OptaJoe", "CentreGoals",
-    "Polymarket Sport", "PolymarketSport", "Troll Football", "TrollFootball2", "Sofascore",
-}
-for _v106_map_name in ("FACTS_SOURCE_LABELS", "ACCOUNT_DISPLAY_NAMES"):
-    _v106_map = globals().get(_v106_map_name, {})
-    if isinstance(_v106_map, dict):
-        for _v106_u, _v106_label in _v106_map.items():
-            if str(_v106_u or "").strip().lstrip("@").casefold() in _V106_FACT_USERNAMES:
-                if str(_v106_label or "").strip():
-                    _V106_FACT_LABELS.add(str(_v106_label).strip())
-
-_V106_OPENING_LABELS = tuple(
-    str(item or "").strip()
-    for item in globals().get("_V20_OPENING_LABELS", (
-        "דיווח", "רשמי", "בלעדי", "עדכון", "חשיפה", "פרסום ראשון", "פרסום בלעדי", "חדש"
-    ))
-    if str(item or "").strip()
-)
-_V106_OPENING_ALT = "|".join(sorted((re.escape(x) for x in _V106_OPENING_LABELS), key=len, reverse=True))
-_V106_DIR = r"[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]*"
-_V106_TAG_OPEN = r"(?:<(?:b|strong|i|em)[^>]*>\s*)*"
-_V106_TAG_CLOSE = r"(?:</(?:b|strong|i|em)>\s*)*"
-_V106_EMOJI_PREFIX = r"(?:(?:[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2300-\u27BF]\ufe0f?)(?:\u200d[\U0001F300-\U0001FAFF])?[ \t]*)*"
-
-
-def _v106_username(post: Any) -> str:
-    return str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
-
-
-def _v106_is_fact_source(post: Any) -> bool:
-    return _v106_username(post) in _V106_FACT_USERNAMES
-
-
-def _v106_fix_lamine_camara(value: Any) -> Any:
-    if not isinstance(value, str) or not value:
-        return value
-    text = value
-    # Specific to Lamine Camara; do not globally rewrite Kamara/Camara surnames belonging to other players.
-    text = re.sub(r"(?<![א-ת])לאמינה\s+קאמאר[אה](?![א-ת])", "לאמינה קמרה", text)
-    text = re.sub(r"(?<![א-ת])לאמין\s+קאמאר[אה](?![א-ת])", "לאמין קמרה", text)
-    return text
-
-
-def _v106_remove_footer(value: Any) -> str:
-    text = str(value or "")
-    try:
-        text = _V95_CANONICAL_FOOTER_REMOVE_RE.sub("", text)
-    except Exception:
-        pass
-    try:
-        text = _v30_remove_all_neto_footers(text)
-    except Exception:
-        pass
-    # Catch the current canonical footer if a legacy helper left a slightly different dot placement.
-    text = re.sub(
-        r'(?is)\s*[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]*'
-        r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>\s*נטו\s+ספורט\.?\s*</a>\s*\.?\s*📝\s*$',
-        "",
-        text,
-    )
-    return text.strip()
-
-
-def _v106_strip_fact_heading(value: Any) -> str:
-    text = str(value or "").lstrip()
-    if not text:
-        return text
-    aliases = sorted({x for x in _V106_FACT_LABELS if x}, key=len, reverse=True)
-    for alias in aliases:
-        escaped_variants = {alias, html.escape(alias, quote=True), html.escape(alias, quote=False)}
-        for candidate in sorted(escaped_variants, key=len, reverse=True):
-            pattern = re.compile(
-                rf"(?is)^\s*{_V106_DIR}{_V106_TAG_OPEN}{_V106_DIR}{re.escape(candidate)}\s*[:：]?\s*{_V106_TAG_CLOSE}{_V106_DIR}(?:\s*<br\s*/?>|[ \t]*\r?\n|[ \t]+)*"
-            )
-            m = pattern.match(text)
-            if m:
-                text = text[m.end():].lstrip(" \t\r\n\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff")
-                # Remove a duplicated source prefix too, but never touch later source mentions.
-                return _v106_strip_fact_heading(text)
-    return text
-
-
-def _v106_reporter_body(post: Any, value: Any) -> tuple[str, str]:
-    text = _v106_remove_footer(value)
-    label = ""
-    try:
-        label = str(_v11_writer_label(post) or "").strip()
-    except Exception:
-        pass
-    if not label:
-        try:
-            label = str(ACCOUNT_DISPLAY_NAMES.get(getattr(post, "username", ""), "") or "").strip()
-        except Exception:
-            label = ""
-    if not label:
-        return "", text.strip()
-    aliases: set[str] = {label, html.escape(label, quote=True), html.escape(label, quote=False)}
-    try:
-        for alias in _v11_writer_aliases(post, label):
-            raw = str(alias or "").strip()
-            if raw:
-                aliases.update({raw, html.escape(raw, quote=True), html.escape(raw, quote=False)})
-    except Exception:
-        pass
-    try:
-        body = _v11_strip_leading_writer_prefixes(text, sorted(aliases, key=len, reverse=True))
-    except Exception:
-        body = text
-    body = body.lstrip(" \t\r\n\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff")
-    return label, body.strip()
-
-
-def _v106_writer_opening_inline(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text or not _V106_OPENING_ALT:
-        return text
-    # V72/V40: reporter openings are plain/unbold and remain on the same line as the sentence.
-    pattern = re.compile(
-        rf"(?is)^(?P<prefix>{_V106_DIR}{_V106_EMOJI_PREFIX}){_V106_TAG_OPEN}{_V106_DIR}(?P<label>{_V106_OPENING_ALT})\s*[:：]\s*{_V106_TAG_CLOSE}{_V106_DIR}(?:[ \t]*\r?\n(?:[ \t]*\r?\n)*|[ \t]+)?(?P<body>.*)$"
-    )
-    m = pattern.match(text)
-    if not m:
-        return text
-    body = str(m.group("body") or "").lstrip(" \t\r\n\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff")
-    lead = (str(m.group("prefix") or "") + str(m.group("label") or "") + ":").rstrip()
-    return (lead + (" " + body if body else "")).strip()
-
-
-def _v106_fact_opening_layout(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text or not _V106_OPENING_ALT:
-        return text
-    # V72/V30/V40: no writer => opening label bold, body immediately next line, no blank row.
-    pattern = re.compile(
-        rf"(?is)^(?P<prefix>{_V106_DIR}{_V106_EMOJI_PREFIX}){_V106_TAG_OPEN}{_V106_DIR}(?P<label>{_V106_OPENING_ALT})\s*[:：]\s*{_V106_TAG_CLOSE}{_V106_DIR}(?:[ \t]*\r?\n(?:[ \t]*\r?\n)*|[ \t]+)?(?P<body>.*)$"
-    )
-    m = pattern.match(text)
-    if not m:
-        # plain label and body glued directly, e.g. "רשמי: העסקה הושלמה"
-        pattern2 = re.compile(
-            rf"(?is)^(?P<prefix>{_V106_DIR}{_V106_EMOJI_PREFIX}){_V106_DIR}(?P<label>{_V106_OPENING_ALT})\s*[:：]\s*(?P<body>.+)$"
-        )
-        m = pattern2.match(text)
-    if not m:
-        return text
-    prefix = str(m.group("prefix") or "")
-    label = str(m.group("label") or "")
-    body = str(m.group("body") or "").lstrip(" \t\r\n\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff")
-    opening = prefix + f"<b>{html.escape(label + ':')}</b>"
-    return (opening + ("\n" + RTL_MARK + body if body else "")).strip()
-
-
-def _v106_plain_equivalence(value: Any) -> str:
-    text = html.unescape(str(value or ""))
-    text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def _v106_use_canonical_body_if_same(current: Any, canonical: Any) -> str:
-    cur = str(current or "").strip()
-    can = str(canonical or "").strip()
-    if not can:
-        return cur
-    if _v106_plain_equivalence(cur) == _v106_plain_equivalence(can):
-        return can
-    return cur
-
-
-def _v106_canonical_source_layout(post: Any, message: Any, explicit_media: bool | None = None, canonical_body: Any = None) -> str:
-    body = _v106_fix_lamine_camara(_v106_remove_footer(message))
-    # Preserve V72 list/paragraph engine first; this operation changes only the source/header boundary.
-    body = re.sub(r"(?m)^[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]+[ \t]*$", "", body)
-    body = re.sub(r"\n{3,}", "\n\n", body).strip()
-
-    if _v106_is_fact_source(post):
-        body = _v106_strip_fact_heading(body)
-        body = _v106_use_canonical_body_if_same(body, canonical_body)
-        body = _v106_fact_opening_layout(body)
-        body = re.sub(r"\n{3,}", "\n\n", body).strip()
-    else:
-        label, reporter_body = _v106_reporter_body(post, body)
-        if label:
-            reporter_body = _v106_use_canonical_body_if_same(reporter_body, canonical_body)
-            reporter_body = _v106_writer_opening_inline(reporter_body)
-            try:
-                has_media = bool(_v15_post_has_media(post, explicit_media))
-            except Exception:
-                has_media = bool(explicit_media) if explicit_media is not None else bool(
-                    list(getattr(post, "image_urls", []) or []) or list(getattr(post, "video_urls", []) or [])
-                )
-            compact = _v106_username(post) == "nicoschira" or not has_media
-            heading = f"<b>{html.escape(rtl(label + ':'))}</b>"
-            body = (heading + (" " if compact else "\n\n") + reporter_body).rstrip() if reporter_body else heading
-
-    body = _v106_fix_lamine_camara(body)
-    body = re.sub(r"[ \t]+\n", "\n", body)
-    body = re.sub(r"\n[ \t]+", "\n", body)
-    body = re.sub(r"\n{3,}", "\n\n", body).strip()
-    signature = RTL_MARK + _V68_NETO_FOOTER_HTML
-    return (body + "\n\n" + signature).strip() if body else signature
-
-
-def tidy_translated_text(text: str) -> str:
-    return str(_v106_fix_lamine_camara(_V106_PRE_TIDY(text)) or "").strip()
-
-
-def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
-    translated = str(_v106_fix_lamine_camara(translated) or "")
-    quoted_translated = str(_v106_fix_lamine_camara(quoted_translated) or "")
-    main_source = _final_corresponding_source_text(post, quoted=False)
-    try:
-        canonical_main = _v101_v72_prepare_body(main_source, translated)
-    except Exception:
-        canonical_main = translated
-    rendered = _V106_PRE_BUILD(post, canonical_main, quoted_translated, quoted_author_translated, include_video_link)
-    # For a simple main post, if the renderer changed only whitespace/HTML structure,
-    # restore V72/X line layout from canonical_main. Quoted composites keep the full renderer.
-    canonical_for_boundary = canonical_main if not quoted_translated else None
-    return _v106_canonical_source_layout(post, rendered, explicit_media=None, canonical_body=canonical_for_boundary)
-
-
-def send_prepared_message_to_main(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
-    explicit_media = bool(
-        images or video_url or bool(getattr(post, "has_video", False))
-        or bool(getattr(post, "primary_has_video", False)) or bool(getattr(post, "quoted_has_video", False))
-    )
-    clean = _v106_canonical_source_layout(post, message, explicit_media=explicit_media)
-    return _V106_PRE_SEND_MAIN(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
-
-
-def manual_force_send_prepared_message(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
-    explicit_media = bool(
-        images or video_url or bool(getattr(post, "has_video", False))
-        or bool(getattr(post, "primary_has_video", False)) or bool(getattr(post, "quoted_has_video", False))
-    )
-    clean = _v106_canonical_source_layout(post, message, explicit_media=explicit_media)
-    return _V106_PRE_MANUAL_SEND(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
-
-
-# Keep the quiet/full-control prepared preview on the exact same source policy.
-def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
-    clean = _v106_canonical_source_layout(post, message_html, explicit_media=None)
-    return _V106_PRE_CONTROL_CANDIDATE(post, token, clean)
-
-
-def _v106_self_audit() -> None:
-    # Must not alter live provider, translation, duplicate engine, Sabbath or scheduler.
-    if fetch_posts_safely is not _V106_KEEP_FETCH_POSTS_SAFELY:
-        raise RuntimeError("v106_provider_changed")
-    if translate_post_for_send is not _V106_KEEP_TRANSLATE_POST_FOR_SEND:
-        raise RuntimeError("v106_translation_engine_changed")
-    if find_recent_duplicate_event is not _V106_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V106_KEEP_DEDUPE_AI:
-        raise RuntimeError("v106_dedupe_changed")
-    if main is not _V106_KEEP_MAIN or control_loop is not _V106_KEEP_CONTROL_LOOP:
-        raise RuntimeError("v106_sabbath_or_control_changed")
-    required_facts = {"footballfactly", "footballtweet", "optajoe", "centregoals", "polymarketsport", "trollfootball2", "sofascore"}
-    if not required_facts.issubset(_V106_FACT_USERNAMES):
-        raise RuntimeError("v106_fact_family_incomplete")
-    if _v106_fix_lamine_camara("לאמינה קאמארא של מונאקו") != "לאמינה קמרה של מונאקו":
-        raise RuntimeError("v106_camara_fix_failed")
-
-
-_v106_self_audit()
-logging.info(
-    "V106 active: exact V70/V72 media-aware reporter layout and opening-label policy restored; "
-    "all fact/aggregation feeds have no source heading; Lamine Camara => לאמינה קמרה; V105/V104/V103/V102 behavior preserved."
-)
-# ====== END V106 ======
-
-
-# ====== V107 FINAL: FULL V70/V72 TRANSLATION + EXACT X LINES/LISTS POLICY (2026-08-28) ======
-# Purpose: restore the COMPLETE presentation/translation contract from the last proven V70/V72
-# lineage without reverting any current provider/reliability/server-saving work.
-#
-# Preserved from current code: V93 FxTwitter/provider chain, V94 Gemini->Google reliability and
-# no-English gate, latest dedupe, V101-V104 credit saving, V105 hard Shabbat, V106 source headers.
-#
-# Restored/enforced here from V70/V72:
-# - facts are locked; translation may not summarize/omit/guess names, clubs, dates, fees or scores;
-# - original X logical lines and real blank paragraph rows are source-of-truth;
-# - a real list/ranking has one item per line, no blank rows between list items, and one blank row
-#   before/after the list when surrounding prose exists;
-# - inline lists proven by the source are formatted as lists even if a translator flattened them;
-# - source/junk URLs, pure credit handles, sponsor/PR/source shells and link-only arrows may be
-#   removed, but factual mentions/quotes/numbers/emojis/conditions/context are preserved;
-# - Google fallback must preserve source rows too. If a whole-text Google result flattened a proven
-#   multi-row source, retry row-by-row only then (bounded), rather than publishing a flattened list.
-# - V72 reporter layout remains: NicoSchira always compact; normal reporter text-only compact;
-#   normal reporter with media => heading + exactly one blank line; fact feeds => no source heading.
-
-BOT_BUILD_ID = "winner-v107-v70-v72-full-translation-lines-lists-policy-2026-08-28"
-
-_V107_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V107_KEEP_DEDUPE = find_recent_duplicate_event
-_V107_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
-_V107_KEEP_MAIN = main
-_V107_KEEP_CONTROL_LOOP = control_loop
-_V107_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
-_V107_PRE_GOOGLE_FORCED = _v94_google_translate_forced
-_V107_PRE_BUILD_MESSAGE = build_message
-_V107_PRE_SEND_MAIN = send_prepared_message_to_main
-_V107_PRE_MANUAL_SEND = manual_force_send_prepared_message
-_V107_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
-_V107_PRE_HISTORY_TRANSLATE = _translate_history_post
-
-_V107_BIDI_ONLY_RE = re.compile(r"[\u061c\u200e\u200f\u202a-\u202e\u2063\u2066-\u2069\ufeff]")
-_V107_STAT_PAIR_RE = re.compile(
-    r"(?iu)(?:^|[ \t]+)(?:[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת0-9 .,'׳״()\-/]{0,36})\s*[:：]\s*\d+(?:[.,]\d+)?"
-)
-_V107_PERCENT_RE = re.compile(r"(?<!\d)\d{1,3}(?:[.,]\d+)?\s*%")
-_V107_STAT_NEXT_RE = re.compile(
-    r"(?<=[0-9%])(?:[ \t]+)(?=(?:[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת0-9 .,'׳״()\-/]{0,36})\s*[:：]\s*\d)",
-    re.IGNORECASE | re.UNICODE,
-)
-_V107_PERCENT_NEXT_RE = re.compile(r"(?<=\S)[ \t]+(?=\d{1,3}(?:[.,]\d+)?\s*%)")
-_V107_BULLET_ROW_RE = re.compile(r"^\s*(?:[-–—•▪▫◦‣*]|\d{1,3}[.)])\s+\S", re.UNICODE)
-_V107_STAT_ROW_RE = re.compile(
-    r"^\s*(?:[A-Za-zÀ-ÿא-ת][A-Za-zÀ-ÿא-ת0-9 .,'׳״()\-/]{0,42})\s*[:：]\s*\d+(?:[.,]\d+)?(?:\s*%?)?\s*$",
-    re.IGNORECASE | re.UNICODE,
-)
-_V107_PERCENT_ROW_RE = re.compile(r"^\s*\d{1,3}(?:[.,]\d+)?\s*%\b", re.UNICODE)
-
-
-def _v107_source_layout_text(value: Any) -> str:
-    """Raw X structure is the layout source-of-truth, exactly as V72's final renderer used it.
-
-    Content cleaning is deliberately separate: V70 cleaning can remove URLs/credits and historically
-    collapses some whitespace, so it must never be allowed to erase the original X paragraph map.
-    """
-    return html.unescape(str(value or "")).replace("\r\n", "\n").replace("\r", "\n").strip()
-
-
-def _v107_clean_translation_line(value: Any) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    try:
-        return str(clean_for_ai_translation(raw) or "").strip()
-    except Exception:
-        try:
-            return str(clean_before_translation(raw) or "").strip()
-        except Exception:
-            return raw
-
-
-def _v107_visible_line(value: Any) -> str:
-    text = html.unescape(str(value or ""))
-    text = re.sub(r"<[^>]+>", "", text)
-    text = _V107_BIDI_ONLY_RE.sub("", text)
-    return text.strip()
-
-
-def _v107_is_list_row(line: Any) -> bool:
-    visible = _v107_visible_line(line)
-    if not visible:
-        return False
-    try:
-        marker, body = _v72_marker_parts(visible)
-        if marker and body:
-            return True
-    except Exception:
-        pass
-    if _V107_BULLET_ROW_RE.match(visible) or _V107_STAT_ROW_RE.match(visible) or _V107_PERCENT_ROW_RE.match(visible):
-        return True
-    return False
-
-
-def _v107_source_proves_inline_list(source: Any) -> bool:
-    text = _v107_source_layout_text(source)
-    if not text:
-        return False
-    try:
-        if _v101_source_inline_list(text):
-            return True
-    except Exception:
-        pass
-    # V70 translation prompt explicitly treats repeated stats/percentages as a real inline list.
-    for line in text.split("\n"):
-        if len(_V107_STAT_PAIR_RE.findall(line)) >= 3:
-            return True
-        if len(_V107_PERCENT_RE.findall(line)) >= 3:
-            return True
-    return False
-
-
-def _v107_split_proven_inline_list(source: Any, translated: Any) -> str:
-    text = str(translated or "").replace("\r\n", "\n").replace("\r", "\n")
-    src = _v107_source_layout_text(source)
-    if not text or not src:
-        return text
-    try:
-        if _v101_source_inline_list(src):
-            text = _v101_split_proven_inline_list(text)
-    except Exception:
-        pass
-    # Generic V70 list classes beyond emoji markers: repeated "label: number" stats and percentages.
-    if any(len(_V107_STAT_PAIR_RE.findall(line)) >= 3 for line in src.split("\n")):
-        text = "\n".join(_V107_STAT_NEXT_RE.sub("\n", row) for row in text.split("\n"))
-    if any(len(_V107_PERCENT_RE.findall(line)) >= 3 for line in src.split("\n")):
-        text = "\n".join(_V107_PERCENT_NEXT_RE.sub("\n", row) for row in text.split("\n"))
-    return text
-
-
-def _v107_exact_list_spacing(value: Any) -> str:
-    """V70/V72: no blank rows inside lists; exactly one around list blocks when prose surrounds."""
-    raw_lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    # First collapse blank rows; source paragraph restoration is re-applied later where provable.
-    lines = [line.rstrip() for line in raw_lines]
-    # Remove blank rows that accidentally appeared between two list rows.
-    compact: list[str] = []
-    for idx, line in enumerate(lines):
-        if not line.strip():
-            prev = next((compact[j] for j in range(len(compact) - 1, -1, -1) if compact[j].strip()), "")
-            nxt = next((lines[j] for j in range(idx + 1, len(lines)) if lines[j].strip()), "")
-            if prev and nxt and _v107_is_list_row(prev) and _v107_is_list_row(nxt):
-                continue
-        compact.append(line)
-    lines = compact
-    # Find consecutive list blocks (at least 2 rows) and guarantee one blank row around when prose exists.
-    nonempty_positions = [i for i, line in enumerate(lines) if line.strip()]
-    blocks: list[tuple[int, int]] = []
-    pos = 0
-    while pos < len(nonempty_positions):
-        start_pos = pos
-        while pos < len(nonempty_positions) and _v107_is_list_row(lines[nonempty_positions[pos]]):
-            pos += 1
-        if pos - start_pos >= 2:
-            blocks.append((nonempty_positions[start_pos], nonempty_positions[pos - 1]))
-        if pos == start_pos:
-            pos += 1
-    # Insert from right to left so indexes remain stable.
-    for start, end in reversed(blocks):
-        prev_nonempty = next((i for i in range(start - 1, -1, -1) if lines[i].strip()), None)
-        next_nonempty = next((i for i in range(end + 1, len(lines)) if lines[i].strip()), None)
-        if next_nonempty is not None:
-            between = lines[end + 1:next_nonempty]
-            if not between or any(x.strip() for x in between) or len(between) != 1:
-                lines[end + 1:next_nonempty] = [""]
-        if prev_nonempty is not None:
-            # recompute start index after possible right-side modification is unnecessary because right-side edit is after start.
-            between = lines[prev_nonempty + 1:start]
-            if not between or any(x.strip() for x in between) or len(between) != 1:
-                lines[prev_nonempty + 1:start] = [""]
-    text = "\n".join(lines)
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n[ \t]+", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def _v107_exact_v72_body(source: Any, translated: Any) -> str:
-    src = _v107_source_layout_text(source)
-    text = str(translated or "")
-    if not text:
-        return ""
-    # User-approved canonical corrections remain after the V70/V72 policy.
-    try:
-        text = _v96_hebrew_canonicalize(text)
-    except Exception:
-        pass
-    try:
-        text = str(_v106_fix_lamine_camara(text) or "")
-    except Exception:
-        pass
-    # Exact V72 root engine: source marker provenance + last-list-label split + no guessed hardcoded rows.
-    text = _v72_general_body_layout(src, text)
-    # V70 also explicitly required true inline lists/stats to become readable lists.
-    if _v107_source_proves_inline_list(src):
-        text = _v107_split_proven_inline_list(src, text)
-        text = _v72_general_body_layout(src, text)
-    # Restore real blank paragraph rows only when row-count proof is exact (same conservative V101/V72 principle).
-    try:
-        text = _v101_restore_source_blank_pattern(src, text)
-    except Exception:
-        pass
-    text = _v107_exact_list_spacing(text)
-    try:
-        text = _v72_cleanup_dangling_source_shells(text)
-        text = _v72_remove_redundant_double_markers(text)
-        text = _v72_normalize_known_club_prefixes(text)
-    except Exception:
-        pass
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n[ \t]+", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def _v107_source_row_signature(source: Any) -> tuple[list[str], list[bool]]:
-    """Logical translatable rows + real blank paragraphs from RAW X. Junk/link-only rows are ignored."""
-    src = _v107_source_layout_text(source)
-    lines = src.split("\n") if src else []
-    kept: list[tuple[int, str]] = []
-    for i, line in enumerate(lines):
-        cleaned = _v107_clean_translation_line(line)
-        if cleaned:
-            kept.append((i, cleaned))
-    logical = [cleaned for _idx, cleaned in kept]
-    blanks: list[bool] = []
-    for pos in range(max(0, len(kept) - 1)):
-        left, right = kept[pos][0], kept[pos + 1][0]
-        blanks.append(any(not lines[i].strip() for i in range(left + 1, right)))
-    return logical, blanks
-
-
-def _v107_google_needs_row_rescue(source: Any, translated: Any) -> bool:
-    logical, _blanks = _v107_source_row_signature(source)
-    if len(logical) < 2 or len(logical) > 12:
-        return False
-    out_rows = [x for x in str(translated or "").replace("\r\n", "\n").replace("\r", "\n").split("\n") if x.strip()]
-    # Strong evidence only: a proven multi-row X body was flattened/partially collapsed by Google.
-    return len(out_rows) < len(logical)
-
-
-def _v107_google_translate_rows_exact(source: Any, max_chars: int = 2500) -> str:
-    logical, blanks = _v107_source_row_signature(source)
-    if len(logical) < 2 or len(logical) > 12:
-        return ""
-    translated_rows: list[str] = []
-    for line in logical:
-        # Use the already-proven V94/V96 translator below V107. This keeps all current endpoints,
-        # success-only cache, retries and no-English validation. No recursion into V107.
-        translated_line = _V107_PRE_GOOGLE_FORCED(line, min(max_chars, max(240, len(line) * 5)))
-        translated_line = _v107_exact_v72_body(line, translated_line)
-        if not translated_line:
-            return ""
-        translated_rows.append(translated_line)
-    rebuilt: list[str] = []
-    for i, row in enumerate(translated_rows):
-        rebuilt.append(row)
-        if i < len(blanks) and blanks[i]:
-            rebuilt.append("")
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(rebuilt)).strip()
-
-
-# Final Google boundary. Whole-text remains first (cheapest). Row-by-row only rescues a proven
-# structure loss, so normal posts cost exactly what they cost in V106.
-def _v94_google_translate_forced(source: str, max_chars: int = 2500) -> str:
-    translated = _V107_PRE_GOOGLE_FORCED(source, max_chars)
-    translated = _v107_exact_v72_body(source, translated)
-    if _v107_google_needs_row_rescue(source, translated):
-        try:
-            row_exact = _v107_google_translate_rows_exact(source, max_chars)
-            if row_exact:
-                translated = row_exact
-        except Exception as exc:
-            logging.debug("V107 Google row-preserving rescue unavailable; keeping whole translation: %s", short_error(exc, 220))
-    return _v107_exact_v72_body(source, translated)
-
-
-# Final publish translation boundary. Keep V94's strong Gemini->Google reliability; only enforce
-# V70/V72 structure/cleanup on the successful output. No extra Gemini call is introduced.
-def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    main, quote, author = _V107_PRE_TRANSLATE_POST_FOR_SEND(post)
-    main_source = _final_corresponding_source_text(post, quoted=False)
-    quote_source = _final_corresponding_source_text(post, quoted=True) if quote else ""
-    main = _v107_exact_v72_body(main_source, main)
-    # Gemini is explicitly instructed by the V70/V72 prompt to preserve source rows. Google has no
-    # prompt, so if Google flattened a proven raw-X multi-row body, repair it row-by-row only then.
-    if str(getattr(post, "translation_provider", "") or "").casefold() == "google" and _v107_google_needs_row_rescue(main_source, main):
-        try:
-            row_exact = _v107_google_translate_rows_exact(main_source, 2200)
-            if row_exact:
-                main = row_exact
-        except Exception as exc:
-            logging.debug("V107 publish Google raw-row rescue unavailable: %s", short_error(exc, 220))
-    if quote:
-        quote = _v107_exact_v72_body(quote_source, quote)
-        if str(getattr(post, "translation_provider", "") or "").casefold() == "google" and _v107_google_needs_row_rescue(quote_source, quote):
-            try:
-                row_exact_q = _v107_google_translate_rows_exact(quote_source, 1200)
-                if row_exact_q:
-                    quote = row_exact_q
-            except Exception:
-                pass
-    return _v107_exact_v72_body(main_source, main), (_v107_exact_v72_body(quote_source, quote) if quote else quote), author
-
-
-def _translate_history_post(post: Post) -> str:
-    """10-latest remains Google-only, but now obeys the same raw-X V70/V72 row/list contract."""
-    raw_source = _final_corresponding_source_text(post, quoted=False)
-    try:
-        clean_source = clean_before_translation(raw_source)
-    except Exception:
-        clean_source = raw_source
-    clean_source = str(clean_source or "").strip()
-    if not clean_source:
-        return "אין טקסט זמין לתרגום"
-    try:
-        translated = _v94_google_translate_forced(clean_source, 1800)
-        translated = _v107_exact_v72_body(raw_source, translated)
-        if _v107_google_needs_row_rescue(raw_source, translated):
-            row_exact = _v107_google_translate_rows_exact(raw_source, 1800)
-            if row_exact:
-                translated = row_exact
-        return _v107_exact_v72_body(raw_source, translated)
-    except Exception as exc:
-        reason = _v94_classify_translation_error(exc)
-        logging.warning("V107 forced Google history translation failed for @%s: %s", getattr(post, "username", ""), short_error(exc, 500))
-        return f"⚠️ תרגום Google נכשל ({reason}) — יבוצע ניסיון חדש בלחיצה הבאה"
-
-
-# Final message boundary: run the source-aware V72 body once more BEFORE V106 applies its exact
-# reporter/fact-source header policy. This protects lists/paragraphs from any legacy renderer below.
-def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
-    main_source = _final_corresponding_source_text(post, quoted=False)
-    quote_source = _final_corresponding_source_text(post, quoted=True) if quoted_translated else ""
-    exact_main = _v107_exact_v72_body(main_source, translated)
-    exact_quote = _v107_exact_v72_body(quote_source, quoted_translated) if quoted_translated else ""
-    rendered = _V107_PRE_BUILD_MESSAGE(post, exact_main, exact_quote, quoted_author_translated, include_video_link)
-    # V106 is already the exact V70/V72 source-heading/opening boundary. If the old renderer flattened
-    # only whitespace, its canonical-body equivalence will restore exact_main. Re-run proven list spacing
-    # on the body as a final safety net, while leaving heading/footer placement to V106.
     return rendered
 
 
-# Media may be discovered only at send time. Preserve V106's exact media-aware reporter layout.
-def send_prepared_message_to_main(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
-    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
-    main_source = _final_corresponding_source_text(post, quoted=False)
-    # V106 canonicalizes heading placement; provide a body already structured by V72.
-    clean = _v106_canonical_source_layout(post, message, explicit_media=explicit_media)
-    return _V107_PRE_SEND_MAIN(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
+# Final outgoing display cleanup also handles prepared messages created by older
+# builds, without touching their persistent duplicate/history metadata.
+_V72_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
 
 
-def manual_force_send_prepared_message(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
-    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
-    clean = _v106_canonical_source_layout(post, message, explicit_media=explicit_media)
-    return _V107_PRE_MANUAL_SEND(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
-
-
-def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
-    clean = _v106_canonical_source_layout(post, message_html, explicit_media=None)
-    return _V107_PRE_CONTROL_CANDIDATE(post, token, clean)
-
-
-def _v107_self_audit() -> None:
-    # Everything unrelated to translation/layout must remain the current V106 implementation.
-    if fetch_posts_safely is not _V107_KEEP_FETCH_POSTS_SAFELY:
-        raise RuntimeError("v107_provider_changed")
-    if find_recent_duplicate_event is not _V107_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V107_KEEP_DEDUPE_AI:
-        raise RuntimeError("v107_dedupe_changed")
-    if main is not _V107_KEEP_MAIN or control_loop is not _V107_KEEP_CONTROL_LOOP:
-        raise RuntimeError("v107_scheduler_sabbath_control_changed")
-    # Exact V72 source-list proof: flattened marker list must be restored.
-    src = "🇬🇧 Premier League\n🇩🇪 Bundesliga\n🇪🇸 La Liga\n\nFinal context."
-    flat = "🇬🇧 הפרמייר ליג 🇩🇪 הבונדסליגה 🇪🇸 לה ליגה Final context."
-    restored = _v107_exact_v72_body(src, flat)
-    rows = [x for x in restored.split("\n") if x.strip()]
-    if len(rows) < 3 or not any(x.startswith("🇩🇪") for x in rows):
-        raise RuntimeError("v107_v72_marker_restore_failed")
-    # Generic V70 inline stat-list policy.
-    src_stats = "Appearances: 454 Goals: 173 Assists: 101 Trophies: 12"
-    tr_stats = "משחקים: 454 שערים: 173 בישולים: 101 תארים: 12"
-    fixed_stats = _v107_exact_v72_body(src_stats, tr_stats)
-    stat_rows = [x for x in fixed_stats.split("\n") if x.strip()]
-    if len(stat_rows) < 4:
-        raise RuntimeError("v107_inline_stat_list_failed")
-    # No blank line between consecutive list rows.
-    if re.search(r"(?m)^משחקים: 454\n\nשערים: 173$", fixed_stats):
-        raise RuntimeError("v107_blank_inside_list")
-    # Exact V70/V72 writer/fact-source layout functional simulations (no network).
-    now = time.time()
-    def sample(user: str, body: str, media: bool = False) -> Post:
-        return Post(
-            post_id="v107:" + user, username=user, text=body,
-            link="https://x.com/" + user + "/status/107",
-            image_urls=["https://example.invalid/a.jpg"] if media else [], video_urls=[],
-            has_video=False, primary_has_video=False, quoted_has_video=False,
-            quoted_author="", quoted_text="", published_ts=now, dedupe_ids=["v107:" + user], source_name="audit",
-        )
-    nico = build_message(sample("NicoSchira", "EXCLUSIVE: Chelsea are in talks.", True), "בלעדי: צ'לסי בשיחות.")
-    nico_plain = _v106_plain_equivalence(_v106_remove_footer(nico))
-    if not nico_plain.startswith("ניקולו שירה: בלעדי:"):
-        raise RuntimeError("v107_nico_not_compact")
-    jac_media = build_message(sample("JacobsBen", "Manchester City agreed.", True), "מנצ'סטר סיטי סיכמה.")
-    if "</b>\n\n" not in _v106_remove_footer(jac_media):
-        raise RuntimeError("v107_media_reporter_gap_failed")
-    jac_text = build_message(sample("JacobsBen", "Manchester City agreed.", False), "מנצ'סטר סיטי סיכמה.")
-    if "</b> " not in _v106_remove_footer(jac_text):
-        raise RuntimeError("v107_text_reporter_compact_failed")
-    fact = build_message(sample("FootballFactly", "OFFICIAL: New record.", False), "רשמי: שיא חדש.")
-    fact_plain = _v106_plain_equivalence(_v106_remove_footer(fact)).casefold()
-    if "עובדות כדורגל" in fact_plain or "footballfactly" in fact_plain:
-        raise RuntimeError("v107_fact_heading_leaked")
-    # Real X blank paragraph must survive when translated logical rows match.
-    para = _v107_exact_v72_body("First fact.\n\nSecond fact.", "עובדה ראשונה.\nעובדה שנייה.")
-    if "עובדה ראשונה.\n\nעובדה שנייה." != para:
-        raise RuntimeError("v107_exact_blank_paragraph_failed")
-    # Cleaning semantics inherited from V70/V72: links/sponsor/source shells are removable, facts stay.
-    if "https://" in clean_before_translation("Deal agreed. https://example.com/story"):
-        raise RuntimeError("v107_url_cleanup_failed")
-    factual = _v107_exact_v72_body("Fee: €50m in 2026.", "הסכום: 50 מיליון אירו ב-2026.")
-    if "50" not in factual or "2026" not in factual:
-        raise RuntimeError("v107_facts_not_preserved")
-
-
-_v107_self_audit()
-logging.info(
-    "V107 active: full V70/V72 translation contract enforced at final boundaries; exact X rows/paragraphs, "
-    "proven inline lists/stats, V72 cleanup semantics, Google row-preserving rescue, and V106 Nico/media/fact-source headings preserved."
-)
-# ====== END V107 ======
-
-# ====== V110 FINAL: V70/V72 EDITORIAL HARD RESET, CURRENT INFRA PRESERVED (2026-08-28) ======
-# User request: stop stacking new formatters. Restore the proven V70/V72 editorial contract
-# as the FINAL authority for translation instructions, publish/no-publish policy and Telegram
-# presentation, while preserving all current infrastructure (FxTwitter, adaptive scan, credit
-# savers, latest dedupe, hard Shabbat, current Gemini->Google reliability/no-English gate).
-BOT_BUILD_ID = "winner-v110-v70-v72-editorial-hard-reset-current-infra-2026-08-28"
-
-# Hard locks: these mechanisms are NOT part of the editorial reset.
-_V110_KEEP_FETCH_POSTS = fetch_posts
-_V110_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V110_KEEP_DEDUPE = find_recent_duplicate_event
-_V110_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
-_V110_KEEP_DELIVERY_KEY = _v58_delivery_key
-_V110_KEEP_SEND_POST = send_post
-_V110_KEEP_MAIN = main
-_V110_KEEP_CONTROL_LOOP = control_loop
-_V110_KEEP_GOOGLE_NETWORK = globals().get("_v94_google_network_once")
-_V110_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
-_V110_PRE_HISTORY_TRANSLATE = _translate_history_post
-_V110_PRE_SEND_MAIN = send_prepared_message_to_main
-_V110_PRE_MANUAL_SEND = manual_force_send_prepared_message
-_V110_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
-
-# ---------------------------------------------------------------------------
-# A) Exact V70 translation instructions + protected structural markers.
-# The current Gemini transport/budget/key failover remains unchanged. Only the prompt contract
-# is restored. The final Gemini engine already encodes real X newlines as ⟪LB....⟫; this prompt
-# now combines that reliable marker mechanism with the full old V70 translation/editorial rules.
-# ---------------------------------------------------------------------------
-def _final_translation_payload(main_source: str, quote_source: str, author_source: str, glossary: str) -> dict[str, Any]:
-    system_text = (
-        "You are a senior Hebrew MEN'S football news translator and name editor. "
-        "The content already passed local publishing filters. Translate only; never decide whether to publish. "
-        "Return only valid JSON with the exact keys main, quote, quote_author.\n"
-        "NON-NEGOTIABLE RULES:\n"
-        "- Hebrew only, natural concise Telegram football-news Hebrew.\n"
-        "- Translate the FULL source. Do not summarize, shorten, collapse, rewrite away, or omit any factual sentence, clause, list item, condition, quote, denial, fee, date, contract detail or context.\n"
-        "- Never add or infer a fact, club, person, year, injury, status or transfer stage that is not in the source.\n"
-        "- Preserve every factual item exactly: player/coach names, clubs, national teams, years, dates, numbers, scores, fees, percentages, contract lengths and deal status.\n"
-        "- If a name is genuinely uncertain, keep a clean Latin original rather than inventing a Hebrew name. Use the supplied glossary exactly when relevant.\n"
-        "- Keep HERE WE GO in uppercase English only if those words actually appear in the source. Never infer it.\n"
-        "- Remove URLs, tracking text, sponsor lines, useless link prompts, source-only @handles and detached source/credit metadata.\n"
-        "- Remove promotional credit/PR such as 'another top deal by', 'great work by', agent/agency praise, 'credit to', 'via @source', 'reported by @source', and Hebrew equivalents such as 'קרדיט ל', 'באמצעות', 'לפי @', when they are only attribution and not football facts.\n"
-        "- Preserve factual @mentions only when the mention itself is part of the news; never leave a raw source handle or malformed @ credit in the final Hebrew.\n"
-        "- Preserve real flag emojis and useful source emojis. Do not invent decorative emojis.\n"
-        "- Preserve EVERY protected token shaped like ⟪LB0001⟫, ⟪HWG0001⟫ or ⟪HAYOM0001⟫ EXACTLY and in the SAME position. Never translate, move, delete or duplicate those tokens.\n"
-        "- The ⟪LB....⟫ tokens are authoritative X/Twitter logical line/paragraph boundaries. Translate inside each logical row; never flatten them and never invent extra paragraphs.\n"
-        "- If the source contains a real list/ranking/stats block, output one item per consecutive line with NO empty line between list items. Keep exactly one blank row before/after the list only when surrounding prose exists.\n"
-        "- Repeated flags, bullets, ranks, percentages, scores, medal/ball/checkmark/cross emojis, and repeated 'label: number' statistics are list markers.\n"
-        "- For odds/probability lists such as '33% France 19% Argentina', each percentage item gets its own line.\n"
-        "- For football-stat blocks such as Appearances/Goals/Assists/Trophies, each stat gets its own line.\n"
-        "- Do not split ordinary prose sentence-by-sentence. Preserve the source's real X/Twitter structure, not screen-width wrapping.\n"
-        "- For Opta/FootballFactly/fact feeds, keep source structure too; format as a list only when the source is a list or has repeated structured list markers.\n"
-        "- Do not write explanations, notes, source labels or translator comments. JSON only."
-    )
-    prompt = (
-        (f"Known names glossary. Use these exact Hebrew names when relevant:\n{glossary}\n\n" if glossary else "")
-        + "MAIN_TEXT:\n" + (main_source or "")
-        + "\n\nQUOTED_AUTHOR:\n" + (author_source or "")
-        + "\n\nQUOTED_TEXT:\n" + (quote_source or "")
-    )
-    return {
-        "systemInstruction": {"parts": [{"text": system_text}]},
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.0,
-            "topP": 0.7,
-            "candidateCount": 1,
-            "maxOutputTokens": GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS,
-            "responseMimeType": "application/json",
-        },
-    }
-
-# Bump only Gemini translation cache namespace so an old malformed cached translation cannot
-# bypass the restored V70 prompt. Persistent sent/duplicate/state memories are untouched.
-_FINAL_GEMINI_CACHE_PREFIX = "combined-gemini-v110-v70-editorial-2026-08-28:"
-
-# ---------------------------------------------------------------------------
-# B) Conservative post-translation cleanup from the old lineage.
-# ---------------------------------------------------------------------------
-_V110_DIR = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2063\u2066\u2067\u2068\u2069\ufeff"
-
-
-def _v110_writer_label(post: Any) -> str:
-    try:
-        return str(_v11_writer_label(post) or "").strip()
-    except Exception:
-        return ""
-
-
-def _v110_strip_translated_trailing_attribution(post: Any, value: Any) -> str:
-    """Remove only a proven attribution tail after complete news prose.
-
-    This deliberately does NOT remove a journalist/person mention in normal prose. It requires a
-    completed sentence and an attribution marker (via/באמצעות/etc), or a detached credit line.
-    """
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not text:
-        return text
-
-    writer = _v110_writer_label(post)
-    writer_alt = re.escape(writer) if writer else r"(?!)"
-    handle = str(getattr(post, "username", "") or "").strip().lstrip("@")
-    handle_alt = re.escape(handle) if handle else r"(?!)"
-
-    # Whole detached source/credit rows.
-    detached = re.compile(
-        rf"(?iu)^\s*(?:{writer_alt}\s*[:\-–—]?\s*)?(?:via|source|credit|reported\s+by|according\s+to|"
-        rf"באמצעות|דרך|מקור|קרדיט|דווח\s+על\s+ידי|מדווח\s+על\s+ידי|לפי)\b[^\n]{{0,220}}$"
-    )
-    rows = text.split("\n")
-    while rows and not rows[-1].strip():
-        rows.pop()
-    while rows and detached.match(html.unescape(rows[-1]).strip()):
-        rows.pop()
-        while rows and not rows[-1].strip():
-            rows.pop()
-    text = "\n".join(rows).strip()
-
-    # Same-line tail after a real sentence boundary. Covers malformed machine-translated credits
-    # such as "... העסקה. מתאו מורטו באמצעות מילאנמאטטהרס@ אסטון וילה".
-    attribution_start = (
-        rf"(?:{writer_alt}\s+)?(?:via|source|credit|reported\s+by|according\s+to|"
-        rf"באמצעות|דרך|מקור|קרדיט|דווח\s+על\s+ידי|מדווח\s+על\s+ידי|לפי)\b"
-    )
-    inline = re.compile(
-        rf"(?is)^(?P<body>.*?[.!?…][\"'״׳)\]]*)\s+(?P<tail>{attribution_start}[^\n]{{1,240}})$"
-    )
-    match = inline.match(text)
-    if match:
-        tail = html.unescape(match.group("tail")).strip()
-        # Additional proof: source metadata typically has @/handle/source-like compact token, or
-        # begins with this post's writer name + attribution keyword. Never rely on a club name.
-        proof = bool(
-            "@" in tail
-            or (handle and re.search(rf"(?iu)(?<!\w)@?{handle}(?!\w)", tail))
-            or (writer and re.match(rf"(?iu)^{writer_alt}\s+(?:via|באמצעות|דרך|לפי|מקור|קרדיט)\b", tail))
-            or re.search(r"(?iu)\b(?:via|source|credit|reported\s+by|באמצעות|קרדיט|מקור)\b\s+@?[A-Za-z0-9_.]{3,}", tail)
-        )
-        if proof:
-            text = match.group("body").strip()
-
-    text = _v72_cleanup_dangling_source_shells(text)
-    text = _v32_clean_report_text(text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-
-# V70/V72 deterministic safety for a very specific failure class: the RAW X source contains
-# consecutive structured stat/list rows, but a translator flattened every row into one sentence.
-# This is NOT a generic sentence splitter. It activates only when the source itself proves at least
-# one 2+ row structured block and the translated result contains the exact same number of colon-number
-# items. That makes the repair conservative and source-driven.
-_V110_COLON_NUMBER_RE = re.compile(r"[:：]\s*[+\-]?\d+(?:[.,]\d+)?(?:\s*%)?", re.UNICODE)
-_V110_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?…][\"'”’״׳)\]]*\s+", re.UNICODE)
-
-
-def _v110_source_structured_blocks(source: Any) -> tuple[list[int], int]:
-    rows = str(source or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    blocks: list[int] = []
-    run = 0
-    total = 0
-    for row in rows + [""]:
-        is_structured = bool(row.strip()) and _v107_is_list_row(row)
-        if is_structured:
-            run += 1
-            total += 1
-            continue
-        if run:
-            if run >= 2:
-                blocks.append(run)
-            run = 0
-    # Only count rows that belong to proven 2+ row blocks. A lone "Fee: 50" in prose is not enough.
-    proven_total = sum(blocks)
-    return blocks, proven_total
-
-
-def _v110_restore_flat_structured_rows(source: Any, translated: Any) -> str:
-    src = str(source or "").replace("\r\n", "\n").replace("\r", "\n")
-    text = str(translated or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    blocks, expected = _v110_source_structured_blocks(src)
-    if expected < 2 or not text:
-        return text
-
-    # If the translation already has enough structured rows, keep it exactly as-is.
-    existing_structured = [row for row in text.split("\n") if row.strip() and _v107_is_list_row(row)]
-    if len(existing_structured) >= expected:
-        return text
-
-    matches = list(_V110_COLON_NUMBER_RE.finditer(text))
-    # Exact-count proof avoids touching prose containing unrelated times/scores/fees.
-    if len(matches) != expected:
-        return text
-
-    # First list item begins after the last completed prose sentence before its colon. Subsequent
-    # item boundaries are exact: immediately after the previous numeric value.
-    first_colon = matches[0].start()
-    prefix_probe = text[:first_colon]
-    boundaries = list(_V110_SENTENCE_BOUNDARY_RE.finditer(prefix_probe))
-    first_start = boundaries[-1].end() if boundaries else 0
-    prefix = text[:first_start].strip()
-
-    items: list[str] = []
-    for idx, match in enumerate(matches):
-        start = first_start if idx == 0 else matches[idx - 1].end()
-        item = text[start:match.end()].strip()
-        if not item or ":" not in item and "：" not in item:
-            return text
-        items.append(item)
-    suffix = text[matches[-1].end():].strip()
-
-    # Rebuild according to the source's proven structured block sizes. There are no blank rows
-    # inside a list block; separate source blocks retain one blank row. Prose gets one blank row
-    # before/after a list, matching the V70/V72 contract.
-    out: list[str] = []
-    if prefix:
-        out.extend([prefix, ""])
-    pos = 0
-    for bidx, size in enumerate(blocks):
-        out.extend(items[pos:pos + size])
-        pos += size
-        if bidx < len(blocks) - 1:
-            out.append("")
-    if pos != len(items):
-        return text
-    if suffix:
-        out.extend(["", suffix])
-    rebuilt = "\n".join(out)
-    rebuilt = re.sub(r"[ \t]+\n", "\n", rebuilt)
-    rebuilt = re.sub(r"\n[ \t]+", "\n", rebuilt)
-    rebuilt = re.sub(r"\n{3,}", "\n\n", rebuilt)
-    return rebuilt.strip()
-
-
-def _v110_exact_body(post: Any, source: Any, translated: Any) -> str:
-    # V70/V72 source structure is authoritative. V107's deterministic helper is retained only as
-    # a safety implementation of that old contract for Google, which has no prompt controls.
-    text = str(translated or "")
-    try:
-        text = _v107_exact_v72_body(source, text)
-    except Exception:
-        text = _v72_general_body_layout(source, text)
-    # If a translator flattened a source-proven structured block, restore it deterministically
-    # before any further cleanup. No network call and no guessed sentence splitting.
-    text = _v110_restore_flat_structured_rows(source, text)
-    try:
-        text = _v101_restore_source_blank_pattern(source, text)
-    except Exception:
-        pass
-    try:
-        text = _v96_hebrew_canonicalize(text)
-    except Exception:
-        pass
-    text = _v110_strip_translated_trailing_attribution(post, text)
-    text = _v72_remove_recycle_display_label(text)
+def _finalize_outgoing_message_only(message: Any) -> str:
+    text = _v72_remove_recycle_display_label(message)
     text = _v72_normalize_known_club_prefixes(text)
-    text = _v72_remove_redundant_double_markers(text)
     text = _v72_cleanup_dangling_source_shells(text)
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n[ \t]+", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return _V72_PRE_FINALIZE_OUTGOING(text)
 
 
 # ---------------------------------------------------------------------------
-# C) Restore the old publish/no-publish editorial boundary (V58→V60→V63→V66 + V69).
-# Latest duplicate engine stays separate and untouched.
+# Offline root-cause regression audit. Examples prove classes, not hardcoded rules.
 # ---------------------------------------------------------------------------
-def pre_send_final_local_block_reason(post: Post) -> str:
-    # Exact late-V66 hard live-update rule.
-    try:
-        if _v66_is_in_match_update(post):
-            return "global_in_match_update"
-    except Exception:
-        pass
+def _v72_self_audit() -> None:
+    # Catalog-driven club prefix: test with multiple catalog clubs, not Porto only.
+    probes = []
+    for name in _V72_KNOWN_CLUB_NAMES:
+        if name in {"פורטו", "ברצלונה", "מילאן", "רומא"}:
+            probes.append(name)
+    if len(probes) < 2:
+        probes = _V72_KNOWN_CLUB_NAMES[:2]
 
-    # Exact V69 low-value interview/reaction rule from the V70/V72 working policy.
-    try:
-        if _v69_is_low_value_interview(post):
-            return "low_value_interview_or_reaction"
-    except Exception:
-        pass
+    for club in probes[:4]:
+        sample = f"פ.צ.\n{club} יצרה קשר עם שחקן."
+        fixed = _v72_normalize_known_club_prefixes(sample)
+        if "פ.צ." in fixed or f"{club} יצרה" not in fixed:
+            raise RuntimeError(f"v72_catalog_club_prefix_failed:{club}:{fixed!r}")
 
-    # _V66_PRE_FINAL_LOCAL_BLOCK is the frozen V63→V60→V58 legacy policy chain.
-    reason = str(_V66_PRE_FINAL_LOCAL_BLOCK(post) or "")
-    try:
-        if reason and _v69_is_plain_mens_football_news(post):
-            low = reason.casefold()
-            if any(token in low for token in ("other_sport", "not_mens", "not_male", "mens_football")) or "כדורגל גברים" in reason:
-                return ""
-    except Exception:
-        pass
-    return reason
+    # Generic structured marker grammar: use several unrelated Unicode markers.
+    for row in (
+        "🌍 תחרות",
+        "🛩️ מעבר",
+        "🇩🇪 🗂️ הצעה",
+        "🏆 תואר",
+    ):
+        marker, body = _v72_marker_parts(row)
+        if not marker or not body:
+            raise RuntimeError(f"v72_generic_marker_failed:{row!r}")
 
-
-_V110_CURRENT_HEBREW_BLOCK_REASON = hebrew_block_reason
-
-def hebrew_block_reason(reason: str) -> str:
-    raw = str(reason or "")
-    if "low_value_interview_or_reaction" in raw:
-        return "ראיון, תגובה או פרשנות ללא מידע חדשותי ממשי נחסמו"
-    if "global_in_match_update" in raw:
-        return "עדכון חי מתוך משחק נחסם"
-    return str(_V110_CURRENT_HEBREW_BLOCK_REASON(raw) or "")
-
-
-# ---------------------------------------------------------------------------
-# D) EXACT old message construction path: pre-V58 proven builder + V15 media-aware writer layout,
-# V18 RTL correction, V72 source/list cleanup, one current blue-dot Neto footer.
-# V106/V107 formatters are no longer authoritative.
-# ---------------------------------------------------------------------------
-def _v110_remove_all_footers(value: Any) -> str:
-    text = str(value or "")
-    # Historical HTML footer forms, with the period inside or outside the link.
-    text = re.sub(
-        r'(?is)[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*'
-        r'<a\s+[^>]*href=["\']https?://t\.me/neto_sport/?["\'][^>]*>\s*'
-        r'[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*נטו\s+ספורט\.?\s*</a>\s*\.?\s*📝',
-        "", text,
+    # Source row markers must restore boundaries even if translation flattened them.
+    source = (
+        "🇬🇧 Premier League\n"
+        "🇩🇪 Bundesliga\n"
+        "🇪🇸 La Liga\n"
+        "🌍 World Cup\n"
+        "A long final sentence follows the list."
     )
-    try:
-        text = _v30_remove_all_neto_footers(text)
-    except Exception:
-        pass
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def _v110_footer(value: Any) -> str:
-    body = _v110_remove_all_footers(value)
-    signature = RTL_MARK + _V68_NETO_FOOTER_HTML
-    return (body + "\n\n" + signature).strip() if body else signature
-
-
-def _v110_old_builder(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False, explicit_media: bool | None = None) -> str:
-    main_source = _final_corresponding_source_text(post, quoted=False)
-    quote_source = _final_corresponding_source_text(post, quoted=True) if quoted_translated else ""
-    main = _v110_exact_body(post, main_source, translated)
-    quote = _v110_exact_body(post, quote_source, quoted_translated) if quoted_translated else ""
-
-    # _V58_PRE_BUILD_MESSAGE is the frozen builder chain immediately before V58; it contains the
-    # working V15/V16/V18/V20... formatting lineage. Recreate V58's only message addition (Troll quote)
-    # explicitly so the historical builder is not lost to later V106/V107 wrappers.
-    rendered = _V58_PRE_BUILD_MESSAGE(post, main, quote, quoted_author_translated, include_video_link)
-    if _v37_is_troll_football_post(post) and quote:
-        try:
-            probe = _v58_plain_compare(quote)[:120]
-            if probe and probe not in _v58_plain_compare(rendered):
-                author = str(quoted_author_translated or getattr(post, "quoted_author", "") or "").strip()
-                block = (f"{author}:\n{quote}" if author else quote).strip()
-                rendered = _v58_insert_before_footer(rendered, block)
-        except Exception:
-            pass
-
-    # V15 is the explicit user-approved media-aware heading rule:
-    # media => heading + one blank row; text-only => inline; Nico Schira always inline;
-    # fact/aggregation sources have no writer heading.
-    rendered = _v15_render_writer_layout(post, rendered, explicit_media=explicit_media)
-    rendered = _v18_restore_emoji_led_rtl_marks(rendered)
-    rendered = _v72_remove_recycle_display_label(rendered)
-    rendered = _v72_cleanup_dangling_source_shells(rendered)
-    rendered = _v72_protect_keycap_runs(rendered)
-    rendered = re.sub(r"[ \t]+\n", "\n", rendered)
-    rendered = re.sub(r"\n[ \t]+", "\n", rendered)
-    rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
-    return _v110_footer(rendered)
-
-
-def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
-    return _v110_old_builder(post, translated, quoted_translated, quoted_author_translated, include_video_link, explicit_media=None)
-
-
-# Absolute outgoing generic finalizer: use the old V16/V18 boundary and then current canonical footer.
-def _finalize_outgoing_message_only(message: Any) -> str:
-    value = str(message or "")
-    try:
-        value = _retained__finalize_outgoing_message_only_L49677(value)
-    except Exception:
-        try:
-            value = _v30_format_report_body(value)
-        except Exception:
-            pass
-    value = _v18_restore_emoji_led_rtl_marks(value)
-    value = _v72_cleanup_dangling_source_shells(value)
-    value = _v72_protect_keycap_runs(value)
-    return _v110_footer(value)
-
-
-# Media can be discovered after build_message. Re-apply only the exact V15 heading rule immediately
-# before the existing current transport, then let the transport send it. This operation is idempotent.
-def _v110_layout_existing_for_media(post: Post, message: Any, explicit_media: bool) -> str:
-    value = _v110_remove_all_footers(message)
-    value = _v15_render_writer_layout(post, value, explicit_media=explicit_media)
-    value = _v18_restore_emoji_led_rtl_marks(value)
-    value = _v72_cleanup_dangling_source_shells(value)
-    return _v110_footer(value)
-
-
-def send_prepared_message_to_main(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
-    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
-    clean = _v110_layout_existing_for_media(post, message, explicit_media)
-    return _V110_PRE_SEND_MAIN(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
-
-
-def manual_force_send_prepared_message(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
-    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
-    clean = _v110_layout_existing_for_media(post, message, explicit_media)
-    return _V110_PRE_MANUAL_SEND(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
-
-
-def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
-    explicit_media = bool(list(getattr(post, "image_urls", []) or []) or list(getattr(post, "video_urls", []) or []) or getattr(post, "has_video", False))
-    clean = _v110_layout_existing_for_media(post, message_html, explicit_media)
-    return _V110_PRE_CONTROL_CANDIDATE(post, token, clean)
-
-
-# ---------------------------------------------------------------------------
-# E) Keep current reliable Gemini->Google/no-English behavior, but force successful output through
-# the restored old source/layout/credit contract. Google row rescue remains bounded and only runs
-# when a proven source structure was flattened.
-# ---------------------------------------------------------------------------
-def translate_post_for_send(post: Post) -> tuple[str, str, str]:
-    main, quote, author = _V110_PRE_TRANSLATE_POST_FOR_SEND(post)
-    main_source = _final_corresponding_source_text(post, quoted=False)
-    quote_source = _final_corresponding_source_text(post, quoted=True) if quote else ""
-    main = _v110_exact_body(post, main_source, main)
-    quote = _v110_exact_body(post, quote_source, quote) if quote else quote
-
-    # Google has no prompt contract; if it flattened a proven raw-X structure, keep the existing
-    # bounded row rescue. No extra request is made when the result already respects V70/V72.
-    if str(getattr(post, "translation_provider", "") or "").casefold() == "google":
-        try:
-            if _v107_google_needs_row_rescue(main_source, main):
-                rescued = _v107_google_translate_rows_exact(main_source, 2200)
-                if rescued:
-                    main = _v110_exact_body(post, main_source, rescued)
-        except Exception:
-            pass
-        if quote and quote_source:
-            try:
-                if _v107_google_needs_row_rescue(quote_source, quote):
-                    rescued_q = _v107_google_translate_rows_exact(quote_source, 1200)
-                    if rescued_q:
-                        quote = _v110_exact_body(post, quote_source, rescued_q)
-            except Exception:
-                pass
-    return main, quote, author
-
-
-def _translate_history_post(post: Post) -> str:
-    # 10-latest stays Google-only and mandatory, but uses the exact same old editorial structure.
-    raw_source = _final_corresponding_source_text(post, quoted=False)
-    try:
-        clean_source = clean_before_translation(raw_source)
-    except Exception:
-        clean_source = raw_source
-    clean_source = str(clean_source or "").strip()
-    if not clean_source:
-        return "אין טקסט זמין לתרגום"
-    try:
-        translated = _v94_google_translate_forced(clean_source, 1800)
-        translated = _v110_exact_body(post, raw_source, translated)
-        if _v107_google_needs_row_rescue(raw_source, translated):
-            rescued = _v107_google_translate_rows_exact(raw_source, 1800)
-            if rescued:
-                translated = _v110_exact_body(post, raw_source, rescued)
-        return translated
-    except Exception as exc:
-        reason = _v94_classify_translation_error(exc)
-        logging.warning("V110 forced Google history translation failed for @%s: %s", getattr(post, "username", ""), short_error(exc, 500))
-        return f"⚠️ תרגום Google נכשל ({reason}) — יבוצע ניסיון חדש בלחיצה הבאה"
-
-
-# ---------------------------------------------------------------------------
-# F) Regression audit for the exact failures the operator reported + infrastructure locks.
-# ---------------------------------------------------------------------------
-def _v110_test_post(username: str, source: str, *, media: bool = False) -> Post:
-    return Post(
-        post_id="v110-" + username,
-        username=username,
-        text=source,
-        link=f"https://x.com/{username}/status/2100000000000000000",
-        image_urls=["https://pbs.twimg.com/media/v110.jpg"] if media else [],
-        video_urls=[], has_video=False, primary_has_video=False, quoted_has_video=False,
-        quoted_author="", quoted_text="", published_ts=time.time(), dedupe_ids=["v110-" + username], source_name=username,
+    flat = (
+        "🇬🇧 הפרמייר ליג 🇩🇪 הבונדסליגה 🇪🇸 לה ליגה "
+        "🌍 מונדיאל הכוכב ממשיך להיות מוערך בחסר לאורך הקריירה."
     )
+    restored = _v72_general_body_layout(source, flat)
+    restored_lines = [line.strip() for line in restored.splitlines() if line.strip()]
+    if len(restored_lines) < 5:
+        raise RuntimeError(f"v72_source_structure_not_restored:{restored_lines!r}")
+    if not any(line.startswith("🌍 ") for line in restored_lines):
+        raise RuntimeError("v72_last_structured_marker_lost")
+
+    # Dangling credit shell is a grammar class, not a Gerard-specific string.
+    for shell in ("מדווח ב", "🕶️ מדווח ב", "reported by", "via"):
+        if _v72_cleanup_dangling_source_shells(shell):
+            raise RuntimeError(f"v72_dangling_source_shell_failed:{shell!r}")
+
+    # Redundant bullet + semantic emoji is normalized generically.
+    if _v72_remove_redundant_double_markers("- 🛩️ שחקן יעזוב") != "🛩️ שחקן יעזוב":
+        raise RuntimeError("v72_double_marker_failed")
+
+    # Multi-keycap run preserves logical order through LTR isolation.
+    for number in ("1️⃣9️⃣", "2️⃣0️⃣", "2️⃣5️⃣", "1️⃣0️⃣0️⃣"):
+        protected = _v72_protect_keycap_runs("מספר " + number + "👕")
+        if _V72_LRI + number not in protected or _V72_PDI not in protected:
+            raise RuntimeError(f"v72_keycap_isolation_failed:{number}")
+
+    # No recycle presentation label can be produced or survive a historical render.
+    if should_label_recycled_report(None):
+        raise RuntimeError("v72_recycle_label_enabled")
+    old = "<b>מיחזור של פבריציו רומאנו:</b>\nטקסט"
+    if "מיחזור של" in _v72_remove_recycle_display_label(old):
+        raise RuntimeError("v72_old_recycle_render_not_cleaned")
+
+    # Operational boundaries explicitly untouched.
+    if int(CHECK_EVERY_SECONDS) != 20:
+        raise RuntimeError("v72_rss_cadence_changed")
+    if int(RSS_PRIMARY_SOURCE_COUNT) != 3 or int(RSS_FALLBACK_SOURCE_COUNT) != 2:
+        raise RuntimeError("v72_rss_policy_changed")
 
 
-def _v110_visible(value: Any) -> str:
-    text = html.unescape(re.sub(r"(?is)<[^>]+>", "", str(value or "")))
-    text = re.sub(rf"[{_V110_DIR}]", "", text)
-    return text
-
-
-def _v110_self_audit() -> None:
-    # Infrastructure/current reliability locks.
-    if fetch_posts is not _V110_KEEP_FETCH_POSTS or fetch_posts_safely is not _V110_KEEP_FETCH_POSTS_SAFELY:
-        raise RuntimeError("v110_provider_changed")
-    if find_recent_duplicate_event is not _V110_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V110_KEEP_DEDUPE_AI:
-        raise RuntimeError("v110_latest_dedupe_changed")
-    if _v58_delivery_key is not _V110_KEEP_DELIVERY_KEY or send_post is not _V110_KEEP_SEND_POST:
-        raise RuntimeError("v110_delivery_lock_changed")
-    if main is not _V110_KEEP_MAIN or control_loop is not _V110_KEEP_CONTROL_LOOP:
-        raise RuntimeError("v110_scheduler_or_shabbat_changed")
-    if globals().get("_v94_google_network_once") is not _V110_KEEP_GOOGLE_NETWORK:
-        raise RuntimeError("v110_google_transport_changed")
-    if int(MAX_VIDEO_BYTES) != 13_107_200:
-        raise RuntimeError("v110_video_limit_changed")
-
-    # Duplicate writer prefix: exactly one Ben Jacobs remains.
-    jac = _v110_test_post("JacobsBen", "Ben Jacobs: Mamadou Sarr joined on loan.", media=True)
-    jac_out = build_message(jac, "בן ג'ייקובס:\n\nבן ג'ייקובס:\n\nממאדו סאר הצטרף בהשאלה.")
-    jac_visible = _v110_visible(_v110_remove_all_footers(jac_out))
-    if jac_visible.count("בן ג'ייקובס:") != 1 or "בן ג'ייקובס:\n\nממאדו" not in jac_visible:
-        raise RuntimeError("v110_duplicate_writer_or_media_gap_failed:" + repr(jac_visible))
-
-    # Text-only normal reporter is compact; Nico remains compact even with media.
-    jac_text = build_message(_v110_test_post("JacobsBen", "Deal agreed.", media=False), "העסקה סוכמה.")
-    if "בן ג'ייקובס: העסקה" not in _v110_visible(_v110_remove_all_footers(jac_text)):
-        raise RuntimeError("v110_text_reporter_compact_failed")
-    nico = build_message(_v110_test_post("NicoSchira", "EXCLUSIVE: Deal agreed.", media=True), "בלעדי: העסקה סוכמה.")
-    if "ניקולו שירה: בלעדי:" not in _v110_visible(_v110_remove_all_footers(nico)):
-        raise RuntimeError("v110_nico_compact_failed")
-
-    # Facts feeds: no source heading.
-    fact = build_message(_v110_test_post("FootballFactly", "OFFICIAL: New record."), "רשמי: שיא חדש.")
-    fact_visible = _v110_visible(_v110_remove_all_footers(fact)).casefold()
-    if "עובדות כדורגל" in fact_visible or "footballfactly" in fact_visible:
-        raise RuntimeError("v110_fact_heading_leaked")
-
-    # Source paragraph + stats list structure.
-    stat_source = "11 years ago Tottenham signed Son.\n\nAppearances: 454\nGoals: 173\nAssists: 101\n\nTeam trophies: 10\nBallon d'Or placements: 3\nGolden boots: 1"
-    stat_flat = "לפני 11 שנים טוטנהאם החתימה את סון. משחקים: 454 שערים: 173 בישולים: 101 תארים קבוצתיים: 10 דירוגי כדור הזהב: 3 נעלי זהב: 1"
-    stat_body = _v110_exact_body(_v110_test_post("FootballFactly", stat_source), stat_source, stat_flat)
-    if len([row for row in stat_body.split("\n") if row.strip()]) < 7 or "משחקים: 454\nשערים: 173\nבישולים: 101" not in stat_body:
-        raise RuntimeError("v110_stats_list_restore_failed:" + repr(stat_body))
-
-    # Moretto malformed attribution tail is removed without removing the news sentence.
-    moretto = _v110_test_post("MatteMoretto", "Rafael Leao is close to Aston Villa. Matteo Moretto via @MilanMatters")
-    moretto_tr = "רפאל לאאו קרוב לאסטון וילה. בשעות הקרובות וילה תנסה לסגור את העסקה. מתאו מורטו באמצעות מילאנמאטטהרס@ אסטון וילה"
-    moretto_clean = _v110_exact_body(moretto, moretto.text, moretto_tr)
-    if "בשעות הקרובות" not in moretto_clean or "באמצעות" in moretto_clean or "מילאנמאט" in moretto_clean:
-        raise RuntimeError("v110_attribution_cleanup_failed:" + moretto_clean)
-
-    # Footer period stays inside the blue link, exactly once.
-    if jac_out.count('href="https://t.me/neto_sport"') != 1 or ">נטו ספורט.</a>📝" not in jac_out:
-        raise RuntimeError("v110_footer_failed")
-
-    # Prompt contains the full old contract and protected line tokens.
-    payload = _final_translation_payload("A ⟪LB0001⟫ B", "", "", "")
-    payload_text = json.dumps(payload, ensure_ascii=False)
-    for needle in ("Do not summarize", "source/credit", "⟪LB0001⟫", "one item per consecutive line", "football-stat blocks"):
-        if needle not in payload_text:
-            raise RuntimeError("v110_translation_prompt_missing:" + needle)
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v110_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v110_self_audit")
-
+_v72_self_audit()
 logging.info(
-    "V110 active: V70/V72 editorial hard reset is final authority for translation instructions, source rows/lists, "
-    "credits, writer/fact headings, RTL/footer and publish filter; current FxTwitter, adaptive/credit savers, latest dedupe, "
-    "hard Shabbat and Gemini->Google/no-English reliability remain unchanged."
-)
-# ====== END V110 ======
-
-
-# ====== V111 FINAL: CLUB PREFIX + HARD BETTING + ABSOLUTE SINGLE-WRITER GUARD (2026-08-28) ======
-# Scope: only the three operator-reported regressions. All V110 editorial/translation behavior and
-# all current infrastructure remain untouched underneath this final safety layer.
-BOT_BUILD_ID = "winner-v111-club-prefix-betting-single-writer-final-2026-08-28"
-
-_V111_KEEP_FETCH_POSTS = fetch_posts
-_V111_KEEP_FETCH_POSTS_SAFELY = fetch_posts_safely
-_V111_KEEP_DEDUPE = find_recent_duplicate_event
-_V111_KEEP_DEDUPE_AI = find_recent_duplicate_event_ai_aware
-_V111_KEEP_MAIN = main
-_V111_KEEP_CONTROL_LOOP = control_loop
-_V111_KEEP_TRANSLATE = translate_post_for_send
-_V111_KEEP_HISTORY_TRANSLATE = _translate_history_post
-
-# ---------------------------------------------------------------------------
-# 1) Club display prefixes: strip Latin legal/club abbreviations when they are a display prefix
-#    immediately before a Hebrew club name. This restores the old generic prefix policy and also
-#    covers clubs not yet present in the Hebrew catalog, e.g. "CD לגאנס" -> "לגאנס".
-# ---------------------------------------------------------------------------
-_V111_CLUB_PREFIX_ALT = "|".join(sorted((re.escape(x) for x in _REQUESTED_CLUB_PREFIXES), key=len, reverse=True))
-_V111_CLUB_PREFIX_WITH_PREP_RE = re.compile(
-    rf"(?iu)(?<![א-תA-Za-z0-9])(?P<prep>[בלמכהו])-?(?:{_V111_CLUB_PREFIX_ALT})(?:\.)?[.\-־ ]+(?=[א-ת])"
-)
-_V111_CLUB_PREFIX_PLAIN_RE = re.compile(
-    rf"(?iu)(?<![א-תA-Za-z0-9])(?:{_V111_CLUB_PREFIX_ALT})(?:\.)?[.\-־ ]+(?=[א-ת])"
+    "V72 active: root formatting engine uses source row provenance + generic Unicode markers + "
+    "catalog-driven club normalization + final dangling-credit cleanup + generic keycap bidi isolation; "
+    "no example-specific Porto/globe/plane repair is active."
 )
 
-
-def _v111_strip_latin_club_prefixes(value: Any) -> str:
-    text = str(value or "")
-    if not text:
-        return text
-    # Attached Hebrew prepositions remain attached to the club after the Latin prefix disappears:
-    # ל-FC ברצלונה -> לברצלונה.
-    text = _V111_CLUB_PREFIX_WITH_PREP_RE.sub(lambda m: str(m.group("prep") or ""), text)
-    text = _V111_CLUB_PREFIX_PLAIN_RE.sub("", text)
-    return re.sub(r"[ \t]{2,}", " ", text)
-
-
-# Add explicit Leganés aliases to the existing entity catalog without touching any other club.
-TEAM_REPLACEMENTS.update({
-    "Leganes": "לגאנס",
-    "Leganés": "לגאנס",
-    "CD Leganes": "לגאנס",
-    "CD Leganés": "לגאנס",
-})
-
-_V111_PRE_EXACT_BODY = _v110_exact_body
-
-def _v110_exact_body(post: Any, source: Any, translated: Any) -> str:
-    value = _V111_PRE_EXACT_BODY(post, source, translated)
-    return _v111_strip_latin_club_prefixes(value)
-
-
-# ---------------------------------------------------------------------------
-# 2) Hard betting/bookmaker ad gate. Runs on RAW source before translation/media.
-#    It is intentionally ad-focused: bookmaker + promo/betting mechanic, registration/promo code,
-#    or explicit 18+ call-to-action. Genuine football governance/news is not blocked merely for
-#    containing the word "betting" in a report.
-# ---------------------------------------------------------------------------
-_V111_BOOKMAKER_RE = re.compile(
-    r"(?iu)(?:1\s*[x×]\s*bet|1xbet|bet365|boylesports|william\s+hill|paddy\s+power|sky\s+bet|"
-    r"ladbrokes|coral|stake(?:\.com)?|rainbet|sportsbook)"
-)
-_V111_BET_PROMO_RE = re.compile(
-    r"(?iu)(?:registration\s+code|sign[- ]?up\s+code|promo\s+code|bonus\s+code|full\s+offer|"
-    r"claim\s+(?:here|now)|join\s+now|sign\s*up|deposit|bet\s+now|odds?|wager|to\s+score|will\s+score|"
-    r"(?:\+\s*18|18\s*\+)|קוד\s+(?:רישום|הרשמה|קופון|בונוס)|הצעה\s+מלאה|להצעה\s+המלאה|"
-    r"הירשמו|הרשמה|הפקדה|הימור|הימורים|יחס(?:ים)?|יבקיע)"
-)
-_V111_AGE_GATE_RE = re.compile(r"(?iu)(?:\+\s*18|18\s*\+)")
-_V111_RT_RE = re.compile(r"(?iu)^\s*RT\s*:")
-
-
-def _v111_raw_post_text(post: Any) -> str:
-    return "\n".join(
-        part for part in (
-            str(getattr(post, "text", "") or ""),
-            str(getattr(post, "quoted_text", "") or ""),
-        ) if part
-    )
-
-
-def _v111_is_hard_betting_ad(post: Any) -> bool:
-    raw = html.unescape(_v111_raw_post_text(post))
-    if not raw:
-        return False
-    bookmaker = bool(_V111_BOOKMAKER_RE.search(raw))
-    promo = bool(_V111_BET_PROMO_RE.search(raw))
-    age_gate = bool(_V111_AGE_GATE_RE.search(raw))
-    # A bookmaker paired with any CTA/betting mechanic is unambiguously an ad.
-    if bookmaker and (promo or age_gate):
-        return True
-    # Registration/promo code + explicit adult gate is also unambiguously an ad even if the brand
-    # spelling changed. RT makes the same call-to-action pattern stricter, not looser.
-    if promo and age_gate and ("code" in raw.casefold() or "קוד" in raw or _V111_RT_RE.search(raw)):
-        return True
-    return False
-
-
-_V111_PRE_LOCAL_BLOCK = pre_send_final_local_block_reason
-
-def pre_send_final_local_block_reason(post: Post) -> str:
-    if _v111_is_hard_betting_ad(post):
-        return "hard_bookmaker_betting_ad"
-    return str(_V111_PRE_LOCAL_BLOCK(post) or "")
-
-
-_V111_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
-
-def hebrew_block_reason(reason: str) -> str:
-    raw = str(reason or "")
-    if "hard_bookmaker_betting_ad" in raw:
-        return "פרסומת הימורים, קוד הרשמה או קידום חברת הימורים נחסמו"
-    return str(_V111_PRE_HEBREW_BLOCK_REASON(raw) or "")
-
-
-# ---------------------------------------------------------------------------
-# 3) Absolute single-writer heading guard. V11/V15 already solved the normal case, but production
-#    showed a second heading variant can survive when apostrophe/geresh/HTML/Markdown forms differ.
-#    This final guard normalizes ALL leading aliases only, never a writer mention later in prose.
-# ---------------------------------------------------------------------------
-_V111_APOSTROPHE_PATTERN = r"(?:['’‘`׳]|&#x27;|&#39;|&apos;)"
-_V111_INVIS = r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]*"
-
-
-def _v111_alias_pattern(alias: Any) -> str:
-    value = html.unescape(str(alias or "")).strip()
-    if not value:
-        return r"(?!)"
-    pieces: list[str] = []
-    for ch in value:
-        if ch in "'’‘`׳":
-            pieces.append(_V111_APOSTROPHE_PATTERN)
-        elif ch.isspace():
-            pieces.append(r"\s+")
-        else:
-            pieces.append(re.escape(ch))
-    return "".join(pieces)
-
-
-def _v111_strip_all_leading_writer_prefixes(post: Any, value: Any) -> str:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-    label = str(_v11_writer_label(post) or "").strip()
-    if not label:
-        return text
-    aliases = list(_v11_writer_aliases(post, label) or [])
-    aliases.extend([label, html.escape(label, quote=True), html.escape(label, quote=False)])
-    patterns = sorted({_v111_alias_pattern(x) for x in aliases if str(x or "").strip()}, key=len, reverse=True)
-    if not patterns:
-        return text
-    alias_alt = "|".join(patterns)
-    # Accept plain, HTML-bold and Markdown-bold headings, plus bidi marks and either apostrophe form.
-    prefix = re.compile(
-        rf"(?is)^\s*{_V111_INVIS}(?:(?:<b[^>]*>|<strong[^>]*>|\*\*)\s*)?{_V111_INVIS}"
-        rf"(?:{alias_alt}){_V111_INVIS}\s*[:：]\s*"
-        rf"(?:(?:</b>|</strong>|\*\*)\s*)?{_V111_INVIS}[ \t]*(?:\n[ \t]*)*"
-    )
-    previous = None
-    while text != previous:
-        previous = text
-        text = prefix.sub("", text, count=1)
-        text = re.sub(r"(?is)^\s*(?:<(?:b|strong|i|em)[^>]*>\s*</(?:b|strong|i|em)>\s*)+", "", text)
-    return text.lstrip(" \t\n\r\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\ufeff")
-
-
-def _v111_force_single_writer_layout(post: Any, message: Any, explicit_media: bool | None = None) -> str:
-    value = _v110_remove_all_footers(_v111_strip_latin_club_prefixes(message))
-    label = str(_v11_writer_label(post) or "").strip()
-    if not label:
-        return _v110_footer(value)
-    body = _v111_strip_all_leading_writer_prefixes(post, value)
-    # Retry after removing empty wrappers, because historical layers can leave one between headings.
-    body = re.sub(r"(?is)^\s*(?:<(?:b|strong|i|em)[^>]*>\s*</(?:b|strong|i|em)>\s*)+", "", body)
-    body = _v111_strip_all_leading_writer_prefixes(post, body)
-    heading = f"<b>{html.escape(rtl(label + ':'))}</b>"
-    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
-    compact = username == "nicoschira" or not _v15_post_has_media(post, explicit_media)
-    rendered = (f"{heading} {body}" if compact and body else
-                f"{heading}\n\n{body}" if body else heading)
-    return _v110_footer(rendered)
-
-
-_V111_PRE_BUILD_MESSAGE = build_message
-
-def build_message(post: Post, translated: str, quoted_translated: str = "", quoted_author_translated: str = "", include_video_link: bool = False) -> str:
-    rendered = _V111_PRE_BUILD_MESSAGE(post, translated, quoted_translated, quoted_author_translated, include_video_link)
-    return _v111_force_single_writer_layout(post, rendered, explicit_media=None)
-
-
-# Re-assert the single-heading rule at every post-aware final send boundary.
-_V111_PRE_SEND_MAIN = send_prepared_message_to_main
-
-def send_prepared_message_to_main(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
-    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
-    clean = _v111_force_single_writer_layout(post, message, explicit_media=explicit_media)
-    return _V111_PRE_SEND_MAIN(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
-
-
-_V111_PRE_MANUAL_SEND = manual_force_send_prepared_message
-
-def manual_force_send_prepared_message(post: Post, message: str, images: list[str], video_url: str = "", reply_message_ids: dict[str, int] | None = None) -> tuple[dict[str, int], str]:
-    explicit_media = bool(images or video_url or getattr(post, "has_video", False) or getattr(post, "primary_has_video", False) or getattr(post, "quoted_has_video", False))
-    clean = _v111_force_single_writer_layout(post, message, explicit_media=explicit_media)
-    return _V111_PRE_MANUAL_SEND(post, clean, images, video_url=video_url, reply_message_ids=reply_message_ids)
-
-
-_V111_PRE_CONTROL_CANDIDATE = _send_full_control_candidate
-
-def _send_full_control_candidate(post: Post, token: str, message_html: str) -> list[int]:
-    explicit_media = bool(list(getattr(post, "image_urls", []) or []) or list(getattr(post, "video_urls", []) or []) or getattr(post, "has_video", False))
-    clean = _v111_force_single_writer_layout(post, message_html, explicit_media=explicit_media)
-    return _V111_PRE_CONTROL_CANDIDATE(post, token, clean)
-
-
-# Generic last-mile guard: if historical wrappers somehow produce two identical writer-heading rows,
-# remove the extra row even in transports that no longer carry the Post object.
-def _v111_norm_visible_heading(row: Any) -> str:
-    value = str(row or "")
-    try:
-        value = html_message_to_plain_text(value)
-    except Exception:
-        value = re.sub(r"(?is)<[^>]+>", "", value)
-    value = html.unescape(value)
-    value = re.sub(r"[*_`]+", "", value)
-    value = re.sub(rf"{_V111_INVIS}", "", value)
-    value = value.replace("׳", "'").replace("’", "'").replace("‘", "'").replace("`", "'")
-    return re.sub(r"\s+", " ", value).strip().casefold()
-
-
-def _v111_dedupe_identical_leading_heading_rows(message: Any) -> str:
-    text = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
-    rows = text.split("\n")
-    nonempty = [i for i, row in enumerate(rows) if row.strip()]
-    if len(nonempty) < 2:
-        return text
-    first_i = nonempty[0]
-    first_norm = _v111_norm_visible_heading(rows[first_i])
-    if not first_norm.endswith(":") or len(first_norm) > 90:
-        return text
-    removed = False
-    # Remove repeated identical heading rows immediately after the first, allowing blank rows between.
-    i = first_i + 1
-    while i < len(rows):
-        while i < len(rows) and not rows[i].strip():
-            i += 1
-        if i >= len(rows) or _v111_norm_visible_heading(rows[i]) != first_norm:
-            break
-        del rows[i]
-        removed = True
-    if removed:
-        # A duplicated row is a media-style heading failure. Restore the exact old media gap:
-        # heading, one empty row, body — never 2/3 empty rows left by the removed heading.
-        body_i = first_i + 1
-        while body_i < len(rows) and not rows[body_i].strip():
-            body_i += 1
-        if body_i < len(rows):
-            rows = rows[: first_i + 1] + [""] + rows[body_i:]
-    return "\n".join(rows)
-
-
-_V111_PRE_FINALIZE = _finalize_outgoing_message_only
-
-def _finalize_outgoing_message_only(message: Any) -> str:
-    value = _V111_PRE_FINALIZE(message)
-    value = _v111_strip_latin_club_prefixes(value)
-    value = _v111_dedupe_identical_leading_heading_rows(value)
-    return value
-
-
-# ---------------------------------------------------------------------------
-# Regression audit: reproduce all three operator examples.
-# ---------------------------------------------------------------------------
-def _v111_test_post(username: str, source: str, *, media: bool = False) -> Post:
-    return Post(
-        post_id="v111-" + username,
-        username=username,
-        text=source,
-        link=f"https://x.com/{username}/status/2111000000000000000",
-        image_urls=["https://pbs.twimg.com/media/v111.jpg"] if media else [],
-        video_urls=[], has_video=False, primary_has_video=False, quoted_has_video=False,
-        quoted_author="", quoted_text="", published_ts=time.time(), dedupe_ids=["v111-" + username], source_name=username,
-    )
-
-
-def _v111_plain(value: Any) -> str:
-    text = str(value or "")
-    try:
-        text = html_message_to_plain_text(text)
-    except Exception:
-        text = re.sub(r"(?is)<[^>]+>", "", text)
-    text = html.unescape(text)
-    text = re.sub(r"[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", text)
-    return text
-
-
-def _v111_self_audit() -> None:
-    if fetch_posts is not _V111_KEEP_FETCH_POSTS or fetch_posts_safely is not _V111_KEEP_FETCH_POSTS_SAFELY:
-        raise RuntimeError("v111_fetch_changed")
-    if find_recent_duplicate_event is not _V111_KEEP_DEDUPE or find_recent_duplicate_event_ai_aware is not _V111_KEEP_DEDUPE_AI:
-        raise RuntimeError("v111_dedupe_changed")
-    if main is not _V111_KEEP_MAIN or control_loop is not _V111_KEEP_CONTROL_LOOP:
-        raise RuntimeError("v111_scheduler_or_shabbat_changed")
-    if translate_post_for_send is not _V111_KEEP_TRANSLATE or _translate_history_post is not _V111_KEEP_HISTORY_TRANSLATE:
-        raise RuntimeError("v111_translation_engine_changed")
-
-    # CD/FC/etc prefixes vanish before a Hebrew club; ordinary Latin text is untouched.
-    club = _v111_strip_latin_club_prefixes("🚨 CD לגאנס סיכמה. FC ברצלונה ניצחה. ל-FC ברצלונה הוגשה הצעה.")
-    if "CD " in club or "FC " in club or "ל-FC" in club or "לגאנס" not in club or "לברצלונה" not in club:
-        raise RuntimeError("v111_club_prefix_failed:" + club)
-
-    # Exact 1xBet example is blocked before translation/media.
-    bet = _v111_test_post("TrollFootball2", "RT: Crystal Palace vs Manchester City Erling Haaland to score 1xBet registration code: KOH full offer here +18")
-    if pre_send_final_local_block_reason(bet) != "hard_bookmaker_betting_ad":
-        raise RuntimeError("v111_betting_ad_not_blocked")
-
-    # Ben Jacobs variations (ASCII apostrophe, Hebrew geresh, markdown/HTML, repeated) collapse to one.
-    jac = _v111_test_post("JacobsBen", "Ben Jacobs: Mamadou Sarr joined on loan.", media=True)
-    translated = "בן ג'ייקובס:\n\n**בן ג׳ייקובס:**\n\nבן גייקובס:\n\nממאדו סאר הצטרף בהשאלה."
-    out = build_message(jac, translated)
-    visible = _v111_plain(_v110_remove_all_footers(out))
-    normalized = visible.replace("׳", "'")
-    if normalized.count("בן ג'ייקובס:") != 1 or "ממאדו" not in normalized:
-        raise RuntimeError("v111_single_writer_failed:" + repr(visible))
-
-    # Last-mile row dedupe works without a Post object as well.
-    last = _v111_dedupe_identical_leading_heading_rows("<b>בן ג&#x27;ייקובס:</b>\n\n<b>בן ג&#x27;ייקובס:</b>\n\nהעסקה סוכמה")
-    if _v111_plain(last).count("בן ג'ייקובס:") != 1:
-        raise RuntimeError("v111_last_mile_heading_failed:" + repr(last))
-
-
-if RUN_STARTUP_SELF_AUDITS:
-    _v111_self_audit()
-else:
-    _STARTUP_AUDITS_SKIPPED.append("_v111_self_audit")
-
-logging.info(
-    "V111 active: generic Latin club-prefix cleanup (CD/FC/CF/AFC...), hard bookmaker-ad gate including 1xBet/+18/codes, "
-    "and absolute one-writer-heading guard at build, post-aware send and generic last-mile finalization; V110 translation/editorial and current infrastructure unchanged."
-)
-# ====== END V111 ======
+# ====== END V72 ROOT FORMAT ENGINE ======
 
 if __name__ == "__main__":
     main()
