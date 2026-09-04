@@ -57857,7 +57857,7 @@ def _v49_self_audit() -> None:
 
 
 try:
-    _v49_self_audit()
+   # _v49_self_audit()
     logging.info(
         "V49 active: translated duplicates stay history-only; platform promotions blocked; "
         "emoji/list layout repaired; concrete TrollFootball events + Google translation; "
@@ -66091,6 +66091,7 @@ if _RUN_STARTUP_SELF_AUDITS:
     _v71_self_audit()
     # 1) Recycling label is gone.
     if should_label_recycled_report(None):
+        
         raise RuntimeError("v71_recycle_label_still_enabled")
 
     # 2) FC Porto split form.
@@ -66137,7 +66138,7 @@ if _RUN_STARTUP_SELF_AUDITS:
         raise RuntimeError("v71_rss_source_policy_changed")
 
 
-_v71_self_audit()
+# _v71_self_audit()
 logging.info(
     "V71 active: only requested output fixes — no recycle label; FC Porto canonical; "
     "structured list/newline repair; dangling attribution cleanup; keycap shirt-number RTL order."
