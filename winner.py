@@ -68179,5 +68179,923 @@ logging.info(
 
 # ====== END V74 GOOGLE HISTORY RATE-LIMIT + 12.5 MB VIDEO CAP ======
 
+# ====== V75 SINGLE-NITTER / PER-SOURCE SMART SCHEDULER / HARD-IDLE (2026-09-04) ======
+# This final runtime boundary intentionally leaves the historical implementations
+# above in place for state/schema compatibility, while making them unreachable
+# from the active automatic discovery path.
+
+import http.client as _v75_http_client
+import threading as _v75_threading
+
+BOT_BUILD_ID = "winner-v75-single-nitter-smart-scheduler-2026-09-04"
+
+V75_NITTER_RSS_TEMPLATE = "https://nitter.net/{username}/rss"
+FEED_TEMPLATES = [V75_NITTER_RSS_TEMPLATE]
+MAX_FEED_TEMPLATES_PER_ACCOUNT = 1
+RSS_ENABLE_FALLBACK = False
+RSS_PRIMARY_SOURCE_COUNT = 1
+RSS_FALLBACK_SOURCE_COUNT = 0
+FEED_HTTP_RETRIES = 1
+
+V75_NORMAL_INTERVALS = (30, 60, 90, 120)
+V75_SLOW_INTERVALS = (60, 120, 180, 240, 300)
+V75_TIER_SECONDS = 300
+V75_NIGHT_START_HOUR = 2
+V75_NIGHT_END_HOUR = 9
+V75_NIGHT_FLOOR_SECONDS = 300
+V75_FAILURE_BACKOFF_3 = 300
+V75_FAILURE_BACKOFF_6 = 600
+V75_FAST_TIMELINE_LIMIT = 5
+V75_MEDIUM_TIMELINE_LIMIT = 8
+V75_SLOW_TIMELINE_LIMIT = 12
+V75_CATCHUP_TIMELINE_LIMIT = 30
+V75_BATCH_WRITE_SECONDS = 60
+V75_SCHEDULER_STATE_KEY = "v75_source_scheduler"
+
+V75_SLOW_SOURCE_NAMES = {
+    "trollfootball2",   # TrollFootball
+    "nicoschira",       # Nicolò Schira
+    "dimarzio",         # Gianluca Di Marzio
+    "sofascore",        # Sofascore Football
+    "gerardromero",     # Gerard Romero
+    "fabricehawkins",   # Fabrice Hawkins
+    "optajoe",          # Opta
+}
+
+MAX_PARALLEL_ACCOUNT_CHECKS = 4
+NIGHT_MAX_PARALLEL_ACCOUNT_CHECKS = 4
+MAX_PARALLEL_POST_SENDS = 4
+NIGHT_MAX_PARALLEL_POST_SENDS = 4
+GEMINI_MAX_PARALLEL_TRANSLATIONS = 2
+GEMINI_TRANSLATION_SEMAPHORE = BoundedSemaphore(2)
+CONTROL_GETUPDATES_TIMEOUT_SECONDS = 30
+CONTROL_GETUPDATES_HTTP_TIMEOUT_SECONDS = 42
+MAX_VIDEO_BYTES = 13_107_200
+
+_V75_BASE_ACTIVE_X_ACCOUNTS = active_x_accounts
+_V75_BASE_ORDERED_ACCOUNTS = ordered_accounts
+_V75_BASE_HYDRATE_EXACT_POST = _reliable_hydrate_exact_post
+_V75_BASE_SAVE_TRANSLATION_CACHE = save_translation_cache
+_V75_NETWORK_SHABBAT_CHECK = is_shabbat_now
+_V75_CONTEXT = _v75_threading.local()
+_V75_FETCH_LOCK = RLock()
+_V75_HTTP_POOL_LOCK = RLock()
+_V75_HTTP_POOL: dict[tuple[str, str, int], list[Any]] = {}
+_V75_HTTP_META: dict[str, dict[str, str]] = {}
+_V75_ACCOUNT_CACHE: dict[str, list[Post]] = {}
+_V75_SCAN_REQUESTS: dict[str, dict[str, Any]] = {}
+_V75_SCAN_RESULTS: dict[str, dict[str, Any]] = {}
+
+
+def active_feed_templates() -> list[str]:
+    """The active runtime has exactly one RSS endpoint."""
+    return [V75_NITTER_RSS_TEMPLATE]
+
+
+def feed_source_name(template: str) -> str:
+    return "nitter.net"
+
+
+def active_x_accounts() -> list[str]:
+    scoped = getattr(_V75_CONTEXT, "accounts", None)
+    if scoped is not None:
+        return list(scoped)
+    return list(_V75_BASE_ACTIVE_X_ACCOUNTS())
+
+
+def ordered_accounts() -> list[str]:
+    scoped = getattr(_V75_CONTEXT, "accounts", None)
+    if scoped is not None:
+        return list(scoped)
+    return list(_V75_BASE_ORDERED_ACCOUNTS())
+
+
+def current_max_parallel_account_checks() -> int:
+    return 4
+
+
+def current_max_parallel_post_sends() -> int:
+    return 4
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    # Filtering and de-duplication run in the scheduler thread.  A media/exact-X
+    # network lookup is forbidden there.  Send/control workers have their own
+    # thread-local context and may hydrate only after a post has been selected.
+    if bool(getattr(_V75_CONTEXT, "pipeline_scan", False)):
+        return post
+    return _V75_BASE_HYDRATE_EXACT_POST(post, force=force)
+
+
+def save_translation_cache(cache: dict[str, str]) -> None:
+    """Persist successful Hebrew translations only; never negative/failure rows."""
+    failure_re = re.compile(
+        r"(?iu)(?:translation\s+(?:failed|unavailable)|תרגום\s+(?:נכשל|לא\s+זמין)|"
+        r"יותר\s+מדי\s+בקשות|too\s+many\s+requests|timed\s*out|תם\s+הזמן)"
+    )
+    for key, value in list(cache.items()):
+        text_value = str(value or "").strip()
+        if not text_value or failure_re.search(text_value) or not re.search(r"[א-ת]", text_value):
+            cache.pop(key, None)
+    return _V75_BASE_SAVE_TRANSLATION_CACHE(cache)
+
+
+def _v75_http_connection(scheme: str, host: str, port: int, timeout: float) -> Any:
+    key = (scheme, host, port)
+    with _V75_HTTP_POOL_LOCK:
+        bucket = _V75_HTTP_POOL.get(key, [])
+        while bucket:
+            connection = bucket.pop()
+            try:
+                connection.timeout = timeout
+                if getattr(connection, "sock", None) is not None:
+                    connection.sock.settimeout(timeout)
+                return connection
+            except Exception:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+    cls = _v75_http_client.HTTPSConnection if scheme == "https" else _v75_http_client.HTTPConnection
+    return cls(host, port=port, timeout=timeout)
+
+
+def _v75_release_http_connection(
+    key: tuple[str, str, int], connection: Any, reusable: bool
+) -> None:
+    if not reusable:
+        try:
+            connection.close()
+        except Exception:
+            pass
+        return
+    with _V75_HTTP_POOL_LOCK:
+        bucket = _V75_HTTP_POOL.setdefault(key, [])
+        if len(bucket) < 4:
+            bucket.append(connection)
+            return
+    try:
+        connection.close()
+    except Exception:
+        pass
+
+
+def _v75_http_get(
+    url: str,
+    timeout: float = 7.0,
+    extra_headers: dict[str, str] | None = None,
+    redirects_left: int = 2,
+) -> tuple[int, dict[str, str], bytes]:
+    parsed = urllib.parse.urlsplit(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("כתובת RSS לא תקינה")
+    host = parsed.hostname
+    port = int(parsed.port or (443 if scheme == "https" else 80))
+    pool_key = (scheme, host, port)
+    path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    headers = {
+        "Host": parsed.netloc,
+        "User-Agent": "Mozilla/5.0 (compatible; NetoSportBot/75; +https://t.me/neto_sport)",
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.2",
+        "Accept-Encoding": "identity",
+        "Connection": "keep-alive",
+    }
+    headers.update(extra_headers or {})
+    last_error: BaseException | None = None
+    # The second pass is only stale keep-alive recovery, not a second endpoint.
+    for connection_pass in range(2):
+        connection = _v75_http_connection(scheme, host, port, timeout)
+        reusable = False
+        try:
+            connection.request("GET", path, headers=headers)
+            response = connection.getresponse()
+            body = response.read()
+            response_headers = {str(k).lower(): str(v) for k, v in response.getheaders()}
+            reusable = not bool(response.will_close) and response_headers.get("connection", "").lower() != "close"
+            status = int(response.status)
+            if status in {301, 302, 303, 307, 308} and redirects_left > 0:
+                location = response_headers.get("location", "")
+                if not location:
+                    raise RuntimeError(f"RSS redirect HTTP {status} ללא Location")
+                redirected = urllib.parse.urljoin(url, location)
+                redirected_host = (urllib.parse.urlsplit(redirected).hostname or "").casefold()
+                if redirected_host != "nitter.net":
+                    raise RuntimeError("Nitter RSS attempted to redirect to a different host")
+                _v75_release_http_connection(pool_key, connection, reusable)
+                return _v75_http_get(
+                    redirected, timeout, extra_headers, redirects_left - 1
+                )
+            if status == 304:
+                _v75_release_http_connection(pool_key, connection, reusable)
+                return status, response_headers, body
+            if status < 200 or status >= 300:
+                raise RuntimeError(f"Nitter RSS HTTP {status}")
+            _v75_release_http_connection(pool_key, connection, reusable)
+            return status, response_headers, body
+        except (_v75_http_client.RemoteDisconnected, BrokenPipeError, ConnectionResetError, TimeoutError, OSError) as exc:
+            last_error = exc
+            _v75_release_http_connection(pool_key, connection, False)
+            if connection_pass == 0:
+                continue
+            raise RuntimeError(f"Nitter RSS connection failed: {short_error(exc, 220)}") from exc
+        except Exception:
+            _v75_release_http_connection(pool_key, connection, False)
+            raise
+    raise RuntimeError(f"Nitter RSS connection failed: {short_error(last_error, 220)}")
+
+
+def _v75_nitter_url(username: str, limit: int) -> str:
+    canonical = str(username or "").strip().lstrip("@")
+    base = V75_NITTER_RSS_TEMPLATE.format(username=urllib.parse.quote(canonical, safe=""))
+    return base + "?" + urllib.parse.urlencode({"count": max(1, int(limit))})
+
+
+def _v75_fetch_window(username: str, limit: int, conditional: bool = True) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    key = canonical.casefold()
+    request_headers: dict[str, str] = {}
+    with _V75_FETCH_LOCK:
+        meta = dict(_V75_HTTP_META.get(key, {}))
+    if conditional and meta.get("etag"):
+        request_headers["If-None-Match"] = meta["etag"]
+    if conditional and meta.get("last-modified"):
+        request_headers["If-Modified-Since"] = meta["last-modified"]
+    status, response_headers, body = _v75_http_get(
+        _v75_nitter_url(canonical, limit),
+        timeout=float(FEED_REQUEST_TIMEOUT_SECONDS),
+        extra_headers=request_headers,
+    )
+    if status == 304:
+        with _V75_FETCH_LOCK:
+            return list(_V75_ACCOUNT_CACHE.get(key, []))[: max(1, int(limit))]
+    # Parse errors are genuine failures.  A valid empty RSS document is a
+    # successful scan with no new post and must not increase failure backoff.
+    ET.fromstring(body)
+    rows = list(parse_posts(canonical, body, "nitter.net") or [])
+    rows.sort(key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    rows = rows[: max(1, int(limit))]
+    for post in rows:
+        try:
+            post.source_name = "nitter.net"
+            _ensure_post_original_structure(post)
+        except Exception:
+            pass
+    with _V75_FETCH_LOCK:
+        _V75_ACCOUNT_CACHE[key] = list(rows)
+        _V75_HTTP_META[key] = {
+            "etag": response_headers.get("etag", ""),
+            "last-modified": response_headers.get("last-modified", ""),
+        }
+    return rows
+
+
+def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
+    # Compatibility entrypoint: only nitter.net is accepted by the active engine.
+    parsed = urllib.parse.urlsplit(str(url or ""))
+    if (parsed.hostname or "").casefold() != "nitter.net":
+        raise RuntimeError("V75 blocks every RSS host except nitter.net")
+    return _v75_http_get(url, timeout=float(timeout))[2]
+
+
+def fetch_feed(username: str, template: str = V75_NITTER_RSS_TEMPLATE) -> list[Post]:
+    if str(template or "") != V75_NITTER_RSS_TEMPLATE:
+        raise RuntimeError("V75 blocks RSS mirrors; nitter.net is the only active source")
+    return _v75_fetch_window(username, V75_SLOW_TIMELINE_LIMIT)
+
+
+def collect_posts_from_feed_templates(
+    username: str, feed_templates: list[str]
+) -> tuple[list[Post], list[str], list[str]]:
+    if not feed_templates:
+        return [], [], []
+    try:
+        return fetch_feed(username, V75_NITTER_RSS_TEMPLATE), [], []
+    except Exception as exc:
+        return [], [short_error(exc, 300)], []
+
+
+def _v75_post_ids(post: Post) -> set[str]:
+    result = {str(value).strip() for value in (getattr(post, "dedupe_ids", []) or []) if str(value).strip()}
+    for value in (getattr(post, "post_id", ""), getattr(post, "link", "")):
+        if str(value or "").strip():
+            result.add(str(value).strip())
+    return result
+
+
+def _v75_frontier_index(rows: list[Post], frontier: str, seen: set[str]) -> int | None:
+    wanted = str(frontier or "").strip()
+    for index, post in enumerate(rows):
+        ids = _v75_post_ids(post)
+        if (wanted and wanted in ids) or (not wanted and ids.intersection(seen)):
+            return index
+    return None
+
+
+def _v75_fetch_scheduled_account(username: str, request: dict[str, Any]) -> tuple[list[Post], dict[str, Any]]:
+    limit = max(1, int(request.get("limit", V75_FAST_TIMELINE_LIMIT) or V75_FAST_TIMELINE_LIMIT))
+    frontier = str(request.get("frontier", "") or "")
+    seen = {str(value) for value in (request.get("seen", []) or []) if str(value)}
+    rows = _v75_fetch_window(username, limit, conditional=True)
+    frontier_index = _v75_frontier_index(rows, frontier, seen)
+    catchup_used = False
+    if frontier_index is None and (frontier or seen) and limit < V75_CATCHUP_TIMELINE_LIMIT:
+        catchup_used = True
+        rows = _v75_fetch_window(username, V75_CATCHUP_TIMELINE_LIMIT, conditional=False)
+        frontier_index = _v75_frontier_index(rows, frontier, seen)
+    if frontier_index is not None:
+        selected = rows[: frontier_index + 1]
+        new_count = frontier_index
+        frontier_found = True
+    else:
+        selected = rows[:V75_CATCHUP_TIMELINE_LIMIT]
+        # On a genuinely blank state run_once performs its established no-backlog
+        # initialization.  Existing state without a visible frontier is a bounded
+        # one-off catch-up and never scans beyond these 30 rows.
+        new_count = 0 if not seen and not frontier else len(selected)
+        frontier_found = False
+    latest_id = ""
+    if rows:
+        latest_id = str(getattr(rows[0], "post_id", "") or getattr(rows[0], "link", "") or "").strip()
+    return selected, {
+        "success": True,
+        "new_count": int(new_count),
+        "frontier_found": bool(frontier_found),
+        "catchup_used": bool(catchup_used),
+        "latest_frontier": latest_id,
+        "rows": len(selected),
+    }
+
+
+def _rss_engine_network_fetch(username: str) -> list[Post]:
+    return _v75_fetch_window(username, V75_SLOW_TIMELINE_LIMIT)
+
+
+def _rss_engine_rows(username: str) -> list[Post]:
+    return _rss_engine_network_fetch(username)
+
+
+def fetch_posts(username: str) -> list[Post]:
+    request = {"limit": V75_SLOW_TIMELINE_LIMIT, "frontier": "", "seen": []}
+    rows, _result = _v75_fetch_scheduled_account(username, request)
+    return rows
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical = str(username or "").strip().lstrip("@")
+    with _V75_FETCH_LOCK:
+        request = dict(_V75_SCAN_REQUESTS.get(canonical.casefold(), {}))
+    if not request:
+        request = {"limit": V75_SLOW_TIMELINE_LIMIT, "frontier": "", "seen": []}
+    started = time.perf_counter()
+    try:
+        rows, result = _v75_fetch_scheduled_account(canonical, request)
+        result["elapsed"] = time.perf_counter() - started
+        with _V75_FETCH_LOCK:
+            _V75_SCAN_RESULTS[canonical.casefold()] = result
+        return canonical, rows
+    except Exception as exc:
+        result = {
+            "success": False,
+            "error": short_error(exc, 360),
+            "new_count": 0,
+            "rows": 0,
+            "elapsed": time.perf_counter() - started,
+        }
+        with _V75_FETCH_LOCK:
+            _V75_SCAN_RESULTS[canonical.casefold()] = result
+        logging.warning("⚠️ Nitter RSS נכשל זמנית עבור @%s: %s", canonical, result["error"])
+        return canonical, []
+
+
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        return canonical, _v75_fetch_window(canonical, V75_CATCHUP_TIMELINE_LIMIT, conditional=False), None
+    except Exception as exc:
+        with _V75_FETCH_LOCK:
+            cached = list(_V75_ACCOUNT_CACHE.get(canonical.casefold(), []))
+        return canonical, cached, None if cached else exc
+
+
+def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post]:
+    """Return ten complete rows or none; a short cache is never presented as ten."""
+    canonical = str(username or "").strip().lstrip("@")
+    wanted = max(10, int(limit or 10))
+    live: list[Post] = []
+    try:
+        live = _v75_fetch_window(canonical, V75_CATCHUP_TIMELINE_LIMIT, conditional=False)
+    except Exception as exc:
+        logging.warning("⚠️ 10 אחרונים: Nitter לא זמין זמנית עבור @%s: %s", canonical, short_error(exc, 240))
+    gathered = list(live)
+    if len(gathered) < wanted:
+        cached_candidates: list[Post] = []
+        with _V75_FETCH_LOCK:
+            cached_candidates.extend(_V75_ACCOUNT_CACHE.get(canonical.casefold(), []))
+        for loader in (
+            lambda: _ten_history_load(canonical),
+            lambda: _ten_history_collect_existing_state_posts(canonical),
+        ):
+            try:
+                cached_candidates.extend(list(loader() or []))
+            except Exception:
+                pass
+        try:
+            gathered = list(_canonical_merge(gathered, cached_candidates, canonical) or gathered)
+        except Exception:
+            gathered.extend(cached_candidates)
+    unique: dict[str, Post] = {}
+    for post in gathered:
+        if not isinstance(post, Post):
+            continue
+        identity = str(getattr(post, "post_id", "") or getattr(post, "link", "") or "").strip()
+        if identity:
+            unique.setdefault(identity, post)
+    ordered = sorted(
+        unique.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+    if len(ordered) < wanted:
+        return []
+    result = ordered[:wanted]
+    try:
+        _ten_history_save(canonical, result)
+    except Exception:
+        pass
+    return result
+
+
+def _v75_history_message_chunks(
+    entries: list[tuple[Post, str, str, str]], label: str
+) -> list[str]:
+    total = len(entries)
+    header = f"<b>📚 10 אחרונים — {html.escape(label)}</b>\nתרגום מלא · בלי טעינת מדיה\n\n"
+    blocks: list[str] = []
+    for index, (post, translated, status, reason) in enumerate(entries, 1):
+        body = str(translated or "").strip() or str(getattr(post, "text", "") or "").strip()
+        stamp = (
+            datetime.fromtimestamp(float(getattr(post, "published_ts", 0.0) or 0.0), tz=ZoneInfo(SHABBAT_TIMEZONE)).strftime("%d/%m %H:%M")
+            if getattr(post, "published_ts", 0.0) else "זמן לא ידוע"
+        )
+        blocks.append(
+            f"<b>{index}/{total}</b>\n{html.escape(rtl(body))}\n"
+            f"{html.escape(str(status or 'נמצא'))} | {html.escape(str(reason or ''))} | {html.escape(stamp)}"
+        )
+    chunks: list[str] = []
+    current = header
+    for block in blocks:
+        addition = ("\n\n" if current else "") + block
+        if len(current) + len(addition) > 3900 and current != header:
+            chunks.append(current)
+            current = block
+        else:
+            current += addition
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def run_last_ten_account_control_test_replace(username: str, loading_message_id: Any) -> None:
+    username = _canonical_control_source_username(username) if "_canonical_control_source_username" in globals() else str(username or "")
+    label = _hebrew_account_label(username)
+    try:
+        posts = fetch_last_ten_control_isolated(username, limit=10)
+        if len(posts) != 10:
+            message = f"📚 10 אחרונים — {label}\n\nעדיין אין 10 פוסטים מלאים זמינים. לא הוצג cache חלקי."
+            if not _edit_control_result_html(loading_message_id, html.escape(message), control_delete_message_reply_markup()):
+                send_control_text(message, None, control_delete_message_reply_markup())
+            return
+        translations = _translate_history_posts_parallel(posts)
+        entries: list[tuple[Post, str, str, str]] = []
+        prepared: list[tuple[int, Post, str]] = []
+        for index, (post, translated) in enumerate(zip(posts, translations), 1):
+            try:
+                status, reason = _history_status_for_post(post)
+            except Exception as exc:
+                status, reason = "נמצא ב-RSS", short_error(exc, 120)
+            entries.append((post, translated, status, reason))
+            token = remember_control_prepared_send(post, "", "", "")
+            if token:
+                prepared.append((index, post, token))
+        chunks = _v75_history_message_chunks(entries, label)
+        first_markup = _history_prepare_markup(prepared)
+        if not _edit_control_result_html(loading_message_id, chunks[0], first_markup):
+            send_control_html(chunks[0], first_markup)
+        for chunk in chunks[1:]:
+            send_control_html(chunk, control_delete_message_reply_markup())
+    except Exception as exc:
+        logging.exception("10-latest V75 task crashed for @%s", username)
+        result = f"📚 10 אחרונים — {label}\n\nהפעולה נעצרה זמנית: {short_error(exc, 700)}"
+        if not _edit_control_result_html(loading_message_id, html.escape(result), control_delete_message_reply_markup()):
+            send_control_text(result, None, control_delete_message_reply_markup())
+
+
+def _v75_raw_shabbat_windows() -> list[tuple[datetime, datetime]]:
+    path = shabbat_cache_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        result: list[tuple[datetime, datetime]] = []
+        for item in data.get("windows", []):
+            start = parse_hebcal_datetime(str(item.get("start", "")))
+            end = parse_hebcal_datetime(str(item.get("end", "")))
+            if start and end and end > start:
+                result.append((start, end))
+        return sorted(result)
+    except Exception:
+        return []
+
+
+def _v75_fallback_shabbat_window(now: datetime) -> tuple[datetime, datetime] | None:
+    timezone = ZoneInfo(SHABBAT_TIMEZONE)
+    if now.weekday() == 4 and now.hour >= 16:
+        end = (now + timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+        return now.replace(hour=16, minute=0, second=0, microsecond=0), end
+    if now.weekday() == 5 and now.hour < 21:
+        start = (now - timedelta(days=1)).replace(hour=16, minute=0, second=0, microsecond=0)
+        end = now.replace(hour=21, minute=0, second=0, microsecond=0)
+        return start.astimezone(timezone), end.astimezone(timezone)
+    return None
+
+
+def _v75_hard_idle_end_ts(now: datetime | None = None) -> float:
+    if not SHABBAT_MODE_ENABLED:
+        return 0.0
+    current = now or datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    windows = _v75_raw_shabbat_windows()
+    for start, end in windows:
+        if start <= current < end:
+            return end.timestamp()
+    # If the cache contains this weekend, its exact Jerusalem times win.  The
+    # conservative 16:00-21:00 fallback is used only when this weekend is absent.
+    if any(
+        abs((start.date() - current.date()).days) <= 1
+        for start, _end in windows
+    ):
+        return 0.0
+    fallback = _v75_fallback_shabbat_window(current)
+    return fallback[1].timestamp() if fallback else 0.0
+
+
+def _v75_next_shabbat_start_ts(now: datetime | None = None) -> float:
+    current = now or datetime.now(ZoneInfo(SHABBAT_TIMEZONE))
+    future = [start.timestamp() for start, _end in _v75_raw_shabbat_windows() if start > current]
+    if future:
+        return min(future)
+    days = (4 - current.weekday()) % 7
+    candidate = (current + timedelta(days=days)).replace(hour=16, minute=0, second=0, microsecond=0)
+    if candidate <= current:
+        candidate += timedelta(days=7)
+    return candidate.timestamp()
+
+
+def is_shabbat_now() -> bool:
+    # Offline-only.  No deep pipeline call is allowed to trigger a Hebcal refresh.
+    return _v75_hard_idle_end_ts() > 0
+
+
+def _v75_refresh_shabbat_cache_outside_idle() -> None:
+    if _v75_hard_idle_end_ts() > 0:
+        return
+    try:
+        _V75_NETWORK_SHABBAT_CHECK()
+    except Exception as exc:
+        logging.debug("Shabbat cache refresh postponed safely: %s", short_error(exc, 180))
+
+
+def _v75_source_intervals(username: str) -> tuple[int, ...]:
+    return V75_SLOW_INTERVALS if str(username or "").strip().lstrip("@").casefold() in V75_SLOW_SOURCE_NAMES else V75_NORMAL_INTERVALS
+
+
+def _v75_timeline_limit(tier: int, tier_count: int) -> int:
+    if tier <= 0:
+        return V75_FAST_TIMELINE_LIMIT
+    if tier >= tier_count - 1:
+        return V75_SLOW_TIMELINE_LIMIT
+    return V75_MEDIUM_TIMELINE_LIMIT
+
+
+def _v75_night_floor_active(now_ts: float | None = None) -> bool:
+    local = datetime.fromtimestamp(float(now_ts or time.time()), tz=ZoneInfo(SHABBAT_TIMEZONE))
+    return V75_NIGHT_START_HOUR <= local.hour < V75_NIGHT_END_HOUR
+
+
+def _v75_schedule_record(schedule: dict[str, Any], username: str, now_ts: float) -> dict[str, Any]:
+    key = str(username or "").strip().lstrip("@").casefold()
+    item = schedule.get(key)
+    if not isinstance(item, dict):
+        item = {}
+        schedule[key] = item
+    item.setdefault("tier", 0)
+    item.setdefault("no_new_since", now_ts)
+    item.setdefault("next_due_at", now_ts)
+    item.setdefault("failures", 0)
+    item.setdefault("frontier", "")
+    item["username"] = str(username or "").strip().lstrip("@")
+    return item
+
+
+def _v75_next_interval(username: str, item: dict[str, Any], now_ts: float) -> int:
+    intervals = _v75_source_intervals(username)
+    tier = max(0, min(len(intervals) - 1, int(item.get("tier", 0) or 0)))
+    interval = int(intervals[tier])
+    failures = int(item.get("failures", 0) or 0)
+    if failures >= 6:
+        interval = max(interval, V75_FAILURE_BACKOFF_6)
+    elif failures >= 3:
+        interval = max(interval, V75_FAILURE_BACKOFF_3)
+    if _v75_night_floor_active(now_ts):
+        interval = max(interval, V75_NIGHT_FLOOR_SECONDS)
+    return interval
+
+
+def _v75_prepare_due_requests(
+    state: dict[str, Any], schedule: dict[str, Any], accounts: list[str], now_ts: float
+) -> list[str]:
+    due: list[str] = []
+    requests: dict[str, dict[str, Any]] = {}
+    for username in accounts:
+        item = _v75_schedule_record(schedule, username, now_ts)
+        if float(item.get("next_due_at", 0.0) or 0.0) > now_ts:
+            continue
+        intervals = _v75_source_intervals(username)
+        tier = max(0, min(len(intervals) - 1, int(item.get("tier", 0) or 0)))
+        requests[username.casefold()] = {
+            "limit": _v75_timeline_limit(tier, len(intervals)),
+            "frontier": str(item.get("frontier", "") or ""),
+            "seen": list(state.get(username, []) or []),
+        }
+        due.append(username)
+    with _V75_FETCH_LOCK:
+        _V75_SCAN_REQUESTS.clear()
+        _V75_SCAN_REQUESTS.update(requests)
+        for username in due:
+            _V75_SCAN_RESULTS.pop(username.casefold(), None)
+    return due
+
+
+def _v75_apply_scan_results(schedule: dict[str, Any], due: list[str], now_ts: float) -> None:
+    with _V75_FETCH_LOCK:
+        results = {name.casefold(): dict(_V75_SCAN_RESULTS.get(name.casefold(), {})) for name in due}
+    for username in due:
+        item = _v75_schedule_record(schedule, username, now_ts)
+        result = results.get(username.casefold(), {})
+        if not result.get("success"):
+            item["failures"] = int(item.get("failures", 0) or 0) + 1
+            item["last_error"] = str(result.get("error", "unknown RSS failure"))[:360]
+        else:
+            item["failures"] = 0
+            item.pop("last_error", None)
+            if str(result.get("latest_frontier", "") or ""):
+                item["frontier"] = str(result["latest_frontier"])
+            if int(result.get("new_count", 0) or 0) > 0:
+                item["tier"] = 0
+                item["no_new_since"] = now_ts
+            else:
+                no_new_since = float(item.get("no_new_since", now_ts) or now_ts)
+                intervals = _v75_source_intervals(username)
+                item["tier"] = min(
+                    len(intervals) - 1,
+                    max(0, int((now_ts - no_new_since) // V75_TIER_SECONDS)),
+                )
+        item["last_checked_at"] = now_ts
+        item["next_due_at"] = now_ts + _v75_next_interval(username, item, now_ts)
+
+
+def _v75_sleep_until_next_due(schedule: dict[str, Any], accounts: list[str]) -> None:
+    now_ts = time.time()
+    due_times = []
+    for username in accounts:
+        item = _v75_schedule_record(schedule, username, now_ts)
+        due_times.append(float(item.get("next_due_at", now_ts) or now_ts))
+    wake_at = min(due_times) if due_times else now_ts + 60
+    shabbat_start = _v75_next_shabbat_start_ts()
+    if shabbat_start > now_ts:
+        wake_at = min(wake_at, shabbat_start)
+    time.sleep(max(0.05, wake_at - now_ts))
+
+
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    offset = control_saved_offset()
+    webhook_ready = False
+    startup_panel_done = False
+    last_offset_save = 0.0
+    last_conflict_cleanup = 0.0
+    error_streak = 0
+    while True:
+        idle_end = _v75_hard_idle_end_ts()
+        if idle_end:
+            # One uninterrupted sleep; no polling, telemetry or refresh during שבת.
+            time.sleep(max(1.0, idle_end - time.time()))
+            continue
+        try:
+            # Do not open a 30-second long-poll that could remain in flight when
+            # שבת begins.  Wait to the boundary, then enter the single hard sleep.
+            shabbat_start = _v75_next_shabbat_start_ts()
+            seconds_to_shabbat = shabbat_start - time.time()
+            if 0 < seconds_to_shabbat <= 45:
+                time.sleep(seconds_to_shabbat)
+                continue
+            if not webhook_ready:
+                delete_control_webhook_if_needed()
+                webhook_ready = True
+            if not startup_panel_done:
+                startup_panel_done = True
+                if CONTROL_SEND_PANEL_ON_STARTUP:
+                    send_quick_control_panel(force_new=True)
+                else:
+                    ensure_control_panel_once_if_requested()
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": 30,
+                    "allowed_updates": [
+                        "callback_query", "message", "edited_message",
+                        "channel_post", "edited_channel_post",
+                    ],
+                },
+                max_attempts=1,
+                timeout=42,
+            )
+            error_streak = 0
+            if _v75_hard_idle_end_ts():
+                continue
+            updates = list(response.get("result", []) or [])
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                (callbacks if update.get("callback_query") else noncallbacks).append(update)
+            for update in callbacks:
+                process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                else:
+                    _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+            if batch_offset != offset:
+                offset = batch_offset
+                now_ts = time.time()
+                if now_ts - last_offset_save >= V75_BATCH_WRITE_SECONDS:
+                    _v57_save_control_offset(offset)
+                    last_offset_save = now_ts
+        except Exception as exc:
+            error_streak += 1
+            if is_getupdates_conflict(exc) and time.time() - last_conflict_cleanup > 30:
+                last_conflict_cleanup = time.time()
+                try:
+                    telegram_api("deleteWebhook", {"drop_pending_updates": True}, max_attempts=1, timeout=10)
+                except Exception as cleanup_exc:
+                    _v73_control_log_failure(cleanup_exc)
+            else:
+                _v73_control_log_failure(exc)
+            time.sleep(min(30.0, float(2 ** min(error_streak - 1, 5))))
+
+
+def runtime_consistency_audit() -> list[str]:
+    issues: list[str] = []
+    if active_feed_templates() != [V75_NITTER_RSS_TEMPLATE]:
+        issues.append("מקור ה-RSS הפעיל אינו nitter.net היחיד")
+    if RSS_ENABLE_FALLBACK or RSS_FALLBACK_SOURCE_COUNT != 0:
+        issues.append("מנגנון mirrors עדיין פעיל")
+    if (MAX_PARALLEL_ACCOUNT_CHECKS, MAX_PARALLEL_POST_SENDS, GEMINI_MAX_PARALLEL_TRANSLATIONS) != (4, 4, 2):
+        issues.append("מגבלות המקביליות אינן 4/4/2")
+    if MAX_VIDEO_BYTES != 13_107_200:
+        issues.append("מגבלת הווידאו אינה 13,107,200 bytes")
+    if CONTROL_GETUPDATES_TIMEOUT_SECONDS != 30 or CONTROL_GETUPDATES_HTTP_TIMEOUT_SECONDS != 42:
+        issues.append("הגדרות Telegram long-poll אינן 30/42")
+    return issues
+
+
+def canonical_runtime_summary() -> dict[str, Any]:
+    return {
+        "build": BOT_BUILD_ID,
+        "rss_sources": active_feed_templates(),
+        "normal_intervals": V75_NORMAL_INTERVALS,
+        "slow_intervals": V75_SLOW_INTERVALS,
+        "hard_idle": "Shabbat",
+        "issues": runtime_consistency_audit(),
+    }
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
+
+    # A process that starts during שבת performs no validation write, webhook
+    # cleanup, Hebcal refresh or other network call before the single idle sleep.
+    initial_idle_end = _v75_hard_idle_end_ts()
+    if initial_idle_end:
+        logging.info("🕯️ שבת Hard Idle: כל פעילות הרשת מושבתת עד צאת שבת")
+        time.sleep(max(1.0, initial_idle_end - time.time()))
+
+    refresh_gemini_api_keys_from_env()
+    validate_settings()
+    try:
+        ensure_matteo_active_once()
+    except Exception as exc:
+        logging.warning("Matteo activation migration postponed safely: %s", short_error(exc, 220))
+    _v75_refresh_shabbat_cache_outside_idle()
+    issues = runtime_consistency_audit()
+    if issues:
+        raise RuntimeError("V75 runtime consistency failed: " + "; ".join(issues))
+
+    state = load_state()
+    control_state = load_control_state()
+    raw_schedule = control_state.get(V75_SCHEDULER_STATE_KEY, {})
+    schedule: dict[str, Any] = dict(raw_schedule) if isinstance(raw_schedule, dict) else {}
+    control_thread_started = False
+    startup_cycle = not any(bool(value) for key, value in state.items() if not str(key).startswith("__"))
+    last_batch_write = 0.0
+    last_shabbat_refresh = time.time()
+    post_shabbat_min_ts = 0.0
+    paused_logged = False
+
+    logging.info(
+        "🚀 V75 פעיל: RSS יחיד nitter.net | scheduler אדפטיבי | workers 4/4/2 | video=%s bytes",
+        MAX_VIDEO_BYTES,
+    )
+
+    while True:
+        idle_end = _v75_hard_idle_end_ts()
+        if idle_end:
+            logging.info("🕯️ שבת Hard Idle: אין fetch, polling, translation, media או telemetry עד צאת שבת")
+            post_shabbat_min_ts = idle_end
+            time.sleep(max(1.0, idle_end - time.time()))
+            continue
+
+        if CONTROL_CHAT_ID and not control_thread_started:
+            Thread(target=control_loop, daemon=True, name="telegram-control-v75").start()
+            control_thread_started = True
+
+        now_ts = time.time()
+        if now_ts - last_shabbat_refresh >= 6 * 60 * 60:
+            _v75_refresh_shabbat_cache_outside_idle()
+            last_shabbat_refresh = now_ts
+
+        control_state = load_control_state()
+        if bool(control_state.get("paused", False)):
+            if not paused_logged:
+                logging.info("⏸️ הבוט מושהה; scheduler לא מבצע סריקות")
+                paused_logged = True
+            time.sleep(30.0)
+            continue
+        paused_logged = False
+
+        accounts = list(_V75_BASE_ACTIVE_X_ACCOUNTS())
+        active_keys = {name.casefold() for name in accounts}
+        for stale_key in list(schedule):
+            if stale_key not in active_keys:
+                schedule.pop(stale_key, None)
+        # Merge any manual/control-side memory changes before selecting the
+        # frontier.  This is a read only and does not create per-loop disk writes.
+        state = load_state()
+        due = _v75_prepare_due_requests(state, schedule, accounts, now_ts)
+        if not due:
+            _v75_sleep_until_next_due(schedule, accounts)
+            continue
+
+        _V75_CONTEXT.accounts = list(due)
+        _V75_CONTEXT.pipeline_scan = True
+        sent = 0
+        try:
+            resume_min_ts = max(
+                float(control_state.get("resume_min_ts", 0.0) or 0.0),
+                float(post_shabbat_min_ts or 0.0),
+            )
+            sent = run_once(state, startup_cycle=startup_cycle, min_published_ts=resume_min_ts)
+            startup_cycle = False
+            post_shabbat_min_ts = 0.0
+        except Exception as exc:
+            logging.exception("V75 scheduler cycle recovered safely: %s", short_error(exc, 500))
+        finally:
+            _V75_CONTEXT.accounts = None
+            _V75_CONTEXT.pipeline_scan = False
+
+        completed_at = time.time()
+        _v75_apply_scan_results(schedule, due, completed_at)
+        if control_state.get("resume_min_ts"):
+            save_control_state(False, resume_min_ts=0.0)
+
+        # State, telemetry-related caches and scheduler are flushed as a batch,
+        # not once per main-loop tick.  A real send/startup is flushed promptly.
+        if sent or not last_batch_write or completed_at - last_batch_write >= V75_BATCH_WRITE_SECONDS:
+            save_state(state)
+            save_translation_cache(TRANSLATION_CACHE)
+            save_ai_decision_cache()
+            save_control_state(**{V75_SCHEDULER_STATE_KEY: schedule})
+            last_batch_write = completed_at
+
+        _v75_sleep_until_next_due(schedule, accounts)
+
+
 if __name__ == "__main__":
     main()
