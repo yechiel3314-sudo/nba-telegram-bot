@@ -2052,9 +2052,11 @@ def ensure_persistent_memory_continuity() -> None:
     if persistent_storage_is_external():
         logging.info("💾 זיכרון קבוע פעיל בתיקייה: %s", app_data_dir())
     else:
-        logging.warning(
-            "⚠️ הזיכרון נשמר ליד קובץ הקוד ועלול להימחק בעדכון. "
-            "חבר Railway Volume והגדר FOOTBALL_BOT_DATA_DIR=/data"
+        # This is a deployment recommendation, not a runtime failure.  Keep it
+        # visible once at startup without presenting a healthy bot as broken.
+        logging.info(
+            "ℹ️ הזיכרון פועל כרגע ללא Railway Volume קבוע. לשמירה בין פריסות "
+            "יש לחבר Volume ולהגדיר FOOTBALL_BOT_DATA_DIR=/data"
         )
 
 
@@ -55367,6 +55369,10 @@ def _v45_rss_source_key(url: str) -> str:
 
 
 def _v45_rss_log_transition(key: str, message: str, level: str = "warning") -> None:
+    # Synthetic .invalid endpoints belong only to the offline startup audit.
+    # They must never look like real production RSS failures in Railway logs.
+    if str(key or "").casefold().endswith(".invalid"):
+        return
     now = time.time()
     stamp_key = f"{key}|{message}"
     with _V45_RSS_CB_LOCK:
@@ -56740,6 +56746,10 @@ def _v48_rss_endpoint_key(url: str) -> str:
 
 
 def _v48_rss_log_once(key: str, message: str, level: str = "warning") -> None:
+    # Keep deterministic self-tests silent.  RFC 2606 .invalid names can never
+    # be real sources and previously produced the alarming 403/404 log lines.
+    if ".invalid" in str(key or "").casefold():
+        return
     now = time.time()
     stamp = hashlib.sha1(f"{key}|{message}".encode("utf-8", errors="ignore")).hexdigest()
     with _V48_RSS_LOCK:
@@ -66852,6 +66862,612 @@ logging.info(
 )
 
 # ====== END V72 ROOT FORMAT ENGINE ======
+
+# ====== V73 FINAL RELIABILITY REPAIR: FXTWITTER API + ONE RSS FALLBACK ======
+# This is the final discovery boundary.  All automatic and control fetches use
+# one account route: FxTwitter API v2 first, the documented FxTwitter RSS feed
+# once as fallback, and the last good in-memory/persistent cache after that.
+# Historical mirror definitions above are intentionally no longer active.
+
+BOT_BUILD_ID = "winner-v73-fxtwitter-api-rss-repair-2026-09-04"
+
+V73_FXTWITTER_API_BASE = os.environ.get(
+    "FXTWITTER_API_BASE", "https://api.fxtwitter.com"
+).strip().rstrip("/")
+V73_FXTWITTER_API_TEMPLATE = V73_FXTWITTER_API_BASE + "/2/profile/{username}/statuses"
+V73_FXTWITTER_RSS_TEMPLATE = os.environ.get(
+    "FXTWITTER_RSS_TEMPLATE", "https://fxtwitter.com/{username}/feed.xml"
+).strip()
+
+# Ignore obsolete EXTRA_FEED_TEMPLATES.  A malformed operator-supplied mirror
+# was the root cause of repeated 404s; only the documented fallback is active.
+FEED_TEMPLATES = [V73_FXTWITTER_RSS_TEMPLATE]
+MAX_FEED_TEMPLATES_PER_ACCOUNT = 1
+RSS_PRIMARY_SOURCE_COUNT = 1
+RSS_ENABLE_FALLBACK = False
+RSS_FALLBACK_SOURCE_COUNT = 0
+RSS_ENABLE_STALE_FALLBACK = False
+FEED_HTTP_RETRIES = 1
+FEED_REQUEST_TIMEOUT_SECONDS = max(
+    6.0, float(os.environ.get("FXTWITTER_REQUEST_TIMEOUT_SECONDS", "12"))
+)
+FEED_COLLECTION_TIMEOUT_SECONDS = FEED_REQUEST_TIMEOUT_SECONDS + 2.0
+MAX_PARALLEL_FEED_CHECKS_PER_ACCOUNT = 1
+
+V73_TIMELINE_COUNT = max(12, min(100, int(os.environ.get("FXTWITTER_TIMELINE_COUNT", "30"))))
+V73_FETCH_CACHE_SECONDS = max(5.0, float(os.environ.get("FXTWITTER_FETCH_CACHE_SECONDS", "18")))
+V73_SOURCE_BACKOFF_STEPS = (60.0, 120.0, 300.0, 600.0, 900.0)
+V73_SOURCE_LOG_INTERVAL_SECONDS = 15 * 60
+
+_V73_FETCH_LOCKS_GUARD = Lock()
+_V73_FETCH_LOCKS: dict[str, Lock] = {}
+_V73_FETCH_CACHE_LOCK = RLock()
+_V73_FETCH_CACHE: dict[str, tuple[float, list[Post], str]] = {}
+_V73_SOURCE_STATE_LOCK = RLock()
+_V73_SOURCE_STATE: dict[str, dict[str, Any]] = {}
+_V73_FAILURE_LOGGED_AT: dict[str, float] = {}
+
+
+def _v73_account_lock(username: str) -> Lock:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V73_FETCH_LOCKS_GUARD:
+        lock = _V73_FETCH_LOCKS.get(key)
+        if lock is None:
+            lock = Lock()
+            _V73_FETCH_LOCKS[key] = lock
+        return lock
+
+
+def _v73_source_ready(key: str) -> bool:
+    with _V73_SOURCE_STATE_LOCK:
+        return float((_V73_SOURCE_STATE.get(key) or {}).get("retry_at", 0.0) or 0.0) <= time.time()
+
+
+def _v73_retry_after_seconds(exc: BaseException, failures: int) -> float:
+    status = int(getattr(exc, "code", 0) or 0)
+    if status == 429:
+        try:
+            raw = str(getattr(exc, "headers", {}).get("Retry-After", "") or "").strip()
+            if raw.isdigit():
+                return max(60.0, min(3600.0, float(raw)))
+        except Exception:
+            pass
+    if status == 404:
+        # FxTwitter can use 404 for a temporarily unavailable timeline as well
+        # as a missing account.  Retry later, but never hammer it this cycle.
+        return 5 * 60.0
+    index = min(max(0, failures - 1), len(V73_SOURCE_BACKOFF_STEPS) - 1)
+    return V73_SOURCE_BACKOFF_STEPS[index]
+
+
+def _v73_source_failed(key: str, exc: BaseException) -> None:
+    with _V73_SOURCE_STATE_LOCK:
+        previous = dict(_V73_SOURCE_STATE.get(key) or {})
+        failures = int(previous.get("failures", 0) or 0) + 1
+        _V73_SOURCE_STATE[key] = {
+            "failures": failures,
+            "retry_at": time.time() + _v73_retry_after_seconds(exc, failures),
+            "last_error": short_error(exc, 500),
+        }
+
+
+def _v73_source_succeeded(key: str) -> None:
+    with _V73_SOURCE_STATE_LOCK:
+        _V73_SOURCE_STATE.pop(key, None)
+
+
+def _v73_http_get(url: str, accept: str, source_key: str) -> tuple[int, bytes]:
+    if not _v73_source_ready(source_key):
+        raise RuntimeError("source cooling down after a recent failure")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "NetoSportBot/73 (+https://t.me/neto_sport)",
+            "Accept": accept,
+            "Cache-Control": "no-cache",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=FEED_REQUEST_TIMEOUT_SECONDS) as response:
+            status = int(getattr(response, "status", 200) or 200)
+            body = response.read()
+        _v73_source_succeeded(source_key)
+        return status, body
+    except Exception as exc:
+        _v73_source_failed(source_key, exc)
+        raise
+
+
+def _v73_timestamp(status: dict[str, Any], post_id: str) -> float:
+    raw = status.get("created_timestamp")
+    try:
+        value = float(raw or 0.0)
+        if value >= 1e12:
+            value /= 1000.0
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    created_at = str(status.get("created_at") or "").strip()
+    if created_at:
+        try:
+            return parsedate_to_datetime(created_at).timestamp()
+        except Exception:
+            try:
+                return datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                pass
+    return _reliable_snowflake_timestamp(post_id)
+
+
+def _v73_media_urls(status: Any) -> tuple[list[str], list[str]]:
+    """Read only post media, never profile avatar/banner artwork."""
+    if not isinstance(status, dict):
+        return [], []
+    images: list[str] = []
+    videos: list[str] = []
+    media = status.get("media")
+    if not isinstance(media, dict):
+        return images, videos
+
+    for item in media.get("photos") or []:
+        if isinstance(item, dict):
+            url = str(item.get("url") or "").strip()
+            if url.startswith(("http://", "https://")):
+                images.append(url)
+
+    for item in media.get("videos") or []:
+        if not isinstance(item, dict):
+            continue
+        candidates: list[tuple[int, str]] = []
+        for form in item.get("formats") or []:
+            if not isinstance(form, dict):
+                continue
+            url = str(form.get("url") or "").strip()
+            container = str(form.get("container") or "").casefold()
+            if url.startswith(("http://", "https://")) and (container == "mp4" or ".mp4" in url.casefold()):
+                score = int(form.get("bitrate") or form.get("size") or 0)
+                candidates.append((score, url))
+        for field in ("transcode_url", "url"):
+            url = str(item.get(field) or "").strip()
+            if url.startswith(("http://", "https://")) and ".m3u8" not in url.casefold():
+                candidates.append((0, url))
+        if candidates:
+            videos.append(max(candidates, key=lambda pair: pair[0])[1])
+        thumbnail = str(item.get("thumbnail_url") or "").strip()
+        if thumbnail.startswith(("http://", "https://")):
+            images.append(thumbnail)
+
+    external = media.get("external")
+    if isinstance(external, dict):
+        url = str(external.get("url") or "").strip()
+        if url.startswith(("http://", "https://")) and _real_tweet_video_url(url):
+            videos.append(url)
+
+    return list(dict.fromkeys(images)), list(dict.fromkeys(videos))
+
+
+def _v73_post_from_status(username: str, status: Any) -> Post | None:
+    if not isinstance(status, dict) or str(status.get("type") or "status") != "status":
+        return None
+    post_id = str(status.get("id") or "").strip()
+    text_value = _reliable_normalize_x_text(str(status.get("text") or ""))
+    if not post_id or not text_value:
+        return None
+
+    canonical = str(username or "").strip().lstrip("@")
+    author = status.get("author") if isinstance(status.get("author"), dict) else {}
+    author_handle = str(author.get("screen_name") or "").strip().lstrip("@")
+    # The statuses endpoint can contain repost bodies.  Keep only posts authored
+    # by the requested reporter; quoted posts are retained separately below.
+    if author_handle and author_handle.casefold() != canonical.casefold():
+        return None
+
+    quote = status.get("quote") if isinstance(status.get("quote"), dict) else {}
+    quoted_text = ""
+    quoted_author = ""
+    quoted_images: list[str] = []
+    quoted_videos: list[str] = []
+    if quote and str(quote.get("type") or "status") == "status":
+        quoted_text = _reliable_normalize_x_text(str(quote.get("text") or ""))
+        quote_author = quote.get("author") if isinstance(quote.get("author"), dict) else {}
+        quoted_author = str(quote_author.get("name") or quote_author.get("screen_name") or "").strip()
+        quoted_images, quoted_videos = _v73_media_urls(quote)
+
+    images, videos = _v73_media_urls(status)
+    images = list(dict.fromkeys(images + quoted_images))
+    videos = list(dict.fromkeys(videos + quoted_videos))
+    link = str(status.get("url") or f"https://x.com/{canonical}/status/{post_id}").strip()
+    if not link.startswith(("http://", "https://")):
+        link = f"https://x.com/{canonical}/status/{post_id}"
+
+    post = Post(
+        post_id=post_id,
+        username=canonical,
+        text=text_value,
+        link=link,
+        image_urls=images,
+        video_urls=videos,
+        has_video=bool(videos),
+        primary_has_video=bool(_v73_media_urls(status)[1]),
+        quoted_has_video=bool(quoted_videos),
+        quoted_author=quoted_author,
+        quoted_text=quoted_text,
+        published_ts=_v73_timestamp(status, post_id),
+        dedupe_ids=[
+            post_id,
+            f"{canonical}:{post_id}",
+            f"{canonical}:{link}",
+            post_content_signature(canonical, text_value, quoted_text),
+        ],
+        source_name="fxtwitter-api-v2",
+    )
+    post.original_text = text_value
+    post.original_quoted_text = quoted_text
+    post.source_structure_available = True
+    post.exact_source_structure = True
+    post.exact_source_provider = "fxtwitter-api-v2"
+    post.exact_media_checked = True
+    return post
+
+
+def _v73_fetch_api(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    encoded = urllib.parse.quote(canonical, safe="")
+    query = urllib.parse.urlencode({"count": V73_TIMELINE_COUNT})
+    url = V73_FXTWITTER_API_TEMPLATE.format(username=encoded) + "?" + query
+    status, body = _v73_http_get(
+        url,
+        "application/json",
+        "api:" + canonical.casefold(),
+    )
+    if status == 204 or not body:
+        return []
+    payload = json.loads(body.decode("utf-8", errors="replace"))
+    code = int(payload.get("code", 200) or 200) if isinstance(payload, dict) else 500
+    if code != 200:
+        raise RuntimeError(f"FxTwitter API returned code {code}")
+    results = payload.get("results") if isinstance(payload, dict) else []
+    merged: dict[str, Post] = {}
+    for item in results or []:
+        post = _v73_post_from_status(canonical, item)
+        if post is not None:
+            merged.setdefault(str(post.post_id), post)
+    return sorted(
+        merged.values(),
+        key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+        reverse=True,
+    )
+
+
+def active_feed_templates() -> list[str]:
+    return [V73_FXTWITTER_RSS_TEMPLATE]
+
+
+def fetch_feed(username: str, template: str = V73_FXTWITTER_RSS_TEMPLATE) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    encoded = urllib.parse.quote(canonical, safe="")
+    selected = template if template == V73_FXTWITTER_RSS_TEMPLATE else V73_FXTWITTER_RSS_TEMPLATE
+    url = selected.format(username=encoded)
+    separator = "&" if "?" in url else "?"
+    url = url + separator + urllib.parse.urlencode({"count": V73_TIMELINE_COUNT})
+    _status, body = _v73_http_get(
+        url,
+        "application/rss+xml, application/xml, text/xml",
+        "rss:" + canonical.casefold(),
+    )
+    return list(parse_posts(canonical, body, "fxtwitter-rss") or [])
+
+
+def _v73_network_fetch(username: str) -> tuple[list[Post], str, list[str]]:
+    canonical = str(username or "").strip().lstrip("@")
+    errors: list[str] = []
+    try:
+        rows = _v73_fetch_api(canonical)
+        if rows:
+            return rows, "fxtwitter-api-v2", errors
+    except Exception as exc:
+        errors.append("API: " + short_error(exc, 240))
+
+    try:
+        rows = fetch_feed(canonical, V73_FXTWITTER_RSS_TEMPLATE)
+        if rows:
+            return rows, "fxtwitter-rss", errors
+    except Exception as exc:
+        errors.append("RSS: " + short_error(exc, 240))
+    return [], "", errors
+
+
+def _v73_cached_account(username: str, fresh_only: bool = False) -> list[Post]:
+    key = str(username or "").strip().lstrip("@").casefold()
+    with _V73_FETCH_CACHE_LOCK:
+        cached = _V73_FETCH_CACHE.get(key)
+    if cached and (not fresh_only or time.time() - cached[0] <= V73_FETCH_CACHE_SECONDS):
+        return list(cached[1])
+    if fresh_only:
+        return []
+    try:
+        return list(_stable_rss_cached_posts(username, limit=60) or [])
+    except Exception:
+        return []
+
+
+def _v73_log_total_failure(username: str, errors: list[str]) -> None:
+    key = str(username or "").casefold()
+    now = time.time()
+    with _V73_SOURCE_STATE_LOCK:
+        last = float(_V73_FAILURE_LOGGED_AT.get(key, 0.0) or 0.0)
+        if now - last < V73_SOURCE_LOG_INTERVAL_SECONDS:
+            return
+        _V73_FAILURE_LOGGED_AT[key] = now
+    logging.warning(
+        "⚠️ FxTwitter לא החזיר כרגע פוסטים עבור @%s; הבוט ממשיך מהמטמון וינסה שוב אוטומטית. %s",
+        username,
+        " | ".join(errors[:2]) or "empty timeline",
+    )
+
+
+def _v73_fetch_account(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    if not canonical:
+        return []
+    fresh = _v73_cached_account(canonical, fresh_only=True)
+    if fresh:
+        return fresh
+
+    with _v73_account_lock(canonical):
+        fresh = _v73_cached_account(canonical, fresh_only=True)
+        if fresh:
+            return fresh
+        rows, source, errors = _v73_network_fetch(canonical)
+        if rows:
+            ordered = sorted(
+                [post for post in rows if isinstance(post, Post)],
+                key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
+                reverse=True,
+            )
+            with _V73_FETCH_CACHE_LOCK:
+                _V73_FETCH_CACHE[canonical.casefold()] = (time.time(), ordered, source)
+            try:
+                _stable_rss_remember(canonical, ordered)
+                _remember_control_rss_posts(canonical, ordered)
+                _ten_history_save(canonical, ordered)
+            except Exception:
+                pass
+            return ordered
+
+        cached = _v73_cached_account(canonical, fresh_only=False)
+        if errors and not cached:
+            _v73_log_total_failure(canonical, errors)
+        return cached
+
+
+def _rss_engine_network_fetch(username: str) -> list[Post]:
+    rows, _source, _errors = _v73_network_fetch(username)
+    return rows
+
+
+def _rss_engine_rows(username: str) -> list[Post]:
+    return _v73_fetch_account(username)
+
+
+def fetch_posts(username: str) -> list[Post]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    rows = _v73_fetch_account(canonical)
+    observed = time.time()
+    elapsed = time.perf_counter() - started
+    for post in rows:
+        try:
+            _pipeline_mark_seen(post, "automatic:fxtwitter_api_then_rss", observed, elapsed)
+        except Exception:
+            pass
+    return list(rows[: max(30, int(MAX_NEW_POSTS_PER_ACCOUNT_PER_CHECK))])
+
+
+def fetch_control_posts(username: str) -> tuple[str, list[Post], Exception | None]:
+    canonical = str(username or "").strip().lstrip("@")
+    try:
+        return canonical, _v73_fetch_account(canonical), None
+    except Exception as exc:
+        cached = _v73_cached_account(canonical, fresh_only=False)
+        return canonical, cached, None if cached else exc
+
+
+def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
+    canonical = str(username or "").strip().lstrip("@")
+    started = time.perf_counter()
+    try:
+        rows = fetch_posts(canonical)
+        try:
+            daily_stat_add_timing("scan_seconds", time.perf_counter() - started)
+        except Exception:
+            pass
+        return canonical, list(rows[:12])
+    except Exception as exc:
+        logging.debug("FxTwitter fetch recovered safely for @%s: %s", canonical, short_error(exc, 400))
+        return canonical, _v73_cached_account(canonical, fresh_only=False)[:12]
+
+
+# Telegram long polling: Telegram waits 30 seconds, while the socket gets a
+# larger 42-second budget and exactly one HTTP attempt.  A normal read timeout
+# is quiet; genuine failures are rate-limited instead of flooding Railway logs.
+CONTROL_GETUPDATES_TIMEOUT_SECONDS = max(
+    5, min(50, int(os.environ.get("CONTROL_GETUPDATES_TIMEOUT", "30")))
+)
+CONTROL_GETUPDATES_HTTP_TIMEOUT_SECONDS = max(
+    CONTROL_GETUPDATES_TIMEOUT_SECONDS + 5,
+    int(os.environ.get("CONTROL_GETUPDATES_HTTP_TIMEOUT", "42")),
+)
+CONTROL_POLL_SECONDS = max(0.5, float(os.environ.get("CONTROL_POLL_ERROR_SECONDS", "1")))
+_V73_CONTROL_ERROR_LOGGED_AT: dict[str, float] = {}
+
+
+def _v73_control_log_failure(exc: BaseException) -> None:
+    value = short_error(exc, 600)
+    if re.search(r"(?iu)timeout|timed\s*out|פרק הזמן", value):
+        logging.debug("Telegram long-poll timed out normally; reconnecting")
+        return
+    key = re.sub(r"\d+", "#", value).casefold()
+    now = time.time()
+    last = float(_V73_CONTROL_ERROR_LOGGED_AT.get(key, 0.0) or 0.0)
+    if now - last >= 5 * 60:
+        _V73_CONTROL_ERROR_LOGGED_AT[key] = now
+        logging.warning("⚠️ לוח שליטה: חיבור Telegram נכשל זמנית; מתחבר מחדש: %s", value)
+
+
+def control_loop() -> None:
+    if not CONTROL_CHAT_ID:
+        return
+    delete_control_webhook_if_needed()
+    offset = control_saved_offset()
+    last_conflict_cleanup = 0.0
+    startup_panel_done = False
+    error_streak = 0
+    while True:
+        try:
+            if is_shabbat_now():
+                time.sleep(min(max(30, int(SHABBAT_SLEEP_SECONDS)), 300))
+                continue
+            if not startup_panel_done:
+                startup_panel_done = True
+                try:
+                    if CONTROL_SEND_PANEL_ON_STARTUP:
+                        send_quick_control_panel(force_new=True)
+                    else:
+                        ensure_control_panel_once_if_requested()
+                except Exception as exc:
+                    logging.debug("לוח שליטה: אתחול נדחה בבטחה: %s", exc)
+
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": CONTROL_GETUPDATES_TIMEOUT_SECONDS,
+                    "allowed_updates": [
+                        "callback_query", "message", "edited_message",
+                        "channel_post", "edited_channel_post",
+                    ],
+                },
+                max_attempts=1,
+                timeout=CONTROL_GETUPDATES_HTTP_TIMEOUT_SECONDS,
+            )
+            error_streak = 0
+            if is_shabbat_now():
+                continue
+            updates = list(response.get("result", []) or [])
+            if not updates:
+                continue
+
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                if isinstance(update.get("callback_query"), dict) and update.get("callback_query"):
+                    callbacks.append(update)
+                else:
+                    noncallbacks.append(update)
+            for update in callbacks:
+                process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    try:
+                        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_channel_post, args=(update,), daemon=True).start()
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+            if batch_offset != offset:
+                offset = batch_offset
+                try:
+                    _V57_CONTROL_STATE_EXECUTOR.submit(_v57_save_control_offset, offset)
+                except RuntimeError:
+                    pass
+        except Exception as exc:
+            error_streak += 1
+            if is_getupdates_conflict(exc):
+                now = time.time()
+                if now - last_conflict_cleanup > 30:
+                    last_conflict_cleanup = now
+                    try:
+                        telegram_api(
+                            "deleteWebhook", {"drop_pending_updates": True},
+                            max_attempts=1, timeout=10,
+                        )
+                    except Exception as cleanup_exc:
+                        _v73_control_log_failure(cleanup_exc)
+            else:
+                _v73_control_log_failure(exc)
+            time.sleep(min(30.0, CONTROL_POLL_SECONDS * (2 ** min(error_streak - 1, 5))))
+
+
+# Replace the stale V34 identity test with behavior-based checks for the final
+# active finalizer and V73 source chain.
+def runtime_consistency_audit() -> list[str]:
+    issues: list[str] = []
+    if active_feed_templates() != [V73_FXTWITTER_RSS_TEMPLATE]:
+        issues.append("מקור ה-RSS הפעיל אינו FxTwitter feed.xml היחיד")
+    if not V73_FXTWITTER_API_TEMPLATE.endswith("/2/profile/{username}/statuses"):
+        issues.append("נתיב FxTwitter API v2 אינו תקין")
+    for name in (
+        "_v73_fetch_api", "fetch_feed", "fetch_posts", "fetch_control_posts",
+        "fetch_posts_safely", "control_loop",
+    ):
+        if not callable(globals().get(name)):
+            issues.append(f"פונקציה פעילה חסרה: {name}")
+    try:
+        probe = _finalize_outgoing_message_only(
+            "דיווח בדיקה\n\nנטו ספורט (https://t.me/neto_sport).📝"
+        )
+        if len(re.findall(r"(?iu)נטו\s+ספורט", probe)) != 1:
+            issues.append("מנגנון החתימה אינו מחזיר חתימה יחידה")
+    except Exception as exc:
+        issues.append("בדיקת מסיים ההודעה נכשלה: " + short_error(exc, 180))
+    if CONTROL_GETUPDATES_HTTP_TIMEOUT_SECONDS <= CONTROL_GETUPDATES_TIMEOUT_SECONDS:
+        issues.append("תקציב HTTP של long-poll קצר מזמן ההמתנה של Telegram")
+    return issues
+
+
+def _v73_self_audit() -> None:
+    sample = {
+        "type": "status",
+        "id": "1999999999999999999",
+        "url": "https://x.com/Writer/status/1999999999999999999",
+        "text": "Transfer report with concrete details.",
+        "created_timestamp": 1770000000,
+        "author": {"screen_name": "Writer", "name": "Writer"},
+        "media": {"photos": [{"type": "photo", "url": "https://pbs.twimg.com/media/example.jpg"}]},
+        "quote": {
+            "type": "status", "id": "1888888888888888888", "text": "Quoted source text.",
+            "author": {"screen_name": "Club", "name": "Club"},
+        },
+    }
+    post = _v73_post_from_status("Writer", sample)
+    if post is None or post.post_id != sample["id"] or post.quoted_text != "Quoted source text.":
+        raise RuntimeError("v73_api_status_parser_failed")
+    if post.image_urls != ["https://pbs.twimg.com/media/example.jpg"]:
+        raise RuntimeError("v73_api_media_parser_failed")
+    if any("nitter" in value or "rsshub" in value for value in active_feed_templates()):
+        raise RuntimeError("v73_obsolete_mirror_still_active")
+    issues = runtime_consistency_audit()
+    if issues:
+        raise RuntimeError("; ".join(issues))
+
+
+_v73_self_audit()
+logging.info(
+    "V73 active: FxTwitter API v2 primary, documented FxTwitter RSS fallback, "
+    "one shared account fetch/cache, silent synthetic audits, Telegram long-poll 30/42/1."
+)
+
+# ====== END V73 FINAL RELIABILITY REPAIR ======
 
 if __name__ == "__main__":
     main()
