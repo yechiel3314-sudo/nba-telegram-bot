@@ -68179,7 +68179,7 @@ logging.info(
 
 # ====== END V74 GOOGLE HISTORY RATE-LIMIT + 12.5 MB VIDEO CAP ======
 
-# ====== V75 SINGLE-NITTER / PER-SOURCE SMART SCHEDULER / HARD-IDLE (2026-09-04) ======
+# ====== V76 FXTWITTER / PER-SOURCE SMART SCHEDULER / HARD-IDLE (2026-09-04) ======
 # This final runtime boundary intentionally leaves the historical implementations
 # above in place for state/schema compatibility, while making them unreachable
 # from the active automatic discovery path.
@@ -68187,10 +68187,14 @@ logging.info(
 import http.client as _v75_http_client
 import threading as _v75_threading
 
-BOT_BUILD_ID = "winner-v75-single-nitter-smart-scheduler-2026-09-04"
+BOT_BUILD_ID = "winner-v76-fxtwitter-smart-scheduler-2026-09-04"
 
-V75_NITTER_RSS_TEMPLATE = "https://nitter.net/{username}/rss"
-FEED_TEMPLATES = [V75_NITTER_RSS_TEMPLATE]
+# nitter.net was permanently taken offline and now returns HTTP 410 for every
+# handle.  Keep one RSS source only, but use the currently documented FxTwitter
+# feed behind the documented FxTwitter v2 timeline API.
+V75_FXTWITTER_API_TEMPLATE = "https://api.fxtwitter.com/2/profile/{username}/statuses"
+V75_FXTWITTER_RSS_TEMPLATE = "https://fxtwitter.com/{username}/feed.xml"
+FEED_TEMPLATES = [V75_FXTWITTER_RSS_TEMPLATE]
 MAX_FEED_TEMPLATES_PER_ACCOUNT = 1
 RSS_ENABLE_FALLBACK = False
 RSS_PRIMARY_SOURCE_COUNT = 1
@@ -68211,6 +68215,7 @@ V75_SLOW_TIMELINE_LIMIT = 12
 V75_CATCHUP_TIMELINE_LIMIT = 30
 V75_BATCH_WRITE_SECONDS = 60
 V75_SCHEDULER_STATE_KEY = "v75_source_scheduler"
+V76_SOURCE_MIGRATION_KEY = "v76_fxtwitter_source_migrated"
 
 V75_SLOW_SOURCE_NAMES = {
     "trollfootball2",   # TrollFootball
@@ -68249,11 +68254,11 @@ _V75_SCAN_RESULTS: dict[str, dict[str, Any]] = {}
 
 def active_feed_templates() -> list[str]:
     """The active runtime has exactly one RSS endpoint."""
-    return [V75_NITTER_RSS_TEMPLATE]
+    return [V75_FXTWITTER_RSS_TEMPLATE]
 
 
 def feed_source_name(template: str) -> str:
-    return "nitter.net"
+    return "fxtwitter.com"
 
 
 def active_x_accounts() -> list[str]:
@@ -68380,8 +68385,11 @@ def _v75_http_get(
                     raise RuntimeError(f"RSS redirect HTTP {status} ללא Location")
                 redirected = urllib.parse.urljoin(url, location)
                 redirected_host = (urllib.parse.urlsplit(redirected).hostname or "").casefold()
-                if redirected_host != "nitter.net":
-                    raise RuntimeError("Nitter RSS attempted to redirect to a different host")
+                allowed_redirect_hosts = {
+                    "api.fxtwitter.com", "fxtwitter.com", "www.fxtwitter.com",
+                }
+                if redirected_host not in allowed_redirect_hosts:
+                    raise RuntimeError("FxTwitter attempted to redirect to an unrelated host")
                 _v75_release_http_connection(pool_key, connection, reusable)
                 return _v75_http_get(
                     redirected, timeout, extra_headers, redirects_left - 1
@@ -68390,7 +68398,7 @@ def _v75_http_get(
                 _v75_release_http_connection(pool_key, connection, reusable)
                 return status, response_headers, body
             if status < 200 or status >= 300:
-                raise RuntimeError(f"Nitter RSS HTTP {status}")
+                raise RuntimeError(f"FxTwitter HTTP {status}")
             _v75_release_http_connection(pool_key, connection, reusable)
             return status, response_headers, body
         except (_v75_http_client.RemoteDisconnected, BrokenPipeError, ConnectionResetError, TimeoutError, OSError) as exc:
@@ -68398,70 +68406,124 @@ def _v75_http_get(
             _v75_release_http_connection(pool_key, connection, False)
             if connection_pass == 0:
                 continue
-            raise RuntimeError(f"Nitter RSS connection failed: {short_error(exc, 220)}") from exc
+            raise RuntimeError(f"FxTwitter connection failed: {short_error(exc, 220)}") from exc
         except Exception:
             _v75_release_http_connection(pool_key, connection, False)
             raise
-    raise RuntimeError(f"Nitter RSS connection failed: {short_error(last_error, 220)}")
+    raise RuntimeError(f"FxTwitter connection failed: {short_error(last_error, 220)}")
 
 
-def _v75_nitter_url(username: str, limit: int) -> str:
+def _v75_fxtwitter_api_url(username: str, limit: int) -> str:
     canonical = str(username or "").strip().lstrip("@")
-    base = V75_NITTER_RSS_TEMPLATE.format(username=urllib.parse.quote(canonical, safe=""))
+    base = V75_FXTWITTER_API_TEMPLATE.format(username=urllib.parse.quote(canonical, safe=""))
     return base + "?" + urllib.parse.urlencode({"count": max(1, int(limit))})
+
+
+def _v75_fxtwitter_rss_url(username: str, limit: int) -> str:
+    canonical = str(username or "").strip().lstrip("@")
+    base = V75_FXTWITTER_RSS_TEMPLATE.format(username=urllib.parse.quote(canonical, safe=""))
+    return base + "?" + urllib.parse.urlencode({"count": max(1, int(limit))})
+
+
+_V75_SOURCE_WARNING_AT: dict[str, float] = {}
+
+
+def _v75_warn_source_failure(username: str, error: str) -> None:
+    # One infrastructure outage affects every account.  Group identical errors
+    # so Railway receives one useful warning, not 17 copies per scheduler wave.
+    key = re.sub(r"\d+", "#", str(error or "unknown")).casefold()
+    now_ts = time.time()
+    with _V75_FETCH_LOCK:
+        last = float(_V75_SOURCE_WARNING_AT.get(key, 0.0) or 0.0)
+        if now_ts - last < 15 * 60:
+            return
+        _V75_SOURCE_WARNING_AT[key] = now_ts
+    logging.warning(
+        "⚠️ מקור FxTwitter לא זמין זמנית עבור @%s; הבוט ישתמש בזיכרון וינסה שוב לפי ה-backoff: %s",
+        username,
+        error,
+    )
+
+
+def _v75_fetch_api_window(username: str, limit: int) -> list[Post]:
+    status, _headers, body = _v75_http_get(
+        _v75_fxtwitter_api_url(username, limit),
+        timeout=float(FEED_REQUEST_TIMEOUT_SECONDS),
+        extra_headers={"Accept": "application/json"},
+    )
+    if status == 204 or not body:
+        return []
+    payload = json.loads(body.decode("utf-8", errors="replace"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("FxTwitter API returned invalid JSON")
+    code = int(payload.get("code", status) or status)
+    if code != 200:
+        raise RuntimeError(f"FxTwitter API returned code {code}")
+    canonical = str(username or "").strip().lstrip("@")
+    rows: list[Post] = []
+    for item in payload.get("results", []) or []:
+        post = _v73_post_from_status(canonical, item)
+        if isinstance(post, Post):
+            post.source_name = "fxtwitter-api-v2"
+            rows.append(post)
+    rows.sort(key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    return rows[: max(1, int(limit))]
+
+
+def _v75_fetch_rss_window(username: str, limit: int) -> list[Post]:
+    status, _headers, body = _v75_http_get(
+        _v75_fxtwitter_rss_url(username, limit),
+        timeout=float(FEED_REQUEST_TIMEOUT_SECONDS),
+        extra_headers={"Accept": "application/rss+xml, application/xml, text/xml"},
+    )
+    if status == 204 or not body:
+        return []
+    ET.fromstring(body)
+    canonical = str(username or "").strip().lstrip("@")
+    rows = list(parse_posts(canonical, body, "fxtwitter-rss") or [])
+    rows.sort(key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
+    return rows[: max(1, int(limit))]
 
 
 def _v75_fetch_window(username: str, limit: int, conditional: bool = True) -> list[Post]:
     canonical = str(username or "").strip().lstrip("@")
     key = canonical.casefold()
-    request_headers: dict[str, str] = {}
-    with _V75_FETCH_LOCK:
-        meta = dict(_V75_HTTP_META.get(key, {}))
-    if conditional and meta.get("etag"):
-        request_headers["If-None-Match"] = meta["etag"]
-    if conditional and meta.get("last-modified"):
-        request_headers["If-Modified-Since"] = meta["last-modified"]
-    status, response_headers, body = _v75_http_get(
-        _v75_nitter_url(canonical, limit),
-        timeout=float(FEED_REQUEST_TIMEOUT_SECONDS),
-        extra_headers=request_headers,
-    )
-    if status == 304:
-        with _V75_FETCH_LOCK:
-            return list(_V75_ACCOUNT_CACHE.get(key, []))[: max(1, int(limit))]
-    # Parse errors are genuine failures.  A valid empty RSS document is a
-    # successful scan with no new post and must not increase failure backoff.
-    ET.fromstring(body)
-    rows = list(parse_posts(canonical, body, "nitter.net") or [])
-    rows.sort(key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0), reverse=True)
-    rows = rows[: max(1, int(limit))]
+    errors: list[str] = []
+    try:
+        rows = _v75_fetch_api_window(canonical, limit)
+    except Exception as api_exc:
+        errors.append("API: " + short_error(api_exc, 220))
+        try:
+            # Exactly one RSS fallback, and only when the primary API truly
+            # failed.  A valid empty API result is success/no-new.
+            rows = _v75_fetch_rss_window(canonical, limit)
+        except Exception as rss_exc:
+            errors.append("RSS: " + short_error(rss_exc, 220))
+            error = " | ".join(errors)
+            _v75_warn_source_failure(canonical, error)
+            raise RuntimeError(error) from rss_exc
     for post in rows:
         try:
-            post.source_name = "nitter.net"
             _ensure_post_original_structure(post)
         except Exception:
             pass
     with _V75_FETCH_LOCK:
         _V75_ACCOUNT_CACHE[key] = list(rows)
-        _V75_HTTP_META[key] = {
-            "etag": response_headers.get("etag", ""),
-            "last-modified": response_headers.get("last-modified", ""),
-        }
-    return rows
+    return list(rows)
 
 
 def http_get_feed(url: str, timeout: int = FEED_REQUEST_TIMEOUT_SECONDS) -> bytes:
-    # Compatibility entrypoint: only nitter.net is accepted by the active engine.
+    # Compatibility entrypoint: exactly one RSS host is accepted.
     parsed = urllib.parse.urlsplit(str(url or ""))
-    if (parsed.hostname or "").casefold() != "nitter.net":
-        raise RuntimeError("V75 blocks every RSS host except nitter.net")
+    if (parsed.hostname or "").casefold() not in {"fxtwitter.com", "www.fxtwitter.com"}:
+        raise RuntimeError("V76 blocks every RSS host except fxtwitter.com")
     return _v75_http_get(url, timeout=float(timeout))[2]
 
 
-def fetch_feed(username: str, template: str = V75_NITTER_RSS_TEMPLATE) -> list[Post]:
-    if str(template or "") != V75_NITTER_RSS_TEMPLATE:
-        raise RuntimeError("V75 blocks RSS mirrors; nitter.net is the only active source")
-    return _v75_fetch_window(username, V75_SLOW_TIMELINE_LIMIT)
+def fetch_feed(username: str, template: str = V75_FXTWITTER_RSS_TEMPLATE) -> list[Post]:
+    if str(template or "") != V75_FXTWITTER_RSS_TEMPLATE:
+        raise RuntimeError("V76 blocks RSS mirrors; fxtwitter.com is the only RSS source")
+    return _v75_fetch_rss_window(username, V75_SLOW_TIMELINE_LIMIT)
 
 
 def collect_posts_from_feed_templates(
@@ -68470,7 +68532,7 @@ def collect_posts_from_feed_templates(
     if not feed_templates:
         return [], [], []
     try:
-        return fetch_feed(username, V75_NITTER_RSS_TEMPLATE), [], []
+        return fetch_feed(username, V75_FXTWITTER_RSS_TEMPLATE), [], []
     except Exception as exc:
         return [], [short_error(exc, 300)], []
 
@@ -68564,7 +68626,7 @@ def fetch_posts_safely(username: str) -> tuple[str, list[Post]]:
         }
         with _V75_FETCH_LOCK:
             _V75_SCAN_RESULTS[canonical.casefold()] = result
-        logging.warning("⚠️ Nitter RSS נכשל זמנית עבור @%s: %s", canonical, result["error"])
+        _v75_warn_source_failure(canonical, str(result["error"]))
         return canonical, []
 
 
@@ -68586,7 +68648,7 @@ def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post
     try:
         live = _v75_fetch_window(canonical, V75_CATCHUP_TIMELINE_LIMIT, conditional=False)
     except Exception as exc:
-        logging.warning("⚠️ 10 אחרונים: Nitter לא זמין זמנית עבור @%s: %s", canonical, short_error(exc, 240))
+        _v75_warn_source_failure(canonical, short_error(exc, 240))
     gathered = list(live)
     if len(gathered) < wanted:
         cached_candidates: list[Post] = []
@@ -68595,6 +68657,11 @@ def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post
         for loader in (
             lambda: _ten_history_load(canonical),
             lambda: _ten_history_collect_existing_state_posts(canonical),
+            lambda: _stable_rss_cached_posts(canonical, limit=60),
+            lambda: _working_rss_cached(canonical, 60),
+            lambda: _v73_cached_account(canonical, fresh_only=False),
+            lambda: _full_speed_rss_cache_get(canonical),
+            lambda: _full_speed_cache_get(canonical),
         ):
             try:
                 cached_candidates.extend(list(loader() or []))
@@ -68616,8 +68683,8 @@ def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post
         key=lambda item: float(getattr(item, "published_ts", 0.0) or 0.0),
         reverse=True,
     )
-    if len(ordered) < wanted:
-        return []
+    # The operator explicitly asked to always see what is available.  Never
+    # refuse a partial history: return up to ten complete posts from live/cache.
     result = ordered[:wanted]
     try:
         _ten_history_save(canonical, result)
@@ -68661,8 +68728,8 @@ def run_last_ten_account_control_test_replace(username: str, loading_message_id:
     label = _hebrew_account_label(username)
     try:
         posts = fetch_last_ten_control_isolated(username, limit=10)
-        if len(posts) != 10:
-            message = f"📚 10 אחרונים — {label}\n\nעדיין אין 10 פוסטים מלאים זמינים. לא הוצג cache חלקי."
+        if not posts:
+            message = f"📚 10 אחרונים — {label}\n\nלא נמצאו כרגע פוסטים חיים או פוסטים שמורים להצגה."
             if not _edit_control_result_html(loading_message_id, html.escape(message), control_delete_message_reply_markup()):
                 send_control_text(message, None, control_delete_message_reply_markup())
             return
@@ -68963,8 +69030,8 @@ def control_loop() -> None:
 
 def runtime_consistency_audit() -> list[str]:
     issues: list[str] = []
-    if active_feed_templates() != [V75_NITTER_RSS_TEMPLATE]:
-        issues.append("מקור ה-RSS הפעיל אינו nitter.net היחיד")
+    if active_feed_templates() != [V75_FXTWITTER_RSS_TEMPLATE]:
+        issues.append("מקור ה-RSS הפעיל אינו fxtwitter.com היחיד")
     if RSS_ENABLE_FALLBACK or RSS_FALLBACK_SOURCE_COUNT != 0:
         issues.append("מנגנון mirrors עדיין פעיל")
     if (MAX_PARALLEL_ACCOUNT_CHECKS, MAX_PARALLEL_POST_SENDS, GEMINI_MAX_PARALLEL_TRANSLATIONS) != (4, 4, 2):
@@ -69012,6 +69079,21 @@ def main() -> None:
     control_state = load_control_state()
     raw_schedule = control_state.get(V75_SCHEDULER_STATE_KEY, {})
     schedule: dict[str, Any] = dict(raw_schedule) if isinstance(raw_schedule, dict) else {}
+    if not bool(control_state.get(V76_SOURCE_MIGRATION_KEY, False)):
+        # Discard only Nitter failure timing.  Keep each X post frontier so the
+        # repaired source cannot replay already-processed history.
+        migration_now = time.time()
+        for item in schedule.values():
+            if isinstance(item, dict):
+                item["failures"] = 0
+                item.pop("last_error", None)
+                item["tier"] = 0
+                item["no_new_since"] = migration_now
+                item["next_due_at"] = migration_now
+        save_control_state(**{
+            V75_SCHEDULER_STATE_KEY: schedule,
+            V76_SOURCE_MIGRATION_KEY: True,
+        })
     control_thread_started = False
     startup_cycle = not any(bool(value) for key, value in state.items() if not str(key).startswith("__"))
     last_batch_write = 0.0
@@ -69020,7 +69102,7 @@ def main() -> None:
     paused_logged = False
 
     logging.info(
-        "🚀 V75 פעיל: RSS יחיד nitter.net | scheduler אדפטיבי | workers 4/4/2 | video=%s bytes",
+        "🚀 V76 פעיל: FxTwitter API v2 + RSS גיבוי יחיד | scheduler אדפטיבי | workers 4/4/2 | video=%s bytes",
         MAX_VIDEO_BYTES,
     )
 
