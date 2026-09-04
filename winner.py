@@ -67469,5 +67469,715 @@ logging.info(
 
 # ====== END V73 FINAL RELIABILITY REPAIR ======
 
+
+# ====== V74 GOOGLE HISTORY RATE-LIMIT + 12.5 MB VIDEO CAP (2026-09-04) ======
+# The writer-history button used to launch up to ten simultaneous requests to
+# Google's unauthenticated translate endpoint.  That burst reliably triggered
+# HTTP 429 on Railway and left the history list in English.  Translate the
+# uncached rows in one bounded batch (normally one request, at most a few for
+# exceptionally long posts), cache every result, and stop immediately when
+# Google asks us to cool down.
+
+V74_GOOGLE_HISTORY_CACHE_PREFIX = "google-history-v74:"
+V74_GOOGLE_HISTORY_BATCH_CHARS = max(
+    1200, min(4600, int(os.environ.get("GOOGLE_HISTORY_BATCH_CHARS", "4200")))
+)
+V74_GOOGLE_HISTORY_COOLDOWN_SECONDS = max(
+    60, int(os.environ.get("GOOGLE_HISTORY_429_COOLDOWN_SECONDS", "900"))
+)
+V74_GOOGLE_HISTORY_ERROR_COOLDOWN_SECONDS = max(
+    15, int(os.environ.get("GOOGLE_HISTORY_ERROR_COOLDOWN_SECONDS", "60"))
+)
+_V74_GOOGLE_HISTORY_LOCK = RLock()
+_V74_GOOGLE_HISTORY_CACHE_LOCK = RLock()
+_V74_GOOGLE_HISTORY_DISABLED_UNTIL = 0.0
+_V74_GOOGLE_HISTORY_LAST_WARNING_AT = 0.0
+
+
+def _v74_history_source(post: Post) -> str:
+    source = clean_for_ai_translation(html.unescape(str(getattr(post, "text", "") or ""))).strip()
+    if not source:
+        source = remove_external_links(html.unescape(str(getattr(post, "title", "") or ""))).strip()
+    return compact_debug_text(source, 1800).strip()
+
+
+def _v74_history_cache_key(source: str) -> str:
+    return V74_GOOGLE_HISTORY_CACHE_PREFIX + hashlib.sha256(source.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _v74_history_polish(source: str, translated: str) -> str:
+    value = tidy_translated_text(str(translated or "").strip())
+    value = apply_phrase_replacements(value, TEAM_REPLACEMENTS)
+    value = apply_phrase_replacements(value, PLAYER_REPLACEMENTS)
+    value = apply_phrase_replacements(value, HEBREW_FINAL_FIXES)
+    value = preserve_original_country_flags(source, preserve_original_emojis(source, value))
+    value = final_visual_cleanup(final_hebrew_polish(value))
+    value = remove_urls(value)
+    return value.strip()
+
+
+def _v74_google_history_request(value: str) -> str:
+    """Make exactly one Google request; the caller owns retries/cooldown."""
+    query = urllib.parse.urlencode(
+        {"client": "gtx", "sl": "auto", "tl": TARGET_LANGUAGE, "dt": "t", "q": value}
+    )
+    raw = http_get_once(
+        "https://translate.googleapis.com/translate_a/single?" + query,
+        timeout=max(3, GOOGLE_TRANSLATE_TIMEOUT_SECONDS),
+    )
+    data = json.loads(raw.decode("utf-8", errors="replace"))
+    return "".join(str(part[0]) for part in data[0] if part and part[0]).strip()
+
+
+def _v74_history_marker(index: int) -> str:
+    return f"__NETO_ITEM_{index:02d}_7F__"
+
+
+def _v74_parse_history_batch(value: str, expected: set[int]) -> dict[int, str]:
+    pattern = re.compile(r"__\s*NETO\s*_\s*ITEM\s*_\s*(\d{2})\s*_\s*7F\s*__", re.IGNORECASE)
+    matches = list(pattern.finditer(str(value or "")))
+    parsed: dict[int, str] = {}
+    for position, match in enumerate(matches):
+        index = int(match.group(1))
+        if index not in expected:
+            continue
+        end = matches[position + 1].start() if position + 1 < len(matches) else len(value)
+        translated = str(value[match.end():end]).strip()
+        if translated:
+            parsed[index] = translated
+    return parsed
+
+
+def _v74_history_chunks(rows: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
+    chunks: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    current_chars = 0
+    for index, source in rows:
+        addition = len(source) + len(_v74_history_marker(index)) + 4
+        if current and current_chars + addition > V74_GOOGLE_HISTORY_BATCH_CHARS:
+            chunks.append(current)
+            current = []
+            current_chars = 0
+        current.append((index, source))
+        current_chars += addition
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _v74_google_error_is_429(exc: BaseException) -> bool:
+    return int(getattr(exc, "code", 0) or 0) == 429 or bool(
+        re.search(r"(?i)(?:HTTP\s*)?429|too many requests", str(exc or ""))
+    )
+
+
+def _v74_note_google_history_failure(exc: BaseException) -> None:
+    global _V74_GOOGLE_HISTORY_DISABLED_UNTIL, _V74_GOOGLE_HISTORY_LAST_WARNING_AT
+    now = time.time()
+    rate_limited = _v74_google_error_is_429(exc)
+    delay = V74_GOOGLE_HISTORY_COOLDOWN_SECONDS if rate_limited else V74_GOOGLE_HISTORY_ERROR_COOLDOWN_SECONDS
+    _V74_GOOGLE_HISTORY_DISABLED_UNTIL = max(_V74_GOOGLE_HISTORY_DISABLED_UNTIL, now + delay)
+    # One concise warning per cooldown.  Never log the request URL or the post
+    # text, both of which made the previous Railway log practically unreadable.
+    if now - _V74_GOOGLE_HISTORY_LAST_WARNING_AT >= delay:
+        _V74_GOOGLE_HISTORY_LAST_WARNING_AT = now
+        if rate_limited:
+            logging.warning(
+                "⚠️ Google Translate הגביל זמנית את תרגום ההיסטוריה (429); "
+                "הבקשות נעצרו ל-%s דקות והמטמון נשאר פעיל.",
+                max(1, int(delay / 60)),
+            )
+        else:
+            logging.warning(
+                "⚠️ תרגום היסטוריית הכתב ב-Google נכשל זמנית; ניסיון חדש יתבצע בעוד %s שניות (%s).",
+                int(delay), type(exc).__name__,
+            )
+
+
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    """Translate ten-history rows with cached, serialized Google batches."""
+    global TRANSLATION_CACHE_DIRTY, _V74_GOOGLE_HISTORY_DISABLED_UNTIL
+    values = list(posts or [])
+    if not values:
+        return []
+
+    sources = [_v74_history_source(post) for post in values]
+    results = [""] * len(values)
+    missing: list[tuple[int, str]] = []
+    with _V74_GOOGLE_HISTORY_CACHE_LOCK:
+        for index, source in enumerate(sources):
+            if not source:
+                results[index] = "הפוסט התקבל ללא טקסט קריא"
+                continue
+            # Already-Hebrew rows do not need a network round trip.
+            if re.search(r"[א-ת]", source) and latin_ratio(source) < 0.10:
+                results[index] = source
+                continue
+            cached = str(TRANSLATION_CACHE.get(_v74_history_cache_key(source), "") or "").strip()
+            if cached:
+                results[index] = cached
+            else:
+                missing.append((index, source))
+
+    for chunk in _v74_history_chunks(missing):
+        with _V74_GOOGLE_HISTORY_LOCK:
+            if time.time() < _V74_GOOGLE_HISTORY_DISABLED_UNTIL:
+                break
+            request_text = "\n\n".join(
+                f"{_v74_history_marker(index)}\n{source}" for index, source in chunk
+            )
+            try:
+                translated_batch = _v74_google_history_request(request_text)
+                parsed = _v74_parse_history_batch(translated_batch, {index for index, _source in chunk})
+                # A one-row batch remains usable even if Google unexpectedly
+                # strips our non-linguistic separator.
+                if not parsed and len(chunk) == 1 and translated_batch:
+                    parsed = {chunk[0][0]: translated_batch}
+                if not parsed:
+                    raise ValueError("Google returned a batch without item separators")
+                _V74_GOOGLE_HISTORY_DISABLED_UNTIL = 0.0
+            except Exception as exc:
+                _v74_note_google_history_failure(exc)
+                break
+
+        with _V74_GOOGLE_HISTORY_CACHE_LOCK:
+            for index, source in chunk:
+                polished = _v74_history_polish(source, parsed.get(index, ""))
+                if not polished:
+                    continue
+                results[index] = polished
+                TRANSLATION_CACHE[_v74_history_cache_key(source)] = polished
+                TRANSLATION_CACHE_DIRTY = True
+
+    # A temporary Google outage never crashes the button.  Cached/new Hebrew is
+    # shown where available and the untouched source remains as the last-resort
+    # value for rows that Google explicitly postponed.
+    for index, source in enumerate(sources):
+        if not results[index]:
+            results[index] = source or "הפוסט התקבל ללא טקסט קריא"
+    if TRANSLATION_CACHE_DIRTY:
+        try:
+            save_translation_cache(TRANSLATION_CACHE)
+        except Exception:
+            pass
+    return results
+
+
+# Telegram Bot API uploads become less reliable near the previous 25 MB cap.
+# Keep the requested 12.5 MB ceiling in one final runtime constant used by every
+# existing download/upload guard.
+MAX_VIDEO_BYTES = int(12.5 * 1024 * 1024)
+
+
+def _v74_self_audit() -> None:
+    sample = "__NETO_ITEM_00_7F__\nדיווח ראשון\n\n__NETO_ITEM_01_7F__\nדיווח שני"
+    parsed = _v74_parse_history_batch(sample, {0, 1})
+    if parsed != {0: "דיווח ראשון", 1: "דיווח שני"}:
+        raise RuntimeError("v74_google_history_batch_parser_failed")
+    if MAX_VIDEO_BYTES != 13_107_200:
+        raise RuntimeError("v74_video_limit_is_not_12_5_mb")
+
+
+# Manual control actions must stay interactive. Automatic publishing keeps its
+# persistent retry schedule; a manual preparation uses at most two bounded
+# Gemini requests and never sleeps for 150 seconds between attempts.
+FINAL_GEMINI_NETWORK_BUDGET = min(max(1, int(FINAL_GEMINI_NETWORK_BUDGET)), 2)
+GEMINI_TRANSLATION_TIMEOUT_SECONDS = min(max(8, int(GEMINI_TRANSLATION_TIMEOUT_SECONDS)), 10)
+V74_PREPARE_WORKERS = max(1, min(4, int(os.environ.get("CONTROL_PREPARE_WORKERS", "2"))))
+_V74_PREPARE_EXECUTOR = ThreadPoolExecutor(max_workers=V74_PREPARE_WORKERS, thread_name_prefix="prepare-v74")
+_V74_PREPARE_LOCK = RLock()
+_V74_PREPARE_INFLIGHT: set[str] = set()
+
+
+# Accept both the singular "בדיקה רפואית" and plural "בדיקות רפואיות". The
+# older integrity regex accidentally rejected the singular and caused a good
+# Gemini result to be retried.
+_V74_PRE_COMPLETENESS_ISSUES = _final_translation_completeness_issues
+_V74_HEBREW_MEDICAL_RE = re.compile(
+    r"(?u)בדיק(?:ה|ות)\s+רפואי(?:ת|ות|ים)?|עבר(?:ה|ו)?\s+(?:את\s+)?הבדיק(?:ה|ות)\s+הרפואי(?:ת|ות)"
+)
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    issues = list(_V74_PRE_COMPLETENESS_ISSUES(source, translated) or [])
+    if re.search(r"(?iu)\bmedical(?:s)?\b", str(source or "")) and _V74_HEBREW_MEDICAL_RE.search(str(translated or "")):
+        issues = [
+            issue for issue in issues
+            if not re.search(r"(?iu)(?:רכיב משמעותי מהמקור:\s*medical|missing.*medical)", str(issue or ""))
+        ]
+    return list(dict.fromkeys(str(issue) for issue in issues if str(issue).strip()))
+
+
+# V73 posts already contain exact text. Do not query several exact-X endpoints
+# again merely because an old preparation wrapper passed force=True.
+_V74_PRE_HYDRATE_EXACT_POST = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    if isinstance(post, Post) and bool(getattr(post, "exact_source_structure", False)) and str(
+        getattr(post, "original_text", "") or getattr(post, "text", "") or ""
+    ).strip():
+        return post
+    return _V74_PRE_HYDRATE_EXACT_POST(post, force=False)
+
+
+def _v74_clone_translation_post(post: Post, source: str, suffix: str) -> Post:
+    clone = Post(
+        post_id=f"{getattr(post, 'post_id', '')}:{suffix}",
+        username=str(getattr(post, "username", "") or ""),
+        text=source,
+        link=str(getattr(post, "link", "") or ""),
+        image_urls=[], video_urls=[], has_video=False, primary_has_video=False,
+        quoted_has_video=False, quoted_author="", quoted_text="",
+        published_ts=float(getattr(post, "published_ts", 0.0) or 0.0),
+        dedupe_ids=[], source_name="google-manual-fallback",
+    )
+    clone.original_text = source
+    return clone
+
+
+def _v74_manual_google_fallback(post: Post) -> tuple[str, str, str]:
+    main_source = _v74_history_source(post)
+    quote_source = clean_for_ai_translation(html.unescape(str(getattr(post, "quoted_text", "") or ""))).strip()
+    rows = [_v74_clone_translation_post(post, main_source, "main")]
+    if quote_source:
+        rows.append(_v74_clone_translation_post(post, quote_source, "quote"))
+    translated = _translate_history_posts_parallel(rows)
+    main = str(translated[0] if translated else "").strip()
+    quote = str(translated[1] if quote_source and len(translated) > 1 else "").strip()
+    if _final_translation_is_still_english(main_source, main):
+        raise TranslationUnavailable("Google Translate is temporarily rate-limited and no Hebrew cache is available")
+    if quote_source and _final_translation_is_still_english(quote_source, quote):
+        raise TranslationUnavailable("Google Translate left the quoted post untranslated")
+    post.translation_origin = "google"
+    return main, quote, ""
+
+
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    """One bounded manual operation; never sleep inside a button worker."""
+    _reliable_hydrate_exact_post(post, force=False)
+    gemini_error: Exception | None = None
+    try:
+        main, quote, author = translate_post_for_send(post)
+        main_source = _final_corresponding_source_text(post, quoted=False)
+        quote_source = _final_corresponding_source_text(post, quoted=True)
+        if _final_translation_is_still_english(main_source, main):
+            raise TranslationUnavailable("Gemini returned untranslated English")
+        if quote and _final_translation_is_still_english(quote_source, quote):
+            raise TranslationUnavailable("Gemini left the quoted post untranslated")
+        post.translation_origin = "gemini"
+        return str(main or ""), str(quote or ""), str(author or "")
+    except Exception as exc:
+        gemini_error = exc
+        logging.warning(
+            "⚠️ הכנה ידנית: Gemini לא השלים תרגום בזמן הקצוב; עובר פעם אחת לגיבוי Google (%s).",
+            gemini_error_summary(exc),
+        )
+    try:
+        return _v74_manual_google_fallback(post)
+    except Exception as google_exc:
+        raise TranslationUnavailable(
+            "לא התקבל תרגום תקין בזמן הקצוב; Gemini: "
+            + gemini_error_summary(gemini_error)
+            + "; Google: "
+            + ("הגבלת קצב 429" if _v74_google_error_is_429(google_exc) else short_error(google_exc, 220))
+        ) from google_exc
+
+
+def _v74_update_prepare_status(message_id: Any, text: str) -> None:
+    if not message_id:
+        return
+    try:
+        send_control_text(text, message_id, control_delete_message_reply_markup())
+    except Exception as exc:
+        logging.debug("Prepare status update failed safely: %s", short_error(exc, 180))
+
+
+def prepare_history_post_with_ai(token: str, status_message_id: Any = None) -> None:
+    item = _restore_prepared_send(token)
+    if not item:
+        raise RuntimeError("הפוסט כבר לא נמצא בזיכרון. פתח שוב את 10 האחרונים של הכתב")
+    post = _ensure_post_original_structure(item.get("post"))
+    if not isinstance(post, Post):
+        raise RuntimeError("אין מספיק נתונים לשחזור הפוסט")
+
+    _v74_update_prepare_status(status_message_id, "⏳ מתרגם את הדיווח...")
+    _reliable_hydrate_exact_post(post, force=False)
+    translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+    if not str(translated or "").strip():
+        raise TranslationUnavailable("התרגום חזר ריק")
+
+    final_message = _render_full_control_candidate(post, translated, quoted_translated, quoted_author_translated)
+    item.update({
+        "post": post,
+        "translated": translated,
+        "quoted_translated": quoted_translated,
+        "quoted_author_translated": quoted_author_translated,
+        "prepared_final_message_html": final_message,
+    })
+    CONTROL_PREPARED_SENDS[token] = item
+    _persist_prepared_send(token, item)
+    try:
+        _persist_prepared_send_durable(token, item)
+    except Exception:
+        pass
+
+    _v74_update_prepare_status(status_message_id, "⏳ התרגום מוכן; מכין את המדיה והכפתורים...")
+    _send_full_control_candidate(post, token, final_message)
+
+
+_V74_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def _v74_prepare_worker(token: str, status_message_id: Any) -> None:
+    try:
+        prepare_history_post_with_ai(token, status_message_id)
+        _quiet_delete_temporary_status(status_message_id)
+    except Exception as exc:
+        logging.warning("⚠️ הכנת דיווח ידנית הסתיימה ללא תוצאה: %s", short_error(exc, 500))
+        error = "⛔ הכנת הדיווח לא הושלמה:\n" + short_error(exc, 700) + "\nאפשר ללחוץ שוב בעוד דקה."
+        if status_message_id:
+            _v74_update_prepare_status(status_message_id, error)
+        else:
+            try:
+                send_control_text(error, None, control_delete_message_reply_markup())
+            except Exception:
+                pass
+    finally:
+        with _V74_PREPARE_LOCK:
+            _V74_PREPARE_INFLIGHT.discard(token)
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "") if callback else ""
+    if not data.startswith("football_prepare_history_ai:"):
+        return _V74_PRE_PROCESS_CONTROL_UPDATE(update)
+
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+
+    token = data.split(":", 1)[1].strip()
+    with _V74_PREPARE_LOCK:
+        already_running = token in _V74_PREPARE_INFLIGHT
+        if not already_running:
+            _V74_PREPARE_INFLIGHT.add(token)
+    if already_running:
+        if callback_id:
+            answer_control_callback(callback_id, "הדיווח כבר בהכנה; אין צורך ללחוץ שוב")
+        return
+
+    if callback_id:
+        answer_control_callback(callback_id, "מתחיל להכין את הדיווח")
+    try:
+        status_id = send_control_text("⏳ מתחיל להכין את הדיווח...", None, control_delete_message_reply_markup())
+    except Exception:
+        status_id = None
+    try:
+        _V74_PREPARE_EXECUTOR.submit(_v74_prepare_worker, token, status_id)
+    except RuntimeError:
+        with _V74_PREPARE_LOCK:
+            _V74_PREPARE_INFLIGHT.discard(token)
+        error = "⛔ מנגנון ההכנה מתאתחל מחדש. נסה שוב בעוד כמה שניות."
+        if status_id:
+            _v74_update_prepare_status(status_id, error)
+        else:
+            send_control_text(error, None, control_delete_message_reply_markup())
+
+
+# A manual button must be interactive, not a seven-minute background retry
+# schedule.  Automatic publishing keeps its persistent scheduled retries, while
+# one manual preparation gets two bounded Gemini network attempts followed by
+# one batched Google fallback.  There are no 150-second sleeps on this path.
+FINAL_GEMINI_NETWORK_BUDGET = min(max(1, int(FINAL_GEMINI_NETWORK_BUDGET)), 2)
+GEMINI_TRANSLATION_TIMEOUT_SECONDS = min(max(8, int(GEMINI_TRANSLATION_TIMEOUT_SECONDS)), 10)
+V74_PREPARE_WORKERS = max(1, min(4, int(os.environ.get("CONTROL_PREPARE_WORKERS", "2"))))
+_V74_PREPARE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=V74_PREPARE_WORKERS,
+    thread_name_prefix="prepare-v74",
+)
+_V74_PREPARE_LOCK = RLock()
+_V74_PREPARE_INFLIGHT: set[str] = set()
+
+
+# The prior medical-integrity regex accepted the plural "בדיקות רפואיות" but
+# accidentally rejected the perfectly valid singular "בדיקה רפואית".  Keep all
+# integrity checks and remove only that false positive when the concept is
+# visibly present in Hebrew.
+_V74_PRE_COMPLETENESS_ISSUES = _final_translation_completeness_issues
+_V74_HEBREW_MEDICAL_RE = re.compile(
+    r"(?u)בדיק(?:ה|ות)\s+רפואי(?:ת|ות|ים)?|עבר(?:ה|ו)?\s+(?:את\s+)?הבדיק(?:ה|ות)\s+הרפואי(?:ת|ות)"
+)
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    issues = list(_V74_PRE_COMPLETENESS_ISSUES(source, translated) or [])
+    if re.search(r"(?iu)\bmedical(?:s)?\b", str(source or "")) and _V74_HEBREW_MEDICAL_RE.search(
+        str(translated or "")
+    ):
+        issues = [
+            issue for issue in issues
+            if not re.search(r"(?iu)(?:רכיב משמעותי מהמקור:\s*medical|missing.*medical)", str(issue or ""))
+        ]
+    return list(dict.fromkeys(str(issue) for issue in issues if str(issue).strip()))
+
+
+# V73 already supplies exact source text.  Several old wrappers nevertheless
+# forced the same post through all exact-X endpoints again during preparation.
+# Reuse exact/cached text instead of adding avoidable sequential timeouts.
+_V74_PRE_HYDRATE_EXACT_POST = _reliable_hydrate_exact_post
+
+
+def _reliable_hydrate_exact_post(post: Any, force: bool = False) -> Any:
+    if isinstance(post, Post) and bool(getattr(post, "exact_source_structure", False)) and str(
+        getattr(post, "original_text", "") or getattr(post, "text", "") or ""
+    ).strip():
+        return post
+    return _V74_PRE_HYDRATE_EXACT_POST(post, force=False)
+
+
+def _v74_clone_translation_post(post: Post, source: str, suffix: str) -> Post:
+    clone = Post(
+        post_id=f"{getattr(post, 'post_id', '')}:{suffix}",
+        username=str(getattr(post, "username", "") or ""),
+        text=source,
+        link=str(getattr(post, "link", "") or ""),
+        image_urls=[],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=float(getattr(post, "published_ts", 0.0) or 0.0),
+        dedupe_ids=[],
+        source_name="google-manual-fallback",
+    )
+    clone.original_text = source
+    return clone
+
+
+def _v74_manual_google_fallback(post: Post) -> tuple[str, str, str]:
+    main_source = _v74_history_source(post)
+    quote_source = clean_for_ai_translation(
+        html.unescape(str(getattr(post, "quoted_text", "") or ""))
+    ).strip()
+    rows = [_v74_clone_translation_post(post, main_source, "main")]
+    if quote_source:
+        rows.append(_v74_clone_translation_post(post, quote_source, "quote"))
+    translated = _translate_history_posts_parallel(rows)
+    main = str(translated[0] if translated else "").strip()
+    quote = str(translated[1] if quote_source and len(translated) > 1 else "").strip()
+    if _final_translation_is_still_english(main_source, main):
+        raise TranslationUnavailable("Google Translate is temporarily rate-limited and no Hebrew cache is available")
+    if quote_source and _final_translation_is_still_english(quote_source, quote):
+        raise TranslationUnavailable("Google Translate left the quoted post untranslated")
+    post.translation_origin = "google"
+    return main, quote, ""
+
+
+def manual_force_translation(post: Post) -> tuple[str, str, str]:
+    """One bounded manual attempt; never sleep inside a control-button job."""
+    _reliable_hydrate_exact_post(post, force=False)
+    gemini_error: Exception | None = None
+    try:
+        main, quote, author = translate_post_for_send(post)
+        main_source = _final_corresponding_source_text(post, quoted=False)
+        quote_source = _final_corresponding_source_text(post, quoted=True)
+        if _final_translation_is_still_english(main_source, main):
+            raise TranslationUnavailable("Gemini returned untranslated English")
+        if quote and _final_translation_is_still_english(quote_source, quote):
+            raise TranslationUnavailable("Gemini left the quoted post untranslated")
+        post.translation_origin = "gemini"
+        return str(main or ""), str(quote or ""), str(author or "")
+    except Exception as exc:
+        gemini_error = exc
+        logging.warning(
+            "⚠️ הכנה ידנית: Gemini לא השלים תרגום לאחר הניסיונות הקצובים; עובר פעם אחת לגיבוי Google (%s).",
+            gemini_error_summary(exc),
+        )
+    try:
+        return _v74_manual_google_fallback(post)
+    except Exception as google_exc:
+        raise TranslationUnavailable(
+            "לא התקבל תרגום תקין בזמן הקצוב; Gemini: "
+            + gemini_error_summary(gemini_error)
+            + "; Google: "
+            + ("הגבלת קצב 429" if _v74_google_error_is_429(google_exc) else short_error(google_exc, 220))
+        ) from google_exc
+
+
+def _v74_update_prepare_status(message_id: Any, text: str) -> None:
+    if not message_id:
+        return
+    try:
+        send_control_text(text, message_id, control_delete_message_reply_markup())
+    except Exception as exc:
+        logging.debug("Prepare status update failed safely: %s", short_error(exc, 180))
+
+
+def prepare_history_post_with_ai(token: str, status_message_id: Any = None) -> None:
+    item = _restore_prepared_send(token)
+    if not item:
+        raise RuntimeError("הפוסט כבר לא נמצא בזיכרון. פתח שוב את 10 האחרונים של הכתב")
+    post = _ensure_post_original_structure(item.get("post"))
+    if not isinstance(post, Post):
+        raise RuntimeError("אין מספיק נתונים לשחזור הפוסט")
+
+    _v74_update_prepare_status(status_message_id, "⏳ מתרגם את הדיווח...")
+    _reliable_hydrate_exact_post(post, force=False)
+    translated, quoted_translated, quoted_author_translated = _manual_translation_for_preview(post)
+    if not str(translated or "").strip():
+        raise TranslationUnavailable("התרגום חזר ריק")
+
+    final_message = _render_full_control_candidate(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+    )
+    item.update({
+        "post": post,
+        "translated": translated,
+        "quoted_translated": quoted_translated,
+        "quoted_author_translated": quoted_author_translated,
+        "prepared_final_message_html": final_message,
+    })
+    CONTROL_PREPARED_SENDS[token] = item
+    _persist_prepared_send(token, item)
+    try:
+        _persist_prepared_send_durable(token, item)
+    except Exception:
+        pass
+
+    _v74_update_prepare_status(status_message_id, "⏳ התרגום מוכן; מכין את המדיה והכפתורים...")
+    _send_full_control_candidate(post, token, final_message)
+
+
+_V74_PRE_PROCESS_CONTROL_UPDATE = process_control_update
+
+
+def _v74_prepare_worker(token: str, status_message_id: Any) -> None:
+    try:
+        prepare_history_post_with_ai(token, status_message_id)
+        _quiet_delete_temporary_status(status_message_id)
+    except Exception as exc:
+        logging.warning("⚠️ הכנת דיווח ידנית הסתיימה ללא תוצאה: %s", short_error(exc, 500))
+        error = "⛔ הכנת הדיווח לא הושלמה:\n" + short_error(exc, 700) + "\nאפשר ללחוץ שוב בעוד דקה."
+        if status_message_id:
+            _v74_update_prepare_status(status_message_id, error)
+        else:
+            try:
+                send_control_text(error, None, control_delete_message_reply_markup())
+            except Exception:
+                pass
+    finally:
+        with _V74_PREPARE_LOCK:
+            _V74_PREPARE_INFLIGHT.discard(token)
+
+
+def process_control_update(update: dict[str, Any]) -> None:
+    callback = update.get("callback_query") or {}
+    data = str(callback.get("data", "") or "") if callback else ""
+    if not data.startswith("football_prepare_history_ai:"):
+        return _V74_PRE_PROCESS_CONTROL_UPDATE(update)
+
+    callback_id = str(callback.get("id", "") or "")
+    message = callback.get("message", {}) or {}
+    chat_id = str((message.get("chat", {}) or {}).get("id", ""))
+    if CONTROL_CHAT_ID and chat_id != str(CONTROL_CHAT_ID):
+        if callback_id:
+            answer_control_callback(callback_id, "אין הרשאה לערוץ הזה")
+        return
+
+    token = data.split(":", 1)[1].strip()
+    with _V74_PREPARE_LOCK:
+        already_running = token in _V74_PREPARE_INFLIGHT
+        if not already_running:
+            _V74_PREPARE_INFLIGHT.add(token)
+    if already_running:
+        if callback_id:
+            answer_control_callback(callback_id, "הדיווח כבר בהכנה; אין צורך ללחוץ שוב")
+        return
+
+    if callback_id:
+        answer_control_callback(callback_id, "מתחיל להכין את הדיווח")
+    try:
+        status_id = send_control_text(
+            "⏳ מתחיל להכין את הדיווח...",
+            None,
+            control_delete_message_reply_markup(),
+        )
+    except Exception:
+        status_id = None
+    try:
+        _V74_PREPARE_EXECUTOR.submit(_v74_prepare_worker, token, status_id)
+    except RuntimeError:
+        with _V74_PREPARE_LOCK:
+            _V74_PREPARE_INFLIGHT.discard(token)
+        error = "⛔ מנגנון ההכנה מתאתחל מחדש. נסה שוב בעוד כמה שניות."
+        if status_id:
+            _v74_update_prepare_status(status_id, error)
+        else:
+            send_control_text(error, None, control_delete_message_reply_markup())
+
+
+# The source file contains many historical add-on layers. If this repair is
+# applied twice while iterating on a deployment, keep the dynamic base edges
+# anchored to the last pre-V74 implementations instead of letting wrappers call
+# themselves recursively.
+_V74_PRE_HYDRATE_EXACT_POST = _V27_PRE_HYDRATE_EXACT_POST
+_V74_HEBREW_MEDICAL_RE = re.compile(
+    r"(?u)ה?בדיק(?:ה|ות)\s+הר?פואי(?:ת|ות|ים)?|"
+    r"ה?בדיק(?:ה|ות)\s+רפואי(?:ת|ות|ים)?|"
+    r"עבר(?:ה|ו)?\s+(?:את\s+)?ה?בדיק(?:ה|ות)\s+הר?פואי(?:ת|ות)"
+)
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    issues = list(_V46_PRE_TRANSLATION_COMPLETENESS(source, translated) or [])
+    src = clean_before_translation(str(source or ""))
+    out = clean_before_translation(str(translated or ""))
+    for label, source_pattern, output_pattern in _V46_TRANSLATION_CONCEPTS:
+        present = bool(output_pattern.search(out))
+        if label == "medical":
+            present = present or bool(_V74_HEBREW_MEDICAL_RE.search(out))
+        if source_pattern.search(src) and not present:
+            issues.append("חסר רכיב משמעותי מהמקור: " + label)
+    source_has_hwg = bool(re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO", src))
+    output_has_hwg = bool(re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO|היר\s+וי\s+גו|הנה\s+זה\s+קורה", out))
+    if output_has_hwg and not source_has_hwg:
+        issues.append("התרגום המציא HERE WE GO שלא הופיע במקור")
+    src_words = _V46_WORD_RE.findall(src)
+    out_words = _V46_WORD_RE.findall(out)
+    if len(src_words) >= 16 and len(out_words) < max(6, int(len(src_words) * 0.42)):
+        issues.append("התרגום קצר מדי ביחס למקור ועלול להשמיט פרטים")
+    return list(dict.fromkeys(str(issue) for issue in issues if str(issue).strip()))
+
+
+def _v74_nonprepare_control_update(update: dict[str, Any]) -> None:
+    try:
+        _v63_ensure_button_executor_alive()
+    except Exception:
+        pass
+    return _V63_PRE_PROCESS_CONTROL_UPDATE(update)
+
+
+_V74_PRE_PROCESS_CONTROL_UPDATE = _v74_nonprepare_control_update
+
+
+_v74_self_audit()
+logging.info(
+    "V74 active: Google history uses cached serialized batches with 429 cooldown; "
+    "video transfer cap is 12.5 MB."
+)
+
+# ====== END V74 GOOGLE HISTORY RATE-LIMIT + 12.5 MB VIDEO CAP ======
+
 if __name__ == "__main__":
     main()
