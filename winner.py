@@ -69179,5 +69179,786 @@ def main() -> None:
         _v75_sleep_until_next_due(schedule, accounts)
 
 
+# ====== V77 GEMINI / TELEGRAM ERROR-RECOVERY PATCH (2026-09-05) ======
+# This final layer fixes the failures observed in Railway without weakening the
+# translation integrity gate.  It is intentionally network-free at import time.
+
+BOT_BUILD_ID = "V77-gemini-telegram-recovery-2026-09-05"
+
+# The V74 manual-path layer accidentally clamped an explicitly configured
+# 18-second Gemini read timeout to ten seconds.  Ten seconds is too short under
+# normal model load and produced the repeated "read operation timed out" logs.
+# Keep each request bounded, but allow enough time for a complete JSON result.
+try:
+    _V77_GEMINI_TIMEOUT_RAW = int(
+        os.environ.get("GEMINI_TRANSLATION_TIMEOUT_SECONDS", "18") or 18
+    )
+except Exception:
+    _V77_GEMINI_TIMEOUT_RAW = 18
+GEMINI_TRANSLATION_TIMEOUT_SECONDS = max(15, min(24, _V77_GEMINI_TIMEOUT_RAW))
+FINAL_GEMINI_NETWORK_BUDGET = max(1, min(2, int(FINAL_GEMINI_NETWORK_BUDGET)))
+
+
+# A 401 ACCOUNT_STATE_INVALID is permanent for the running deployment.  A
+# disabled service-account key must not consume one request in every later post.
+_V77_DISABLED_GEMINI_KEYS: set[str] = set()
+_V77_PRE_GEMINI_KEYS_FOR_OPERATION = gemini_translation_keys_for_operation
+
+
+def gemini_translation_keys_for_operation() -> list[tuple[int, str]]:
+    return [
+        (index, key)
+        for index, key in _V77_PRE_GEMINI_KEYS_FOR_OPERATION()
+        if key not in _V77_DISABLED_GEMINI_KEYS
+    ]
+
+
+_V77_PRE_APPLY_GEMINI_COOLDOWN = _final_apply_gemini_failure_cooldown
+
+
+def _final_apply_gemini_failure_cooldown(
+    model: str, key: str, exc: Exception
+) -> tuple[bool, bool]:
+    decision = _V77_PRE_APPLY_GEMINI_COOLDOWN(model, key, exc)
+    now = time.time()
+    code = int(getattr(exc, "code", 0) or 0)
+    lowered = str(exc or "").casefold()
+    if code == 401 or "account_state_invalid" in lowered or "service account" in lowered:
+        _V77_DISABLED_GEMINI_KEYS.add(key)
+        GEMINI_KEY_COOLDOWNS[key] = max(
+            float(GEMINI_KEY_COOLDOWNS.get(key, 0.0) or 0.0),
+            now + 30 * 24 * 60 * 60,
+        )
+        return True, False
+    if code == 503 or "high demand" in lowered or "temporarily unavailable" in lowered:
+        GEMINI_MODEL_COOLDOWNS[model] = max(
+            float(GEMINI_MODEL_COOLDOWNS.get(model, 0.0) or 0.0),
+            now + 10 * 60,
+        )
+        return False, True
+    if any(token in lowered for token in ("timed out", "timeout", "פעולת הקריאה")):
+        GEMINI_MODEL_COOLDOWNS[model] = max(
+            float(GEMINI_MODEL_COOLDOWNS.get(model, 0.0) or 0.0),
+            now + 3 * 60,
+        )
+        return False, True
+    return decision
+
+
+# After a busy current model, reach proven stable fallbacks inside the same
+# two-request budget instead of spending both requests on adjacent preview tiers.
+_V77_GEMINI_MODEL_ORDER = (
+    "gemini-3.6-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+)
+
+
+def _final_gemini_model_candidates() -> list[str]:
+    values: list[str] = []
+    configured_primary = (
+        os.environ.get("GEMINI_MODEL", ""),
+        os.environ.get("GEMINI_FAST_MODEL", ""),
+    )
+    configured_fallback = (
+        os.environ.get("GEMINI_FALLBACK_MODEL", ""),
+        os.environ.get("GEMINI_FALLBACK_MODELS", ""),
+    )
+    for raw in configured_primary:
+        for part in re.split(r"[,\n\r;]+", str(raw or "")):
+            name = part.strip()
+            if name and name not in GEMINI_SHUTDOWN_MODELS and name not in values:
+                values.append(name)
+    for name in _V77_GEMINI_MODEL_ORDER:
+        if name not in GEMINI_SHUTDOWN_MODELS and name not in values:
+            values.append(name)
+    # Railway's old fallback variables may still name adjacent overloaded
+    # preview tiers.  Honor them, but only after the stable 2.5 fallbacks.
+    for raw in configured_fallback:
+        for part in re.split(r"[,\n\r;]+", str(raw or "")):
+            name = part.strip()
+            if name and name not in GEMINI_SHUTDOWN_MODELS and name not in values:
+                values.append(name)
+    now = time.time()
+    available = [
+        name for name in values
+        if float(GEMINI_MODEL_COOLDOWNS.get(name, 0.0) or 0.0) <= now
+    ]
+    # If every model is in a short cooldown, fail fast into the existing
+    # scheduled retry/Google path.  Re-hitting a known-busy model defeats the
+    # cooldown and was the source of the repeated 503 storms in the log.
+    return available
+
+
+def gemini_models_for_operation() -> list[str]:
+    return _final_gemini_model_candidates()
+
+
+# Preserve every factual number and compact money amount as an immutable token.
+# The decoder restores the exact source value even when a model accidentally
+# omits the marker, so the integrity checker remains strict without needless
+# retries for lost values such as 15 or €15m.
+_V77_PRE_ENCODE_SPECIAL_ANCHORS = _final_encode_special_anchors
+_V77_PRE_DECODE_SPECIAL_ANCHORS = _final_decode_special_anchors
+_V77_PROTECTED_MARKER_RE = re.compile(r"(⟪(?:HWG|HAYOM)\d{4}⟫)")
+_V77_FACT_VALUE_RE = re.compile(
+    r"(?<![A-Za-zא-ת0-9])(?:[€£$]\s*)?\d+(?:[.,]\d+)*(?:\s*(?:%|m|bn|k))?(?![A-Za-zא-ת0-9])",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _final_encode_special_anchors(value: str) -> tuple[str, list[dict[str, Any]]]:
+    text, anchors = _V77_PRE_ENCODE_SPECIAL_ANCHORS(value)
+    pieces = _V77_PROTECTED_MARKER_RE.split(text)
+    output: list[str] = []
+    value_index = 0
+    for piece in pieces:
+        if not piece:
+            continue
+        if _V77_PROTECTED_MARKER_RE.fullmatch(piece):
+            output.append(piece)
+            continue
+        base_position = sum(len(part) for part in output)
+
+        def protect(match: re.Match[str]) -> str:
+            nonlocal value_index
+            value_index += 1
+            marker = f"⟪VAL{value_index:04d}⟫"
+            anchors.append({
+                "marker": marker,
+                "replacement": match.group(0),
+                "start": base_position + match.start(),
+                "kind": "fact_value",
+            })
+            return marker
+
+        output.append(_V77_FACT_VALUE_RE.sub(protect, piece))
+    return "".join(output), anchors
+
+
+def _final_decode_special_anchors(
+    source: str, translated: str, anchors: list[dict[str, Any]]
+) -> str:
+    value = _V77_PRE_DECODE_SPECIAL_ANCHORS(source, translated, anchors)
+    # A duplicated marker from model output must never leak to Telegram.
+    return re.sub(r"⟪VAL\d{4}⟫", "", value).strip()
+
+
+_V77_PRE_TRANSLATION_PAYLOAD = _final_translation_payload
+
+
+def _final_translation_payload(
+    main_source: str, quote_source: str, author_source: str, glossary: str
+) -> dict[str, Any]:
+    payload = _V77_PRE_TRANSLATION_PAYLOAD(
+        main_source, quote_source, author_source, glossary
+    )
+    instruction = (
+        " Tokens shaped like ⟪VAL0001⟫ are immutable factual values. "
+        "Copy every VAL token exactly once into the corresponding translated field; "
+        "never delete, translate, reorder or duplicate one."
+    )
+    try:
+        payload["systemInstruction"]["parts"][0]["text"] += instruction
+        payload["contents"][0]["parts"][0]["text"] += (
+            "\n\nMANDATORY: preserve every ⟪VALdddd⟫ token exactly once."
+        )
+    except Exception:
+        pass
+    return payload
+
+
+# "Officials" has several faithful Hebrew renderings.  Retain the concept
+# check, but accept common translations rather than forcing one exact phrase.
+_V77_PRE_COMPLETENESS_ISSUES = _final_translation_completeness_issues
+_V77_OFFICIALS_HE_RE = re.compile(
+    r"(?u)אנשי\s+(?:ה)?צוות|גורמי(?:ם)?|אנשי\s+המועדון|צוות|"
+    r"בכירי\s+המועדון|הנהלת\s+המועדון|נציגי\s+המועדון|בעלי\s+תפקידים"
+)
+
+
+def _final_translation_completeness_issues(
+    source: str, translated: str
+) -> list[str]:
+    issues = list(_V77_PRE_COMPLETENESS_ISSUES(source, translated) or [])
+    if _V77_OFFICIALS_HE_RE.search(str(translated or "")):
+        issues = [
+            issue for issue in issues
+            if "officials_or_staff" not in str(issue or "")
+        ]
+    return list(dict.fromkeys(str(issue) for issue in issues if str(issue).strip()))
+
+
+# Telegram entity offsets are UTF-16 code units.  Drop only a malformed entity
+# if an upstream edit placed it inside an emoji surrogate pair; the text edit
+# itself can still succeed safely.
+_V77_PRE_TRANSFORM_TEXT_ENTITIES = _v42_transform_text_entities
+
+
+def _v77_utf16_boundaries(value: str) -> set[int]:
+    cursor = 0
+    boundaries = {0}
+    for character in str(value or ""):
+        cursor += _v42_utf16_len(character)
+        boundaries.add(cursor)
+    return boundaries
+
+
+def _v42_transform_text_entities(
+    text: str, entities: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]]] | None:
+    transformed = _V77_PRE_TRANSFORM_TEXT_ENTITIES(text, entities)
+    if transformed is None:
+        return None
+    fixed_text, fixed_entities = transformed
+    boundaries = _v77_utf16_boundaries(fixed_text)
+    total = _v42_utf16_len(fixed_text)
+    valid: list[dict[str, Any]] = []
+    for raw in fixed_entities:
+        if not isinstance(raw, dict):
+            continue
+        start = int(raw.get("offset", 0) or 0)
+        length = int(raw.get("length", 0) or 0)
+        end = start + length
+        if length > 0 and start in boundaries and end in boundaries and end <= total:
+            valid.append(raw)
+        else:
+            logging.debug(
+                "Skipped malformed Telegram UTF-16 entity safely: offset=%s length=%s total=%s",
+                start, length, total,
+            )
+    return fixed_text, valid
+
+
+_V77_PRE_TRY_EDIT_CHANNEL_RTL = _v43_try_edit_any_admin_channel_post
+
+
+def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
+    message = update.get("channel_post") or update.get("edited_channel_post") or {}
+    if isinstance(message, dict):
+        kind, original, entities = _v42_message_text_and_entities(message)
+        if kind and original and _v42_message_needs_rtl_repair(original):
+            transformed = _v42_transform_text_entities(original, entities)
+            if transformed is not None:
+                fixed_text, _fixed_entities = transformed
+                # Telegram captions are limited to 1024 UTF-16 units after
+                # entity parsing.  Do not issue an edit Telegram must reject.
+                if kind == "caption" and _v42_utf16_len(fixed_text) > 1024:
+                    logging.info(
+                        "RTL caption edit skipped safely because it exceeds Telegram's 1024-unit limit: chat=%s message=%s",
+                        str((message.get("chat") or {}).get("id", "")),
+                        int(message.get("message_id", 0) or 0),
+                    )
+                    return True
+    return _V77_PRE_TRY_EDIT_CHANNEL_RTL(update)
+
+
+_V77_PRE_TELEGRAM_API = telegram_api
+_V77_TRANSIENT_EDIT_ERRORS = (
+    "network is unreachable", "network is unreached", "timed out", "timeout",
+    "connection reset", "temporarily unavailable", "remote end closed",
+)
+
+
+def telegram_api(
+    method: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    max_attempts: int = HTTP_RETRIES,
+    timeout: int = REQUEST_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    method_name = str(method or "")
+    data = dict(payload or {})
+    is_edit = method_name.casefold().startswith("editmessage")
+
+    # This also protects edit paths outside the RTL handler.
+    if method_name == "editMessageCaption" and _v42_utf16_len(str(data.get("caption") or "")) > 1024:
+        return {
+            "ok": True,
+            "result": {"message_id": int(data.get("message_id", 0) or 0)},
+            "v77_skipped_oversize_caption": True,
+        }
+
+    attempts = 2 if is_edit else 1
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return _V77_PRE_TELEGRAM_API(
+                method_name,
+                data,
+                max_attempts=1 if is_edit else max_attempts,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            last_error = exc
+            lowered = str(exc or "").casefold()
+            if "message is not modified" in lowered or "message_not_modified" in lowered:
+                return {
+                    "ok": True,
+                    "result": {"message_id": int(data.get("message_id", 0) or 0)},
+                    "v77_already_current": True,
+                }
+            transient = any(token in lowered for token in _V77_TRANSIENT_EDIT_ERRORS)
+            if not is_edit or not transient or attempt + 1 >= attempts:
+                raise
+            time.sleep(0.25)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Telegram edit failed without an error")
+
+
+# yt-dlp reports "no video in this post" at ERROR level by default.  For a
+# hard-lazy optional lookup that result is normal, not a bot failure.
+class _V77QuietYTDLPLogger:
+    def debug(self, message: Any) -> None:
+        return None
+
+    def warning(self, message: Any) -> None:
+        return None
+
+    def error(self, message: Any) -> None:
+        logging.debug("Optional yt-dlp lookup returned no usable video: %s", short_error(message, 180))
+
+
+def _final_ytdlp_candidates(post: Post) -> list[dict[str, Any]]:
+    link = str(getattr(post, "link", "") or "")
+    if not link:
+        return []
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        import yt_dlp  # type: ignore
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "ignoreerrors": True,
+            "skip_download": True,
+            "noplaylist": False,
+            "socket_timeout": FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS,
+            "extractor_args": {"twitter": {"api": ["syndication"]}},
+            "logger": _V77QuietYTDLPLogger(),
+        }
+        with yt_dlp.YoutubeDL(options) as downloader:
+            info = downloader.extract_info(link, download=False)
+        if info:
+            _final_walk_video_variants(info, out)
+    except Exception as exc:
+        logging.debug("Optional yt-dlp module lookup failed safely: %s", short_error(exc, 180))
+    if out:
+        return list(out.values())
+    executable = shutil.which("yt-dlp")
+    if not executable:
+        return []
+    try:
+        import subprocess
+        completed = subprocess.run(
+            [
+                executable, "-J", "--no-warnings", "--ignore-errors",
+                "--extractor-args", "twitter:api=syndication", link,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(15.0, FINAL_VIDEO_LOOKUP_TIMEOUT_SECONDS * 2),
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            parsed = json.loads(completed.stdout)
+            if parsed:
+                _final_walk_video_variants(parsed, out)
+    except Exception as exc:
+        logging.debug("Optional yt-dlp command lookup failed safely: %s", short_error(exc, 180))
+    return list(out.values())
+
+
+def _v77_self_audit() -> None:
+    encoded, anchors = _final_encode_special_anchors(
+        "Deal worth €15m plus €2.5m, contract until 2029."
+    )
+    if "€15m" in encoded or "2029" in encoded or len(anchors) < 3:
+        raise RuntimeError("v77_fact_anchor_encoding_failed")
+    translated = "עסקה בשווי ⟪VAL0001⟫ ועוד ⟪VAL0002⟫, חוזה עד ⟪VAL0003⟫."
+    decoded = _final_decode_special_anchors(
+        "Deal worth €15m plus €2.5m, contract until 2029.", translated, anchors
+    )
+    if not all(value in decoded for value in ("€15m", "€2.5m", "2029")):
+        raise RuntimeError("v77_fact_anchor_decoding_failed")
+    transformed = _v42_transform_text_entities(
+        "🚨 קישור", [{"type": "bold", "offset": 3, "length": 5}]
+    )
+    if transformed is None:
+        raise RuntimeError("v77_utf16_entity_transform_failed")
+    fixed_text, fixed_entities = transformed
+    boundaries = _v77_utf16_boundaries(fixed_text)
+    if any(
+        int(item.get("offset", 0)) not in boundaries
+        or int(item.get("offset", 0)) + int(item.get("length", 0)) not in boundaries
+        for item in fixed_entities
+    ):
+        raise RuntimeError("v77_utf16_entity_boundary_failed")
+    if not (15 <= GEMINI_TRANSLATION_TIMEOUT_SECONDS <= 24):
+        raise RuntimeError("v77_gemini_timeout_failed")
+
+
+_v77_self_audit()
+logging.info(
+    "V77 active: Gemini factual anchors + disabled-key quarantine + stable fallback order; "
+    "Telegram idempotent/UTF-16/caption-safe edits; quiet no-video lookup"
+)
+
+
+# ====== V78 LOW-LATENCY GEMINI HEDGING PATCH (2026-09-05) ======
+# Fast path for short football translations:
+# - one bounded translation operation, not long sequential waits;
+# - two distinct keys/models race per wave;
+# - at most four healthy keys are considered per operation;
+# - first structurally complete result wins immediately;
+# - 401/429/5xx health is still handled by the V77 quarantine/cooldowns.
+
+BOT_BUILD_ID = "V78-fast-gemini-hedging-2026-09-05"
+GEMINI_TRANSLATION_TIMEOUT_SECONDS = 8
+FINAL_GEMINI_NETWORK_BUDGET = 1
+GEMINI_TRANSLATION_MAX_OUTPUT_TOKENS = 2048
+V78_GEMINI_HEDGE_WIDTH = 2
+V78_GEMINI_MAX_KEYS_PER_OPERATION = 4
+_V78_GEMINI_REQUEST_SLOTS = BoundedSemaphore(4)
+_V78_GEMINI_HEALTH_LOCK = RLock()
+_V78_GEMINI_KEY_HEALTH: dict[str, dict[str, float]] = {}
+_V78_PRE_GEMINI_REQUEST_JSON = _final_gemini_request_json
+
+
+def _v78_key_health_score(key: str) -> tuple[float, float, float]:
+    with _V78_GEMINI_HEALTH_LOCK:
+        item = dict(_V78_GEMINI_KEY_HEALTH.get(key, {}))
+    # Healthy/fast keys lead.  last_used is the final tie-breaker so equally
+    # healthy keys rotate instead of one key receiving every request.
+    return (
+        float(item.get("failures", 0.0) or 0.0),
+        float(item.get("latency", 3.0) or 3.0),
+        float(item.get("last_used", 0.0) or 0.0),
+    )
+
+
+def _v78_healthy_keys(primary_key: str) -> list[str]:
+    refresh_gemini_api_keys_from_env()
+    now = time.time()
+    available = [
+        key for key in GEMINI_API_KEYS
+        if key not in _V77_DISABLED_GEMINI_KEYS
+        and float(GEMINI_KEY_COOLDOWNS.get(key, 0.0) or 0.0) <= now
+    ]
+    ordered = sorted(available, key=_v78_key_health_score)
+    if primary_key in ordered:
+        ordered.remove(primary_key)
+        ordered.insert(0, primary_key)
+    elif primary_key and primary_key not in _V77_DISABLED_GEMINI_KEYS:
+        if float(GEMINI_KEY_COOLDOWNS.get(primary_key, 0.0) or 0.0) <= now:
+            ordered.insert(0, primary_key)
+    return ordered[:V78_GEMINI_MAX_KEYS_PER_OPERATION]
+
+
+def _v78_fast_models(primary_model: str) -> list[str]:
+    now = time.time()
+    preferred = [
+        primary_model,
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+    ]
+    result: list[str] = []
+    for model in preferred:
+        name = str(model or "").strip()
+        if (
+            name
+            and name not in result
+            and name not in GEMINI_SHUTDOWN_MODELS
+            and float(GEMINI_MODEL_COOLDOWNS.get(name, 0.0) or 0.0) <= now
+        ):
+            result.append(name)
+    return result
+
+
+def _v78_payload_for_model(model: str, payload: dict[str, Any]) -> dict[str, Any]:
+    # Payloads contain JSON primitives, so this is a cheap and reliable deep copy.
+    output = json.loads(json.dumps(payload, ensure_ascii=False))
+    generation = output.setdefault("generationConfig", {})
+    generation["maxOutputTokens"] = min(
+        2048, int(generation.get("maxOutputTokens", 2048) or 2048)
+    )
+    # Translation needs faithful instruction following, not long reasoning.
+    # Gemini 3.x supports thinkingLevel=low; 2.5 Flash/Lite supports budget 0.
+    if str(model).startswith("gemini-3"):
+        generation["thinkingConfig"] = {"thinkingLevel": "low"}
+    elif str(model).startswith("gemini-2.5"):
+        generation["thinkingConfig"] = {"thinkingBudget": 0}
+    return output
+
+
+def _v78_required_value_markers(payload: dict[str, Any]) -> set[str]:
+    try:
+        contents = payload.get("contents", [])
+        user_text = "\n".join(
+            str(part.get("text", "") or "")
+            for content in contents if isinstance(content, dict)
+            for part in (content.get("parts", []) or []) if isinstance(part, dict)
+        )
+    except Exception:
+        return set()
+    return set(re.findall(r"⟪VAL\d{4}⟫", user_text))
+
+
+def _v78_response_is_structurally_complete(
+    data: dict[str, Any], required_markers: set[str]
+) -> bool:
+    try:
+        raw, _finish_reason = _final_gemini_response_text(data)
+        parsed = _final_parse_translation_json(raw)
+        if not str(parsed.get("main", "") or "").strip():
+            return False
+        return all(marker in raw for marker in required_markers)
+    except Exception:
+        return False
+
+
+def _v78_note_key_result(key: str, elapsed: float, succeeded: bool) -> None:
+    with _V78_GEMINI_HEALTH_LOCK:
+        item = _V78_GEMINI_KEY_HEALTH.setdefault(key, {})
+        old_latency = float(item.get("latency", elapsed) or elapsed)
+        item["latency"] = old_latency * 0.65 + max(0.001, elapsed) * 0.35
+        item["last_used"] = time.time()
+        if succeeded:
+            item["failures"] = max(0.0, float(item.get("failures", 0.0) or 0.0) - 1.0)
+        else:
+            item["failures"] = min(20.0, float(item.get("failures", 0.0) or 0.0) + 1.0)
+
+
+def _v78_one_gemini_candidate(
+    model: str,
+    key: str,
+    payload: dict[str, Any],
+    required_markers: set[str],
+) -> tuple[dict[str, Any] | None, Exception | None, float]:
+    started = time.perf_counter()
+    acquired = _V78_GEMINI_REQUEST_SLOTS.acquire(timeout=1.0)
+    if not acquired:
+        return None, RuntimeError("Gemini hedge slots busy"), time.perf_counter() - started
+    try:
+        data = _V78_PRE_GEMINI_REQUEST_JSON(
+            model,
+            key,
+            _v78_payload_for_model(model, payload),
+            GEMINI_TRANSLATION_TIMEOUT_SECONDS,
+        )
+        elapsed = time.perf_counter() - started
+        if not _v78_response_is_structurally_complete(data, required_markers):
+            error = RuntimeError("Gemini hedge output failed structural integrity")
+            _v78_note_key_result(key, elapsed, False)
+            _final_apply_gemini_failure_cooldown(model, key, error)
+            return None, error, elapsed
+        _v78_note_key_result(key, elapsed, True)
+        return data, None, elapsed
+    except Exception as exc:
+        elapsed = time.perf_counter() - started
+        _v78_note_key_result(key, elapsed, False)
+        _final_apply_gemini_failure_cooldown(model, key, exc)
+        return None, exc, elapsed
+    finally:
+        _V78_GEMINI_REQUEST_SLOTS.release()
+
+
+def _final_gemini_request_json(
+    model: str,
+    key: str,
+    payload: dict[str, Any],
+    timeout: int,
+) -> dict[str, Any]:
+    del timeout  # V78 owns the fixed eight-second per-request deadline.
+    keys = _v78_healthy_keys(key)
+    models = _v78_fast_models(model)
+    if not keys:
+        raise TranslationUnavailable("No healthy Gemini API key is currently available")
+    if not models:
+        raise TranslationUnavailable("All Gemini models are cooling down")
+
+    pairs = [(models[index % len(models)], candidate_key) for index, candidate_key in enumerate(keys)]
+    required_markers = _v78_required_value_markers(payload)
+    errors: list[str] = []
+
+    for start in range(0, len(pairs), V78_GEMINI_HEDGE_WIDTH):
+        wave = pairs[start:start + V78_GEMINI_HEDGE_WIDTH]
+        executor = ThreadPoolExecutor(max_workers=len(wave), thread_name_prefix="gemini-v78-hedge")
+        futures = {
+            executor.submit(
+                _v78_one_gemini_candidate,
+                candidate_model,
+                candidate_key,
+                payload,
+                required_markers,
+            ): (candidate_model, candidate_key)
+            for candidate_model, candidate_key in wave
+        }
+        try:
+            for future in as_completed(futures):
+                candidate_model, _candidate_key = futures[future]
+                try:
+                    data, error, elapsed = future.result()
+                except Exception as exc:
+                    data, error, elapsed = None, exc, 0.0
+                if data is not None:
+                    for pending in futures:
+                        if pending is not future:
+                            pending.cancel()
+                    globals()["GEMINI_LAST_MODEL_USED"] = candidate_model
+                    logging.info(
+                        "Gemini fast hedge succeeded: model=%s wave=%s latency=%.2fs",
+                        candidate_model,
+                        start // V78_GEMINI_HEDGE_WIDTH + 1,
+                        elapsed,
+                    )
+                    return data
+                errors.append(
+                    f"{candidate_model}: {compact_debug_text(str(error or 'failed'), 180)}"
+                )
+        finally:
+            for pending in futures:
+                pending.cancel()
+            # Do not wait for a slow loser after a valid winner. urllib requests
+            # remain bounded by eight seconds and the global semaphore.
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    raise RuntimeError(
+        "Gemini fast hedge exhausted: " + " | ".join(errors[-V78_GEMINI_MAX_KEYS_PER_OPERATION:])
+    )
+
+
+def _v78_self_audit() -> None:
+    sample = _v78_payload_for_model(
+        "gemini-3.6-flash",
+        {"generationConfig": {"maxOutputTokens": 4096}, "contents": []},
+    )
+    if sample["generationConfig"].get("thinkingConfig") != {"thinkingLevel": "low"}:
+        raise RuntimeError("v78_gemini3_thinking_level_failed")
+    legacy = _v78_payload_for_model(
+        "gemini-2.5-flash",
+        {"generationConfig": {"maxOutputTokens": 4096}, "contents": []},
+    )
+    if legacy["generationConfig"].get("thinkingConfig") != {"thinkingBudget": 0}:
+        raise RuntimeError("v78_gemini25_thinking_budget_failed")
+    if sample["generationConfig"].get("maxOutputTokens") != 2048:
+        raise RuntimeError("v78_output_budget_failed")
+    if GEMINI_TRANSLATION_TIMEOUT_SECONDS != 8 or FINAL_GEMINI_NETWORK_BUDGET != 1:
+        raise RuntimeError("v78_latency_budget_failed")
+
+
+_v78_self_audit()
+logging.info(
+    "V78 active: Gemini 2-key hedged waves, up to 4 healthy keys per operation, "
+    "8s request deadline, low/off thinking, first valid result wins"
+)
+
+
+# ====== V79 STRICTLY SEQUENTIAL GEMINI FAILOVER (2026-09-05) ======
+# V78 raced two requests to reduce tail latency.  That can leave a losing HTTP
+# request running after a valid answer already won.  V79 deliberately replaces
+# that behaviour: one request per post at a time, and the next key/model is used
+# only after the previous request has finished and failed validation/networking.
+
+BOT_BUILD_ID = "V79-sequential-gemini-failover-2026-09-05"
+V79_GEMINI_MAX_SEQUENTIAL_KEYS = 4
+
+
+def _v79_healthy_keys(primary_key: str) -> list[str]:
+    """Return healthy keys in measured health order, with stable rotation.
+
+    The caller-provided key is only a hint.  A repeatedly slow/failing primary
+    must not be forced ahead of a healthier key on every translation.
+    """
+    refresh_gemini_api_keys_from_env()
+    now = time.time()
+    available = [
+        candidate_key
+        for candidate_key in GEMINI_API_KEYS
+        if candidate_key not in _V77_DISABLED_GEMINI_KEYS
+        and float(GEMINI_KEY_COOLDOWNS.get(candidate_key, 0.0) or 0.0) <= now
+    ]
+    if (
+        primary_key
+        and primary_key not in available
+        and primary_key not in _V77_DISABLED_GEMINI_KEYS
+        and float(GEMINI_KEY_COOLDOWNS.get(primary_key, 0.0) or 0.0) <= now
+    ):
+        available.append(primary_key)
+    return sorted(dict.fromkeys(available), key=_v78_key_health_score)[
+        :V79_GEMINI_MAX_SEQUENTIAL_KEYS
+    ]
+
+
+def _final_gemini_request_json(
+    model: str,
+    key: str,
+    payload: dict[str, Any],
+    timeout: int,
+) -> dict[str, Any]:
+    del timeout  # V79 keeps the bounded eight-second deadline for each attempt.
+    keys = _v79_healthy_keys(key)
+    models = _v78_fast_models(model)
+    if not keys:
+        raise TranslationUnavailable("No healthy Gemini API key is currently available")
+    if not models:
+        raise TranslationUnavailable("All Gemini models are cooling down")
+
+    required_markers = _v78_required_value_markers(payload)
+    errors: list[str] = []
+    total = len(keys)
+
+    # Intentionally no executor/futures here.  A candidate is started only after
+    # the preceding candidate returned an error or an invalid response.
+    for index, candidate_key in enumerate(keys):
+        candidate_model = models[index % len(models)]
+        data, error, elapsed = _v78_one_gemini_candidate(
+            candidate_model,
+            candidate_key,
+            payload,
+            required_markers,
+        )
+        if data is not None:
+            globals()["GEMINI_LAST_MODEL_USED"] = candidate_model
+            logging.info(
+                "Gemini sequential failover succeeded: model=%s position=%s/%s latency=%.2fs",
+                candidate_model,
+                index + 1,
+                total,
+                elapsed,
+            )
+            return data
+        errors.append(
+            f"{candidate_model}: {compact_debug_text(str(error or 'failed'), 180)}"
+        )
+
+    raise RuntimeError(
+        "Gemini sequential failover exhausted: "
+        + " | ".join(errors[-V79_GEMINI_MAX_SEQUENTIAL_KEYS:])
+    )
+
+
+def _v79_self_audit() -> None:
+    if V79_GEMINI_MAX_SEQUENTIAL_KEYS < 1:
+        raise RuntimeError("v79_sequential_key_limit_failed")
+    if GEMINI_TRANSLATION_TIMEOUT_SECONDS != 8:
+        raise RuntimeError("v79_request_timeout_failed")
+
+
+_v79_self_audit()
+logging.info(
+    "V79 active: strictly sequential Gemini failover per post; one request finishes "
+    "before the next key/model starts; no hedged background losers"
+)
+
+
 if __name__ == "__main__":
     main()
