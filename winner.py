@@ -69960,5 +69960,2154 @@ logging.info(
 )
 
 
+# ====== V80 TEN-HISTORY TRANSLATION + SEND-LEASE RECOVERY (2026-09-05) ======
+# The active ten-history route was still hard-wired to the unauthenticated
+# Google endpoint.  A single 429 therefore left every uncached row in English
+# and made the loading message look stuck before Telegram sending even began.
+# Translate each small history batch with one Gemini request at a time, try one
+# additional healthy key only after a failure, and use Google only as fallback.
+
+BOT_BUILD_ID = "V80-history-batch-translation-send-recovery-2026-09-05"
+V80_HISTORY_CACHE_PREFIX = "history-v80:"
+V80_HISTORY_GEMINI_MAX_KEYS = 2
+_V80_HISTORY_INFLIGHT_LOCK = RLock()
+_V80_HISTORY_INFLIGHT: set[str] = set()
+
+
+def _v80_history_cache_key(source: str) -> str:
+    return V80_HISTORY_CACHE_PREFIX + hashlib.sha256(
+        str(source or "").encode("utf-8", errors="ignore")
+    ).hexdigest()
+
+
+def _v80_history_translation_is_valid(source: str, translated: str) -> bool:
+    value = str(translated or "").strip()
+    if not value or not re.search(r"[א-ת]", value):
+        return False
+    if _final_translation_is_still_english(source, value):
+        return False
+    return not bool(_final_translation_completeness_issues(source, value))
+
+
+def _v80_gemini_history_chunk(chunk: list[tuple[int, str]]) -> dict[int, str]:
+    if not chunk or gemini_requests_paused_until_refill():
+        return {}
+    keys = _v79_healthy_keys("")[:V80_HISTORY_GEMINI_MAX_KEYS]
+    models = _v78_fast_models("gemini-2.5-flash")
+    if not keys or not models:
+        return {}
+
+    expected = {index for index, _source in chunk}
+    # Encode factual values inside each body before adding NETO_ITEM.  Encoding
+    # the combined text would mistake the digits in NETO_ITEM_00 for football
+    # facts and destroy the batch separator itself.
+    anchored_rows: list[tuple[int, str]] = []
+    anchors_by_index: dict[int, list[dict[str, Any]]] = {}
+    for index, source in chunk:
+        anchored, anchors = _final_encode_special_anchors(source)
+        anchored_rows.append((index, anchored))
+        anchors_by_index[index] = anchors
+    anchored_source = "\n\n".join(
+        f"{_v74_history_marker(index)}\n{anchored}" for index, anchored in anchored_rows
+    )
+    glossary = "\n".join(
+        part for part in (relevant_name_glossary(source) for _index, source in chunk)
+        if part
+    )
+    payload = _final_translation_payload(anchored_source, "", "", glossary)
+    try:
+        payload["systemInstruction"]["parts"][0]["text"] += (
+            " This MAIN_TEXT contains separate news items beginning with markers "
+            "like __NETO_ITEM_00_7F__. Preserve every such marker exactly and "
+            "translate every item fully without merging, omitting or summarizing it."
+        )
+        payload["contents"][0]["parts"][0]["text"] += (
+            "\n\nMANDATORY: return all NETO_ITEM markers in MAIN_TEXT in their original order."
+        )
+    except Exception:
+        pass
+
+    required_markers = _v78_required_value_markers(payload)
+    best: dict[int, str] = {}
+    for attempt, candidate_key in enumerate(keys):
+        candidate_model = models[attempt % len(models)]
+        data, error, _elapsed = _v78_one_gemini_candidate(
+            candidate_model, candidate_key, payload, required_markers
+        )
+        if data is None:
+            logging.warning(
+                "10-latest Gemini batch failed: model=%s key-position=%s/%s reason=%s",
+                candidate_model,
+                attempt + 1,
+                len(keys),
+                compact_debug_text(str(error or "failed"), 220),
+            )
+            continue
+        try:
+            raw, _finish_reason = _final_gemini_response_text(data)
+            parsed_json = _final_parse_translation_json(raw)
+            parsed_rows = _v74_parse_history_batch(parsed_json.get("main", ""), expected)
+            valid: dict[int, str] = {}
+            for index, source in chunk:
+                decoded = _final_decode_special_anchors(
+                    source,
+                    parsed_rows.get(index, ""),
+                    anchors_by_index.get(index, []),
+                )
+                polished = _v74_history_polish(source, decoded)
+                if _v80_history_translation_is_valid(source, polished):
+                    valid[index] = polished
+            # Different healthy keys may successfully translate different rows
+            # of the same batch.  Keep every independently validated row instead
+            # of discarding complementary successes in favour of one "largest"
+            # partial response.
+            for valid_index, valid_value in valid.items():
+                best.setdefault(valid_index, valid_value)
+            if set(best) == expected:
+                globals()["GEMINI_LAST_MODEL_USED"] = candidate_model
+                return best
+            logging.warning(
+                "10-latest Gemini batch was partial: model=%s translated=%s/%s; trying next key",
+                candidate_model, len(best), len(expected),
+            )
+        except Exception as exc:
+            logging.warning(
+                "10-latest Gemini batch parsing failed: model=%s reason=%s",
+                candidate_model, compact_debug_text(str(exc), 220),
+            )
+    return best
+
+
+def _v80_google_history_chunks(rows: list[tuple[int, str]]) -> dict[int, str]:
+    """One serialized Google fallback per small chunk; 429 stops immediately."""
+    global _V74_GOOGLE_HISTORY_DISABLED_UNTIL
+    output: dict[int, str] = {}
+    for chunk in _v74_history_chunks(rows):
+        with _V74_GOOGLE_HISTORY_LOCK:
+            if time.time() < _V74_GOOGLE_HISTORY_DISABLED_UNTIL:
+                break
+            request_text = "\n\n".join(
+                f"{_v74_history_marker(index)}\n{source}" for index, source in chunk
+            )
+            try:
+                raw = _v74_google_history_request(request_text)
+                parsed = _v74_parse_history_batch(raw, {index for index, _source in chunk})
+                if not parsed and len(chunk) == 1 and raw:
+                    parsed = {chunk[0][0]: raw}
+                if not parsed:
+                    raise ValueError("Google returned a batch without item separators")
+                _V74_GOOGLE_HISTORY_DISABLED_UNTIL = 0.0
+            except Exception as exc:
+                _v74_note_google_history_failure(exc)
+                break
+        for index, source in chunk:
+            polished = _v74_history_polish(source, parsed.get(index, ""))
+            if _v80_history_translation_is_valid(source, polished):
+                output[index] = polished
+    return output
+
+
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    """Translate up to ten rows in bounded sequential batches, never ten races."""
+    global TRANSLATION_CACHE_DIRTY
+    values = list(posts or [])
+    if not values:
+        return []
+    sources = [_v74_history_source(post) for post in values]
+    results = [""] * len(values)
+    missing: list[tuple[int, str]] = []
+
+    with _V74_GOOGLE_HISTORY_CACHE_LOCK:
+        for index, source in enumerate(sources):
+            if not source:
+                results[index] = "הפוסט התקבל ללא טקסט קריא"
+                continue
+            if re.search(r"[א-ת]", source) and latin_ratio(source) < 0.10:
+                results[index] = source
+                continue
+            candidates = (
+                TRANSLATION_CACHE.get(_v80_history_cache_key(source)),
+                TRANSLATION_CACHE.get(_v74_history_cache_key(source)),
+            )
+            cached = next(
+                (str(item or "").strip() for item in candidates
+                 if _v80_history_translation_is_valid(source, str(item or ""))),
+                "",
+            )
+            if cached:
+                results[index] = cached
+            else:
+                missing.append((index, source))
+
+    # Preserve the proven 4,200-character chunks so Gemini has enough output
+    # room and the complete ten-post request cannot be cut at 2,048 tokens.
+    for chunk in _v74_history_chunks(missing):
+        translated = _v80_gemini_history_chunk(chunk)
+        for index, value in translated.items():
+            results[index] = value
+
+    unresolved = [(index, source) for index, source in missing if not results[index]]
+    if unresolved:
+        for index, value in _v80_google_history_chunks(unresolved).items():
+            results[index] = value
+
+    with _V74_GOOGLE_HISTORY_CACHE_LOCK:
+        for index, source in enumerate(sources):
+            if results[index] and _v80_history_translation_is_valid(source, results[index]):
+                TRANSLATION_CACHE[_v80_history_cache_key(source)] = results[index]
+                TRANSLATION_CACHE_DIRTY = True
+
+    # Always finish the button.  If both providers are unavailable, identify
+    # the exact untranslated row instead of silently claiming it is translated.
+    for index, source in enumerate(sources):
+        if not results[index]:
+            results[index] = "⚠️ התרגום זמנית לא זמין:\n" + (
+                source or "הפוסט התקבל ללא טקסט קריא"
+            )
+    if TRANSLATION_CACHE_DIRTY:
+        try:
+            save_translation_cache(TRANSLATION_CACHE)
+        except Exception:
+            pass
+    return results
+
+
+def run_last_ten_account_control_test_replace(username: str, loading_message_id: Any) -> None:
+    """Prevent duplicate ten-history jobs and expose translation progress."""
+    canonical = (
+        _canonical_control_source_username(username)
+        if "_canonical_control_source_username" in globals()
+        else str(username or "")
+    )
+    key = str(canonical or "").strip().lstrip("@").casefold()
+    with _V80_HISTORY_INFLIGHT_LOCK:
+        if key in _V80_HISTORY_INFLIGHT:
+            message = "⏳ עשרת הפוסטים של הכתב הזה כבר נמצאים בתהליך הכנה."
+            if not _edit_control_result_html(
+                loading_message_id, html.escape(message), control_delete_message_reply_markup()
+            ):
+                send_control_text(message, None, control_delete_message_reply_markup())
+            return
+        _V80_HISTORY_INFLIGHT.add(key)
+    try:
+        label = _hebrew_account_label(canonical)
+        posts = fetch_last_ten_control_isolated(canonical, limit=10)
+        if not posts:
+            message = f"📚 10 אחרונים — {label}\n\nלא נמצאו כרגע פוסטים חיים או פוסטים שמורים להצגה."
+            if not _edit_control_result_html(
+                loading_message_id, html.escape(message), control_delete_message_reply_markup()
+            ):
+                send_control_text(message, None, control_delete_message_reply_markup())
+            return
+
+        progress = (
+            f"<b>📚 10 אחרונים — {html.escape(label)}</b>\n\n"
+            f"⏳ נמצאו {len(posts)} פוסטים; מתרגם אותם כעת באצווה חסכונית..."
+        )
+        _edit_control_result_html(
+            loading_message_id, progress, control_delete_message_reply_markup()
+        )
+        translations = _translate_history_posts_parallel(posts)
+        entries: list[tuple[Post, str, str, str]] = []
+        prepared: list[tuple[int, Post, str]] = []
+        for index, (post, translated) in enumerate(zip(posts, translations), 1):
+            try:
+                status, reason = _history_status_for_post(post)
+            except Exception as exc:
+                status, reason = "נמצא ב-RSS", short_error(exc, 120)
+            entries.append((post, translated, status, reason))
+            try:
+                token = remember_control_prepared_send(post, "", "", "")
+                if token:
+                    prepared.append((index, post, token))
+            except Exception as exc:
+                logging.warning(
+                    "10-latest prepare token failed for @%s item %s: %s",
+                    canonical, index, short_error(exc, 220),
+                )
+        chunks = _v75_history_message_chunks(entries, label)
+        markup = _history_prepare_markup(prepared)
+        if not _edit_control_result_html(loading_message_id, chunks[0], markup):
+            send_control_html(chunks[0], markup)
+        for chunk in chunks[1:]:
+            send_control_html(chunk, control_delete_message_reply_markup())
+    except Exception as exc:
+        logging.exception("10-latest V80 task crashed for @%s", canonical)
+        result = f"📚 10 אחרונים — {_hebrew_account_label(canonical)}\n\nהפעולה נעצרה זמנית: {short_error(exc, 700)}"
+        if not _edit_control_result_html(
+            loading_message_id, html.escape(result), control_delete_message_reply_markup()
+        ):
+            send_control_text(result, None, control_delete_message_reply_markup())
+    finally:
+        with _V80_HISTORY_INFLIGHT_LOCK:
+            _V80_HISTORY_INFLIGHT.discard(key)
+
+
+# A rare exception below the automatic translation reservation (for example a
+# Telegram network failure) previously left attempt_in_progress=True until its
+# stale timeout, making later scans report that the post was still being sent.
+_V80_PRE_SEND_POST = send_post
+
+
+def send_post(
+    post: Post,
+    reply_message_ids: Any = None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        return _V80_PRE_SEND_POST(post, reply_message_ids=reply_message_ids, state=state)
+    except Exception:
+        try:
+            identity = _acceptance_retry_identity(post)
+            with _GEMINI_RETRY_SCHEDULE_LOCK:
+                schedule = _gemini_retry_schedule(state)
+                entry = dict(schedule.get(identity, {}) or {})
+                if entry.get("attempt_in_progress"):
+                    entry["attempt_in_progress"] = False
+                    entry["attempt_started_at"] = 0.0
+                    entry["updated_at"] = time.time()
+                    entry["next_retry_at"] = min(
+                        float(entry.get("next_retry_at", 0.0) or 0.0) or time.time() + 15.0,
+                        time.time() + 15.0,
+                    )
+                    schedule[identity] = entry
+                    _store_gemini_retry_schedule(state, schedule)
+        except Exception as cleanup_exc:
+            logging.debug("Send reservation cleanup failed safely: %s", short_error(cleanup_exc, 180))
+        raise
+
+
+def _v80_self_audit() -> None:
+    sample_source = "Deal worth €15m until 2029."
+    if _v80_history_translation_is_valid(sample_source, sample_source):
+        raise RuntimeError("v80_english_history_cache_accepted")
+    if not _v80_history_translation_is_valid(
+        sample_source, "העסקה בשווי €15m עד 2029."
+    ):
+        raise RuntimeError("v80_valid_history_translation_rejected")
+    if V80_HISTORY_GEMINI_MAX_KEYS != 2:
+        raise RuntimeError("v80_history_failover_limit_changed")
+
+
+_v80_self_audit()
+logging.info(
+    "V80 active: 10-latest uses cached Gemini batches with sequential 2-key failover "
+    "and Google fallback; duplicate history jobs and stale send reservations are guarded"
+)
+
+
+# ====== V81 EDITORIAL / TRANSLATION / STRUCTURE ROOT REPAIR (2026-09-22) ======
+# This final boundary fixes the classes reported by the operator, rather than
+# special-casing individual tweet ids.  The order is intentional:
+#   source policy -> duplicate identity -> translation integrity -> presentation.
+# It keeps V73's single discovery route, V79's strictly sequential Gemini calls,
+# the scheduler, Shabbat hard-idle and media/send limits unchanged.
+
+BOT_BUILD_ID = "V81-editorial-translation-structure-root-repair-2026-09-22"
+
+# Ten-history remains sequential, but may walk four healthy keys just like a
+# normal post.  No two Gemini requests are started together.
+V80_HISTORY_GEMINI_MAX_KEYS = min(4, max(1, int(V79_GEMINI_MAX_SEQUENTIAL_KEYS)))
+
+
+# ---------------------------------------------------------------------------
+# 1) Transport garbage and flag ownership.
+# Six-digit fragments observed in the feed are transport/card identifiers, not
+# football facts.  Ignore them in completeness checks and never render them.
+# ---------------------------------------------------------------------------
+_V81_TRANSPORT_ID_RE = re.compile(
+    r"(?<![A-Za-z0-9א-ת€£$#])(?:[1-9]\d{5})(?![A-Za-z0-9א-ת%])",
+    re.UNICODE,
+)
+_V81_RI = r"[\U0001F1E6-\U0001F1FF]"
+_V81_TAG_FLAG = r"\U0001F3F4[\U000E0061-\U000E007A]+\U000E007F"
+_V81_FLAG_PATTERN = rf"(?:{_V81_RI}{{2}}|{_V81_TAG_FLAG})"
+_V81_FLAG_RE = re.compile(_V81_FLAG_PATTERN, re.UNICODE)
+_V81_BIDI_SPACE = r"[\s\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]"
+
+
+def _v81_strip_transport_artifacts(value: Any) -> str:
+    text = str(value or "")
+    # Feed/card identifiers are sometimes emitted as tiny synthetic sentences
+    # (for example "497018."). Remove their punctuation with the identifier so
+    # it cannot be glued to the preceding real sentence as a double full stop.
+    text = re.sub(
+        rf"{_V81_TRANSPORT_ID_RE.pattern}[ \t]*[,.;:]?",
+        "",
+        text,
+        flags=re.UNICODE,
+    )
+    text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
+    text = re.sub(r"(?m)^\s*[,.;:–—-]+\s*$", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _v81_normalize_flag_clusters(value: Any) -> str:
+    text = str(value or "")
+    # Join only two *standalone* regional indicators.  The lookarounds avoid
+    # corrupting the boundary between two already-valid adjacent flags.
+    text = re.sub(
+        rf"(?<!{_V81_RI})(?P<a>{_V81_RI}){_V81_BIDI_SPACE}+(?P<b>{_V81_RI})(?!{_V81_RI})",
+        lambda match: match.group("a") + match.group("b"),
+        text,
+    )
+    duplicate = re.compile(
+        rf"(?P<flag>{_V81_FLAG_PATTERN})(?:{_V81_BIDI_SPACE}+(?P=flag))+",
+        re.UNICODE,
+    )
+    previous = None
+    while previous != text:
+        previous = text
+        text = duplicate.sub(lambda match: match.group("flag"), text)
+    return text
+
+
+_V81_PRE_NORMALIZE_COUNTRY_FLAGS = normalize_country_flags
+
+
+def normalize_country_flags(text: str) -> str:
+    return _v81_normalize_flag_clusters(_V81_PRE_NORMALIZE_COUNTRY_FLAGS(text))
+
+
+def _v81_flags(value: Any) -> list[str]:
+    return [match.group(0) for match in _V81_FLAG_RE.finditer(
+        _v81_normalize_flag_clusters(value)
+    )]
+
+
+_V81_RANKED_ROW_RE = re.compile(
+    r"(?u)^\s*(?:" + _V81_FLAG_PATTERN + r"\s*)?\d{1,3}\s*(?:[—–-]|\.)\s*\S"
+)
+
+
+def _v81_align_ranked_list_flags(source: Any, translated: Any) -> str:
+    """Attach source flags to their ranked row, never to the next row.
+
+    Some sources put a nationality flag at the end of each English row.  RTL
+    translation can move that flag to the following row.  When there are at
+    least three ranked rows, source order is authoritative and deterministic.
+    """
+    text = _v81_normalize_flag_clusters(translated)
+    source_flags = _v81_flags(source)
+    if len(source_flags) < 3:
+        return text
+    lines = text.splitlines()
+    ranked_indexes = [
+        index for index, line in enumerate(lines)
+        if _V81_RANKED_ROW_RE.match(_v72_visible_line(line))
+    ]
+    if len(ranked_indexes) < 3 or abs(len(ranked_indexes) - len(source_flags)) > 1:
+        return text
+    for index, flag in zip(ranked_indexes, source_flags):
+        line = lines[index]
+        # Remove any flag that drifted to this row, then apply the source row's
+        # flag.  HTML is not present at this pre-render boundary.
+        line = _V81_FLAG_RE.sub("", line)
+        line = re.sub(r"^[ \t\u061c\u200e\u200f\u2066-\u2069]+", "", line)
+        lines[index] = f"{flag} {line.strip()}"
+    return "\n".join(lines)
+
+
+def preserve_original_country_flags(original: str, translated: str) -> str:
+    """Restore flags without the old global-prepend/row-shift failure."""
+    source = _v81_normalize_flag_clusters(original)
+    output = _v81_normalize_flag_clusters(translated)
+    output = _v81_align_ranked_list_flags(source, output)
+    source_flags = _v81_flags(source)
+    output_flags = _v81_flags(output)
+    # A single leading nationality flag is safe to restore.  Multiple flags
+    # require row provenance; never prepend them globally.
+    if len(source_flags) == 1 and source_flags[0] not in output_flags:
+        output = f"{source_flags[0]} {output}".strip()
+    return _v81_normalize_flag_clusters(output)
+
+
+_V81_PRE_COMPLETENESS_ISSUES = _final_translation_completeness_issues
+
+
+def _final_translation_completeness_issues(source: str, translated: str) -> list[str]:
+    return list(dict.fromkeys(_V81_PRE_COMPLETENESS_ISSUES(
+        _v81_strip_transport_artifacts(source),
+        _v81_strip_transport_artifacts(translated),
+    ) or []))
+
+
+# ---------------------------------------------------------------------------
+# 2) Final source policy.  These are hard content classes and therefore run
+# before any permissive reporter/source rescue can misclassify them.
+# ---------------------------------------------------------------------------
+_V81_WOMEN_RE = re.compile(
+    r"(?iu)(?:\bwomen(?:'s)?\b|\bfemale\b|\bWSL\b|\bNWSL\b|\bUWCL\b|"
+    r"women'?s?\s+super\s+league|arsenal\s+women|כדורגל\s+נשים|ליגת\s+הנשים|"
+    r"סופר\s+ליג\s+נשים|נבחרת\s+הנשים|ארסנל\s+נשים|שחקנית|כדורגלנית)"
+)
+_V81_HARD_OTHER_SPORT_RE = re.compile(
+    r"(?iu)(?:\bNFL\b|\bNBA\b|\bWNBA\b|\bMLB\b|\bNHL\b|\bfutsal\b|"
+    r"\bquarterback\b|\btouchdown\b|\b(?:passing|rushing|receiving)\s+yards?\b|"
+    r"\bSeattle\s+Seahawks\b|\bNew\s+England\s+Patriots\b|\bPatriots\b|"
+    r"\brugby\b|\bcricket\b|\bbasketball\b|\bbaseball\b|\bice\s+hockey\b|"
+    r"\btennis\b|\bgolf\b|\bFormula\s*1\b|\bSuper\s+Bowl\b|"
+    r"קוורטרבק|טאצ['׳]?דאון|יארד(?:ים)?|סיאטל\s+סיהוקס|הפטריוטס|"
+    r"פוטסל|כדורסל|בייסבול|פוטבול\s+אמריקאי|ראגבי|קריקט|טניס|גולף)"
+)
+_V81_LINEUP_RE = re.compile(
+    r"(?iu)(?:\bstarting\s+(?:XI|line[- ]?up)\b|\bline[- ]?up\b|\bteamsheet\b|"
+    r"\bprobable\s+(?:XI|line[- ]?up|formation)\b|\bdouble\s+pivot\b|"
+    r"\bsquad\s+for\b|\b(?:named|included)\s+in\s+(?:the\s+)?squad\b|"
+    r"\bin\s+(?:the\s+)?squad\b|\bmatchday\s+squad\b|"
+    r"הרכב\s+(?:פותח|משוער)|ההרכב\s+למשחק|אחד\s+עשר\s+הפותחים|"
+    r"דאבל\s+פיבוט|בסגל\s+ל|בסגל\s*:|הסגל\s+של.+?(?:למשחק|לפתיחת)|"
+    r"סגל\s+המשחק|רשימת\s+השחקנים)"
+)
+_V81_PUBLIC_SERVICE_RE = re.compile(
+    r"(?iu)(?:suicide\s+prevention|self[- ]?harm|samaritans|mental\s+health\s+helpline|"
+    r"מניעת\s+התאבדויות|התאבדות|פגיעה\s+עצמית|סמריטנס|קו\s+סיוע)"
+)
+_V81_PHONE_CUE_RE = re.compile(
+    r"(?iu)(?:hotline|helpline|phone|telephone|call\s+(?:us|now|the)|contact\s+number|"
+    r"התקשרו|טלפון|מספר\s+הטלפון|קו\s+חם|קו\s+סיוע)"
+)
+_V81_PHONE_NUMBER_RE = re.compile(r"(?<!\d)\+?\d(?:[ ()\-–]?\d){5,}(?!\d)")
+_V81_CRIME_OFFTOPIC_RE = re.compile(
+    r"(?iu)(?:arrest(?:ed)?[^\n]{0,100}(?:cocaine|drug|smuggl)|"
+    r"(?:cocaine|drug\s+trafficking|smuggl)[^\n]{0,100}arrest|"
+    r"eagle\s+trainer|מאלף\s+(?:הנשר|עופות)|נעצר[^\n]{0,100}(?:קוקאין|סמים|הברח)|"
+    r"(?:קוקאין|הברחת\s+סמים)[^\n]{0,100}נעצר)"
+)
+_V81_GOVERNANCE_FORMAT_RE = re.compile(
+    r"(?iu)(?:reshap|reform|redesign|format).{0,100}(?:nations\s+league|qualif)|"
+    r"(?:nations\s+league|qualif).{0,100}(?:reshap|reform|redesign|format)|"
+    r"מנסח(?:ת|ים)?\s+מחדש.{0,100}(?:ליגת\s+האומות|מוקדמות)|"
+    r"שינוי\s+הפורמט.{0,100}(?:ליגת\s+האומות|מוקדמות)"
+)
+_V81_SCORELINE_RE = re.compile(r"(?<!\d)\d{1,2}\s*[-–—:]\s*\d{1,2}(?!\d)")
+_V81_MATCH_STATE_RE = re.compile(
+    r"(?iu)(?:\bleads?\b|\bahead\b|\bhalf[- ]?time\b|\bHT\b|\bcurrently\b|"
+    r"\bderby\b.{0,30}\bseconds?\b|מוביל(?:ה|ים|ות)?|במחצית|מחצית\s+ראשונה|"
+    r"כרגע|יתרון|דרבי.{0,30}שניות)"
+)
+_V81_MATCH_EVENT_ROW_RE = re.compile(
+    r"(?imu)^\s*(?:⚽️?|🥅|🟥|🟨)\s*[^\n]{0,80}?\b\d{1,3}(?:\+\d{1,2})?\s*['’׳]?\s*$"
+)
+_V81_MATCH_ACTION_RE = re.compile(
+    r"(?iu)(?:\bgoal\b|\bscores?\b|\bscored\b|\bred\s+card\b|\bpenalty\b|"
+    r"\bequali[sz]|\bmakes?\s+it\b|שער|כובש|כבש|כרטיס\s+אדום|פנדל|משווה)"
+)
+_V81_MATCH_MILESTONE_RE = re.compile(
+    r"(?iu)(?:hat[- ]?trick|שלושער|first\s+(?:player|ever)|record|שיא|הראשון\s+אי\s+פעם)"
+)
+_V81_RETURNED_TO_SCORE_RE = re.compile(
+    r"(?iu)(?:returned?\s+to\s+scor|back\s+on\s+the\s+scoresheet|"
+    r"חזר(?:ה)?\s+להבקיע|חזר(?:ה)?\s+לכבוש).{0,100}(?:league|cup|match|game|"
+    r"ליגה|גביע|משחק)"
+)
+
+
+def _v81_source_text(post: Any) -> str:
+    try:
+        value = _final_source_text(post)
+    except Exception:
+        value = "\n".join([
+            str(getattr(post, "text", "") or ""),
+            str(getattr(post, "quoted_text", "") or ""),
+        ])
+    return html.unescape(str(value or "")).strip()
+
+
+def _v81_is_womens_post(post: Any) -> bool:
+    return bool(_V81_WOMEN_RE.search(_v81_source_text(post)))
+
+
+def _v81_is_hard_other_sport(post: Any) -> bool:
+    return bool(_V81_HARD_OTHER_SPORT_RE.search(_v81_source_text(post)))
+
+
+def _v81_is_live_match_content(post: Any) -> bool:
+    text = _v81_source_text(post)
+    if not text or _V66_ADMIN_RESCUE_RE.search(text):
+        return False
+    score = bool(_V81_SCORELINE_RE.search(text))
+    if score and (_V81_MATCH_STATE_RE.search(text) or _V81_MATCH_ACTION_RE.search(text)):
+        return True
+    event_rows = len(_V81_MATCH_EVENT_ROW_RE.findall(text))
+    if event_rows >= 2 and not _V81_MATCH_MILESTONE_RE.search(text):
+        return True
+    return bool(_V81_RETURNED_TO_SCORE_RE.search(text))
+
+
+def _v81_hard_source_block_reason(post: Any) -> str:
+    text = _v81_source_text(post)
+    if _V81_WOMEN_RE.search(text):
+        return "v81_womens_football"
+    if _V81_HARD_OTHER_SPORT_RE.search(text):
+        return "v81_other_sport"
+    if _v81_is_live_match_content(post):
+        return "v81_live_match_update"
+    if _V81_LINEUP_RE.search(text):
+        return "v81_lineup_or_squad"
+    if _V81_PUBLIC_SERVICE_RE.search(text):
+        return "v81_public_service_or_self_harm"
+    if _V81_PHONE_CUE_RE.search(text) and _V81_PHONE_NUMBER_RE.search(text):
+        return "v81_phone_number_content"
+    if _V81_CRIME_OFFTOPIC_RE.search(text):
+        return "v81_offtopic_crime"
+    if _V81_TRANSPORT_ID_RE.search(text) and _V81_GOVERNANCE_FORMAT_RE.search(text):
+        return "v81_malformed_governance_format"
+    return ""
+
+
+_V81_PRE_IS_WOMEN = is_women_or_wnba_post
+
+
+def is_women_or_wnba_post(post: Post) -> bool:
+    return bool(_v81_is_womens_post(post) or _V81_PRE_IS_WOMEN(post))
+
+
+_V81_PRE_IS_OTHER_SPORT = is_other_sport_post
+
+
+def is_other_sport_post(post: Post) -> bool:
+    return bool(_v81_is_hard_other_sport(post) or _V81_PRE_IS_OTHER_SPORT(post))
+
+
+_V81_PRE_IS_LIVE = is_live_goal_or_match_moment_post
+_V81_PRE_IS_RESULT = is_match_result_or_engagement_post
+
+
+def is_live_goal_or_match_moment_post(post: Post) -> bool:
+    return bool(_v81_is_live_match_content(post) or _V81_PRE_IS_LIVE(post))
+
+
+def is_match_result_or_engagement_post(post: Post) -> bool:
+    return bool(_v81_is_live_match_content(post) or _V81_PRE_IS_RESULT(post))
+
+
+_V81_OPTA_VALID_STAT_RE = re.compile(
+    r"(?iu)(?:premier\s+league|champions\s+league|פרמייר\s+ליג|ליגת\s+האלופות)"
+    r"[\s\S]{0,240}(?:players?|club|goals?|assists?|appearances?|שחקנים|מועדון|שערים|הופעות)"
+    r"|(?:players?|club|goals?|assists?|appearances?|שחקנים|מועדון|שערים|הופעות)"
+    r"[\s\S]{0,240}(?:premier\s+league|champions\s+league|פרמייר\s+ליג|ליגת\s+האלופות)"
+)
+_V81_FINANCIAL_MILESTONE_RE = re.compile(
+    r"(?iu)(?:official|officially|historic|first\s+time|first\s+ever|רשמית|היסטורי|"
+    r"לראשונה).{0,160}(?:revenue|turnover|€?1\s*(?:bn|billion)|הכנסות|מיליארד)"
+    r"|(?:revenue|turnover|€?1\s*(?:bn|billion)|הכנסות|מיליארד).{0,160}"
+    r"(?:official|officially|historic|first\s+time|first\s+ever|רשמית|היסטורי|לראשונה)"
+)
+_V81_FOOTBALL_ANECDOTE_RE = re.compile(
+    r"(?iu)(?:challenge.{0,100}song\s+titles?.{0,100}press\s+conference|"
+    r"אתגר.{0,100}כותרות\s+שירים.{0,100}מסיבת\s+עיתונאים)"
+)
+
+
+def _v81_false_block_rescue(post: Any, reason: str) -> bool:
+    text = _v81_source_text(post)
+    username = str(getattr(post, "username", "") or "").strip().lstrip("@").casefold()
+    low = str(reason or "").casefold()
+    if username == "optajoe" and _V81_OPTA_VALID_STAT_RE.search(text):
+        return bool(re.search(r"opta|other_sport|not_mens|tier|context|כדורגל\s+גברים", low))
+    if _V81_FINANCIAL_MILESTONE_RE.search(text):
+        return bool(re.search(r"interview|quote|finance|low_value|special_source|ראיון|ציטוט|פיננס", low))
+    if _V81_FOOTBALL_ANECDOTE_RE.search(text):
+        return bool(re.search(r"interview|quote|low_value|profile_noise|special_source|ראיון|ציטוט", low))
+    return False
+
+
+_V81_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    hard = _v81_hard_source_block_reason(post)
+    if hard:
+        return hard
+    reason = str(_V81_PRE_FINAL_LOCAL_BLOCK(post) or "")
+    if reason and _v81_false_block_rescue(post, reason):
+        return ""
+    return reason
+
+
+_V81_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    mapping = {
+        "v81_womens_football": "כדורגל נשים נחסם",
+        "v81_other_sport": "ענף ספורט שאינו כדורגל גברים נחסם",
+        "v81_live_match_update": "עדכון תוצאה, שער, הרכב או מהלך משחק נחסם",
+        "v81_lineup_or_squad": "הרכב, סגל משחק או הרכב משוער נחסמו",
+        "v81_public_service_or_self_harm": "תוכן שירות ציבורי או מניעת פגיעה עצמית אינו מיועד לערוץ",
+        "v81_phone_number_content": "תוכן הכולל מוקד או מספר טלפון נחסם",
+        "v81_offtopic_crime": "תוכן פלילי שאינו חדשות כדורגל מקצועיות נחסם",
+        "v81_malformed_governance_format": "דיווח פורמט תחרות פגום או חלקי נחסם",
+        "v81_same_injury_fact": "אותו דיווח פציעה כבר נשלח ללא פרט מהותי חדש",
+        "v81_same_transfer_fact": "אותה עסקת העברה כבר נשלחה ללא התקדמות מהותית חדשה",
+    }
+    for key, message in mapping.items():
+        if key in raw:
+            return message
+    return str(_V81_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+# ---------------------------------------------------------------------------
+# 3) Cross-reporter event dedupe for the two missed families: the same injury
+# duration and the same already-agreed transfer.  Exact source text is preferred,
+# so Hebrew transliteration differences cannot manufacture a new event.
+# ---------------------------------------------------------------------------
+_V81_INJURY_RE = re.compile(
+    r"(?iu)(?:injur|ankle|hamstring|knee|sidelined|ruled\s+out|out\s+for|"
+    r"פציע|קרסול|ברך|ייעדר|מחוץ\s+למגרשים)"
+)
+_V81_TRANSFER_RE = re.compile(
+    r"(?iu)(?:transfer|sign(?:s|ed|ing)?|join(?:s|ed|ing)?|free\s+agent|"
+    r"agreement|deal|here\s+we\s+go|contract|העבר|חתם|חתימה|מצטרף|"
+    r"שחקן\s+חופשי|הסכ|עסקה|חוזה|היר\s+ווי\s+גו)"
+)
+_V81_STRONG_PREVIOUS_TRANSFER_RE = re.compile(
+    r"(?iu)(?:agreement|agreed|here\s+we\s+go|official|signed|deal\s+done|"
+    r"הסכמה|סוכם|סגורה|רשמי|חתם|העסקה\s+סוכמה)"
+)
+_V81_HWG_RE = re.compile(r"(?iu)#?here(?:_|\s)+we(?:_|\s)+go|#HERE_WE_GO")
+_V81_DEDUPE_STOP = {
+    "the", "and", "for", "from", "with", "that", "this", "will", "has", "have",
+    "was", "were", "into", "after", "before", "player", "club", "deal", "transfer",
+    "sign", "signed", "signing", "join", "joins", "joined", "contract", "official",
+    "agreement", "agreed", "here", "go", "until", "plus", "free", "agent", "option",
+    "year", "season", "injury", "injured", "ankle", "hamstring", "knee", "sidelined",
+    "weeks", "week", "months", "month", "days", "day",
+    "של", "את", "עם", "על", "לא", "הוא", "היא", "שחקן", "מועדון", "עסקה",
+    "העברה", "חתם", "חתימה", "חוזה", "הסכמה", "סוכם", "חופשי", "אופציה",
+    "פציעה", "ייעדר", "קרסול", "המסטרינג", "ברך", "שבועות", "חודשים",
+}
+
+
+def _v81_event_tokens(value: Any) -> set[str]:
+    text = unicodedata.normalize("NFKD", html.unescape(str(value or "")).casefold())
+    text = "".join(character for character in text if not unicodedata.combining(character))
+    return {
+        token for token in re.findall(r"[a-zא-ת0-9]+", text)
+        if len(token) >= 3 and token not in _V81_DEDUPE_STOP
+    }
+
+
+def _v81_duration_facts(value: Any) -> set[str]:
+    text = html.unescape(str(value or "")).casefold()
+    facts: set[str] = set()
+    pattern = re.compile(
+        r"(?iu)(\d{1,2})\s*(?:[-–—]|to|עד)\s*(\d{1,2})\s*"
+        r"(weeks?|months?|days?|שבועות?|חודשים?|ימים?)"
+    )
+    for first, second, unit in pattern.findall(text):
+        unit_key = "week" if "week" in unit or "שבוע" in unit else (
+            "month" if "month" in unit or "חודש" in unit else "day"
+        )
+        facts.add(f"{first}-{second}:{unit_key}")
+    return facts
+
+
+def _v81_same_event_kind(current_text: Any, previous_text: Any) -> str:
+    current = html.unescape(str(current_text or ""))
+    previous = html.unescape(str(previous_text or ""))
+    current_tokens = _v81_event_tokens(current)
+    previous_tokens = _v81_event_tokens(previous)
+    shared = current_tokens & previous_tokens
+
+    if _V81_INJURY_RE.search(current) and _V81_INJURY_RE.search(previous):
+        current_duration = _v81_duration_facts(current)
+        previous_duration = _v81_duration_facts(previous)
+        subject_overlap = {token for token in shared if not token.isdigit() and len(token) >= 4}
+        if subject_overlap and current_duration and current_duration & previous_duration:
+            return "v81_same_injury_fact"
+
+    if _V81_TRANSFER_RE.search(current) and _V81_TRANSFER_RE.search(previous):
+        if _V81_HWG_RE.search(current) and not _V81_STRONG_PREVIOUS_TRANSFER_RE.search(previous):
+            return ""
+        significant = {token for token in shared if not token.isdigit() and len(token) >= 4}
+        containment = len(shared) / max(1, min(len(current_tokens), len(previous_tokens)))
+        shared_numbers = {token for token in shared if token.isdigit() and len(token) >= 4}
+        if (
+            _V81_STRONG_PREVIOUS_TRANSFER_RE.search(previous)
+            and len(significant) >= 2
+            and (containment >= 0.38 or shared_numbers or len(significant) >= 3)
+        ):
+            return "v81_same_transfer_fact"
+    return ""
+
+
+def _v81_semantic_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    current = str(text_override or _v81_source_text(post) or "")
+    rows = [
+        row for row in list(_v9_recent_duplicate_rows(state) or [])[-_V46_DUPLICATE_MAX_ROWS:]
+        if isinstance(row, dict) and not is_pending_memory_item(row)
+    ]
+    for row in reversed(rows):
+        previous_source = str(row.get("username") or row.get("source") or "")
+        for previous in _v46_row_variants(row):
+            kind = _v81_same_event_kind(current, previous)
+            if not kind:
+                continue
+            result = dict(row)
+            result.update({
+                "duplicate": True,
+                "is_duplicate": True,
+                "duplicate_score": 0.96,
+                "duplicate_verdict": "V81_SAME_FACT_CROSS_REPORTER",
+                "duplicate_source": previous_source or "דיווח קודם",
+                "reason": kind,
+                "raw_reason": kind,
+            })
+            return result
+    return None
+
+
+_V81_PRE_EXTENDED_DUPLICATE = _v53_extended_duplicate
+
+
+def _v53_extended_duplicate(post: Post, state: dict[str, Any], text_override: str = "") -> dict[str, Any] | None:
+    primary = _V81_PRE_EXTENDED_DUPLICATE(post, state, text_override)
+    if primary:
+        return primary
+    return _v81_semantic_duplicate(post, state, text_override)
+
+
+try:
+    with _V49_DUPLICATE_CACHE_LOCK:
+        _V49_DUPLICATE_CACHE.clear()
+except Exception:
+    pass
+try:
+    with _V40_DUP_RESULT_LOCK:
+        _V40_DUP_RESULT_CACHE.clear()
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
+# 4) Translation integrity and terminology.  A model response containing Thai,
+# Cyrillic, Arabic, CJK or substantial untranslated English is rejected inside
+# V79's sequential key loop, so the next key is tried instead of publishing it.
+# ---------------------------------------------------------------------------
+TEAM_REPLACEMENTS.update({
+    "Bodø/Glimt": "בודה/גלימט",
+    "Bodo/Glimt": "בודה/גלימט",
+    "FK Bodø/Glimt": "בודה/גלימט",
+    "Racing Club": "ראסינג קלוב",
+    "River Plate": "ריבר פלייט",
+})
+
+_V81_FOREIGN_SCRIPT_RE = re.compile(
+    r"[\u0400-\u052f\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff"
+    r"\u0900-\u0dff\u0e00-\u0e7f\u1000-\u109f\u10a0-\u10ff"
+    r"\u1200-\u137f\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]"
+)
+_V81_ENGLISH_WORD_RE = re.compile(r"(?i)\b[A-Za-z][A-Za-z'’\-]*\b")
+_V81_ENGLISH_FUNCTION_WORDS = {
+    "the", "and", "of", "to", "in", "on", "for", "with", "from", "has", "have",
+    "had", "is", "are", "was", "were", "be", "been", "being", "as", "at", "by",
+    "but", "or", "full", "control", "assuming", "ownership", "structure", "changed",
+    "strategy", "direction", "day", "level", "transition", "viewed", "left", "currently",
+    "plans", "appoint", "new", "chair", "departure", "stays", "moves", "vehicle", "stake",
+    "ambition", "remains", "compete", "challenge", "major", "believed", "model", "continue",
+    "evolve", "focus", "recruiting", "developing", "young", "talent", "adding", "experience",
+    "proven", "quality", "shown", "summer", "minutes", "across", "appearances", "each",
+    "them", "very", "much", "delivered", "first", "ever", "match",
+}
+_V81_ALLOWED_LATIN_RE = re.compile(
+    r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO|\b(?:UCL|UEL|UEFA|FIFA|PSG|VAR|MLS|"
+    r"xG|xGOT|N/?A|FC|AC|AS)\b"
+)
+
+
+def _v81_candidate_language_issues(source: Any, candidate: Any) -> list[str]:
+    value = html.unescape(re.sub(r"(?is)<[^>]+>", " ", str(candidate or "")))
+    # Immutable factual/batch markers are protocol tokens, not untranslated
+    # English.  Excluding them also keeps number-only history rows valid.
+    value = re.sub(r"⟪VAL\d{4}⟫|__\s*NETO\s*_\s*ITEM\s*_\s*\d{2}\s*_\s*7F\s*__", " ", value, flags=re.IGNORECASE)
+    issues: list[str] = []
+    if not value.strip():
+        return ["empty_translation"]
+    if _V81_FOREIGN_SCRIPT_RE.search(value):
+        issues.append("foreign_script_contamination")
+    probe = _V81_ALLOWED_LATIN_RE.sub(" ", value)
+    latin_words = [word.casefold() for word in _V81_ENGLISH_WORD_RE.findall(probe)]
+    common_hits = [word for word in latin_words if word in _V81_ENGLISH_FUNCTION_WORDS]
+    hebrew_words = re.findall(r"[א-ת]{2,}", value)
+    if len(common_hits) >= 3 or (len(common_hits) >= 2 and len(latin_words) >= 4):
+        issues.append("substantial_untranslated_english")
+    if len(latin_words) >= 6 and len(latin_words) > max(3, len(hebrew_words)):
+        issues.append("latin_text_dominates_translation")
+    if (
+        source
+        and re.search(r"[A-Za-zא-ת]", str(source))
+        and re.search(r"[A-Za-zא-ת]", value)
+        and not hebrew_words
+    ):
+        issues.append("no_hebrew_translation")
+    return list(dict.fromkeys(issues))
+
+
+def _v81_reorder_here_we_go(value: Any) -> str:
+    text = str(value or "")
+    pattern = re.compile(
+        r"(?imu)^(?P<lead>[^\n]{2,100}?)\s+#HERE(?:_|\s)+WE(?:_|\s)+GO[!,.]*\s+"
+        r"(?:אל\s+|ל)(?P<club>[א-ת][^,.;!\n]{1,45})(?P<tail>\s*[,.;!]?.*)$"
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        lead = match.group("lead").rstrip(" ,")
+        club = match.group("club").strip()
+        # HERE_WE_GO already supplies the separator. Discard punctuation that
+        # followed the destination instead of producing "!." before the tail.
+        tail = re.sub(r"^[,.;!]+\s*", "", match.group("tail").lstrip())
+        suffix = (" " + tail) if tail else ""
+        return f"{lead} ל{club}, #HERE_WE_GO!{suffix}".strip()
+
+    return pattern.sub(repl, text)
+
+
+def _v81_lexical_cleanup(source: Any, translated: Any) -> str:
+    src = html.unescape(str(source or ""))
+    text = _v81_strip_transport_artifacts(translated)
+    text = _v81_normalize_flag_clusters(text)
+    # Re-run the maintained global player/team dictionaries at the final text
+    # boundary as well.  This catches a model that left a known club in Latin or
+    # chose an older spelling even when the initial glossary was correct.
+    text = apply_phrase_replacements(text, TEAM_REPLACEMENTS)
+    text = apply_phrase_replacements(text, PLAYER_REPLACEMENTS)
+    text = apply_phrase_replacements(text, HEBREW_FINAL_FIXES)
+    text = _v52_normalize_entity_names(text)
+    # Repair the one deterministic Thai-corruption shape; every other foreign
+    # script remains a validation failure and is retried on another key.
+    text = re.sub(r"(?u)ב[\u0e00-\u0e7f]+משת", "בחמשת", text)
+    text = re.sub(r"(?iu)(?:Bodø|Bodo|בודו|בודה)\s*[/\- ]\s*(?:Glimt|גלימט)", "בודה/גלימט", text)
+    text = re.sub(r"(?iu)ראסינג\s+(?:כלוב|קלאב|קלוב)", "ראסינג קלוב", text)
+    text = re.sub(r"(?u)ריבר\s+פלייט(?:\s+פלייט)+", "ריבר פלייט", text)
+    text = re.sub(r"(?iu)(?<=[A-Za-zא-ת])(?:TM|™)(?![A-Za-zא-ת])", "", text)
+    text = re.sub(r"(?u)(?<![א-ת])כיום\s+הזה(?![א-ת])", "ביום הזה", text)
+    if re.search(r"(?iu)\b(?:apps?|appearances?|UCL|Champions\s+League)\b", src):
+        text = re.sub(r"(?u)(?<!\d)(\d{1,4})\s+אפליקציות(?![א-ת])", r"\1 הופעות", text)
+    if re.search(r"(?iu)\bN/?A\b", text) and re.search(r"(?iu)appearances?|minutes?|apps?", src):
+        text = re.sub(r"(?iu)\bN/?A\b", "לא שיחק", text)
+    text = re.sub(
+        r"(?u)(ניצחון|ניצחה|ניצח|זכייה|זכתה|זכה)([^.\n]{0,90}?)\s+אודות\s+ל",
+        r"\1\2 הודות ל",
+        text,
+    )
+    if re.search(r"(?iu)half[- ]?volley|\bvolley\b", src):
+        text = re.sub(r"(?u)האם\s+זה\s*:", "איך נכון להגדיר את השער הזה?", text)
+    text = _v81_reorder_here_we_go(text)
+    text = _v81_align_ranked_list_flags(src, text)
+    text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+_V81_PRE_TRANSLATION_PAYLOAD = _final_translation_payload
+
+
+def _final_translation_payload(
+    main_source: str, quote_source: str, author_source: str, glossary: str
+) -> dict[str, Any]:
+    payload = _V81_PRE_TRANSLATION_PAYLOAD(
+        main_source, quote_source, author_source, glossary
+    )
+    instruction = (
+        " Translate every prose word into natural Hebrew. Do not leave English "
+        "function words or any Thai/Cyrillic/Arabic/CJK characters. Transliterate "
+        "proper names when needed. Preserve paragraph breaks and put every list "
+        "item on its own line; do not merge a heading, list item, or conclusion."
+    )
+    try:
+        payload["systemInstruction"]["parts"][0]["text"] += instruction
+        payload["contents"][0]["parts"][0]["text"] += (
+            "\n\nOUTPUT QUALITY: complete Hebrew only; preserve all list and paragraph boundaries."
+        )
+    except Exception:
+        pass
+    return payload
+
+
+_V81_PRE_STRUCTURAL_GEMINI_VALIDATION = _v78_response_is_structurally_complete
+
+
+def _v78_response_is_structurally_complete(
+    data: dict[str, Any], required_markers: set[str]
+) -> bool:
+    if not _V81_PRE_STRUCTURAL_GEMINI_VALIDATION(data, required_markers):
+        return False
+    try:
+        raw, _finish_reason = _final_gemini_response_text(data)
+        parsed = _final_parse_translation_json(raw)
+        combined = "\n".join([
+            str(parsed.get("main", "") or ""),
+            str(parsed.get("quote", "") or ""),
+        ]).strip()
+        return not bool(_v81_candidate_language_issues("translated source", combined))
+    except Exception:
+        return False
+
+
+_V81_PRE_TRANSLATION_QUALITY_ISSUES = translation_quality_issues
+
+
+def translation_quality_issues(
+    source_or_post: Any,
+    translated_text: Any = "",
+    quoted_text: Any = "",
+    *args: Any,
+    **kwargs: Any,
+) -> list[str]:
+    issues = list(_V81_PRE_TRANSLATION_QUALITY_ISSUES(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    ) or [])
+    source, translated, _post = _final_combined_translation_inputs(
+        source_or_post, translated_text, quoted_text
+    )
+    issues.extend(_v81_candidate_language_issues(source, translated))
+    return list(dict.fromkeys(str(issue) for issue in issues if str(issue).strip()))[:12]
+
+
+def translation_quality_issue(
+    source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any
+) -> str:
+    issues = translation_quality_issues(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    )
+    return issues[0] if issues else ""
+
+
+def check_translation_quality(
+    source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any
+) -> list[str]:
+    return translation_quality_issues(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    )
+
+
+def translation_quality_block_reason(
+    source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any
+) -> str:
+    return translation_quality_issue(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    )
+
+
+def is_translation_quality_blocked(
+    source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any
+) -> bool:
+    return bool(translation_quality_issue(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    ))
+
+
+def _v81_evict_post_translation_cache(post: Post) -> None:
+    global TRANSLATION_CACHE_DIRTY
+    keys: set[str] = set()
+    try:
+        include_quote = bool(not is_self_quote(post) and post.quoted_text and TRANSLATE_QUOTED_POSTS)
+        keys.add(_final_translation_cache_key_for_post(post, include_quote))
+    except Exception:
+        pass
+    try:
+        keys.add(_gemini_combined_cache_key(post))
+    except Exception:
+        pass
+    removed = False
+    for key in keys:
+        if key and key in TRANSLATION_CACHE:
+            TRANSLATION_CACHE.pop(key, None)
+            removed = True
+    if removed:
+        TRANSLATION_CACHE_DIRTY = True
+
+
+_V81_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    """Retry one newly-discovered bad cached/output translation sequentially."""
+    last_issues: list[str] = []
+    for attempt in range(2):
+        main, quote, author = _V81_PRE_TRANSLATE_POST_FOR_SEND(post)
+        main_source = _final_corresponding_source_text(post, quoted=False)
+        quote_source = _final_corresponding_source_text(post, quoted=True)
+        main = _v81_lexical_cleanup(main_source, main)
+        quote = _v81_lexical_cleanup(quote_source, quote) if quote else ""
+        last_issues = _v81_candidate_language_issues(main_source, main)
+        if quote_source and quote:
+            last_issues.extend(_v81_candidate_language_issues(quote_source, quote))
+        last_issues.extend(_final_translation_completeness_issues(main_source, main))
+        if quote_source and quote:
+            last_issues.extend(_final_translation_completeness_issues(quote_source, quote))
+        last_issues = list(dict.fromkeys(last_issues))
+        if not last_issues:
+            return main, quote, author
+        _v81_evict_post_translation_cache(post)
+        if attempt == 0:
+            logging.warning(
+                "V81 rejected an incomplete/mixed translation for @%s; retrying sequentially: %s",
+                getattr(post, "username", ""),
+                "; ".join(last_issues[:5]),
+            )
+    raise TranslationUnavailable(
+        "התרגום נשאר חלקי או מעורב בשפה זרה ולכן לא נשלח: "
+        + "; ".join(last_issues[:8])
+    )
+
+
+_V81_PRE_HISTORY_POLISH = _v74_history_polish
+
+
+def _v74_history_polish(source: str, translated: str) -> str:
+    return _v81_lexical_cleanup(source, _V81_PRE_HISTORY_POLISH(source, translated))
+
+
+_V81_PRE_HISTORY_VALID = _v80_history_translation_is_valid
+
+
+def _v80_history_translation_is_valid(source: str, translated: str) -> bool:
+    cleaned = _v81_lexical_cleanup(source, translated)
+    return bool(
+        _V81_PRE_HISTORY_VALID(
+            _v81_strip_transport_artifacts(source), cleaned
+        )
+        and not _v81_candidate_language_issues(source, cleaned)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5) Source-aware list layout and final display cleanup.
+# Repeated bullets/arrows/keycaps/stat markers are rows, not inline decoration.
+# A heading/list and list/conclusion boundary receives one blank line; list rows
+# themselves stay contiguous.
+# ---------------------------------------------------------------------------
+_V81_INLINE_TOKEN = (
+    r"(?:▪️?|•|←|→|➡️?|(?:[1-9]\ufe0f?\u20e3)|🔟|🕸️?|⚽️?|📈|🎯|🔑|"
+    r"👟|👣|👕|💨|⏭️?|⭐️?|⚔️|🤺|⏱️?|📊|🏆+|🥇+|✅|"
+    r"[אבגדהוזחטיכלמנסעפצקרשתA-Ca-c][.)])"
+)
+_V81_INLINE_TOKEN_RE = re.compile(
+    rf"(?<!\S)(?P<marker>{_V81_INLINE_TOKEN})(?=[ \t]+\S)", re.UNICODE
+)
+_V81_INLINE_SPLIT_RE = re.compile(
+    rf"[ \t\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]+"
+    rf"(?={_V81_INLINE_TOKEN}[ \t]+\S)",
+    re.UNICODE,
+)
+_V81_LINE_ITEM_RE = re.compile(
+    rf"(?u)^\s*(?:{_V81_INLINE_TOKEN}|{_V81_FLAG_PATTERN}|[-–—](?=\s+\S))\s*"
+)
+_V81_CONCLUSION_START_RE = re.compile(
+    r"(?u)\s+(?=(?:הישג\s+(?:מדהים|אדיר)|עשרה\s+שחקני|ל[א-ת'׳\-]{2,25}\s+יש|"
+    r"סך\s+הכ(?:ו|ו?)ל|בסך\s+הכ(?:ו|ו?)ל|החלוץ\s+|הקשר\s+|הוא\s+פשוט|"
+    r"היא\s+פשוט|פתיחת\s+|אוקיי\b|איך\s+לעזאזל|"
+    r"[א-ת'׳\-]{2,30}\s+(?:ניצח(?:ה|ו)?|זכ(?:ה|תה|ו)|הוביל(?:ה|ו)?|השלים(?:ה|ו)?)\b|"
+    r"(?:שניים|שלושה|ארבעה)\s+(?:שערים|בישולים)|"
+    r"An?\s+(?:incredible|amazing)|The\s+striker|Total\s+|He\s+simply|"
+    r"[A-Z][A-Za-z'’\-]{2,30}\s+(?:won|wins|led|leads|completed)))"
+)
+
+
+def _v81_visible(value: Any) -> str:
+    return _v72_visible_line(value).strip()
+
+
+def _v81_is_structured_line(value: Any) -> bool:
+    return bool(_V81_LINE_ITEM_RE.match(_v81_visible(value)))
+
+
+def _v81_split_inline_rows(value: Any, source: Any = "") -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    occurrences = list(_V81_INLINE_TOKEN_RE.finditer(_v81_visible(text)))
+    marker_counts: dict[str, int] = {}
+    for match in occurrences:
+        key = re.sub(r"[\ufe0f\s]", "", match.group("marker"))
+        marker_counts[key] = marker_counts.get(key, 0) + 1
+    strong_list = len(occurrences) >= 3 or any(count >= 2 for count in marker_counts.values())
+    if strong_list:
+        text = _V81_INLINE_SPLIT_RE.sub("\n", text)
+
+    source_flag_count = len(_v81_flags(source))
+    if source_flag_count >= 3:
+        rebuilt: list[str] = []
+        for line in text.splitlines():
+            matches = list(_V81_FLAG_RE.finditer(_v81_normalize_flag_clusters(line)))
+            if len(matches) < 2:
+                rebuilt.append(line)
+                continue
+            fixed = _v81_normalize_flag_clusters(line)
+            positions = [match.start() for match in _V81_FLAG_RE.finditer(fixed)][1:]
+            for position in reversed(positions):
+                prefix = fixed[:position]
+                if prefix and not prefix.endswith("\n"):
+                    fixed = prefix.rstrip(" \t\u200e\u200f") + "\n" + fixed[position:]
+            rebuilt.append(fixed)
+        text = "\n".join(rebuilt)
+    return text
+
+
+def _v81_split_merged_conclusions(value: Any) -> str:
+    output: list[str] = []
+    for raw_line in str(value or "").splitlines():
+        line = raw_line.rstrip()
+        if _v81_is_structured_line(line):
+            visible = _v81_visible(line)
+            match = _V81_CONCLUSION_START_RE.search(visible)
+            if match and len(re.findall(r"[A-Za-zא-ת0-9]+", visible[:match.start()])) >= 2:
+                # At this boundary input is plain translation in normal use.  For
+                # final HTML fallback, split by the same visible tail string.
+                tail = visible[match.end():].strip()
+                start_text = visible[:match.start()].rstrip()
+                if start_text and tail:
+                    if "<" not in line:
+                        output.extend([start_text, tail])
+                        continue
+                    tail_pos = line.find(tail)
+                    if tail_pos > 0:
+                        output.extend([line[:tail_pos].rstrip(), line[tail_pos:].lstrip()])
+                        continue
+        output.append(line)
+    return "\n".join(output)
+
+
+def _v81_marker_is_meta_heading(value: Any) -> bool:
+    visible = _v81_visible(value)
+    return bool(re.match(r"^(?:👣|👕)\s*", visible) or visible.endswith(":") or visible.endswith("："))
+
+
+def _v81_semantic_list_gaps(value: Any) -> str:
+    raw_lines = [line.rstrip() for line in str(value or "").splitlines()]
+    # Collapse repeated empties first.
+    lines: list[str] = []
+    for line in raw_lines:
+        if not line.strip() and lines and not lines[-1].strip():
+            continue
+        lines.append(line)
+    nonempty = [index for index, line in enumerate(lines) if line.strip()]
+    if len(nonempty) < 2:
+        return "\n".join(lines).strip()
+    rebuilt: list[str] = []
+    for position, index in enumerate(nonempty):
+        line = lines[index]
+        rebuilt.append(line)
+        if position + 1 >= len(nonempty):
+            continue
+        next_index = nonempty[position + 1]
+        next_line = lines[next_index]
+        current_item = _v81_is_structured_line(line)
+        next_item = _v81_is_structured_line(next_line)
+        existing_blank = any(not lines[k].strip() for k in range(index + 1, next_index))
+
+        # Determine whether either side belongs to a real multi-row list.
+        previous_item = position > 0 and _v81_is_structured_line(lines[nonempty[position - 1]])
+        after_next_item = (
+            position + 2 < len(nonempty)
+            and _v81_is_structured_line(lines[nonempty[position + 2]])
+        )
+        list_boundary = (
+            (not current_item and next_item and after_next_item)
+            or (current_item and previous_item and not next_item)
+            or (current_item and next_item and _v81_marker_is_meta_heading(line))
+        )
+        if current_item and next_item and not _v81_marker_is_meta_heading(line):
+            # No random holes inside one list.
+            existing_blank = False
+        if existing_blank or list_boundary:
+            rebuilt.append("")
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(rebuilt)).strip()
+
+
+def _v81_format_structured_layout(source: Any, translated: Any) -> str:
+    text = _v81_normalize_flag_clusters(translated)
+    try:
+        text = _v72_restore_source_marker_boundaries(source, text)
+    except Exception:
+        pass
+    text = _v81_split_inline_rows(text, source)
+    text = _v81_split_merged_conclusions(text)
+    text = _v81_semantic_list_gaps(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+# Injury reports are event reports, not reporter-branded columns.
+def _v81_is_injury_report(post: Any) -> bool:
+    text = _v81_source_text(post)
+    lead = text[:420]
+    return bool(_V81_INJURY_RE.search(lead) and re.search(
+        r"(?iu)(?:out\s+for|miss(?:es|ing)?|ruled\s+out|sidelined|weeks?|months?|"
+        r"ייעדר|פציע|שבועות|חודשים|ניתוח|surgery|operation)",
+        lead,
+    ))
+
+
+_V81_PRE_SHOULD_HIDE_WRITER = should_hide_writer_header
+
+
+def should_hide_writer_header(post: Post, translated: str) -> bool:
+    return bool(_v81_is_injury_report(post) or _V81_PRE_SHOULD_HIDE_WRITER(post, translated))
+
+
+_V81_PRE_WRITER_LABEL = _v11_writer_label
+
+
+def _v11_writer_label(post: Any) -> str:
+    if _v81_is_injury_report(post):
+        return ""
+    return _V81_PRE_WRITER_LABEL(post)
+
+
+def _v81_strip_injury_writer_heading(post: Post, rendered: Any) -> str:
+    text = str(rendered or "")
+    if not _v81_is_injury_report(post):
+        return text
+    try:
+        label = str(_V81_PRE_WRITER_LABEL(post) or "").strip()
+        if not label:
+            return text
+        aliases = list(_v11_writer_aliases(post, label))
+        aliases.extend(html.escape(alias, quote=True) for alias in list(aliases))
+        return _v11_strip_leading_writer_prefixes(
+            text, sorted(set(aliases), key=len, reverse=True)
+        ).lstrip()
+    except Exception:
+        return text
+
+
+def _v81_cleanup_html_text_nodes(value: Any) -> str:
+    pieces = re.split(r"(<[^>]+>)", str(value or ""))
+    for index in range(0, len(pieces), 2):
+        fragment = pieces[index]
+        if not fragment:
+            continue
+        # Keep whitespace surrounding HTML tags byte-for-byte.  In particular,
+        # the two newlines after </b> are the writer/body paragraph boundary.
+        leading_match = re.match(r"^\s*", fragment)
+        trailing_match = re.search(r"\s*$", fragment)
+        leading = leading_match.group(0) if leading_match else ""
+        trailing = trailing_match.group(0) if trailing_match else ""
+        core_start = len(leading)
+        core_end = len(fragment) - len(trailing) if trailing else len(fragment)
+        core = fragment[core_start:core_end]
+        if not core:
+            pieces[index] = fragment
+            continue
+        core = _v81_strip_transport_artifacts(_v81_normalize_flag_clusters(core))
+        core = re.sub(r"(?u)ריבר\s+פלייט(?:\s+פלייט)+", "ריבר פלייט", core)
+        core = re.sub(r"(?iu)(?<=[A-Za-zא-ת])(?:TM|™)(?![A-Za-zא-ת])", "", core)
+        pieces[index] = leading + core + trailing
+    return "".join(pieces)
+
+
+_V81_PRE_BUILD_MESSAGE = build_message
+
+
+def build_message(
+    post: Post,
+    translated: str,
+    quoted_translated: str = "",
+    quoted_author_translated: str = "",
+    include_video_link: bool = False,
+) -> str:
+    main_source = _final_corresponding_source_text(post, quoted=False)
+    quote_source = _final_corresponding_source_text(post, quoted=True)
+    translated = _v81_format_structured_layout(
+        main_source, _v81_lexical_cleanup(main_source, translated)
+    )
+    if quoted_translated:
+        quoted_translated = _v81_format_structured_layout(
+            quote_source, _v81_lexical_cleanup(quote_source, quoted_translated)
+        )
+    rendered = _V81_PRE_BUILD_MESSAGE(
+        post,
+        translated,
+        quoted_translated,
+        quoted_author_translated,
+        include_video_link,
+    )
+    rendered = _v81_strip_injury_writer_heading(post, rendered)
+    rendered = _v81_cleanup_html_text_nodes(rendered)
+    rendered = _v81_format_structured_layout(
+        "\n".join([str(main_source or ""), str(quote_source or "")]), rendered
+    )
+    return rendered
+
+
+_V81_PRE_FINALIZE_OUTGOING = _finalize_outgoing_message_only
+
+
+def _finalize_outgoing_message_only(message: Any) -> str:
+    rendered = _V81_PRE_FINALIZE_OUTGOING(message)
+    rendered = _v81_cleanup_html_text_nodes(rendered)
+    return _v81_format_structured_layout("", rendered)
+
+
+# ---------------------------------------------------------------------------
+# 6) Deterministic regression audit for the reported *classes*.
+# ---------------------------------------------------------------------------
+def _v81_test_post(text: str, username: str = "Footballtweet", pid: str = "v81") -> Post:
+    return Post(
+        post_id=pid,
+        username=username,
+        text=text,
+        link=f"https://x.com/{username}/status/{pid}",
+        image_urls=[],
+        video_urls=[],
+        has_video=False,
+        primary_has_video=False,
+        quoted_has_video=False,
+        quoted_author="",
+        quoted_text="",
+        published_ts=time.time(),
+        dedupe_ids=[pid],
+        source_name=username,
+    )
+
+
+def _v81_self_audit() -> None:
+    if _v81_hard_source_block_reason(_v81_test_post(
+        "Seattle Seahawks quarterback Sam Darnold had a CT scan.", pid="other"
+    )) != "v81_other_sport":
+        raise RuntimeError("v81_other_sport_filter_failed")
+    if _v81_hard_source_block_reason(_v81_test_post(
+        "Arsenal Women are unbeaten in 20 WSL matches.", pid="women"
+    )) != "v81_womens_football":
+        raise RuntimeError("v81_women_filter_failed")
+    if _v81_hard_source_block_reason(_v81_test_post(
+        "Leeds lead Newcastle 2-0 after another goal.", pid="live"
+    )) != "v81_live_match_update":
+        raise RuntimeError("v81_live_filter_failed")
+    if _v81_hard_source_block_reason(_v81_test_post(
+        "Trent in a double pivot. Courtois, Dumfries, Konate and Mbappe.", pid="xi"
+    )) != "v81_lineup_or_squad":
+        raise RuntimeError("v81_lineup_filter_failed")
+    if _v81_hard_source_block_reason(_v81_test_post(
+        "Suicide prevention day. Call Samaritans on 116 123.", pid="phone"
+    )) != "v81_public_service_or_self_harm":
+        raise RuntimeError("v81_phone_filter_failed")
+
+    flags = _v81_normalize_flag_clusters("🇧🇦 🇧 🇦 וגם 🇭 🇺")
+    if flags.count("🇧🇦") != 1 or "🇭🇺" not in flags:
+        raise RuntimeError(f"v81_flag_normalization_failed:{flags!r}")
+    clean = _v81_lexical_cleanup(
+        "Bodø/Glimt and Racing Club, 8 UCL apps",
+        "בודו גלימט נגד ראסינג כלוב עם 8 אפליקציות 497018. ריבר פלייט פלייט",
+    )
+    for expected in ("בודה/גלימט", "ראסינג קלוב", "8 הופעות", "ריבר פלייט"):
+        if expected not in clean:
+            raise RuntimeError(f"v81_name_cleanup_failed:{expected}:{clean!r}")
+    if "497018" in clean or "פלייט פלייט" in clean:
+        raise RuntimeError(f"v81_transport_or_duplicate_name_failed:{clean!r}")
+    if ".." in clean:
+        raise RuntimeError(f"v81_transport_punctuation_failed:{clean!r}")
+    here_we_go = _v81_lexical_cleanup(
+        "Coutinho HERE WE GO to Santos",
+        "פיליפה קוטיניו #HERE_WE_GO אל סנטוס. סוכמה עסקה.",
+    )
+    if "!." in here_we_go or "#HERE_WE_GO! סוכמה" not in here_we_go:
+        raise RuntimeError(f"v81_here_we_go_punctuation_failed:{here_we_go!r}")
+    if not _v81_candidate_language_issues(
+        "Chelsea ownership changed",
+        "המבנה has changed, but the club strategy and direction hasn't.",
+    ):
+        raise RuntimeError("v81_mixed_translation_not_rejected")
+    if not _v81_candidate_language_issues(
+        "five matches", "המאמן ניצח בแปמשת משחקים"
+    ):
+        raise RuntimeError("v81_foreign_script_not_rejected")
+    listed = _v81_format_structured_layout(
+        "▪️ 24 games ▪️ 20 wins ▪️ 4 draws ▪️ 0 defeats",
+        "▪️ 24 משחקים ▪️ 20 ניצחונות ▪️ 4 תיקו ▪️ 0 הפסדים",
+    )
+    if len([line for line in listed.splitlines() if line.strip().startswith("▪")]) != 4:
+        raise RuntimeError(f"v81_inline_list_failed:{listed!r}")
+    stats = _v81_format_structured_layout(
+        "Salah: ⚽ 54 touches 📈 3 goals 🎯 1.33 xG. Trabzon won 4-0.",
+        "👣 מוחמד סלאח: ⚽️ 54 נגיעות 📈 3 שערים 🎯 1.33 xG טרבזון ניצחה 4-0.",
+    )
+    if "🎯 1.33 xG\n\nטרבזון ניצחה" not in stats:
+        raise RuntimeError(f"v81_stat_conclusion_boundary_failed:{stats!r}")
+    if _v81_same_event_kind(
+        "Mykhailo Mudryk is injured and will miss 6-8 weeks.",
+        "Mudryk suffered an ankle injury and is out for 6-8 weeks.",
+    ) != "v81_same_injury_fact":
+        raise RuntimeError("v81_injury_duplicate_failed")
+    if _v81_same_event_kind(
+        "Yves Bissouma joins Ajax as a free agent. Contract to 2027 plus option.",
+        "Ajax reached an agreement to sign Yves Bissouma, here we go. Deal until 2027.",
+    ) != "v81_same_transfer_fact":
+        raise RuntimeError("v81_transfer_duplicate_failed")
+    if V80_HISTORY_GEMINI_MAX_KEYS != min(4, max(1, int(V79_GEMINI_MAX_SEQUENTIAL_KEYS))):
+        raise RuntimeError("v81_history_sequential_key_limit_failed")
+
+
+_v81_self_audit()
+logging.info(
+    "V81 active: hard source filters, cross-reporter injury/transfer dedupe, sequential "
+    "mixed-language rejection, safe flags, transport-id cleanup and source-aware lists"
+)
+
+
+# ====== V82 IMMEDIATE SELECTIVE RTL LANE (2026-09-22) ======
+# Channel RTL used to share V57's general channel queue with duplicate-memory and
+# control work.  The edit was correct but could arrive visibly late.  Dispatch a
+# tiny, dedicated RTL task as soon as getUpdates returns the channel_post, while
+# keeping the existing general channel work asynchronous and duplicate-free.
+#
+# Direction policy requested by the operator:
+#   * Hebrew/mixed, emoji-only, number-only and other neutral lines -> strong RTL.
+#   * A genuinely Latin-only visible line (for example "📄 GOAL24") -> unchanged
+#     LTR.  HTML attributes do not count; classification uses visible text only.
+
+BOT_BUILD_ID = "V82-immediate-selective-channel-rtl-2026-09-22"
+
+_V82_LATIN_RE = re.compile(r"[A-Za-z]")
+_V82_HEBREW_RE = re.compile(r"[\u0590-\u05ff]")
+_V82_HTML_TAG_RE = re.compile(r"(?is)<[^>]+>")
+
+
+def _v82_visible_direction_text(value: Any) -> str:
+    text = _V42_RTL_EDGE_RE.sub("", str(value or ""))
+    text = html.unescape(_V82_HTML_TAG_RE.sub(" ", text))
+    return text.strip()
+
+
+def _v82_line_is_latin_only(value: Any) -> bool:
+    """True only when every visible letter is ASCII Latin (English)."""
+    visible = _v82_visible_direction_text(value)
+    if not visible or not _V82_LATIN_RE.search(visible):
+        return False
+    return not any(
+        character.isalpha() and not ("A" <= character <= "Z" or "a" <= character <= "z")
+        for character in visible
+    )
+
+
+def _v82_line_requires_rtl(value: Any) -> bool:
+    raw = str(value or "")
+    return bool(raw.strip() and not _v82_line_is_latin_only(raw))
+
+
+def _v41_strong_rtl_all_lines(value: Any) -> Any:
+    """Strong RTL for every non-English line; preserve true Latin-only lines."""
+    if not isinstance(value, str) or not value:
+        return value
+    output: list[str] = []
+    for raw in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not raw.strip():
+            output.append("")
+            continue
+        clean = _V42_RTL_EDGE_RE.sub("", raw)
+        if _v82_line_is_latin_only(clean):
+            output.append(clean)
+        else:
+            output.append(_V42_RLM + _V42_RLE + clean + _V42_PDF)
+    return "\n".join(output)
+
+
+def _v42_message_needs_rtl_repair(text: str) -> bool:
+    """Repair every non-English paragraph that lacks the canonical wrapper."""
+    for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not _v82_line_requires_rtl(line):
+            continue
+        if not _v41_line_is_strong_rtl(line):
+            return True
+    return False
+
+
+def _v42_transform_text_entities(
+    text: str, entities: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Selectively wrap lines and recalculate Telegram UTF-16 entity offsets."""
+    lines = str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    transformed: list[str] = []
+    records: list[tuple[int, int, int]] = []
+    orig_cursor = 0
+    new_cursor = 0
+    prefix_units = _v42_utf16_len(_V42_RLM + _V42_RLE)
+
+    for index, raw in enumerate(lines):
+        raw_units = _v42_utf16_len(raw)
+        if not raw.strip() or _v82_line_is_latin_only(raw) or _v41_line_is_strong_rtl(raw):
+            rendered = raw
+            content_start = new_cursor
+        else:
+            rendered = _V42_RLM + _V42_RLE + raw + _V42_PDF
+            content_start = new_cursor + prefix_units
+        transformed.append(rendered)
+        records.append((orig_cursor, orig_cursor + raw_units, content_start))
+        orig_cursor += raw_units
+        new_cursor += _v42_utf16_len(rendered)
+        if index + 1 < len(lines):
+            orig_cursor += 1
+            new_cursor += 1
+
+    fixed_text = "\n".join(transformed)
+    adjusted: list[dict[str, Any]] = []
+    for raw_entity in list(entities or []):
+        if not isinstance(raw_entity, dict):
+            continue
+        start = int(raw_entity.get("offset", 0) or 0)
+        length = int(raw_entity.get("length", 0) or 0)
+        end = start + length
+        record = next(
+            (row for row in records if row[0] <= start and end <= row[1]),
+            None,
+        )
+        # An entity crossing a newline cannot be shifted safely.
+        if record is None:
+            return None
+        orig_start, _orig_end, new_content_start = record
+        item = dict(raw_entity)
+        item["offset"] = new_content_start + (start - orig_start)
+        item["length"] = length
+        adjusted.append(item)
+
+    # Keep only offsets that still land on full UTF-16 character boundaries.
+    boundaries = _v77_utf16_boundaries(fixed_text)
+    total = _v42_utf16_len(fixed_text)
+    valid = [
+        item for item in adjusted
+        if int(item.get("length", 0) or 0) > 0
+        and int(item.get("offset", 0) or 0) in boundaries
+        and int(item.get("offset", 0) or 0) + int(item.get("length", 0) or 0) in boundaries
+        and int(item.get("offset", 0) or 0) + int(item.get("length", 0) or 0) <= total
+    ]
+    return fixed_text, valid
+
+
+# Capture the fully active V77/V68 editor.  General channel processing receives
+# a private skip marker; the fast copy calls this captured editor directly.
+_V82_ACTIVE_RTL_EDITOR = _v43_try_edit_any_admin_channel_post
+_V82_FAST_RTL_EXECUTOR = ThreadPoolExecutor(
+    # Keep edits ordered and guarantee that the same lane never performs two
+    # Telegram edits concurrently.  It is still fast because it has no memory,
+    # translation, media or control-panel work in front of it.
+    max_workers=1, thread_name_prefix="channel-rtl-v82"
+)
+
+
+def _v43_try_edit_any_admin_channel_post(update: dict[str, Any]) -> bool:
+    if bool(update.get("_v82_skip_rtl")):
+        return False
+    return bool(_V82_ACTIVE_RTL_EDITOR(update))
+
+
+def _v82_fast_rtl_task(update: dict[str, Any], queued_at: float) -> None:
+    try:
+        clean_update = dict(update)
+        clean_update.pop("_v82_skip_rtl", None)
+        repaired = bool(_V82_ACTIVE_RTL_EDITOR(clean_update))
+        if repaired:
+            logging.info(
+                "V82 immediate channel RTL completed in %.3fs",
+                max(0.0, time.perf_counter() - queued_at),
+            )
+    except Exception as exc:
+        logging.debug("V82 immediate channel RTL failed safely: %s", short_error(exc, 300))
+
+
+def _v82_dispatch_channel_update(update: dict[str, Any]) -> None:
+    queued_at = time.perf_counter()
+    fast_copy = dict(update)
+    general_copy = dict(update)
+    general_copy["_v82_skip_rtl"] = True
+    try:
+        _V82_FAST_RTL_EXECUTOR.submit(_v82_fast_rtl_task, fast_copy, queued_at)
+    except RuntimeError:
+        Thread(
+            target=_v82_fast_rtl_task,
+            args=(fast_copy, queued_at),
+            daemon=True,
+        ).start()
+    try:
+        _V57_CHANNEL_EXECUTOR.submit(_v57_process_channel_post, general_copy)
+    except RuntimeError:
+        Thread(target=_v57_process_channel_post, args=(general_copy,), daemon=True).start()
+
+
+def control_loop() -> None:
+    """V75 smart control loop with immediate, dedicated channel RTL dispatch."""
+    if not CONTROL_CHAT_ID:
+        return
+    offset = control_saved_offset()
+    webhook_ready = False
+    startup_panel_done = False
+    last_offset_save = 0.0
+    last_conflict_cleanup = 0.0
+    error_streak = 0
+    while True:
+        idle_end = _v75_hard_idle_end_ts()
+        if idle_end:
+            time.sleep(max(1.0, idle_end - time.time()))
+            continue
+        try:
+            shabbat_start = _v75_next_shabbat_start_ts()
+            seconds_to_shabbat = shabbat_start - time.time()
+            if 0 < seconds_to_shabbat <= 45:
+                time.sleep(seconds_to_shabbat)
+                continue
+            if not webhook_ready:
+                delete_control_webhook_if_needed()
+                webhook_ready = True
+            if not startup_panel_done:
+                startup_panel_done = True
+                if CONTROL_SEND_PANEL_ON_STARTUP:
+                    send_quick_control_panel(force_new=True)
+                else:
+                    ensure_control_panel_once_if_requested()
+            response = telegram_api(
+                "getUpdates",
+                {
+                    "offset": offset,
+                    "timeout": CONTROL_GETUPDATES_TIMEOUT_SECONDS,
+                    "allowed_updates": [
+                        "callback_query", "message", "edited_message",
+                        "channel_post", "edited_channel_post",
+                    ],
+                },
+                max_attempts=1,
+                timeout=CONTROL_GETUPDATES_HTTP_TIMEOUT_SECONDS,
+            )
+            error_streak = 0
+            if _v75_hard_idle_end_ts():
+                continue
+            updates = list(response.get("result", []) or [])
+            batch_offset = offset
+            callbacks: list[dict[str, Any]] = []
+            noncallbacks: list[dict[str, Any]] = []
+            for update in updates:
+                try:
+                    batch_offset = max(batch_offset, int(update.get("update_id", 0)) + 1)
+                except Exception:
+                    pass
+                (callbacks if update.get("callback_query") else noncallbacks).append(update)
+            for update in callbacks:
+                process_control_update(update)
+            for update in noncallbacks:
+                if update.get("channel_post") or update.get("edited_channel_post"):
+                    _v82_dispatch_channel_update(update)
+                else:
+                    try:
+                        _V57_CONTROL_TEXT_EXECUTOR.submit(_v57_process_control_text, update)
+                    except RuntimeError:
+                        Thread(target=_v57_process_control_text, args=(update,), daemon=True).start()
+            if batch_offset != offset:
+                offset = batch_offset
+                now_ts = time.time()
+                if now_ts - last_offset_save >= V75_BATCH_WRITE_SECONDS:
+                    _v57_save_control_offset(offset)
+                    last_offset_save = now_ts
+        except Exception as exc:
+            error_streak += 1
+            if is_getupdates_conflict(exc) and time.time() - last_conflict_cleanup > 30:
+                last_conflict_cleanup = time.time()
+                try:
+                    telegram_api(
+                        "deleteWebhook", {"drop_pending_updates": True},
+                        max_attempts=1, timeout=10,
+                    )
+                except Exception as cleanup_exc:
+                    _v73_control_log_failure(cleanup_exc)
+            else:
+                _v73_control_log_failure(exc)
+            time.sleep(min(5.0, float(2 ** min(error_streak - 1, 3))))
+
+
+def _v82_utf16_slice(value: str, offset: int, length: int) -> str:
+    encoded = str(value).encode("utf-16-le")
+    return encoded[offset * 2:(offset + length) * 2].decode("utf-16-le")
+
+
+def _v82_self_audit() -> None:
+    sample = (
+        "♻️♻️♻️♻️\n"
+        "❗ ולוורדה בחוץ ל-2-3 חודשים!\n"
+        "😳 בדיקה חדשה הראתה פציעה\n"
+        "📄 GOAL24"
+    )
+    if not _v42_message_needs_rtl_repair(sample):
+        raise RuntimeError("v82_mixed_caption_not_detected")
+    english_start = sample.index("GOAL24")
+    english_offset = _v42_utf16_len(sample[:english_start])
+    transformed = _v42_transform_text_entities(
+        sample,
+        [{"type": "bold", "offset": english_offset, "length": 6}],
+    )
+    if transformed is None:
+        raise RuntimeError("v82_transform_failed")
+    fixed, entities = transformed
+    lines = fixed.splitlines()
+    if len(lines) != 4:
+        raise RuntimeError("v82_line_count_changed")
+    if not all(_v41_line_is_strong_rtl(line) for line in lines[:3]):
+        raise RuntimeError("v82_neutral_or_hebrew_line_not_rtl")
+    if lines[3] != "📄 GOAL24" or _v41_line_is_strong_rtl(lines[3]):
+        raise RuntimeError("v82_latin_only_line_changed")
+    if _v42_message_needs_rtl_repair("📄 GOAL24\nOnly English 24"):
+        raise RuntimeError("v82_english_only_message_would_be_edited")
+    if _v82_line_is_latin_only("📄 GOAL24 русский"):
+        raise RuntimeError("v82_non_english_script_misclassified_as_english")
+    if not _v42_message_needs_rtl_repair("♻️♻️♻️"):
+        raise RuntimeError("v82_emoji_only_line_not_detected")
+    if len(entities) != 1 or _v82_utf16_slice(
+        fixed, int(entities[0]["offset"]), int(entities[0]["length"])
+    ) != "GOAL24":
+        raise RuntimeError("v82_english_entity_offset_changed")
+    once = _v41_strong_rtl_all_lines(sample)
+    if _v41_strong_rtl_all_lines(once) != once:
+        raise RuntimeError("v82_direction_transform_not_idempotent")
+
+
+_v82_self_audit()
+logging.info(
+    "V82 active: channel RTL has an immediate dedicated lane; neutral/Hebrew "
+    "lines are RTL and genuinely Latin-only lines remain LTR"
+)
+
+
+# ====== V83 TEN-HISTORY TRUTHFULNESS + COACH-ONLY APPOINTMENTS (2026-09-22) ======
+# History output may never label an English source fallback as a completed
+# translation.  Editorially, administrative/professional appointments are not
+# coach news, and coach changes are relevant only for a dynamically managed
+# tier-1 club.
+
+BOT_BUILD_ID = "V83-history-and-coach-policy-2026-09-22"
+V83_HISTORY_FAILURE_PREFIX = "⚠️ התרגום לא הושלם כרגע; טקסט המקור:"
+_V83_HISTORY_VALIDITY_LOCK = RLock()
+_V83_HISTORY_VALIDITY_CACHE: dict[tuple[str, str], bool] = {}
+_V83_PRE_HISTORY_TRANSLATION_VALIDATOR = _v80_history_translation_is_valid
+
+
+def _v83_fast_history_translation_valid(source: str, translated: str) -> bool:
+    """Fast, strict validator for control-history rows (never main-channel send)."""
+    src = html.unescape(str(source or "").strip())
+    out = html.unescape(str(translated or "").strip())
+    if not out:
+        return False
+    if any(character.isalpha() for character in src) and not re.search(r"[א-ת]", out):
+        return False
+    if _v81_candidate_language_issues(src, out):
+        return False
+    if _final_normalized_numbers(src) - _final_normalized_numbers(out):
+        return False
+    currency_rules = (
+        (r"£|\bpounds?\b|\bsterling\b", r"£|ליש[\"״']?ט|פאונד"),
+        (r"€|\beuros?\b", r"€|אירו"),
+        (r"\$|\bdollars?\b|\bUSD\b", r"\$|דולר"),
+    )
+    for source_pattern, output_pattern in currency_rules:
+        if re.search(source_pattern, src, re.IGNORECASE) and not re.search(
+            output_pattern, out, re.IGNORECASE
+        ):
+            return False
+    for label, source_pattern, output_pattern in _V46_TRANSLATION_CONCEPTS:
+        if not source_pattern.search(src):
+            continue
+        present = bool(output_pattern.search(out))
+        if label == "medical":
+            present = present or bool(_V74_HEBREW_MEDICAL_RE.search(out))
+        elif label == "officials_or_staff":
+            present = present or bool(_V77_OFFICIALS_HE_RE.search(out))
+        if not present:
+            return False
+    source_hwg = bool(re.search(r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO", src))
+    output_hwg = bool(re.search(
+        r"(?iu)#?HERE(?:_|\s)+WE(?:_|\s)+GO|היר\s+וי\s+גו|הנה\s+זה\s+קורה",
+        out,
+    ))
+    if output_hwg and not source_hwg:
+        return False
+    source_words = _V46_WORD_RE.findall(src)
+    output_words = _V46_WORD_RE.findall(out)
+    if len(source_words) >= 16 and len(output_words) < max(6, int(len(source_words) * 0.42)):
+        return False
+    if len(src) >= 260 and len(out) < len(src) * 0.50:
+        return False
+    source_paragraphs = [part for part in re.split(r"\n\s*\n", src) if part.strip()]
+    output_paragraphs = [part for part in re.split(r"\n\s*\n", out) if part.strip()]
+    if len(source_paragraphs) >= 3 and len(output_paragraphs) < len(source_paragraphs) - 1:
+        return False
+    if (
+        _FAST_SAFE_DANGLING_HEBREW_RE.search(out)
+        or _FAST_SAFE_DANGLING_ENGLISH_RE.search(out)
+        or _FAST_SAFE_PARTIAL_WORD_RE.search(out)
+        or re.search(r"[,;:–—-]\s*$", out)
+    ):
+        return False
+    for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
+        if src.count(opening) == src.count(closing) and out.count(opening) > out.count(closing):
+            return False
+    return True
+
+
+def _v83_history_result_is_valid(source: Any, candidate: Any) -> bool:
+    source_text = str(source or "").strip()
+    candidate_text = str(candidate or "").strip()
+    if not candidate_text or candidate_text.startswith(V83_HISTORY_FAILURE_PREFIX):
+        return False
+    # Amount/score/emoji-only rows contain no prose to translate.
+    if source_text and not any(character.isalpha() for character in source_text):
+        return candidate_text == source_text
+    # A source row that was already Hebrew is a no-network success.
+    if (
+        candidate_text == source_text
+        and re.search(r"[א-ת]", source_text)
+        and latin_ratio(source_text) < 0.10
+    ):
+        return True
+    cache_key = (
+        hashlib.sha256(source_text.encode("utf-8", errors="ignore")).hexdigest(),
+        hashlib.sha256(candidate_text.encode("utf-8", errors="ignore")).hexdigest(),
+    )
+    with _V83_HISTORY_VALIDITY_LOCK:
+        cached = _V83_HISTORY_VALIDITY_CACHE.get(cache_key)
+        if cached is not None:
+            return bool(cached)
+    valid = _v83_fast_history_translation_valid(source_text, candidate_text)
+    with _V83_HISTORY_VALIDITY_LOCK:
+        if len(_V83_HISTORY_VALIDITY_CACHE) >= 2048:
+            # FIFO is sufficient here: this is only a process-local validation
+            # memo, not the persistent successful-translation cache.
+            _V83_HISTORY_VALIDITY_CACHE.pop(next(iter(_V83_HISTORY_VALIDITY_CACHE)), None)
+        _V83_HISTORY_VALIDITY_CACHE[cache_key] = valid
+    return valid
+
+
+def _v80_history_translation_is_valid(source: str, translated: str) -> bool:
+    """Share one validation result across Gemini, cache, and list rendering."""
+    return _v83_history_result_is_valid(source, translated)
+
+
+_V83_PRE_TRANSLATE_HISTORY_POSTS = _translate_history_posts_parallel
+
+
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    """Return one honest row per post; raw English is never marked translated."""
+    values = list(posts or [])
+    try:
+        raw_results = list(_V83_PRE_TRANSLATE_HISTORY_POSTS(values) or [])
+    except Exception as exc:
+        logging.warning(
+            "10-latest translation pipeline failed safely; showing explicit source rows: %s",
+            short_error(exc, 260),
+        )
+        raw_results = []
+
+    output: list[str] = []
+    for index, post in enumerate(values):
+        source = _v74_history_source(post)
+        candidate = str(raw_results[index] if index < len(raw_results) else "").strip()
+        if _v83_history_result_is_valid(source, candidate):
+            output.append(candidate)
+            continue
+        if candidate.startswith(V83_HISTORY_FAILURE_PREFIX):
+            output.append(candidate)
+            continue
+        output.append(
+            V83_HISTORY_FAILURE_PREFIX + "\n" + (
+                source or "הפוסט התקבל ללא טקסט קריא"
+            )
+        )
+    return output
+
+
+def _v75_history_message_chunks(
+    entries: list[tuple[Post, str, str, str]], label: str
+) -> list[str]:
+    """Render every available post, but claim full translation only when true."""
+    total = len(entries)
+    all_translated = bool(entries) and all(
+        _v83_history_result_is_valid(_v74_history_source(post), translated)
+        for post, translated, _status, _reason in entries
+    )
+    translation_label = (
+        "תרגום מלא · בלי טעינת מדיה"
+        if all_translated
+        else "תרגום חלקי מסומן בבירור · בלי טעינת מדיה"
+    )
+    header = (
+        f"<b>📚 10 אחרונים — {html.escape(label)}</b>\n"
+        f"{translation_label}\n\n"
+    )
+    blocks: list[str] = []
+    for index, (post, translated, status, reason) in enumerate(entries, 1):
+        source = _v74_history_source(post)
+        body = str(translated or "").strip()
+        if not _v83_history_result_is_valid(source, body) and not body.startswith(
+            V83_HISTORY_FAILURE_PREFIX
+        ):
+            body = V83_HISTORY_FAILURE_PREFIX + "\n" + (
+                source or "הפוסט התקבל ללא טקסט קריא"
+            )
+        stamp = (
+            datetime.fromtimestamp(
+                float(getattr(post, "published_ts", 0.0) or 0.0),
+                tz=ZoneInfo(SHABBAT_TIMEZONE),
+            ).strftime("%d/%m %H:%M")
+            if getattr(post, "published_ts", 0.0)
+            else "זמן לא ידוע"
+        )
+        blocks.append(
+            f"<b>{index}/{total}</b>\n{html.escape(rtl(body))}\n"
+            f"{html.escape(str(status or 'נמצא'))} | "
+            f"{html.escape(str(reason or ''))} | {html.escape(stamp)}"
+        )
+    chunks: list[str] = []
+    current = header
+    for block in blocks:
+        addition = ("\n\n" if current else "") + block
+        if len(current) + len(addition) > 3900 and current != header:
+            chunks.append(current)
+            current = block
+        else:
+            current += addition
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+_V83_STAFF_ROLE_RE = re.compile(
+    r"(?iu)\b(?:travel|team|club|operations?|equipment|kit|delegation)\s+manager\b|"
+    r"\b(?:sporting|technical|performance|medical|academy|recruitment)\s+director\b|"
+    r"\bdirector\s+of\s+(?:football|recruitment|operations?)\b|"
+    r"\b(?:chief\s+executive|CEO|COO|president|chairman|board\s+member|"
+    r"club\s+secretary|chief\s+scout|scout|advisor|consultant|team\s+coordinator|"
+    r"press\s+officer|head\s+of\s+recruitment)\b|"
+    r"\b(?:direttore\s+sportivo|direttore\s+tecnico|dirigente|responsabile)\b|"
+    r"מנהל\s+(?:נסיעות|הקבוצה|מועדון|תפעול|ציוד|מקצועי|טכני|ספורטיבי|ביצועים|רפואי|אקדמיה|גיוס|כדורגל)|"
+    r"מנכ[\"״']?ל|נשיא|יו[\"״']?ר|חבר\s+הנהלה|מזכיר\s+המועדון|סקאוט|יועץ|מתאם\s+הקבוצה"
+)
+_V83_COACH_ROLE_RE = re.compile(
+    r"(?iu)\b(?:head\s+coach|first[- ]team\s+coach|football\s+manager|coach|manager|"
+    r"allenatore|mister)\b|מאמן(?:\s+ראשי)?|מנג[׳']ר"
+)
+_V83_ROLE_EVENT_RE = re.compile(
+    r"(?iu)\b(?:appoint(?:ed|ment|s)?|named\s+as|becomes?|became|will\s+become|"
+    r"returns?\s+to\s+(?:fill|take)|fill(?:s|ed|ing)?\s+the\s+role|takes?\s+over|"
+    r"hired?|promoted?|new\s+(?:head\s+coach|coach|manager|director)|"
+    r"sack(?:ed|s)?|fir(?:ed|es)|dismiss(?:ed|es)|resign(?:ed|s)?|"
+    r"leaves?\s+(?:the\s+)?role|part(?:ed|s)?\s+ways|contract\s+(?:extended|renewed))\b|"
+    r"(?:מונה|מונתה|מינוי|ימונה|תמונה|חוזר|חוזרת|שב|שבה)\s+(?:לתפקיד|למלא)|"
+    r"מתמנה|מאמן\s+חדש|פוטר|פוטרה|התפטר|התפטרה|עזב\s+את\s+תפקידו|"
+    r"עזבה\s+את\s+תפקידה|האריך\s+חוזה|האריכה\s+חוזה"
+)
+
+
+def _v83_mentions_managed_tier1(text: Any) -> bool:
+    value = html.unescape(str(text or ""))
+    if not value:
+        return False
+    try:
+        state = load_control_state()
+        catalog = all_team_catalog_items(state)
+        keys = team_catalog_keys_for_tier("tier1", state)
+    except Exception:
+        catalog = all_team_catalog_items()
+        keys = team_catalog_keys_for_tier("tier1")
+    for key in keys:
+        item = dict(catalog.get(key, {}) or {})
+        aliases = [str(item.get("name", "") or "")]
+        aliases.extend(str(alias or "") for alias in item.get("aliases", []) or [])
+        for alias in aliases:
+            raw = alias.strip()
+            if not raw:
+                continue
+            parts = [part for part in re.split(r"[\s\-]+", raw) if part]
+            escaped = r"[\s\-]+".join(re.escape(part) for part in parts)
+            if re.search(
+                rf"(?<![A-Za-z0-9א-ת]){escaped}(?![A-Za-z0-9א-ת])",
+                value,
+                re.IGNORECASE,
+            ):
+                return True
+    return False
+
+
+def _v83_appointment_block_reason(post: Any) -> str:
+    text = _v81_source_text(post)
+    if not text or not _V83_ROLE_EVENT_RE.search(text):
+        return ""
+    staff_role = bool(_V83_STAFF_ROLE_RE.search(text))
+    # Remove administrative role phrases before looking for a genuine coach
+    # role; otherwise "travel manager" itself looks like football manager.
+    coach_probe = _V83_STAFF_ROLE_RE.sub(" ", text)
+    coach_role = bool(_V83_COACH_ROLE_RE.search(coach_probe))
+    if staff_role and not coach_role:
+        return "v83_non_coach_staff_appointment"
+    if coach_role and not _v83_mentions_managed_tier1(text):
+        return "v83_non_tier1_coach_change"
+    return ""
+
+
+_V83_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    appointment_reason = _v83_appointment_block_reason(post)
+    if appointment_reason:
+        return appointment_reason
+    return str(_V83_PRE_FINAL_LOCAL_BLOCK(post) or "")
+
+
+_V83_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "v83_non_coach_staff_appointment" in raw:
+        return "מינוי מקצועי־מנהלי שאינו מינוי מאמן נחסם"
+    if "v83_non_tier1_coach_change" in raw:
+        return "שינוי מאמן נחסם כי הקבוצה אינה בדרג א׳ המנוהל"
+    return str(_V83_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+def _v83_self_audit() -> None:
+    if _v83_history_result_is_valid(
+        "Tottenham players could not put a shot on target.",
+        "Tottenham players could not put a shot on target.",
+    ):
+        raise RuntimeError("v83_raw_english_history_accepted")
+    if not _v83_history_result_is_valid(
+        "Tottenham players could not put a shot on target.",
+        "שחקני טוטנהאם לא הצליחו לבעוט למסגרת.",
+    ):
+        raise RuntimeError("v83_valid_hebrew_history_rejected")
+    staff = _v58_test_post(
+        "NicoSchira",
+        "Marco Pellegri (current travel manager) returns to fill the role of team manager of Genoa.",
+        "v83-staff",
+    )
+    if _v83_appointment_block_reason(staff) != "v83_non_coach_staff_appointment":
+        raise RuntimeError("v83_staff_appointment_not_blocked")
+    lower_tier_coach = _v58_test_post(
+        "NicoSchira", "Genoa appointed a new head coach.", "v83-low-coach"
+    )
+    if _v83_appointment_block_reason(lower_tier_coach) != "v83_non_tier1_coach_change":
+        raise RuntimeError("v83_non_tier1_coach_not_blocked")
+    tier1_coach = _v58_test_post(
+        "NicoSchira", "Real Madrid appointed a new head coach.", "v83-tier1-coach"
+    )
+    if _v83_appointment_block_reason(tier1_coach):
+        raise RuntimeError("v83_tier1_coach_was_blocked")
+    ordinary = _v58_test_post(
+        "NicoSchira",
+        "Manchester United are interested in a striker and the manager approves the plan.",
+        "v83-ordinary",
+    )
+    if _v83_appointment_block_reason(ordinary):
+        raise RuntimeError("v83_ordinary_transfer_misclassified")
+
+
+_v83_self_audit()
+logging.info(
+    "V83 active: 10-latest never labels raw English as translated; complementary "
+    "Gemini batch rows are retained; staff appointments and non-tier1 coach changes are blocked"
+)
+
+
 if __name__ == "__main__":
     main()
