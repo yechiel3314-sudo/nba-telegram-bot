@@ -68686,10 +68686,13 @@ def fetch_last_ten_control_isolated(username: str, limit: int = 10) -> list[Post
     # The operator explicitly asked to always see what is available.  Never
     # refuse a partial history: return up to ten complete posts from live/cache.
     result = ordered[:wanted]
-    try:
-        _ten_history_save(canonical, result)
-    except Exception:
-        pass
+    # A partial live result may still be shown on explicit request, but it must
+    # never replace the durable ten-item history cache.
+    if len(result) >= wanted:
+        try:
+            _ten_history_save(canonical, result)
+        except Exception:
+            pass
     return result
 
 
@@ -72106,6 +72109,1330 @@ _v83_self_audit()
 logging.info(
     "V83 active: 10-latest never labels raw English as translated; complementary "
     "Gemini batch rows are retained; staff appointments and non-tier1 coach changes are blocked"
+)
+
+
+# ====== V84 GOOGLE-ONLY HISTORY / FACT-SAFE SEND / FULL RTL (2026-09-22) ======
+# Read-only history is intentionally isolated from Gemini.  Automatic posts and
+# explicit manual preparation keep the sequential Gemini path; every other
+# history translation below uses Google Translate, a success-only cache and a
+# bounded serial request stream.
+
+BOT_BUILD_ID = "V84-google-history-fact-safe-full-rtl-2026-09-22"
+V84_GOOGLE_HISTORY_CACHE_PREFIX = "google-history-v84:"
+V84_GOOGLE_HISTORY_BATCH_CHARS = max(
+    1800, min(6000, int(os.environ.get("GOOGLE_HISTORY_V84_BATCH_CHARS", "3600")))
+)
+V84_GOOGLE_HISTORY_MAX_ITEMS = max(
+    1, min(5, int(os.environ.get("GOOGLE_HISTORY_V84_MAX_ITEMS", "4")))
+)
+V84_DIMARZIO_MIN_BODY_WORDS = 8
+
+
+def _v84_split_plain_text(value: Any, max_units: int) -> list[str]:
+    """Split without truncating; prefer paragraph/sentence/word boundaries."""
+    remaining = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    limit = max(200, int(max_units))
+    output: list[str] = []
+    while remaining:
+        if _v42_utf16_len(remaining) <= limit:
+            output.append(remaining)
+            break
+        used = 0
+        hard_cut = 0
+        for position, character in enumerate(remaining):
+            units = _v42_utf16_len(character)
+            if used + units > limit:
+                break
+            used += units
+            hard_cut = position + 1
+        if hard_cut <= 0:
+            hard_cut = 1
+        floor = max(1, int(hard_cut * 0.42))
+        preferred = -1
+        for separator in ("\n\n", "\n", ". ", "! ", "? ", "; ", " "):
+            found = remaining.rfind(separator, floor, hard_cut)
+            if found >= floor:
+                preferred = found + len(separator)
+                break
+        cut = preferred if preferred > 0 else hard_cut
+        piece = remaining[:cut].strip()
+        if not piece:
+            piece = remaining[:hard_cut]
+            cut = hard_cut
+        output.append(piece)
+        remaining = remaining[cut:].strip()
+    return output
+
+
+def _v74_history_source(post: Post) -> str:
+    """Return the complete readable post; history must never use a debug truncation."""
+    source = clean_for_ai_translation(
+        html.unescape(str(getattr(post, "text", "") or ""))
+    ).strip()
+    if not source:
+        source = remove_external_links(
+            html.unescape(str(getattr(post, "title", "") or ""))
+        ).strip()
+    return source.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _v84_google_history_cache_key(source: str) -> str:
+    return V84_GOOGLE_HISTORY_CACHE_PREFIX + hashlib.sha256(
+        str(source or "").encode("utf-8", errors="ignore")
+    ).hexdigest()
+
+
+class _V84GoogleHTTPError(RuntimeError):
+    def __init__(self, code: int) -> None:
+        self.code = int(code)
+        super().__init__(f"Google Translate HTTP {self.code}")
+
+
+def _v84_google_history_request(value: str) -> str:
+    """POST through the existing keep-alive pool (no giant query-string URL)."""
+    body = urllib.parse.urlencode({
+        "client": "gtx", "sl": "auto", "tl": TARGET_LANGUAGE,
+        "dt": "t", "q": str(value or ""),
+    }).encode("utf-8")
+    scheme, host, port = "https", "translate.googleapis.com", 443
+    pool_key = (scheme, host, port)
+    path = "/translate_a/single"
+    timeout = float(max(7, min(18, int(GOOGLE_TRANSLATE_TIMEOUT_SECONDS))))
+    last_error: BaseException | None = None
+
+    # Pass two is stale keep-alive recovery only.  It is not an application
+    # retry and never creates concurrent Google requests.
+    for connection_pass in range(2):
+        connection = _v75_http_connection(scheme, host, port, timeout)
+        released = False
+        try:
+            connection.request(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Host": host,
+                    "User-Agent": "Mozilla/5.0 (compatible; NetoSportBot/84; +https://t.me/neto_sport)",
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Encoding": "identity",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                    "Connection": "keep-alive",
+                },
+            )
+            response = connection.getresponse()
+            raw = response.read()
+            response_headers = {
+                str(key).lower(): str(item) for key, item in response.getheaders()
+            }
+            reusable = (
+                not bool(response.will_close)
+                and response_headers.get("connection", "").casefold() != "close"
+            )
+            status = int(response.status)
+            if status < 200 or status >= 300:
+                _v75_release_http_connection(pool_key, connection, False)
+                released = True
+                raise _V84GoogleHTTPError(status)
+            _v75_release_http_connection(pool_key, connection, reusable)
+            released = True
+            payload = json.loads(raw.decode("utf-8", errors="replace"))
+            return "".join(
+                str(part[0]) for part in payload[0] if part and part[0]
+            ).strip()
+        except _V84GoogleHTTPError:
+            if not released:
+                _v75_release_http_connection(pool_key, connection, False)
+            raise
+        except (
+            _v75_http_client.RemoteDisconnected,
+            BrokenPipeError,
+            ConnectionResetError,
+            TimeoutError,
+            OSError,
+        ) as exc:
+            last_error = exc
+            if not released:
+                _v75_release_http_connection(pool_key, connection, False)
+            if connection_pass == 0:
+                continue
+            raise RuntimeError(
+                "Google Translate connection failed: " + short_error(exc, 180)
+            ) from exc
+        except Exception:
+            if not released:
+                _v75_release_http_connection(pool_key, connection, False)
+            raise
+    raise RuntimeError(
+        "Google Translate connection failed: " + short_error(last_error, 180)
+    )
+
+
+def _v84_google_request_serial(value: str) -> str:
+    global _V74_GOOGLE_HISTORY_DISABLED_UNTIL
+    with _V74_GOOGLE_HISTORY_LOCK:
+        if time.time() < _V74_GOOGLE_HISTORY_DISABLED_UNTIL:
+            return ""
+        try:
+            translated = _v84_google_history_request(value)
+            _V74_GOOGLE_HISTORY_DISABLED_UNTIL = 0.0
+            return translated
+        except Exception as exc:
+            _v74_note_google_history_failure(exc)
+            return ""
+
+
+def _v84_history_chunks(rows: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
+    chunks: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    current_chars = 0
+    for index, source in rows:
+        addition = len(source) + len(_v74_history_marker(index)) + 4
+        if current and (
+            len(current) >= V84_GOOGLE_HISTORY_MAX_ITEMS
+            or current_chars + addition > V84_GOOGLE_HISTORY_BATCH_CHARS
+        ):
+            chunks.append(current)
+            current = []
+            current_chars = 0
+        current.append((index, source))
+        current_chars += addition
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _v84_google_translate_long_row(index: int, source: str) -> dict[int, str]:
+    translated_parts: list[str] = []
+    source_parts = _v84_split_plain_text(source, V84_GOOGLE_HISTORY_BATCH_CHARS)
+    for source_part in source_parts:
+        raw = _v84_google_request_serial(source_part)
+        if not raw:
+            return {}
+        polished = _v74_history_polish(source_part, raw)
+        if not _v84_history_result_is_valid(source_part, polished):
+            return {}
+        translated_parts.append(polished)
+    combined = "\n\n".join(translated_parts).strip()
+    return {index: combined} if _v84_history_result_is_valid(source, combined) else {}
+
+
+def _v84_google_translate_chunk(
+    chunk: list[tuple[int, str]], depth: int = 0
+) -> dict[int, str]:
+    """Translate, validate, and recursively isolate only incomplete batch rows."""
+    if not chunk or time.time() < _V74_GOOGLE_HISTORY_DISABLED_UNTIL:
+        return {}
+    if len(chunk) == 1 and _v42_utf16_len(chunk[0][1]) > V84_GOOGLE_HISTORY_BATCH_CHARS:
+        return _v84_google_translate_long_row(chunk[0][0], chunk[0][1])
+
+    expected = {index for index, _source in chunk}
+    if len(chunk) == 1:
+        request_text = chunk[0][1]
+    else:
+        request_text = "\n\n".join(
+            f"{_v74_history_marker(index)}\n{source}" for index, source in chunk
+        )
+    raw = _v84_google_request_serial(request_text)
+    if not raw:
+        return {}
+    parsed = (
+        {chunk[0][0]: raw}
+        if len(chunk) == 1
+        else _v74_parse_history_batch(raw, expected)
+    )
+    output: dict[int, str] = {}
+    for index, source in chunk:
+        polished = _v74_history_polish(source, parsed.get(index, ""))
+        if _v84_history_result_is_valid(source, polished):
+            output[index] = polished
+
+    unresolved = [row for row in chunk if row[0] not in output]
+    if len(chunk) > 1 and unresolved and depth < 4:
+        midpoint = max(1, len(unresolved) // 2)
+        for smaller in (unresolved[:midpoint], unresolved[midpoint:]):
+            if smaller:
+                output.update(_v84_google_translate_chunk(smaller, depth + 1))
+    return output
+
+
+def _translate_history_posts_parallel(posts: list[Post]) -> list[str]:
+    """Google-only, serial and complete 10-latest translation route."""
+    global TRANSLATION_CACHE_DIRTY
+    values = list(posts or [])
+    if not values:
+        return []
+    sources = [_v74_history_source(post) for post in values]
+    results = [""] * len(values)
+    missing: list[tuple[int, str]] = []
+
+    with _V74_GOOGLE_HISTORY_CACHE_LOCK:
+        for index, source in enumerate(sources):
+            if not source:
+                results[index] = "הפוסט התקבל ללא טקסט קריא"
+                continue
+            if re.search(r"[א-ת]", source) and latin_ratio(source) < 0.10:
+                results[index] = source
+                continue
+            # V80 can contain Gemini output, so it is deliberately excluded.
+            candidates = (
+                TRANSLATION_CACHE.get(_v84_google_history_cache_key(source)),
+                TRANSLATION_CACHE.get(_v74_history_cache_key(source)),
+            )
+            cached = next(
+                (
+                    str(candidate or "").strip()
+                    for candidate in candidates
+                    if _v84_history_result_is_valid(source, str(candidate or ""))
+                ),
+                "",
+            )
+            if cached:
+                results[index] = cached
+            else:
+                missing.append((index, source))
+
+    for chunk in _v84_history_chunks(missing):
+        for index, translated in _v84_google_translate_chunk(chunk).items():
+            results[index] = translated
+        if time.time() < _V74_GOOGLE_HISTORY_DISABLED_UNTIL:
+            break
+
+    with _V74_GOOGLE_HISTORY_CACHE_LOCK:
+        for index, source in enumerate(sources):
+            translated = str(results[index] or "").strip()
+            if _v84_history_result_is_valid(source, translated):
+                key = _v84_google_history_cache_key(source)
+                if TRANSLATION_CACHE.get(key) != translated:
+                    TRANSLATION_CACHE[key] = translated
+                    TRANSLATION_CACHE_DIRTY = True
+
+    for index, source in enumerate(sources):
+        if not _v84_history_result_is_valid(source, results[index]):
+            results[index] = V83_HISTORY_FAILURE_PREFIX + "\n" + (
+                source or "הפוסט התקבל ללא טקסט קריא"
+            )
+    if TRANSLATION_CACHE_DIRTY:
+        try:
+            save_translation_cache(TRANSLATION_CACHE)
+        except Exception as exc:
+            logging.debug("V84 history cache write deferred safely: %s", short_error(exc, 180))
+    return results
+
+
+def _v84_html_visible_units(value: str) -> int:
+    visible = html.unescape(re.sub(r"(?is)<[^>]+>", "", str(value or "")))
+    return _v42_utf16_len(visible)
+
+
+def _v75_history_message_chunks(
+    entries: list[tuple[Post, str, str, str]], label: str
+) -> list[str]:
+    """Render every post in full and split an oversized row without truncation."""
+    total = len(entries)
+    all_translated = bool(entries) and all(
+        _v84_history_result_is_valid(_v74_history_source(post), translated)
+        for post, translated, _status, _reason in entries
+    )
+    translation_label = (
+        "Google Translate מלא · בלי טעינת מדיה"
+        if all_translated
+        else "Google Translate חלקי ומסומן · בלי טעינת מדיה"
+    )
+    header = (
+        f"<b>📚 10 אחרונים — {html.escape(label)}</b>\n"
+        f"{translation_label}\n\n"
+    )
+    blocks: list[str] = []
+    for index, (post, translated, status, reason) in enumerate(entries, 1):
+        source = _v74_history_source(post)
+        body = str(translated or "").strip()
+        if not _v84_history_result_is_valid(source, body) and not body.startswith(
+            V83_HISTORY_FAILURE_PREFIX
+        ):
+            body = V83_HISTORY_FAILURE_PREFIX + "\n" + (
+                source or "הפוסט התקבל ללא טקסט קריא"
+            )
+        stamp = (
+            datetime.fromtimestamp(
+                float(getattr(post, "published_ts", 0.0) or 0.0),
+                tz=ZoneInfo(SHABBAT_TIMEZONE),
+            ).strftime("%d/%m %H:%M")
+            if getattr(post, "published_ts", 0.0)
+            else "זמן לא ידוע"
+        )
+        body_parts = _v84_split_plain_text(body, 2600) or [body]
+        for part_index, body_part in enumerate(body_parts):
+            title = f"{index}/{total}" + (" — המשך" if part_index else "")
+            block = f"<b>{title}</b>\n{html.escape(rtl(body_part))}"
+            if part_index + 1 == len(body_parts):
+                block += (
+                    f"\n{html.escape(str(status or 'נמצא'))} | "
+                    f"{html.escape(str(reason or ''))} | {html.escape(stamp)}"
+                )
+            blocks.append(block)
+
+    chunks: list[str] = []
+    current = header
+    for block in blocks:
+        addition = ("\n\n" if current else "") + block
+        if current and _v84_html_visible_units(current + addition) > 3850:
+            chunks.append(current)
+            current = block
+        else:
+            current += addition
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+# Do not silently erase number-shaped text.  A candidate with an unauthorized
+# number is rejected below and retried from a clean cache instead.
+def _v81_strip_transport_artifacts(value: Any) -> str:
+    return str(value or "").strip()
+
+
+_V84_NUMBER_WORDS: dict[str, str] = {
+    "zero": "0", "one": "1", "first": "1", "two": "2", "second": "2",
+    "three": "3", "third": "3", "four": "4", "fourth": "4",
+    "five": "5", "fifth": "5", "six": "6", "sixth": "6",
+    "seven": "7", "seventh": "7", "eight": "8", "eighth": "8",
+    "nine": "9", "ninth": "9", "ten": "10", "tenth": "10",
+    "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14",
+    "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19", "twenty": "20",
+    "january": "1", "february": "2", "march": "3", "april": "4",
+    "may": "5", "june": "6", "july": "7", "august": "8",
+    "september": "9", "october": "10", "november": "11", "december": "12",
+}
+_V84_NUMBER_TOKEN_RE = re.compile(r"(?<!\d)\d[\d.,]*(?!\d)")
+_V84_CURRENCY_RE = re.compile(
+    r"(?iu)£|€|\$|\b(?:GBP|EUR|USD|pounds?|sterling|euros?|dollars?)\b|"
+    r"ליש[\"״']?ט|פאונד(?:ים)?|אירו|דולר(?:ים)?"
+)
+_V84_AMOUNT_RE = re.compile(
+    r"(?iu)\d|\b(?:hundred|thousand|million|billion|millions|billions)\b|"
+    r"(?:מאות|אלף|אלפים|מיליון|מיליוני|מיליארד|מיליארדי)"
+)
+_V84_PROTOCOL_LEAK_RE = re.compile(
+    r"(?iu)__\s*NETO\s*_\s*ITEM|⟪(?:VAL|LB|HWG|HAYOM)\d+⟫|"
+    r"[\"']?(?:main|quote_author)[\"']?\s*:"
+)
+_V84_METADATA_CLUSTER_RE = re.compile(
+    r"(?<![A-Za-z0-9א-ת])\d{6,}(?:\s+\d{1,4}){1,3}(?![A-Za-z0-9א-ת])"
+)
+_V84_LONG_BARE_NUMBER_RE = re.compile(
+    r"(?<![A-Za-z0-9א-ת.,€£$])\d{6,12}(?![A-Za-z0-9א-ת.,%])"
+)
+_V84_QUOTE_CHAR_RE = re.compile(r"[\"“”]")
+
+
+def _v84_normalize_number_token(raw: str) -> str:
+    value = re.sub(r"\s+", "", str(raw or ""))
+    if "," in value and "." in value:
+        value = value.replace(",", "")
+    elif re.fullmatch(r"\d{1,3}(?:,\d{3})+", value):
+        value = value.replace(",", "")
+    elif value.count(",") == 1:
+        value = value.replace(",", ".")
+    value = value.rstrip(".,")
+    value = value[:-2] if value.endswith(".0") else value
+    if re.fullmatch(r"\d+", value):
+        return str(int(value))
+    return value
+
+
+def _v84_authorized_number_tokens(value: Any) -> set[str]:
+    text = html.unescape(str(value or ""))
+    result = {
+        _v84_normalize_number_token(match.group(0))
+        for match in _V84_NUMBER_TOKEN_RE.finditer(text)
+    }
+    lowered = text.casefold()
+    for word, number in _V84_NUMBER_WORDS.items():
+        if re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", lowered):
+            result.add(number)
+    return {item for item in result if item}
+
+
+def _v84_has_orphan_currency(value: Any) -> bool:
+    text = html.unescape(str(value or ""))
+    for match in _V84_CURRENCY_RE.finditer(text):
+        left = text[max(0, match.start() - 34):match.start()]
+        right = text[match.end():min(len(text), match.end() + 34)]
+        left_has_amount = bool(re.search(
+            r"(?iu)(?:\d[\d.,]*\s*(?:m|bn|k|million|billion|thousand|"
+            r"מיליון|מיליארד|אלף)?|hundreds?|thousands?|millions?|billions?|"
+            r"מאות|אלפים|מיליוני|מיליארדי)(?:\s+of)?\s*$",
+            left,
+        ))
+        right_has_amount = bool(re.match(
+            r"(?iu)^\s*(?:(?:worth|valued\s+at|fee\s+of|בשווי|בסך|בסכום\s+של|סכום\s+של)\s+)?"
+            r"(?:\d[\d.,]*\s*(?:m|bn|k|million|billion|thousand|"
+            r"מיליון|מיליארד|אלף)?|hundreds?|thousands?|millions?|billions?|"
+            r"מאות|אלפים|מיליוני|מיליארדי)",
+            right,
+        ))
+        if not left_has_amount and not right_has_amount:
+            return True
+    return False
+
+
+def _v84_has_uncontextual_long_number(value: Any) -> bool:
+    text = html.unescape(str(value or ""))
+    if _V84_METADATA_CLUSTER_RE.search(text):
+        return True
+    for match in _V84_LONG_BARE_NUMBER_RE.finditer(text):
+        window = text[max(0, match.start() - 28):min(len(text), match.end() + 28)]
+        if not _V84_CURRENCY_RE.search(window) and not re.search(
+            r"(?iu)(?:followers?|views?|attendance|capacity|עוקבים|צפיות|קהל|מקומות)",
+            window,
+        ):
+            return True
+    return False
+
+
+def _v84_repair_single_speaker_quotes(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if len(re.findall(r"🗣️?|(?:^|\s)(?:אמר|אמרה)\s*:", text)) == 1:
+        # A single speaker often arrives as several adjacent quoted paragraphs.
+        # Join only the closing/opening quote pair; no prose is removed.
+        text = re.sub(
+            r"[\"”]\s+[\"“](?=[A-Za-zא-ת])",
+            " ",
+            text,
+        )
+        # If a closing quote was placed on its own line, attach the punctuation
+        # to the preceding paragraph rather than deleting it.
+        text = re.sub(r"\n[ \t]*([\"“”])[ \t]*(?=\n|$)", r"\1", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _v84_translation_integrity_issues(source: Any, translated: Any) -> list[str]:
+    src = html.unescape(str(source or ""))
+    out = html.unescape(str(translated or ""))
+    issues: list[str] = []
+    if not out.strip():
+        return ["v84_empty_translation"]
+    extra_numbers = sorted(
+        _v84_authorized_number_tokens(out) - _v84_authorized_number_tokens(src)
+    )
+    if extra_numbers:
+        issues.append("v84_invented_numbers:" + ",".join(extra_numbers[:8]))
+    if _V84_PROTOCOL_LEAK_RE.search(out):
+        issues.append("v84_protocol_or_json_leak")
+    if _v84_has_uncontextual_long_number(out):
+        issues.append("v84_uncontextual_numeric_metadata")
+    if _v84_has_orphan_currency(out):
+        issues.append("v84_currency_without_amount")
+    if (
+        len(_V84_QUOTE_CHAR_RE.findall(src)) % 2 == 0
+        and len(_V84_QUOTE_CHAR_RE.findall(out)) % 2
+    ):
+        issues.append("v84_unbalanced_double_quotes")
+    return list(dict.fromkeys(issues))
+
+
+def _v84_history_result_is_valid(source: Any, candidate: Any) -> bool:
+    source_text = str(source or "").strip()
+    candidate_text = str(candidate or "").strip()
+    if not _v83_history_result_is_valid(source_text, candidate_text):
+        return False
+    if (
+        candidate_text == source_text
+        and re.search(r"[א-ת]", source_text)
+        and latin_ratio(source_text) < 0.10
+    ):
+        return True
+    return not bool(_v84_translation_integrity_issues(source_text, candidate_text))
+
+
+def _v74_manual_google_fallback(post: Post) -> tuple[str, str, str]:
+    """Manual fallback may consume only validated Google rows, never a warning row."""
+    main_source = _v74_history_source(post)
+    quote_source = clean_for_ai_translation(
+        html.unescape(str(getattr(post, "quoted_text", "") or ""))
+    ).strip()
+    rows = [_v74_clone_translation_post(post, main_source, "main-v84")]
+    if quote_source:
+        rows.append(_v74_clone_translation_post(post, quote_source, "quote-v84"))
+    translated = _translate_history_posts_parallel(rows)
+    main = str(translated[0] if translated else "").strip()
+    quote = str(translated[1] if quote_source and len(translated) > 1 else "").strip()
+    if not _v84_history_result_is_valid(main_source, main):
+        raise TranslationUnavailable(
+            "Google Translate did not return a complete validated Hebrew translation"
+        )
+    if quote_source and not _v84_history_result_is_valid(quote_source, quote):
+        raise TranslationUnavailable(
+            "Google Translate did not return a complete quoted-post translation"
+        )
+    post.translation_origin = "google"
+    return main, quote, ""
+
+
+def _v84_is_dimarzio(post: Any) -> bool:
+    return str(getattr(post, "username", "") or "").strip().lstrip("@").casefold() in {
+        "dimarzio", "gianlucadimarzio",
+    }
+
+
+def _v84_editorial_body_words(value: Any) -> int:
+    text = html.unescape(str(value or ""))
+    text = remove_external_links(text)
+    text = re.sub(
+        r"(?iu)\bGianluca\s+Di\s*Marzio\b|\bDi\s*Marzio\b|"
+        r"ג['׳]אנלוקה\s+די\s+מארציו|גיאנלוקה\s+די\s+מארציו",
+        " ",
+        text,
+    )
+    # Handles and hashtags are routing/source labels, not explanatory words.
+    text = re.sub(r"(?u)(?<!\w)[#@][^\W_]+", " ", text)
+    return count_regular_words(text)
+
+
+_V84_PRE_TRANSLATION_QUALITY_ISSUES = translation_quality_issues
+
+
+def translation_quality_issues(
+    source_or_post: Any,
+    translated_text: Any = "",
+    quoted_text: Any = "",
+    *args: Any,
+    **kwargs: Any,
+) -> list[str]:
+    issues = list(_V84_PRE_TRANSLATION_QUALITY_ISSUES(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    ) or [])
+    if isinstance(source_or_post, Post):
+        main_source = _final_corresponding_source_text(source_or_post, quoted=False)
+        quote_source = _final_corresponding_source_text(source_or_post, quoted=True)
+        issues.extend(_v84_translation_integrity_issues(main_source, translated_text))
+        if quote_source or quoted_text:
+            issues.extend(_v84_translation_integrity_issues(quote_source, quoted_text))
+        if _v84_is_dimarzio(source_or_post) and _v84_editorial_body_words(
+            translated_text
+        ) < V84_DIMARZIO_MIN_BODY_WORDS:
+            issues.append("v84_dimarzio_body_under_8_words")
+    else:
+        issues.extend(_v84_translation_integrity_issues(source_or_post, translated_text))
+    return list(dict.fromkeys(str(issue) for issue in issues if str(issue).strip()))[:16]
+
+
+def translation_quality_issue(
+    source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any
+) -> str:
+    issues = translation_quality_issues(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    )
+    return issues[0] if issues else ""
+
+
+def check_translation_quality(
+    source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any
+) -> list[str]:
+    return translation_quality_issues(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    )
+
+
+def translation_quality_block_reason(
+    source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any
+) -> str:
+    return translation_quality_issue(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    )
+
+
+def is_translation_quality_blocked(
+    source_or_post: Any, translated_text: Any = "", quoted_text: Any = "", *args: Any, **kwargs: Any
+) -> bool:
+    return bool(translation_quality_issue(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    ))
+
+
+_V84_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    """Reject the whole candidate, evict it, and retry once—never delete facts."""
+    last_issues: list[str] = []
+    for attempt in range(2):
+        main, quote, author = _V84_PRE_TRANSLATE_POST_FOR_SEND(post)
+        main = _v84_repair_single_speaker_quotes(main)
+        quote = _v84_repair_single_speaker_quotes(quote) if quote else ""
+        main_source = _final_corresponding_source_text(post, quoted=False)
+        quote_source = _final_corresponding_source_text(post, quoted=True)
+        last_issues = _v84_translation_integrity_issues(main_source, main)
+        if quote_source or quote:
+            last_issues.extend(_v84_translation_integrity_issues(quote_source, quote))
+        if _v84_is_dimarzio(post) and _v84_editorial_body_words(
+            main
+        ) < V84_DIMARZIO_MIN_BODY_WORDS:
+            last_issues.append("v84_dimarzio_body_under_8_words")
+        last_issues = list(dict.fromkeys(last_issues))
+        if not last_issues:
+            return main, quote, author
+        _v81_evict_post_translation_cache(post)
+        if attempt == 0:
+            logging.warning(
+                "V84 rejected an unclear/fact-corrupted translation for @%s; retrying sequentially: %s",
+                getattr(post, "username", ""),
+                "; ".join(last_issues[:6]),
+            )
+    raise TranslationUnavailable(
+        "התרגום הכיל פרט לא מורשה או נוסח לא ברור ולכן לא נשלח: "
+        + "; ".join(last_issues[:8])
+    )
+
+
+_V84_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    source = _final_corresponding_source_text(post, quoted=False)
+    if _v84_has_orphan_currency(source):
+        return "v84_source_currency_without_amount"
+    if _v84_has_uncontextual_long_number(source):
+        return "v84_source_numeric_metadata_corruption"
+    if _v84_is_dimarzio(post) and _v84_editorial_body_words(
+        source
+    ) < V84_DIMARZIO_MIN_BODY_WORDS:
+        return "v84_dimarzio_source_under_8_words"
+    return str(_V84_PRE_FINAL_LOCAL_BLOCK(post) or "")
+
+
+_V84_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "v84_source_currency_without_amount" in raw:
+        return "הדיווח חסר את סכום הכסף ולכן אינו ברור ולא נשלח"
+    if "v84_source_numeric_metadata_corruption" in raw:
+        return "המקור מכיל מספרי מערכת חשודים ולכן אינו נשלח"
+    if "v84_dimarzio_source_under_8_words" in raw:
+        return "דיווח די־מארציו קצר משמונה מילים מהותיות ולכן אינו נשלח"
+    return str(_V84_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+# Whole-message RTL policy: if a message is not genuinely English-only, every
+# non-empty line receives one minimal RLM.  One code unit avoids pushing normal
+# photo captions over Telegram's 1,024-unit caption limit.
+_V84_LEADING_BIDI_RE = re.compile(r"^[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+
+
+def _v84_message_is_english_only(value: Any) -> bool:
+    visible = _v82_visible_direction_text(value)
+    letters = [character for character in visible if character.isalpha()]
+    return bool(letters) and all(
+        "A" <= character <= "Z" or "a" <= character <= "z"
+        for character in letters
+    )
+
+
+def _v41_line_is_strong_rtl(line: str) -> bool:
+    return bool(_V84_LEADING_BIDI_RE.match(str(line or "")))
+
+
+def _v41_strong_rtl_all_lines(value: Any) -> Any:
+    if not isinstance(value, str) or not value or _v84_message_is_english_only(value):
+        return value
+    output: list[str] = []
+    for raw in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not raw.strip() or _V84_LEADING_BIDI_RE.match(raw):
+            output.append(raw)
+        else:
+            output.append(_V42_RLM + raw)
+    return "\n".join(output)
+
+
+def _v42_message_needs_rtl_repair(text: str) -> bool:
+    value = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not value.strip() or _v84_message_is_english_only(value):
+        return False
+    return any(
+        line.strip() and not _V84_LEADING_BIDI_RE.match(line)
+        for line in value.split("\n")
+    )
+
+
+def _v42_transform_text_entities(
+    text: str, entities: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Insert RLMs and map all UTF-16 entities, including multiline entities."""
+    original = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not _v42_message_needs_rtl_repair(original):
+        return original, [dict(item) for item in entities or [] if isinstance(item, dict)]
+
+    lines = original.split("\n")
+    rendered_lines: list[str] = []
+    insertion_positions: list[int] = []
+    original_cursor = 0
+    for index, line in enumerate(lines):
+        if line.strip() and not _V84_LEADING_BIDI_RE.match(line):
+            insertion_positions.append(original_cursor)
+            rendered_lines.append(_V42_RLM + line)
+        else:
+            rendered_lines.append(line)
+        original_cursor += _v42_utf16_len(line)
+        if index + 1 < len(lines):
+            original_cursor += 1
+    fixed_text = "\n".join(rendered_lines)
+
+    boundaries = _v77_utf16_boundaries(fixed_text)
+    total = _v42_utf16_len(fixed_text)
+    adjusted: list[dict[str, Any]] = []
+    for raw_entity in list(entities or []):
+        if not isinstance(raw_entity, dict):
+            continue
+        start = int(raw_entity.get("offset", 0) or 0)
+        length = int(raw_entity.get("length", 0) or 0)
+        end = start + length
+        new_start = start + sum(1 for position in insertion_positions if position <= start)
+        new_end = end + sum(1 for position in insertion_positions if position < end)
+        item = dict(raw_entity)
+        item["offset"] = new_start
+        item["length"] = new_end - new_start
+        if (
+            item["length"] <= 0
+            or new_start not in boundaries
+            or new_end not in boundaries
+            or new_end > total
+        ):
+            logging.warning(
+                "V84 skipped RTL edit because Telegram supplied an invalid UTF-16 entity: offset=%s length=%s",
+                start, length,
+            )
+            return None
+        adjusted.append(item)
+    return fixed_text, adjusted
+
+
+def _v84_full_channel_rtl_editor(update: dict[str, Any]) -> bool:
+    if not V43_ALL_CHANNEL_RTL_EDIT_ENABLED:
+        return False
+    message = update.get("channel_post") or update.get("edited_channel_post") or {}
+    if not isinstance(message, dict):
+        return False
+    chat = message.get("chat") or {}
+    if str(chat.get("type") or "") != "channel":
+        return False
+    chat_id = str(chat.get("id") or "")
+    message_id = int(message.get("message_id", 0) or 0)
+    kind, original, entities = _v42_message_text_and_entities(message)
+    if not chat_id or not message_id or not kind or not original:
+        return False
+    if not _v42_message_needs_rtl_repair(original):
+        return False
+    transformed = _v42_transform_text_entities(original, entities)
+    if transformed is None:
+        return False
+    fixed_text, fixed_entities = transformed
+    if fixed_text == original:
+        return False
+    if kind == "caption" and _v42_utf16_len(fixed_text) > 1024:
+        logging.warning(
+            "V84 RTL could not edit caption without deleting content because Telegram's 1024-unit limit is full: %s:%s",
+            chat_id, message_id,
+        )
+        return False
+
+    key = f"{chat_id}:{message_id}"
+    with _V43_CHANNEL_RTL_EDIT_LOCK:
+        if key in _V43_CHANNEL_RTL_EDIT_INFLIGHT:
+            return True
+        _V43_CHANNEL_RTL_EDIT_INFLIGHT.add(key)
+    try:
+        _v42_edit_message_rtl(
+            chat_id, message_id, kind, fixed_text, fixed_entities
+        )
+        logging.info("V84 repaired the complete channel message RTL in place: %s", key)
+        return True
+    except Exception as exc:
+        lowered = str(exc or "").casefold()
+        if "message is not modified" in lowered or "ההודעה לא שונתה" in lowered:
+            return True
+        logging.warning(
+            "V84 could not edit channel RTL in place (Edit Messages required): %s error=%s",
+            key, short_error(exc, 360),
+        )
+        return False
+    finally:
+        with _V43_CHANNEL_RTL_EDIT_LOCK:
+            _V43_CHANNEL_RTL_EDIT_INFLIGHT.discard(key)
+
+
+# V82's dedicated one-worker lane resolves this variable dynamically.  Pointing
+# it at V84 keeps edits immediate, ordered and duplicate-free.
+_V82_ACTIVE_RTL_EDITOR = _v84_full_channel_rtl_editor
+
+
+def _v84_self_audit() -> None:
+    long_text = "Full original sentence. " * 140
+    long_post = _v58_test_post("Footballtweet", long_text, "v84-full-history")
+    if len(_v74_history_source(long_post)) != len(long_text.strip()):
+        raise RuntimeError("v84_history_source_was_truncated")
+    if "_v80_gemini_history_chunk" in _translate_history_posts_parallel.__code__.co_names:
+        raise RuntimeError("v84_history_still_calls_gemini")
+
+    source = "Mikel Arteta agrees a new Arsenal contract at age 44."
+    corrupted = (
+        "מיקל ארטטה הסכים לחוזה חדש בארסנל בגיל 44 "
+        "7332275 2026 09 בתהליך חידוש."
+    )
+    if not _v84_translation_integrity_issues(source, corrupted):
+        raise RuntimeError("v84_invented_numbers_not_rejected")
+    if _v84_translation_integrity_issues(
+        source, "מיקל ארטטה הסכים לחוזה חדש בארסנל בגיל 44."
+    ):
+        raise RuntimeError("v84_valid_numbers_rejected")
+    if not _v84_has_orphan_currency(
+        "דניאל לוי קיבל ככל הנראה ליש״ט כאשר פוטר מטוטנהאם."
+    ):
+        raise RuntimeError("v84_orphan_currency_not_detected")
+    if _v84_has_orphan_currency(
+        "דניאל לוי קיבל ככל הנראה 10 מיליון ליש״ט כאשר פוטר מטוטנהאם."
+    ):
+        raise RuntimeError("v84_valid_currency_rejected")
+
+    quote = (
+        '🗣️ "ברגע שקריירת המשחק שלי תסתיים, לא אצטרך לעבוד.\n\n'
+        '" "אני לא הולך לשקר לגבי זה. למה שלא אעשה זאת?"'
+    )
+    repaired_quote = _v84_repair_single_speaker_quotes(quote)
+    if '" "' in repaired_quote or len(_V84_QUOTE_CHAR_RE.findall(repaired_quote)) % 2:
+        raise RuntimeError("v84_single_speaker_quote_repair_failed")
+
+    short_dimarzio = _v58_test_post(
+        "DiMarzio", "Contacts are ongoing for Neto's return.", "v84-dimarzio-short"
+    )
+    if pre_send_final_local_block_reason(short_dimarzio) != "v84_dimarzio_source_under_8_words":
+        raise RuntimeError("v84_short_dimarzio_not_blocked")
+    detailed_dimarzio = _v58_test_post(
+        "DiMarzio",
+        "Juventus opened talks today to bring Neto back as their reserve goalkeeper.",
+        "v84-dimarzio-detailed",
+    )
+    if _v84_editorial_body_words(
+        _final_corresponding_source_text(detailed_dimarzio, quoted=False)
+    ) < V84_DIMARZIO_MIN_BODY_WORDS:
+        raise RuntimeError("v84_detailed_dimarzio_word_count_failed")
+
+    mixed = "🚨 רשמי: הודעה בעברית\nGOAL24\n- 12 שערים"
+    whole_units = _v42_utf16_len(mixed)
+    transformed = _v42_transform_text_entities(
+        mixed, [{"type": "bold", "offset": 0, "length": whole_units}]
+    )
+    if transformed is None:
+        raise RuntimeError("v84_multiline_entity_was_skipped")
+    fixed, fixed_entities = transformed
+    if not all(
+        not line.strip() or line.startswith(_V42_RLM)
+        for line in fixed.splitlines()
+    ):
+        raise RuntimeError("v84_not_all_mixed_message_lines_are_rtl")
+    if len(fixed_entities) != 1:
+        raise RuntimeError("v84_multiline_entity_was_lost")
+    if _v42_message_needs_rtl_repair("Only English\nGOAL24"):
+        raise RuntimeError("v84_english_only_message_would_be_edited")
+    if _v41_strong_rtl_all_lines(fixed) != fixed:
+        raise RuntimeError("v84_rtl_transform_not_idempotent")
+
+
+_v84_self_audit()
+logging.info(
+    "V84 active: 10-latest uses Google only and keeps full text; send translations "
+    "reject invented facts/unclear amounts; DiMarzio needs 8 body words; whole-message "
+    "RTL preserves multiline UTF-16 entities"
+)
+
+
+# ====== V85 DIMARZIO EXPLICIT-CLUB CONTEXT (2026-09-23) ======
+# A long sentence can still be editorially unusable when it says only that an
+# offer/medical/trip is imminent without naming the club.  Di Marzio reports are
+# therefore accepted only when the source itself contains an explicit managed
+# club name.  Player affiliations, prior posts and nicknames such as
+# "Bianconeri" are deliberately not used for inference.
+
+BOT_BUILD_ID = "V85-dimarzio-explicit-club-context-2026-09-23"
+
+# Official 2026/27 Serie A and Serie B clubs that were not already present in
+# the managed catalog.  Existing Italian clubs retain their configured tier;
+# newly covered clubs start in tier 3 and remain movable from the control panel.
+V85_ITALIAN_2026_27_CLUB_CATALOG: dict[str, dict[str, Any]] = {
+    "frosinone": {
+        "name": "פרוזינונה", "tier": "tier3", "country": "italy",
+        "aliases": ["Frosinone", "Frosinone Calcio", "פרוזינונה"],
+    },
+    "monza": {
+        "name": "מונצה", "tier": "tier3", "country": "italy",
+        "aliases": ["Monza", "AC Monza", "מונצה"],
+    },
+    "arezzo": {
+        "name": "ארצו", "tier": "tier3", "country": "italy",
+        "aliases": ["Arezzo", "SS Arezzo", "ארצו"],
+    },
+    "ascoli": {
+        "name": "אסקולי", "tier": "tier3", "country": "italy",
+        "aliases": ["Ascoli", "Ascoli Calcio", "אסקולי"],
+    },
+    "avellino": {
+        "name": "אבלינו", "tier": "tier3", "country": "italy",
+        "aliases": ["Avellino", "US Avellino", "אבלינו"],
+    },
+    "benevento": {
+        "name": "בנוונטו", "tier": "tier3", "country": "italy",
+        "aliases": ["Benevento", "Benevento Calcio", "בנוונטו"],
+    },
+    "carrarese": {
+        "name": "קאררזה", "tier": "tier3", "country": "italy",
+        "aliases": ["Carrarese", "Carrarese Calcio", "קאררזה"],
+    },
+    "catanzaro": {
+        "name": "קטנזארו", "tier": "tier3", "country": "italy",
+        "aliases": ["Catanzaro", "US Catanzaro", "קטנזארו"],
+    },
+    "cesena": {
+        "name": "צ'זנה", "tier": "tier3", "country": "italy",
+        "aliases": ["Cesena", "Cesena FC", "צ'זנה", "צזנה"],
+    },
+    "cremonese": {
+        "name": "קרמונזה", "tier": "tier3", "country": "italy",
+        "aliases": ["Cremonese", "US Cremonese", "קרמונזה"],
+    },
+    "empoli": {
+        "name": "אמפולי", "tier": "tier3", "country": "italy",
+        "aliases": ["Empoli", "Empoli FC", "אמפולי"],
+    },
+    "juve stabia": {
+        "name": "יובה סטאביה", "tier": "tier3", "country": "italy",
+        "aliases": ["Juve Stabia", "SS Juve Stabia", "יובה סטאביה"],
+    },
+    "lr vicenza": {
+        "name": "ויצ'נצה", "tier": "tier3", "country": "italy",
+        "aliases": ["L.R. Vicenza", "LR Vicenza", "Vicenza", "ויצ'נצה", "ויצנצה"],
+    },
+    "mantova": {
+        "name": "מנטובה", "tier": "tier3", "country": "italy",
+        "aliases": ["Mantova", "Mantova 1911", "מנטובה"],
+    },
+    "modena": {
+        "name": "מודנה", "tier": "tier3", "country": "italy",
+        "aliases": ["Modena", "Modena FC", "מודנה"],
+    },
+    "padova": {
+        "name": "פדובה", "tier": "tier3", "country": "italy",
+        "aliases": ["Padova", "Calcio Padova", "פדובה"],
+    },
+    "palermo": {
+        "name": "פאלרמו", "tier": "tier3", "country": "italy",
+        "aliases": ["Palermo", "Palermo FC", "פאלרמו"],
+    },
+    "pisa": {
+        "name": "פיזה", "tier": "tier3", "country": "italy",
+        "aliases": ["Pisa", "Pisa SC", "פיזה"],
+    },
+    "sampdoria": {
+        "name": "סמפדוריה", "tier": "tier3", "country": "italy",
+        "aliases": ["Sampdoria", "UC Sampdoria", "סמפדוריה"],
+    },
+    "sudtirol": {
+        "name": "סודטירול", "tier": "tier3", "country": "italy",
+        "aliases": ["Sudtirol", "Südtirol", "FC Südtirol", "סודטירול"],
+    },
+    "virtus entella": {
+        "name": "וירטוס אנטלה", "tier": "tier3", "country": "italy",
+        "aliases": ["Virtus Entella", "V. Entella", "וירטוס אנטלה"],
+    },
+}
+
+V85_SERIE_A_2026_27_KEYS = {
+    "ac milan", "atalanta", "bologna", "cagliari", "como", "fiorentina",
+    "frosinone", "genoa", "inter", "juventus", "lazio", "lecce", "monza",
+    "napoli", "parma", "roma", "sassuolo", "torino", "udinese", "venezia",
+}
+V85_SERIE_B_2026_27_KEYS = {
+    "arezzo", "ascoli", "avellino", "benevento", "carrarese", "catanzaro",
+    "cesena", "cremonese", "empoli", "verona", "juve stabia", "lr vicenza",
+    "mantova", "modena", "padova", "palermo", "pisa", "sampdoria",
+    "sudtirol", "virtus entella",
+}
+V85_ITALIAN_2026_27_KEYS = V85_SERIE_A_2026_27_KEYS | V85_SERIE_B_2026_27_KEYS
+
+for _v85_key, _v85_item in V85_ITALIAN_2026_27_CLUB_CATALOG.items():
+    if _v85_key not in TEAM_CATALOG:
+        TEAM_CATALOG[_v85_key] = dict(_v85_item)
+    else:
+        TEAM_CATALOG[_v85_key].setdefault("country", "italy")
+        existing_aliases = list(TEAM_CATALOG[_v85_key].get("aliases", []) or [])
+        TEAM_CATALOG[_v85_key]["aliases"] = list(dict.fromkeys(
+            existing_aliases + list(_v85_item.get("aliases", []) or [])
+        ))
+
+for _v85_key in V85_ITALIAN_2026_27_KEYS:
+    if _v85_key in TEAM_CATALOG:
+        TEAM_CATALOG[_v85_key]["country"] = "italy"
+
+# The canonical duplicate registry is lazy; invalidate it so the new managed
+# clubs participate in later duplicate checks as well as in the control menu.
+# The strict transfer gate owns a separate short-lived snapshot and must be
+# invalidated too; otherwise clubs added late in this single-file build would
+# remain "untracked" until that stale snapshot expired.
+CANONICAL_ENTITY_ALIAS_CACHE = None
+_RSS_TEAM_CATALOG_CACHE = None
+
+V85_UNCLEAR_STANDALONE_CLUB_ALIASES = {
+    # Generic or multiply-owned abbreviations are not sufficiently explicit.
+    "afc", "fcb", "cfc", "atm", "asm", "acm", "om", "ol", "fc", "ac", "as",
+    # These generic English nicknames/words need the full club name.
+    "sporting", "forest", "racing", "union",
+    # Deliberately excluded: the user's example must not infer Juventus.
+    "bianconeri", "the bianconeri", "biancocelesti", "giallorossi", "rossoneri",
+    "nerazzurri", "blucerchiati", "granata",
+}
+V85_CASE_SENSITIVE_SINGLE_LATIN_ALIASES = {"nice", "como", "inter"}
+V85_SAFE_SHORT_CODES = {"psg", "bvb", "rma"}
+
+
+def _v85_strict_club_aliases(key: str, info: dict[str, Any]) -> list[str]:
+    """Names usable as explicit evidence; never add players or inferred clubs."""
+    candidates = [str(key), str(info.get("name", ""))]
+    candidates.extend(str(alias) for alias in (info.get("aliases", []) or []))
+    output: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        alias = unicodedata.normalize("NFKC", html.unescape(candidate)).strip()
+        folded = re.sub(r"\s+", " ", alias).casefold()
+        letters = re.sub(r"[^A-Za-zא-ת]", "", alias)
+        if not folded or len(letters) < 3 or folded in V85_UNCLEAR_STANDALONE_CLUB_ALIASES:
+            continue
+        if (
+            re.fullmatch(r"[A-Za-z]{2,3}", alias)
+            and folded not in V85_SAFE_SHORT_CODES
+        ):
+            continue
+        if folded not in seen:
+            seen.add(folded)
+            output.append(alias)
+    return sorted(output, key=len, reverse=True)
+
+
+def _v85_explicit_alias_present(value: Any, alias: str) -> bool:
+    text = unicodedata.normalize("NFKC", html.unescape(str(value or "")))
+    wanted = unicodedata.normalize("NFKC", html.unescape(str(alias or ""))).strip()
+    if not text or not wanted:
+        return False
+    pattern = re.escape(wanted)
+    pattern = re.sub(r"(?:\\\s)+", r"[\\s._\-]+", pattern)
+    matcher = re.compile(
+        r"(?<![A-Za-z0-9א-ת])" + pattern + r"(?![A-Za-z0-9א-ת])",
+        re.IGNORECASE,
+    )
+    for match in matcher.finditer(text):
+        if wanted.casefold() in V85_CASE_SENSITIVE_SINGLE_LATIN_ALIASES:
+            visible = match.group(0)
+            prefix = text[match.start() - 1:match.start()] if match.start() else ""
+            if not (prefix in {"@", "#"} or visible[:1].isupper() or visible.isupper()):
+                continue
+        return True
+    return False
+
+
+def _v85_explicit_club_mentions(
+    value: Any, state: dict[str, Any] | None = None
+) -> dict[str, dict[str, str]]:
+    """Return explicit managed club names with their effective editorial tier."""
+    state = state or load_control_state()
+    catalog = all_team_catalog_items(state)
+    overrides = managed_team_overrides(state)
+    found: dict[str, dict[str, str]] = {}
+    for raw_key, raw_info in catalog.items():
+        key = str(raw_key)
+        info = raw_info if isinstance(raw_info, dict) else {}
+        tier = str(overrides.get(key, info.get("tier", "")) or "")
+        if tier not in {"tier1", "tier2", "tier3"}:
+            continue
+        for alias in _v85_strict_club_aliases(key, info):
+            if _v85_explicit_alias_present(value, alias):
+                found[key] = {
+                    "name": str(info.get("name", key)),
+                    "tier": tier,
+                    "alias": alias,
+                }
+                break
+    return found
+
+
+def _v85_dimarzio_source_club_keys(post: Post) -> set[str]:
+    source = "\n".join(filter(None, (
+        _final_corresponding_source_text(post, quoted=False),
+        _final_corresponding_source_text(post, quoted=True),
+    )))
+    return set(_v85_explicit_club_mentions(source))
+
+
+def _v85_dimarzio_context_issues(
+    post: Post, translated_text: Any = "", quoted_text: Any = ""
+) -> list[str]:
+    if not _v84_is_dimarzio(post):
+        return []
+    source_keys = _v85_dimarzio_source_club_keys(post)
+    if not source_keys:
+        return ["v85_dimarzio_missing_explicit_club"]
+    translated_keys = set(_v85_explicit_club_mentions(
+        "\n".join(filter(None, (str(translated_text or ""), str(quoted_text or ""))))
+    ))
+    missing = sorted(source_keys - translated_keys)
+    if missing:
+        return ["v85_dimarzio_club_missing_from_translation:" + ",".join(missing)]
+    return []
+
+
+_V85_PRE_TRANSLATION_QUALITY_ISSUES = translation_quality_issues
+
+
+def translation_quality_issues(
+    source_or_post: Any,
+    translated_text: Any = "",
+    quoted_text: Any = "",
+    *args: Any,
+    **kwargs: Any,
+) -> list[str]:
+    issues = list(_V85_PRE_TRANSLATION_QUALITY_ISSUES(
+        source_or_post, translated_text, quoted_text, *args, **kwargs
+    ) or [])
+    if isinstance(source_or_post, Post):
+        issues.extend(_v85_dimarzio_context_issues(
+            source_or_post, translated_text, quoted_text
+        ))
+    return list(dict.fromkeys(str(issue) for issue in issues if str(issue).strip()))[:20]
+
+
+_V85_PRE_TRANSLATE_POST_FOR_SEND = translate_post_for_send
+
+
+def translate_post_for_send(post: Post) -> tuple[str, str, str]:
+    """Preserve every explicit Di Marzio club, retrying candidates serially."""
+    if not _v84_is_dimarzio(post):
+        return _V85_PRE_TRANSLATE_POST_FOR_SEND(post)
+    if not _v85_dimarzio_source_club_keys(post):
+        raise TranslationUnavailable(
+            "דיווח די־מארציו אינו מציין מועדון מפורש במקור ולכן לא נשלח"
+        )
+    last_issues: list[str] = []
+    for attempt in range(2):
+        main, quote, author = _V85_PRE_TRANSLATE_POST_FOR_SEND(post)
+        last_issues = _v85_dimarzio_context_issues(post, main, quote)
+        if not last_issues:
+            return main, quote, author
+        _v81_evict_post_translation_cache(post)
+        if attempt == 0:
+            logging.warning(
+                "V85 rejected a Di Marzio translation that lost club context; "
+                "retrying sequentially: %s",
+                "; ".join(last_issues[:4]),
+            )
+    raise TranslationUnavailable(
+        "שם המועדון נעלם מתרגום די־מארציו ולכן ההודעה לא נשלחה: "
+        + "; ".join(last_issues[:4])
+    )
+
+
+_V85_PRE_FINAL_LOCAL_BLOCK = pre_send_final_local_block_reason
+
+
+def pre_send_final_local_block_reason(post: Post) -> str:
+    if _v84_is_dimarzio(post) and not _v85_dimarzio_source_club_keys(post):
+        return "v85_dimarzio_missing_explicit_club"
+    return str(_V85_PRE_FINAL_LOCAL_BLOCK(post) or "")
+
+
+_V85_PRE_HEBREW_BLOCK_REASON = hebrew_block_reason
+
+
+def hebrew_block_reason(reason: str) -> str:
+    raw = str(reason or "")
+    if "v85_dimarzio_missing_explicit_club" in raw:
+        return "דיווח די־מארציו אינו מציין במפורש לאיזה מועדון הוא קשור ולכן אינו נשלח"
+    if "v85_dimarzio_club_missing_from_translation" in raw:
+        return "שם המועדון שהיה במקור חסר בתרגום ולכן ההודעה אינה נשלחת"
+    return str(_V85_PRE_HEBREW_BLOCK_REASON(reason) or "")
+
+
+def _v85_self_audit() -> None:
+    if len(V85_SERIE_A_2026_27_KEYS) != 20 or len(V85_SERIE_B_2026_27_KEYS) != 20:
+        raise RuntimeError("v85_official_italian_club_count_changed")
+    missing_catalog = V85_ITALIAN_2026_27_KEYS - set(TEAM_CATALOG)
+    if missing_catalog:
+        raise RuntimeError("v85_missing_italian_clubs:" + ",".join(sorted(missing_catalog)))
+
+    no_club = _v58_test_post(
+        "DiMarzio",
+        "An official proposal to Neto and his entourage is expected today. "
+        "Travel and medical tests will then be organized.",
+        "v85-no-club",
+    )
+    if pre_send_final_local_block_reason(no_club) != "v85_dimarzio_missing_explicit_club":
+        raise RuntimeError("v85_clubless_dimarzio_not_blocked")
+
+    nickname_only = _v58_test_post(
+        "DiMarzio",
+        "The Bianconeri are trying to close the agreement during these final hours today.",
+        "v85-nickname-only",
+    )
+    if pre_send_final_local_block_reason(nickname_only) != "v85_dimarzio_missing_explicit_club":
+        raise RuntimeError("v85_nickname_was_used_as_club_inference")
+
+    for club_text, expected_key in (
+        ("Juventus sent the official proposal to Neto today before the medical.", "juventus"),
+        ("Monza sent the official proposal to Neto today before the medical.", "monza"),
+        ("Pisa sent the official proposal to Neto today before the medical.", "pisa"),
+        ("Arsenal sent the official proposal to Neto today before the medical.", "arsenal"),
+    ):
+        matches = _v85_explicit_club_mentions(club_text)
+        if expected_key not in matches:
+            raise RuntimeError("v85_explicit_club_not_detected:" + expected_key)
+        if not _strict_text_contains_managed_club(club_text):
+            raise RuntimeError("v85_strict_transfer_catalog_stale:" + expected_key)
+
+    if _v85_explicit_club_mentions("An intermediary submitted a nice proposal today."):
+        raise RuntimeError("v85_ordinary_words_misdetected_as_clubs")
+    if _v85_explicit_club_mentions("The Bianconeri submitted an offer for Neto."):
+        raise RuntimeError("v85_nickname_misdetected_as_explicit_club")
+
+    source = _v58_test_post(
+        "DiMarzio",
+        "Juventus sent an official proposal and will organize Neto's medical tomorrow.",
+        "v85-preserve-club",
+    )
+    missing_issue = _v85_dimarzio_context_issues(
+        source, "הצעה רשמית נשלחה והבדיקות הרפואיות ייערכו מחר.", ""
+    )
+    if not any("club_missing_from_translation" in issue for issue in missing_issue):
+        raise RuntimeError("v85_translation_club_loss_not_detected")
+    if _v85_dimarzio_context_issues(
+        source, "יובנטוס שלחה הצעה רשמית ותארגן את הבדיקות הרפואיות מחר.", ""
+    ):
+        raise RuntimeError("v85_preserved_translation_club_rejected")
+
+    # Regression guards for the previously reported failures.
+    if "_v80_gemini_history_chunk" in _translate_history_posts_parallel.__code__.co_names:
+        raise RuntimeError("v85_history_route_regressed_to_gemini")
+    if not _v84_translation_integrity_issues(
+        "Mikel Arteta agrees a new Arsenal contract at age 44.",
+        "מיקל ארטטה הסכים לחוזה חדש בארסנל בגיל 44 7332275 2026 09.",
+    ):
+        raise RuntimeError("v85_numeric_corruption_regression")
+
+
+_v85_self_audit()
+logging.info(
+    "V85 active: Di Marzio requires an explicit managed club in the source and "
+    "the club must survive translation; all 2026/27 Serie A and Serie B clubs "
+    "are available in their effective tiers"
 )
 
 
